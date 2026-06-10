@@ -258,6 +258,98 @@ static void *layout_wrapper(void *gui, const void *name) {
 // No-op stub for TeSFX functions (audio is stubbed via OpenSL ES)
 static void sfx_noop(void *self) { (void)self; }
 
+// Hook for SDL3's Android_JNI_GetEnv: the engine caches the JNIEnv via
+// pthread TLS, but on our fake VM that cache returns garbage (an env whose
+// *env=0x1) → crash at PushLocalFrame in SDL_GetAndroidInternalStoragePath.
+// We force it to always return our valid fake env (&jni_env_ptr), which
+// fixes every JNI call SDL makes (storage path, window, input, audio).
+extern void *jni_shim_get_env(void);
+static void *android_jni_getenv_wrapper(void) { return jni_shim_get_env(); }
+
+/* Hook de Android_WaitActiveAndLockActivity: o caminho normal é uma máquina de
+ * estados de lifecycle (espera surface/resume via callbacks Java) que sem Java
+ * trava com timeout infinito. Substituímos pelo caminho de sucesso: garante a
+ * surface nativa (onNativeSurfaceCreated/Changed), trava o ActivityMutex e
+ * retorna 1 (ativo). É o que a função faz quando a janela está ativa. */
+static int wait_active_wrapper(void) {
+  static void (*lockm)(void) = NULL;
+  static void (*sc)(void *, void *) = NULL;
+  static void (*sch)(void *, void *) = NULL;
+  static int resolved = 0;
+  if (!resolved) {
+    resolved = 1;
+    lockm = (void (*)(void))so_find_addr("Android_LockActivityMutex");
+    sc  = (void (*)(void *, void *))so_find_addr("Java_org_libsdl_app_SDLActivity_onNativeSurfaceCreated");
+    sch = (void (*)(void *, void *))so_find_addr("Java_org_libsdl_app_SDLActivity_onNativeSurfaceChanged");
+  }
+  void *env = jni_shim_get_env();
+  static int fake_cls;
+  if (sc)  sc(env, &fake_cls);   /* seta native_window na janela */
+  if (sch) sch(env, &fake_cls);  /* cria EGL surface se possível */
+  if (lockm) lockm();            /* contrato: retorna com ActivityMutex travado */
+  return 1;
+}
+
+/* ===== Lifecycle driver (F2) =====
+ * SDL3 backend Android bloqueia em Android_WaitLifecycleEvent esperando os
+ * callbacks do SurfaceView Java (surface criada/resume/foco). Sem Java, uma
+ * thread simula esses callbacks chamando os JNI nativos do SDL na ordem certa,
+ * + auroraNativeSetSurfaceReady (gate do engine). Roda concorrente ao SDL_main
+ * (que está bloqueado), igual no Android (UI thread x SDLThread). */
+#include <pthread.h>
+static void *lifecycle_thread(void *arg) {
+  (void)arg;
+  void *env = jni_shim_get_env();
+  static int fake_cls;
+  void *cls = &fake_cls;
+  typedef void (*fn2)(void *, void *);
+  typedef void (*fn3b)(void *, void *, int);
+  typedef void (*fnRes)(void *, void *, int, int, int, int, float, float);
+  typedef void (*fnEv)(int);
+  fn2  surfCreated = (fn2)so_find_addr("Java_org_libsdl_app_SDLActivity_onNativeSurfaceCreated");
+  fn2  surfChanged = (fn2)so_find_addr("Java_org_libsdl_app_SDLActivity_onNativeSurfaceChanged");
+  fnRes setRes     = (fnRes)so_find_addr("Java_org_libsdl_app_SDLActivity_nativeSetScreenResolution");
+  fn2  onResize    = (fn2)so_find_addr("Java_org_libsdl_app_SDLActivity_onNativeResize");
+  fn2  resume      = (fn2)so_find_addr("Java_org_libsdl_app_SDLActivity_nativeResume");
+  fn3b focus       = (fn3b)so_find_addr("Java_org_libsdl_app_SDLActivity_nativeFocusChanged");
+  fn3b surfReady   = (fn3b)so_find_addr("Java_org_libsdl_app_SDLSurface_auroraNativeSetSurfaceReady");
+  fnEv sendLife    = (fnEv)so_find_addr("Android_SendLifecycleEvent");
+  /* Flags globais do SDL3-Android (vaddr fixo no .so):
+   *   0x2ccf149 = Android_Paused (1=pausado -> WaitActiveAndLockActivity espera)
+   *   0x2ccf14a = destroy/device-lost
+   * WaitActiveAndLockActivity SÓ retorna sucesso quando paused!=1 E o poll de
+   * lifecycle esvazia (timeout). Então: NÃO inundar; rajada + silêncio; e forçar
+   * paused=0 direto (destrava mesmo antes da janela existir). */
+  volatile unsigned char *paused  = (volatile unsigned char *)((char *)text_base + 0x2ccf149);
+  volatile unsigned char *destroy = (volatile unsigned char *)((char *)text_base + 0x2ccf14a);
+  debugPrintf("[lifecycle] thread: surfCreated=%p surfChanged=%p resume=%p ready=%p send=%p paused@%p=%d\n",
+              (void*)surfCreated,(void*)surfChanged,(void*)resume,(void*)surfReady,(void*)sendLife,
+              (void*)paused,(int)*paused);
+  volatile int *qcount = (volatile int *)((char *)text_base + 0x2ccec80);
+  for (int i = 0; ; i++) {
+    if (i < 8) {
+      /* setup completo nas primeiras 8 iterações (2.4s) p/ subir janela+surface */
+      if (surfCreated) surfCreated(env, cls);
+      if (surfChanged) surfChanged(env, cls);
+      if (surfReady)   surfReady(env, cls, 1);
+      if (i < 4) {
+        if (setRes)   setRes(env, cls, 1280, 720, 1280, 720, 1.0f, 60.0f);
+        if (onResize) onResize(env, cls);
+        if (resume)   resume(env, cls);
+        if (focus)    focus(env, cls, 1);
+        if (sendLife){ sendLife(0); sendLife(2); }
+      }
+    }
+    /* após iteração 8: SÓ força ativo, NENHUM JNI/evento (quietude total) */
+    *paused = 0; *destroy = 0;
+    if (i == 0 || (i % 10) == 0)
+      debugPrintf("[lifecycle] ciclo %d paused=%d destroy=%d qcount=%d\n",
+                  i, (int)*paused, (int)*destroy, *qcount);
+    usleep(300000); /* 300ms */
+  }
+  return NULL;
+}
+
 // PadScheme::updateUp/updateDown can crash when they access TeButtonLayout
 // objects with corrupted signal data (from gamepad UI layouts that don't
 // exist on this device). We wrap them with sigsetjmp to recover from crashes.
@@ -466,6 +558,27 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  // Force SDL3's Android_JNI_GetEnv to return our valid fake env (see wrapper).
+  {
+    uintptr_t got_slot = so_find_rel_addr_safe("Android_JNI_GetEnv");
+    if (got_slot) {
+      *(uintptr_t *)got_slot = (uintptr_t)android_jni_getenv_wrapper;
+      debugPrintf("GOT-hooked Android_JNI_GetEnv -> wrapper (env=%p)\n",
+                  jni_shim_get_env());
+    } else {
+      debugPrintf("WARN: Android_JNI_GetEnv GOT slot not found\n");
+    }
+  }
+  {
+    uintptr_t got_slot = so_find_rel_addr_safe("Android_WaitActiveAndLockActivity");
+    if (got_slot) {
+      *(uintptr_t *)got_slot = (uintptr_t)wait_active_wrapper;
+      debugPrintf("GOT-hooked Android_WaitActiveAndLockActivity -> wrapper\n");
+    } else {
+      debugPrintf("WARN: Android_WaitActiveAndLockActivity GOT slot not found\n");
+    }
+  }
+
   // Run .init_array constructors
   debugPrintf("Running init array...\n");
   so_execute_init_array();
@@ -491,6 +604,17 @@ int main(int argc, char *argv[]) {
   if (!sdl_set_main_ready)
     sdl_set_main_ready = (void (*)(void))dlsym(RTLD_DEFAULT, "SDL_SetMainReady");
   if (sdl_set_main_ready) { sdl_set_main_ready(); debugPrintf("SDL_SetMainReady() ok\n"); }
+
+  /* Dispara o driver de lifecycle (destrava Android_WaitLifecycleEvent). */
+  {
+    pthread_t lt;
+    if (pthread_create(&lt, NULL, lifecycle_thread, NULL) == 0) {
+      pthread_detach(lt);
+      debugPrintf("[lifecycle] driver iniciado\n");
+    } else {
+      debugPrintf("[lifecycle] FALHA ao criar thread\n");
+    }
+  }
 
   uintptr_t sdl_main_addr = so_find_addr("SDL_main");
   if (!sdl_main_addr)

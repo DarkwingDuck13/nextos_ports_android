@@ -298,7 +298,10 @@ int so_relocate(void) {
         int type = ELF64_R_TYPE(rels[j].r_info);
         switch (type) {
         case R_AARCH64_ABS64:
-          *ptr = (uintptr_t)text_virtbase + sym->st_value + rels[j].r_addend;
+          /* só símbolos DEFINIDOS aqui; ABS64 contra import (UND) é resolvido
+           * em so_resolve (via tabela/dlsym). Antes caía em base+0 = NULL. */
+          if (sym->st_shndx != SHN_UNDEF)
+            *ptr = (uintptr_t)text_virtbase + sym->st_value + rels[j].r_addend;
           break;
         case R_AARCH64_RELATIVE:
           *ptr = (uintptr_t)text_virtbase + rels[j].r_addend;
@@ -354,6 +357,7 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
 
         int type = ELF64_R_TYPE(rels[j].r_info);
         switch (type) {
+        case R_AARCH64_ABS64:       /* ABS64 contra import tb precisa resolver */
         case R_AARCH64_GLOB_DAT:
         case R_AARCH64_JUMP_SLOT: {
           if (sym->st_shndx == SHN_UNDEF) {
@@ -361,10 +365,11 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
               *ptr = rels[j].r_offset;
 
             char *name = dynstrtab + sym->st_name;
+            uintptr_t addend = rels[j].r_addend;
             int found = 0;
             for (int k = 0; k < num_funcs; k++) {
               if (strcmp(name, funcs[k].symbol) == 0) {
-                *ptr = funcs[k].func;
+                *ptr = funcs[k].func + addend;
                 found = 1;
                 break;
               }
@@ -372,7 +377,7 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
             if (!found) {
               /* fallback: libc/libm/zlib/socket/dl padrão resolvem no glibc real do device */
               void *real = dlsym(RTLD_DEFAULT, name);
-              if (real) { *ptr = (uintptr_t)real; found = 1; }
+              if (real) { *ptr = (uintptr_t)real + addend; found = 1; }
             }
             if (!found)
               fprintf(stderr, "*** UNRESOLVED import: \"%s\" (GOT offset 0x%lx) ***\n",

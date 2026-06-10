@@ -35,6 +35,7 @@ enum {
   MID_ERROR_DIALOG,
   MID_GET_CLASS_LOADER,
   MID_LOAD_CLASS,
+  MID_GET_PATH,      /* getCanonicalPath/getAbsolutePath/getPath -> data dir */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_GENERIC,
@@ -45,6 +46,11 @@ static int g_method_tags[16]; /* unique addresses used as method IDs */
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
 static int g_obb_version = 12;
+
+/* Diretório de dados gravável no device (logs, saves, pipeline cache).
+ * getFilesDir().getCanonicalPath() do engine resolve aqui. */
+static const char *g_data_dir = "/storage/roms/dusklight-recon/files";
+void jni_shim_set_data_dir(const char *d) { g_data_dir = d; }
 
 void jni_shim_set_package(const char *package_name, int obb_version) {
   g_package_name = package_name;
@@ -104,6 +110,12 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_GET_CLASS_LOADER];
   if (strcmp(name, "loadClass") == 0)
     return &g_method_tags[MID_LOAD_CLASS];
+  /* File.getCanonicalPath()/getAbsolutePath()/getPath() e String paths
+   * -> devolvem nosso diretório de dados gravável. */
+  if (strcmp(name, "getCanonicalPath") == 0 ||
+      strcmp(name, "getAbsolutePath") == 0 ||
+      strcmp(name, "getPath") == 0)
+    return &g_method_tags[MID_GET_PATH];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -145,6 +157,10 @@ static void *jni_GetStaticFieldID(void *env, void *clazz, const char *name,
 static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
+  if (methodID == &g_method_tags[MID_GET_PATH]) {
+    debugPrintf("jni_shim: CallObjectMethod getPath -> \"%s\"\n", g_data_dir);
+    return make_jstring(g_data_dir);
+  }
   debugPrintf("jni_shim: CallObjectMethod(mid=%p)\n", methodID);
   static int fake_obj;
   return &fake_obj;
@@ -469,4 +485,13 @@ void *jni_shim_get_vm(void) {
   static void *vm = NULL;
   if (!vm) jni_shim_init(&vm, NULL);
   return vm;
+}
+
+/* jni_shim_get_env — retorna o JNIEnv* válido (&jni_env_ptr). Usado pra
+ * hookar Android_JNI_GetEnv do SDL3: o cache via pthread TLS retornava lixo
+ * (env cujo *env=0x1) → crash em PushLocalFrame. Forçar nosso env conserta
+ * TODAS as chamadas JNI subsequentes (storage path, janela, input). */
+void *jni_shim_get_env(void) {
+  if (!jni_env_ptr) jni_shim_init(NULL, NULL);
+  return &jni_env_ptr;
 }

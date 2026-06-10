@@ -87,6 +87,8 @@ extern long pthread_self_fake();
 extern long pthread_setschedparam_fake();
 extern long pthread_setspecific_fake();
 extern long pthread_sigmask_fake();
+extern int my_sigaction();
+extern int my_sigprocmask();
 extern long sem_destroy_fake();
 extern long sem_getvalue_fake();
 extern long sem_init_fake();
@@ -462,7 +464,8 @@ DynLibFunction dynlib_functions[] = {
   // TODO {"setuid", (uintptr_t)&stub_setuid},  // <<< IMPLEMENTAR
   // TODO {"__sF", (uintptr_t)&stub___sF},  // <<< IMPLEMENTAR
   // TODO {"shutdown", (uintptr_t)&stub_shutdown},  // <<< IMPLEMENTAR
-  // TODO {"sigaction", (uintptr_t)&stub_sigaction},  // <<< IMPLEMENTAR
+  {"sigaction", (uintptr_t)&my_sigaction},  // ABI bionic/glibc sigset (evita estouro de stack)
+  {"sigprocmask", (uintptr_t)&my_sigprocmask},  // idem
   // TODO {"sigaddset", (uintptr_t)&stub_sigaddset},  // <<< IMPLEMENTAR
   // TODO {"sigemptyset", (uintptr_t)&stub_sigemptyset},  // <<< IMPLEMENTAR
   // TODO {"sigfillset", (uintptr_t)&stub_sigfillset},  // <<< IMPLEMENTAR

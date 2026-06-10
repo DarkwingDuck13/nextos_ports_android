@@ -44,3 +44,66 @@ void ZSTD_trace_decompress_end(unsigned long long id, const void *t){ (void)id; 
 /* ---- __sF: stdio bionic. F1: buffer válido (3 * tamanho generoso); se o jogo
  * passar &__sF[i] p/ stdio glibc no init, tratamos na F1b. ---- */
 char __sF[3 * 512];
+
+/* ====== sigaction/sigprocmask: ABI bionic x glibc ======
+ * O struct sigaction do bionic (arm64) = { int sa_flags; void* sa_handler;
+ * unsigned long sa_mask; void* sa_restorer; } = 32 bytes (sigset_t bionic=8B).
+ * O da glibc = 152 bytes (sigset_t glibc=128B!). O .so (compilado p/ Android)
+ * reserva ~32B na stack p/ o oldact; se chamarmos a glibc direto, ela escreve
+ * 152B -> ESTOURA a stack (canário) em SDL_InitQuit. Traduzimos os campos. */
+#include <signal.h>
+/* campos com prefixo bsa_ p/ não colidir com as MACROS sa_handler/sa_sigaction
+ * da glibc (#define sa_handler __sigaction_handler.sa_handler). */
+struct bionic_sigaction {
+  int   bsa_flags;
+  void *bsa_handler;      /* união sa_handler/sa_sigaction */
+  unsigned long bsa_mask; /* bionic sigset_t = 8 bytes */
+  void *bsa_restorer;
+};
+int my_sigaction(int sig, const struct bionic_sigaction *act,
+                 struct bionic_sigaction *oldact) {
+  struct sigaction ga, go;
+  struct sigaction *pga = NULL, *pgo = NULL;
+  if (act) {
+    memset(&ga, 0, sizeof ga);
+    ga.sa_flags = act->bsa_flags;
+    if (act->bsa_flags & SA_SIGINFO)
+      ga.sa_sigaction = (void (*)(int, siginfo_t *, void *))act->bsa_handler;
+    else
+      ga.sa_handler = (void (*)(int))act->bsa_handler;
+    sigemptyset(&ga.sa_mask);
+    for (int s = 1; s < 64; s++)
+      if (act->bsa_mask & (1UL << (s - 1))) sigaddset(&ga.sa_mask, s);
+    pga = &ga;
+  }
+  if (oldact) { memset(&go, 0, sizeof go); pgo = &go; }
+  int r = sigaction(sig, pga, pgo);
+  if (oldact) {
+    oldact->bsa_flags = go.sa_flags;
+    oldact->bsa_handler = (go.sa_flags & SA_SIGINFO)
+                              ? (void *)go.sa_sigaction
+                              : (void *)go.sa_handler;
+    unsigned long m = 0;
+    for (int s = 1; s < 64; s++)
+      if (sigismember(&go.sa_mask, s)) m |= (1UL << (s - 1));
+    oldact->bsa_mask = m;
+    oldact->bsa_restorer = NULL;
+  }
+  return r;
+}
+/* sigprocmask/pthread_sigmask: bionic sigset_t (8B) -> glibc (128B).
+ * Mesmo risco de estouro no 'old'. Traduz. */
+static void bset_to_g(unsigned long b, sigset_t *g){
+  sigemptyset(g);
+  for (int s=1;s<64;s++) if (b & (1UL<<(s-1))) sigaddset(g,s);
+}
+static unsigned long g_to_bset(const sigset_t *g){
+  unsigned long b=0; for(int s=1;s<64;s++) if(sigismember(g,s)) b|=(1UL<<(s-1)); return b;
+}
+int my_sigprocmask(int how, const unsigned long *set, unsigned long *oldset){
+  sigset_t gs, go; sigset_t *pgs=NULL;
+  if(set){ bset_to_g(*set,&gs); pgs=&gs; }
+  int r = sigprocmask(how, pgs, oldset?&go:NULL);
+  if(oldset) *oldset = g_to_bset(&go);
+  return r;
+}
