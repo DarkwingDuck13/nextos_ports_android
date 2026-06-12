@@ -1,0 +1,52 @@
+# build artifacts
+build/
+ports/*/build/
+*.o
+*.a
+*.elf
+*.bin
+
+# logs
+log.txt
+*.log
+
+# === BYO game files — NUNCA commitar conteudo de jogo (copyright) ===
+*.so
+*.obb
+*.apk
+*.dat
+*.unity3d
+*.resource
+*.assets
+sharedassets*
+data.unity3d
+global-metadata.dat
+
+# OS
+.DS_Store
+experiments/*/build/
+
+# dados/libs/binarios do jogo (BYO-data estilo PortMaster -- NUNCA no repo)
+ports/*/assets/
+ports/*/*.zip
+ports/*/*.idx
+ports/*/*.obb
+ports/*/*.so
+ports/*/*.swap
+ports/bully/bully
+mem.log
+bully.log
+
+# dados/libs locais GRANDES (>100MB, NUNCA stagear)
+experiments/*/gamefiles/
+experiments/*/gamefiles-arm64/
+experiments/*-pc/gamefiles/
+
+# referencias de terceiros (nao distribuir)
+experiments/bully/ref-*/
+
+# binarios compilados (build artifacts -- gerados por build.sh)
+ports/gtavc/gtavc
+ports/revc/revc
+experiments/hollow-recon/hollow-recon-no
+experiments/hollow-recon/evdev2key

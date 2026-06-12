@@ -1,0 +1,7 @@
+*.so
+re4boot
+re4recon
+assets/
+lib/
+*.raw
+boot.log

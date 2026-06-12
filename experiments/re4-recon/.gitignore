@@ -1,0 +1,5 @@
+*.so
+re4boot
+re4recon
+lib/
+*.raw
