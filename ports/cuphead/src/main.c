@@ -1457,6 +1457,51 @@ static void menuspy_install(uintptr_t base) {
   fprintf(stderr, "[MENUSPY] hooks SlotSelectScreen instalados\n"); fsync(2);
 }
 
+/* ===== CUP_STAGESPY (s14c): por que o conteúdo da fase (boss/cenário) não aparece? =====
+ * Fase: player+chão+céu renderizam, boss+cenário FALTAM; só 29 draws/frame; 1 HIERFIX
+ * (≠ problema do mapa). atlas_veggieslevel deployado. Pergunta-chave: os sprites do boss
+ * estão sendo ATRIBUÍDOS aos renderers (=> problema é render/Mali) ou NÃO (=> load async
+ * da fase não completa)? Hook decisivo: SpriteRenderer.set_sprite (il2cpp 0x178EB3C) —
+ * conta atribuições e quantas com sprite NULL. + AssetBundle.LoadAssetAsync (0x17C893C) —
+ * loga o que a fase pede async (se nunca completa, o sprite nunca é setado). */
+static long (*ss_setsprite_orig)(void *, void *);
+static volatile uint32_t g_ss_set, g_ss_null;
+static long ss_setsprite_hook(void *self, void *sprite) {
+  g_ss_set++;
+  if (!sprite) g_ss_null++;
+  return ss_setsprite_orig(self, sprite);
+}
+static long (*ss_loadasync_orig)(void *, void *, void *);
+static volatile uint32_t g_ss_async;
+static long ss_loadasync_hook(void *self, void *name, void *type) {
+  g_ss_async++;
+  if (g_ss_async < 60 && name) {
+    /* il2cpp String: len@+0x10 (int), chars utf16@+0x14 */
+    int len = *(int *)((char *)name + 0x10);
+    unsigned short *u = (unsigned short *)((char *)name + 0x14);
+    char buf[128]; int n = 0;
+    for (int i = 0; i < len && n < (int)sizeof buf - 1; i++)
+      buf[n++] = (u[i] < 128) ? (char)u[i] : '?';
+    buf[n] = 0;
+    fprintf(stderr, "[STAGESPY] LoadAssetAsync(\"%s\") #%u f=%d\n", buf, g_ss_async, g_render_frame);
+    fsync(2);
+  }
+  return ss_loadasync_orig(self, name, type);
+}
+static void stagespy_install(uintptr_t base) {
+  struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
+    {0x178EB3C, (void *)ss_setsprite_hook, (void **)&ss_setsprite_orig, "SpriteRenderer.set_sprite"},
+    {0x17C893C, (void *)ss_loadasync_hook, (void **)&ss_loadasync_orig, "AssetBundle.LoadAssetAsync"},
+  };
+  for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    void *tr = mk_tramp(base + T[i].rva, T[i].nm);
+    if (!tr) { fprintf(stderr, "[STAGESPY] tramp %s falhou\n", T[i].nm); continue; }
+    *T[i].orig = tr;
+    hook_arm64(base + T[i].rva, (uintptr_t)T[i].hook);
+  }
+  fprintf(stderr, "[STAGESPY] hooks instalados (set_sprite + LoadAssetAsync)\n"); fsync(2);
+}
+
 /* ===== CUP_TAPINPUT: pulsa AnyPlayerInput.GetAnyButtonDown (il2cpp 0xCC2854) =====
  * A coroutine WaitForUserInputBeforeContinue do disclaimer espera
  * WaitUntil(() => AnyPlayerInput.GetAnyButtonDown()). Sem plumbing real de input,
@@ -2476,6 +2521,7 @@ int main(int argc, char **argv) {
       extern void gp_init(uintptr_t);
       gp_init(g_il2cpp_base);
     }
+    if (getenv("CUP_STAGESPY")) stagespy_install(g_il2cpp_base);
     so_finalize(); so_flush_caches();
     fprintf(stderr, "[F1] libil2cpp init_array...\n");
     so_execute_init_array();
@@ -2668,6 +2714,10 @@ int main(int argc, char **argv) {
                 f, avail / 1024, swfree / 1024, rss / 1024, gch >> 20, gcu >> 20);
         fsync(2);
       }
+    }
+    if (getenv("CUP_STAGESPY") && f % 300 == 0) {
+      fprintf(stderr, "[STAGESPY] f=%d set_sprite=%u (null=%u) loadAsync=%u\n",
+              f, g_ss_set, g_ss_null, g_ss_async); fsync(2);
     }
     if (scenespy && f % 600 == 0) scenespy_dump("tick");
     if (setactive && f % 30 == 0) setactive_fix();
