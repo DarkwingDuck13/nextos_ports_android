@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
@@ -100,4 +101,26 @@ void bully_egl_objects(uintptr_t *d, uintptr_t *s, uintptr_t *c) {
 }
 int  bully_make_current(void) { return SDL_GL_MakeCurrent(g_win, g_ctx) == 0 ? 1 : 0; }
 void bully_release_current(void) { SDL_GL_MakeCurrent(g_win, NULL); }
-void bully_swap_buffers(void) { if (g_win) SDL_GL_SwapWindow(g_win); }
+/* screenshot sob demanda: `touch /dev/shm/bully_shot` -> salva RGBA cru do
+ * backbuffer (antes do flip) em /dev/shm/bully_shot.raw + .txt com WxH.
+ * Roda na thread de render (contexto GL correto). */
+static void bully_maybe_screenshot(void) {
+  static int chk = 0;
+  if (++chk % 15) return;
+  if (access("/dev/shm/bully_shot", F_OK) != 0) return;
+  unlink("/dev/shm/bully_shot");
+  int vp[4] = {0,0,0,0};
+  glGetIntegerv(GL_VIEWPORT, vp);
+  int w = vp[2], h = vp[3];
+  if (w <= 0 || h <= 0) return;
+  unsigned char *buf = malloc((size_t)w * h * 4);
+  if (!buf) return;
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+  FILE *o = fopen("/dev/shm/bully_shot.raw", "wb");
+  if (o) { fwrite(buf, 1, (size_t)w * h * 4, o); fclose(o); }
+  FILE *t = fopen("/dev/shm/bully_shot.txt", "w");
+  if (t) { fprintf(t, "%d %d\n", w, h); fclose(t); }
+  free(buf);
+  fprintf(stderr, "[shot] %dx%d salvo em /dev/shm/bully_shot.raw\n", w, h);
+}
+void bully_swap_buffers(void) { if (g_win) { bully_maybe_screenshot(); SDL_GL_SwapWindow(g_win); } }

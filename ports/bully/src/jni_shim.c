@@ -72,7 +72,16 @@ static char *FileGetArchiveName(int type) {
   if (type == 2) return (char *)"patch.obb";
   return NULL;
 }
-static int GetGamepadType(int port) { return port == 0 ? 8 : -1; } /* PS3 */
+/* Tipo do pad define o MAPA DE ACOES interno (BBI->botao) do engine:
+ * 0/5/6=XBOX360 4=MogaPocket 7=MogaPro 8=PS3 9=iOSExtended 10=iOSSimple.
+ * BULLY_PAD_TYPE p/ experimentar (default 8=PS3, historico do port). */
+static int GetGamepadType(int port) {
+  if (port != 0) return -1;
+  static int t = -99;
+  if (t == -99) { const char *e = getenv("BULLY_PAD_TYPE"); t = e ? atoi(e) : 8;
+    fprintf(stderr, "[pad] GetGamepadType=%d\n", t); }
+  return t;
+}
 /* Hotkey universal de SAIR (SELECT+START) — funciona em qualquer device, sem
  * depender de gptokeyb/set_kill (que varia por CFW). Chamado do pump_gamepad
  * (todo frame; o jogo usa eventos, nao polling) E do GetGamepadButtons (poll).
@@ -213,6 +222,51 @@ static void pump_gptk(void) {
   if (g_kb[SDL_SCANCODE_ESCAPE] && g_kb[SDL_SCANCODE_RETURN]) {
     fprintf(stderr, "[pad] SELECT+START (gptk) -> saindo do jogo\n");
     _exit(0);
+  }
+  /* TAP sintetico (AND_TouchEvent): calibracao via `echo "x y" >
+   * /dev/shm/bully_tap` OU teclas f/g -> toque nos botoes touch de troca de
+   * item do HUD (coords BULLY_TAP_PREV/BULLY_TAP_NEXT="x,y"). E o unico jeito
+   * de trocar item no build mobile: a acao BBI_Next/PrevWeapon so existe no
+   * touch (nenhum dos 20 eventos de gamepad cicla itens — sondados todos). */
+  {
+    static void (*touchfn)(int,int,int,int) = NULL;
+    static int t_init = 0, tap_hold = -1, tap_x, tap_y, tframes = 0;
+    static int px = -1, py = -1, nx = -1, ny = -1, lastf = 0, lastg = 0;
+    if (!t_init) {
+      touchfn = (void*)so_symbol(&mod_game, "_Z14AND_TouchEventiiii");
+      /* slot de arma do HUD touch (calibrado por screenshot no X5M 1080p):
+       * zona sup-esq = item ANTERIOR, zona inf-dir = PROXIMO. Coordenadas
+       * RELATIVAS a resolucao (1288,923)/(1320,958) @1920x1080. */
+      int w = bully_screen_w(), h = bully_screen_h();
+      px = w * 1288 / 1920; py = h * 923 / 1080;
+      nx = w * 1320 / 1920; ny = h * 958 / 1080;
+      const char *e;
+      if ((e = getenv("BULLY_TAP_PREV"))) sscanf(e, "%d,%d", &px, &py);
+      if ((e = getenv("BULLY_TAP_NEXT"))) sscanf(e, "%d,%d", &nx, &ny);
+      fprintf(stderr, "[tap] AND_TouchEvent=%p prev=%d,%d next=%d,%d\n", (void*)touchfn, px, py, nx, ny);
+      t_init = 1;
+    }
+    if (touchfn) {
+      if (tap_hold > 0) {
+        if (--tap_hold == 0) { touchfn(1, 0, tap_x, tap_y); tap_hold = -1; }
+      } else {
+        int f = g_kb[SDL_SCANCODE_F] ? 1 : 0, g = g_kb[SDL_SCANCODE_G] ? 1 : 0;
+        if (f && !lastf && px >= 0) { tap_x = px; tap_y = py; touchfn(2, 0, px, py); tap_hold = 8; }
+        else if (g && !lastg && nx >= 0) { tap_x = nx; tap_y = ny; touchfn(2, 0, nx, ny); tap_hold = 8; }
+        else if (++tframes % 10 == 0) {
+          FILE *tf = fopen("/dev/shm/bully_tap", "r");
+          if (tf) {
+            int x = -1, y = -1;
+            if (fscanf(tf, "%d %d", &x, &y) == 2 && x >= 0) {
+              tap_x = x; tap_y = y; touchfn(2, 0, x, y); tap_hold = 8;
+              fprintf(stderr, "[tap] %d,%d\n", x, y);
+            }
+            fclose(tf); unlink("/dev/shm/bully_tap");
+          }
+        }
+        lastf = f; lastg = g;
+      }
+    }
   }
   /* SONDA de enums (mapeamento empirico do GamepadButton do libGame):
    * `echo N > /dev/shm/bully_btn` via ssh -> dispara down/up do enum N
