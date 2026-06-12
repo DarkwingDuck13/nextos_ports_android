@@ -51,3 +51,29 @@ launcher chama `$GPTOKEYB "ClassiCube" -c "classicube.gptk" textinput &`.
   mesmo caminho que TODOS os ports GameMaker/gmloader já usam nesses CFWs.
 - Se o CFW tiver um gptokeyb que DÁ grab, o caminho digital assume sozinho
   (g_pad fica NULL ou sem eventos novos — checagem é por pad aberto).
+
+## RESULTADO FINAL (2026-06-12, validado no S905X5M)
+
+### Enum REAL de eventos do libGame (confirmado por RE: __type_GamepadButton @0x7e03f8)
+0-3=A/B/X/Y (posicional) 4=START 5=BACK 6=LEFTSTICK 7=RIGHTSTICK 8-11=NAV
+12-15=DPAD(legado) 16=LEFTSHOULDER 17=LEFTTRIGGER 18=RIGHTSHOULDER 19=RIGHTTRIGGER
+
+### Ligacoes de GAMEPLAY do build MOBILE (touch) — descobertas empiricamente
+- O jogo le APENAS eventos (GetGamepadButtons/GetGamepadAxis NUNCA sao chamados
+  — provado com instrumentacao; so 3 calls de skip-movie no binario inteiro).
+- **16-19 (shoulders/triggers) NAO fazem NADA no gameplay** — o build touch
+  religou as 6 acoes "extras" do PS2 no cluster 6/7/12-15:
+  - 6 = MIRA/lock-on (e pagina-esq nos menus)
+  - 7 = DISPARAR (e pagina-dir nos menus — por isso "paginava no R3" no v5)
+  - 12 = olhar p/ tras · 13 = agachar · 14 = item-esq · 15 = item-dir
+- implOnGamepadButtonDown: guarda state[24+btn] (base 0x158a9a8, 60B/porta,
+  btn<32) + enfileira LIB_InputEvent(6/7).
+
+### Pegadinhas que custaram horas
+1. **Comentario inline no .gptk MATA a linha** (parser inih so aceita
+   comentario em linha propria). Linhas com `# ...` apos o valor nunca agiram.
+2. **Neste pad/CFW o gptokeyb enxerga shoulder<->gatilho TROCADOS**
+   (fisico L1 chega como `l2`, fisico L2 como `l1`, idem direita) — provado
+   com log [kbd] em ordem controlada. O .gptk cruza as atribuicoes.
+3. O caminho de POLL lendo o pad fisico por fora do gptokeyb mascarava tudo
+   (botoes de cara "funcionavam" sem gptokeyb). Normalizado p/ teclado.

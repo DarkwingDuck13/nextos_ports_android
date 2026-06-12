@@ -86,8 +86,44 @@ static void check_exit_hotkey(void) {
     _exit(0);
   }
 }
+/* ---- estado do modo gptokeyb (usado nos DOIS caminhos: eventos E poll) ---- */
+static int g_gptk = -1;
+static int gptk_mode(void) {
+  if (g_gptk < 0) {
+    const char *e = getenv("BULLY_INPUT");
+    g_gptk = (e && strcmp(e, "gptk") == 0) ? 1 : 0;
+    if (g_gptk) fprintf(stderr, "[pad] modo GPTOKEYB (teclado/mouse, layout PS2 via bully.gptk)\n");
+  }
+  return g_gptk;
+}
+static unsigned char g_kb[SDL_NUM_SCANCODES];
+static int g_mxrel, g_myrel;
+
 static int GetGamepadButtons(int port) {
-  if (port != 0 || !g_pad) return 0;
+  if (port != 0) return 0;
+  if (gptk_mode()) {
+    /* POLL normalizado: mascara (layout Vita/NX) derivada do TECLADO do
+     * gptokeyb — fonte UNICA de botoes; o pad fisico nao entra mais aqui.
+     * NAV up/down (zoom) ficam FORA da mascara, igual bully-NX. */
+    int m = 0;
+    if (g_kb[SDL_SCANCODE_X])      m |= 0x1;    /* Cruz */
+    if (g_kb[SDL_SCANCODE_C])      m |= 0x2;    /* Circulo */
+    if (g_kb[SDL_SCANCODE_Q])      m |= 0x4;    /* Quadrado */
+    if (g_kb[SDL_SCANCODE_T])      m |= 0x8;    /* Triangulo */
+    if (g_kb[SDL_SCANCODE_RETURN]) m |= 0x10;   /* START */
+    if (g_kb[SDL_SCANCODE_ESCAPE]) m |= 0x20;   /* SELECT */
+    if (g_kb[SDL_SCANCODE_H])      m |= 0x40;   /* L1 */
+    if (g_kb[SDL_SCANCODE_J])      m |= 0x80;   /* R1 */
+    if (g_kb[SDL_SCANCODE_LEFT])   m |= 0x400;
+    if (g_kb[SDL_SCANCODE_RIGHT])  m |= 0x800;
+    if (g_kb[SDL_SCANCODE_N])      m |= 0x1000; /* L3 */
+    if (g_kb[SDL_SCANCODE_M])      m |= 0x2000; /* R3 */
+    static int plog = 0, lastm = -1;
+    if (plog < 5) { fprintf(stderr, "[poll] GetGamepadButtons consultado m=0x%x\n", m); plog++; }
+    if (m != lastm) { fprintf(stderr, "[poll] mask=0x%x\n", m); lastm = m; }
+    return m;
+  }
+  if (!g_pad) return 0;
   SDL_GameControllerUpdate();
   check_exit_hotkey();
   int m = 0;
@@ -108,7 +144,24 @@ static int GetGamepadButtons(int port) {
   return m;
 }
 static float GetGamepadAxis(int port, int axis) {
-  if (port != 0 || !g_pad) return 0.0f;
+  if (port != 0) return 0.0f;
+  if (gptk_mode()) {
+    /* AIM/FIRE moram nos EIXOS 4/5 (LT/RT analogicos, estilo Rockstar
+     * mobile/360) — comprovado: a mira so funciona com o eixo em 1.0.
+     * k=mira(eixo4) l=tiro(eixo5). Sticks: pad fisico se visivel. */
+    static int alog = 0;
+    if (alog < 10 && (axis == 4 || axis == 5)) { fprintf(stderr, "[poll] GetGamepadAxis(%d) consultado\n", axis); alog++; }
+    if (axis == 4) return g_kb[SDL_SCANCODE_K] ? 1.0f : 0.0f;
+    if (axis == 5) return g_kb[SDL_SCANCODE_L] ? 1.0f : 0.0f;
+    if (!g_pad) {
+      switch (axis) {
+        case 0: return (g_kb[SDL_SCANCODE_D]?1.0f:0.0f) - (g_kb[SDL_SCANCODE_A]?1.0f:0.0f);
+        case 1: return (g_kb[SDL_SCANCODE_S]?1.0f:0.0f) - (g_kb[SDL_SCANCODE_W]?1.0f:0.0f);
+      }
+      return 0.0f;
+    }
+  }
+  if (!g_pad) return 0.0f;
   SDL_GameControllerAxis ax[] = {SDL_CONTROLLER_AXIS_LEFTX,SDL_CONTROLLER_AXIS_LEFTY,
     SDL_CONTROLLER_AXIS_RIGHTX,SDL_CONTROLLER_AXIS_RIGHTY,
     SDL_CONTROLLER_AXIS_TRIGGERLEFT,SDL_CONTROLLER_AXIS_TRIGGERRIGHT};
@@ -129,22 +182,14 @@ static float GetGamepadAxis(int port, int axis) {
  *           continuam ANALOGICOS direto do pad (gradiente andar/correr).
  *           Senao, fallback digital: wasd=stick esq, mouse rel=stick dir.
  *   sair:   SELECT+START (esc+enter) — mesmo combo de todo device.        */
-static int g_gptk = -1;
-static int gptk_mode(void) {
-  if (g_gptk < 0) {
-    const char *e = getenv("BULLY_INPUT");
-    g_gptk = (e && strcmp(e, "gptk") == 0) ? 1 : 0;
-    if (g_gptk) fprintf(stderr, "[pad] modo GPTOKEYB (teclado/mouse, layout PS2 via bully.gptk)\n");
-  }
-  return g_gptk;
-}
-static unsigned char g_kb[SDL_NUM_SCANCODES];
-static int g_mxrel, g_myrel;
 void gptk_event(void *ev) { /* chamado do loop de eventos do main */
   SDL_Event *e = (SDL_Event *)ev;
   if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) {
     int sc = e->key.keysym.scancode;
     if (sc >= 0 && sc < SDL_NUM_SCANCODES) g_kb[sc] = (e->type == SDL_KEYDOWN);
+    static int klog = 0;
+    if (klog < 120) { fprintf(stderr, "[kbd] %s sc=%d (%s)\n",
+        e->type == SDL_KEYDOWN ? "DOWN" : "UP  ", sc, SDL_GetScancodeName(sc)); klog++; }
   } else if (e->type == SDL_MOUSEMOTION) {
     g_mxrel += e->motion.xrel; g_myrel += e->motion.yrel;
   }
@@ -169,16 +214,44 @@ static void pump_gptk(void) {
     fprintf(stderr, "[pad] SELECT+START (gptk) -> saindo do jogo\n");
     _exit(0);
   }
-  /* botoes: SEMPRE do teclado (e o que o gptokeyb padroniza por device) */
+  /* SONDA de enums (mapeamento empirico do GamepadButton do libGame):
+   * `echo N > /dev/shm/bully_btn` via ssh -> dispara down/up do enum N
+   * (segura ~0.5s). Sem o arquivo, custo = 1 fopen a cada 15 frames. */
+  {
+    static int pframes = 0, phold = -1, pbtn = -1;
+    if (phold >= 0) {
+      if (--phold == 0) { if (up) up(fake_env, NULL, 0, pbtn); fprintf(stderr, "[probe] enum %d UP\n", pbtn); phold = -1; }
+    } else if (++pframes % 15 == 0) {
+      FILE *pf = fopen("/dev/shm/bully_btn", "r");
+      if (pf) {
+        int b = -1; if (fscanf(pf, "%d", &b) != 1) b = -1; fclose(pf);
+        unlink("/dev/shm/bully_btn");
+        if (b >= 0 && b < 20) { pbtn = b; if (down) down(fake_env, NULL, 0, b); fprintf(stderr, "[probe] enum %d DOWN\n", b); phold = 30; }
+      }
+    }
+  }
+  /* botoes: SEMPRE do teclado (e o que o gptokeyb padroniza por device).
+   * Enum REAL do libGame (fonte: bully-NX): 0-3=face 4=START 5=BACK
+   * 6/7=L3/R3 "novos" (NAO usar; 6 dispara lock-on), 8-11=NAV(zoom/tasks),
+   * 12-15=DPAD legado do gameplay -> 12=olhar p/ tras 13=AGACHAR (manual
+   * PS2: L3/R3), 16=L1 17=L2 18=R1 19=R2. */
+  /* TODAS as 20 acoes do engine tem tecla fixa -> remapear = so editar o
+   * bully.gptk (sem rebuild). Teclas: x c q t (face) enter esc (start/sel)
+   * u i (6/7 L3/R3 "novos") setas (NAV 8-11) n m f g (DPAD legado 12-15:
+   * olhar-tras/agachar/item-esq/item-dir) h k j l (16-19 LB/LT/RB/RT). */
   static const struct { int sc; int game; } kmap[] = {
     {SDL_SCANCODE_X,0},{SDL_SCANCODE_C,1},{SDL_SCANCODE_Q,2},{SDL_SCANCODE_T,3},
-    {SDL_SCANCODE_RETURN,4},{SDL_SCANCODE_ESCAPE,5},{SDL_SCANCODE_N,6},{SDL_SCANCODE_M,7},
+    {SDL_SCANCODE_RETURN,4},{SDL_SCANCODE_ESCAPE,5},
+    {SDL_SCANCODE_U,6},{SDL_SCANCODE_I,7},
     {SDL_SCANCODE_UP,8},{SDL_SCANCODE_DOWN,9},{SDL_SCANCODE_LEFT,10},{SDL_SCANCODE_RIGHT,11},
+    {SDL_SCANCODE_N,12},{SDL_SCANCODE_M,13},{SDL_SCANCODE_F,14},{SDL_SCANCODE_G,15},
     {SDL_SCANCODE_H,16},{SDL_SCANCODE_K,17},{SDL_SCANCODE_J,18},{SDL_SCANCODE_L,19},
   };
   for (unsigned i = 0; i < sizeof(kmap)/sizeof(kmap[0]); i++) {
     int g = kmap[i].game, p = g_kb[kmap[i].sc] ? 1 : 0;
     if (p != last[g]) {
+      static int elog = 0;
+      if (elog < 80) { fprintf(stderr, "[evt] %s enum %d\n", p ? "DOWN" : "UP  ", g); elog++; }
       if (p) { if (down) down(fake_env, NULL, 0, g); }
       else   { if (up)   up(fake_env, NULL, 0, g); }
       last[g] = p;
@@ -208,8 +281,8 @@ static void pump_gptk(void) {
     if (fabsf(cam_y) < 0.02f) cam_y = 0;
     a[2] = cam_x; a[3] = cam_y;
   }
-  a[4] = g_kb[SDL_SCANCODE_K] ? 1.0f : 0.0f; /* L2 tambem como eixo (gatilho) */
-  a[5] = g_kb[SDL_SCANCODE_L] ? 1.0f : 0.0f; /* R2 tambem como eixo (gatilho) */
+  a[4] = g_kb[SDL_SCANCODE_K] ? 1.0f : 0.0f; /* MIRA = eixo 4 (LT) em 1.0 */
+  a[5] = g_kb[SDL_SCANCODE_L] ? 1.0f : 0.0f; /* TIRO = eixo 5 (RT) em 1.0 */
   int ch = 0;
   for (int i = 0; i < 6; i++) if (fabsf(a[i] - la[i]) > 0.02f) { ch = 1; break; }
   if (ch && axesfn) { axesfn(fake_env, NULL, 0, a[0],a[1],a[2],a[3],a[4],a[5]); for (int i = 0; i < 6; i++) la[i] = a[i]; }
