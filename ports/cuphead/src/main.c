@@ -692,9 +692,11 @@ static int ds_skip(const ds_rec *r) {
   for (int i = 0; i < g_nskipprog; i++) if (r->prog == g_skipprog[i]) return 1;
   return 0;
 }
-volatile unsigned long g_frame_draws, g_frame_verts;   /* CUP_DRAWCOUNT: carga de desenho/frame */
+volatile unsigned long g_frame_draws, g_frame_verts, g_draws_lo;   /* CUP_DRAWCOUNT: carga de desenho/frame */
+extern int rs_logical0(void); extern int rs_enabled(void);
 static void my_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
   g_frame_draws++; g_frame_verts += (unsigned)count;
+  if (rs_enabled() && rs_logical0()) g_draws_lo++;
   ds_rec *r = ds_enter(0, mode, count, type);
   if (r->seq < 8) fprintf(stderr, "[DS] draw#%u f=%d ELM cnt=%d prog=%d fbo=%d tex=%d(%dx%d)\n",
                           r->seq, r->frame, count, r->prog, r->fbo, r->tex, r->texw, r->texh);
@@ -802,9 +804,27 @@ static void *ds_watchdog(void *a) {
   }
   return NULL;
 }
+/* render-scale (renderscale.c): redireciona a tela p/ um FBO lo-res + upscale */
+extern void rs_init(void); extern int rs_enabled(void);
+extern void rs_BindFramebuffer(unsigned, unsigned);
+extern void rs_Viewport(int, int, int, int);
+extern void rs_Scissor(int, int, int, int);
+extern void rs_present(void);
+static unsigned (*r_eglSwapBuffers)(void *, void *);
+static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
+  if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+  return r_eglSwapBuffers ? r_eglSwapBuffers(dpy, surf) : 1;
+}
 static void *ds_route(const char *nm, void *real) {
   void *w = real;
   if (!nm || !real) return real;
+  /* CUP_RENDERSCALE: intercepta o binding da tela + viewport/scissor (independe de DRAWSPY) */
+  if (rs_enabled()) {
+    if (!strcmp(nm, "glBindFramebuffer")) return (void *)rs_BindFramebuffer;
+    if (!strcmp(nm, "glViewport"))        return (void *)rs_Viewport;
+    if (!strcmp(nm, "glScissor"))         return (void *)rs_Scissor;
+  }
   /* CUP_DRAWCOUNT: roteia só os draws (contador leve), mesmo sem DRAWSPY completo */
   if (!g_drawspy && getenv("CUP_DRAWCOUNT")) {
     if (!strcmp(nm, "glDrawElements")) { ds_r_DrawElements = real; return (void *)my_glDrawElements; }
@@ -822,8 +842,9 @@ static void *ds_route(const char *nm, void *real) {
   return w;
 }
 static void ds_init(void) {
+  rs_init();   /* CUP_RENDERSCALE: parseia env (o FBO lo-res cria-se lazy no 1º bind) */
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
-  if (!getenv("CUP_DRAWSPY") && !g_texhalf) return;
+  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled()) return;
   g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY e/ou TEXHALF precisam de glTexImage2D) */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;
   const char *sp = getenv("CUP_SKIPPROG");
@@ -2110,6 +2131,8 @@ int main(int argc, char **argv) {
   patch_got("__android_log_vprint", (void *)my_alog_vprint);
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     patch_got("eglGetProcAddress", (void *)my_eglGetProcAddress);
+  /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
+  if (rs_enabled()) patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
   /* dl* estavam COMENTADOS em imports.gen.c -> set_import foi no-op e o dlopen@plt
      caiu no glibc REAL (falha ao carregar .so Android). Sem isso o il2cpp nao carrega. */
   patch_got("dlopen", (void *)my_dlopen);
@@ -2746,13 +2769,14 @@ int main(int argc, char **argv) {
         if (f0 >= 0) {
           double dt = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
           if (dt > 0.5)
-            fprintf(stderr, "[FPS] f=%d media=%.1f draws/f=%lu kverts/f=%lu (janela %d frames / %.1fs)\n",
+            fprintf(stderr, "[FPS] f=%d media=%.1f draws/f=%lu kverts/f=%lu lo/f=%lu (janela %d frames / %.1fs)\n",
                     f, (f - f0) / dt,
                     (f > f0) ? g_frame_draws / (unsigned)(f - f0) : 0,
                     (f > f0) ? (g_frame_verts / (unsigned)(f - f0)) / 1000 : 0,
+                    (f > f0) ? g_draws_lo / (unsigned)(f - f0) : 0,
                     f - f0, dt);
         }
-        t0 = t1; f0 = f; g_frame_draws = 0; g_frame_verts = 0;
+        t0 = t1; f0 = f; g_frame_draws = 0; g_frame_verts = 0; g_draws_lo = 0;
       }
     }
   }
