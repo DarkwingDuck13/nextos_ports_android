@@ -28,8 +28,9 @@
 #include "util.h"
 
 /* ---- Screen resolution (Trimui Smart Pro) ---- */
-#define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 720
+extern int dys_screen_w, dys_screen_h; /* resolucao real (egl_shim) */
+#define SCREEN_WIDTH dys_screen_w
+#define SCREEN_HEIGHT dys_screen_h
 
 /* ---- Input event queue ---- */
 #define MAX_INPUT_EVENTS 64
@@ -40,8 +41,8 @@ static int g_input_tail = 0; // next read position
 static FakeInputEvent *g_current_event = NULL; // event being processed
 
 // Virtual cursor for analog stick → touch mapping
-static float g_cursor_x = SCREEN_WIDTH / 2.0f;
-static float g_cursor_y = SCREEN_HEIGHT / 2.0f;
+static float g_cursor_x = 640.0f; /* recentrado dinamicamente no 1o uso */
+static float g_cursor_y = 360.0f;
 static int g_cursor_down = 0; // whether virtual "finger" is down
 
 // Last sent joystick axis values (to avoid flooding)

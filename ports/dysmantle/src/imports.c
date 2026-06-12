@@ -96,8 +96,9 @@ extern int _setjmp(void *);
 extern void _longjmp(void *, int) __attribute__((noreturn));
 
 /* ---------------- ANativeWindow (faltam no android_shim) ---------------- */
-#define DYS_W 1280
-#define DYS_H 720
+extern int dys_screen_w, dys_screen_h; /* resolucao real (egl_shim) */
+#define DYS_W dys_screen_w
+#define DYS_H dys_screen_h
 static ANativeWindow *aw_fromSurface(void *env, void *surface) {
   (void)env; (void)surface; return android_shim_get_window();
 }

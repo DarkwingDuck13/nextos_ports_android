@@ -19,8 +19,12 @@
 #include "egl_shim.h"
 #include "util.h"
 
-#define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 720
+/* Resolucao DINAMICA (qualquer device): desktop mode do SDL com fallback
+ * 1280x720. Exportada p/ imports.c (ANativeWindow_getWidth/Height — o que o
+ * JOGO le) e android_shim.c (clamp do cursor). */
+int dys_screen_w = 1280, dys_screen_h = 720;
+#define SCREEN_WIDTH dys_screen_w
+#define SCREEN_HEIGHT dys_screen_h
 
 /* A engine (bionic) lê a stack-canary de tpidr_el0+0x28 (TLS_SLOT_STACK_GUARD).
  * Sob glibc esse offset colide com uma TLS var que o Mali/SDL escreve no
@@ -63,6 +67,17 @@ static int has_real_gl = 0;
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 
 void egl_shim_create_window(void) {
+  /* resolucao nativa do device (TV 1080p, handheld 480p...) c/ fallback 720p */
+  SDL_DisplayMode dm;
+  if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+    dys_screen_w = dm.w; dys_screen_h = dm.h;
+    debugPrintf("egl_shim: desktop mode %dx%d\n", dm.w, dm.h);
+  }
+  { const char *e = getenv("DYSMANTLE_RES"); int w, h; /* override opcional */
+    if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+      dys_screen_w = w; dys_screen_h = h;
+      debugPrintf("egl_shim: DYSMANTLE_RES override %dx%d\n", w, h);
+    } }
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
