@@ -117,6 +117,104 @@ static float GetGamepadAxis(int port, int axis) {
   return fabsf(v) > 0.25f ? v : 0.0f;
 }
 
+/* ==== modo GPTOKEYB (BULLY_INPUT=gptk, setado pelo launcher) ===============
+ * Padrao PortMaster: o gptokeyb de CADA CFW le o controle fisico (normalizado
+ * pelo control.txt do device) e emite TECLADO/MOUSE via uinput, conforme o
+ * bully.gptk (layout PS2). O binario le essas teclas e entrega pro jogo os
+ * MESMOS eventos JNI de sempre — o mapeamento sai do binario e vai pro .gptk.
+ *
+ *   tecla -> botao:  x=Cruz c=Circulo q=Quadrado t=Triangulo enter=START
+ *                    esc=SELECT h=L1 j=R1 k=L2 l=R2 n=L3 m=R3 setas=dpad
+ *   sticks: se o pad estiver visivel pro SDL (gptokeyb nao da grab), os EIXOS
+ *           continuam ANALOGICOS direto do pad (gradiente andar/correr).
+ *           Senao, fallback digital: wasd=stick esq, mouse rel=stick dir.
+ *   sair:   SELECT+START (esc+enter) — mesmo combo de todo device.        */
+static int g_gptk = -1;
+static int gptk_mode(void) {
+  if (g_gptk < 0) {
+    const char *e = getenv("BULLY_INPUT");
+    g_gptk = (e && strcmp(e, "gptk") == 0) ? 1 : 0;
+    if (g_gptk) fprintf(stderr, "[pad] modo GPTOKEYB (teclado/mouse, layout PS2 via bully.gptk)\n");
+  }
+  return g_gptk;
+}
+static unsigned char g_kb[SDL_NUM_SCANCODES];
+static int g_mxrel, g_myrel;
+void gptk_event(void *ev) { /* chamado do loop de eventos do main */
+  SDL_Event *e = (SDL_Event *)ev;
+  if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) {
+    int sc = e->key.keysym.scancode;
+    if (sc >= 0 && sc < SDL_NUM_SCANCODES) g_kb[sc] = (e->type == SDL_KEYDOWN);
+  } else if (e->type == SDL_MOUSEMOTION) {
+    g_mxrel += e->motion.xrel; g_myrel += e->motion.yrel;
+  }
+}
+static void pump_gptk(void) {
+  static void (*down)(void*,void*,int,int) = NULL;
+  static void (*up)(void*,void*,int,int) = NULL;
+  static void (*axesfn)(void*,void*,int,float,float,float,float,float,float) = NULL;
+  static void (*countfn)(void*,void*,int) = NULL;
+  static int inited = 0, last[20] = {0};
+  static float la[6] = {0}, cam_x = 0, cam_y = 0, sens = 0;
+  if (!inited) {
+#define GP(n) (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_" n)
+    down = GP("implOnGamepadButtonDown"); up = GP("implOnGamepadButtonUp");
+    axesfn = GP("implOnGamepadAxesChanged"); countfn = GP("implOnGamepadCountChanged");
+#undef GP
+    if (countfn) countfn(fake_env, NULL, 1); /* avisa: 1 controle conectado */
+    inited = 1;
+  }
+  /* SAIR: SELECT+START (esc+enter vindos do gptokeyb) */
+  if (g_kb[SDL_SCANCODE_ESCAPE] && g_kb[SDL_SCANCODE_RETURN]) {
+    fprintf(stderr, "[pad] SELECT+START (gptk) -> saindo do jogo\n");
+    _exit(0);
+  }
+  /* botoes: SEMPRE do teclado (e o que o gptokeyb padroniza por device) */
+  static const struct { int sc; int game; } kmap[] = {
+    {SDL_SCANCODE_X,0},{SDL_SCANCODE_C,1},{SDL_SCANCODE_Q,2},{SDL_SCANCODE_T,3},
+    {SDL_SCANCODE_RETURN,4},{SDL_SCANCODE_ESCAPE,5},{SDL_SCANCODE_N,6},{SDL_SCANCODE_M,7},
+    {SDL_SCANCODE_UP,8},{SDL_SCANCODE_DOWN,9},{SDL_SCANCODE_LEFT,10},{SDL_SCANCODE_RIGHT,11},
+    {SDL_SCANCODE_H,16},{SDL_SCANCODE_K,17},{SDL_SCANCODE_J,18},{SDL_SCANCODE_L,19},
+  };
+  for (unsigned i = 0; i < sizeof(kmap)/sizeof(kmap[0]); i++) {
+    int g = kmap[i].game, p = g_kb[kmap[i].sc] ? 1 : 0;
+    if (p != last[g]) {
+      if (p) { if (down) down(fake_env, NULL, 0, g); }
+      else   { if (up)   up(fake_env, NULL, 0, g); }
+      last[g] = p;
+    }
+  }
+  /* eixos */
+  float a[6];
+  if (g_pad) {
+    /* pad visivel: sticks ANALOGICOS direto (gptokeyb nao deu grab) */
+    SDL_GameControllerUpdate();
+    a[0] = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX)/32768.0f;
+    a[1] = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY)/32768.0f;
+    a[2] = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX)/32768.0f;
+    a[3] = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY)/32768.0f;
+    g_mxrel = g_myrel = 0;
+  } else {
+    /* pad invisivel (grab do gptokeyb): wasd digital + mouse rel = camera */
+    a[0] = (g_kb[SDL_SCANCODE_D] ? 1.0f : 0.0f) - (g_kb[SDL_SCANCODE_A] ? 1.0f : 0.0f);
+    a[1] = (g_kb[SDL_SCANCODE_S] ? 1.0f : 0.0f) - (g_kb[SDL_SCANCODE_W] ? 1.0f : 0.0f);
+    if (sens == 0) { const char *e = getenv("BULLY_MOUSE_SENS"); sens = e ? atof(e) : 0.09f; if (sens <= 0) sens = 0.09f; }
+    float tx = g_mxrel * sens, ty = g_myrel * sens;
+    g_mxrel = g_myrel = 0;
+    if (tx > 1) tx = 1; if (tx < -1) tx = -1;
+    if (ty > 1) ty = 1; if (ty < -1) ty = -1;
+    cam_x = cam_x * 0.5f + tx * 0.5f; cam_y = cam_y * 0.5f + ty * 0.5f; /* suaviza + decai */
+    if (fabsf(cam_x) < 0.02f) cam_x = 0;
+    if (fabsf(cam_y) < 0.02f) cam_y = 0;
+    a[2] = cam_x; a[3] = cam_y;
+  }
+  a[4] = g_kb[SDL_SCANCODE_K] ? 1.0f : 0.0f; /* L2 tambem como eixo (gatilho) */
+  a[5] = g_kb[SDL_SCANCODE_L] ? 1.0f : 0.0f; /* R2 tambem como eixo (gatilho) */
+  int ch = 0;
+  for (int i = 0; i < 6; i++) if (fabsf(a[i] - la[i]) > 0.02f) { ch = 1; break; }
+  if (ch && axesfn) { axesfn(fake_env, NULL, 0, a[0],a[1],a[2],a[3],a[4],a[5]); for (int i = 0; i < 6; i++) la[i] = a[i]; }
+}
+
 /* ---- pump de eventos de controle (o jogo NÃO faz polling; usa eventos JNI,
  * igual bully-NX). GamepadButton enum do libGame: 0=A 1=B 2=X 3=Y 4=START
  * 5=BACK 6=L3 7=R3 8-11=NAV(menu) 12-15=DPAD 16=LB 17=LT 18=RB 19=RT. ---- */
@@ -645,8 +743,13 @@ void jni_load(void) {
   int rk_fired = 0, rk_signin = 0;
   for (int f = 0; OnDrawFrame; f++) {
     extern unsigned long g_frame_no; g_frame_no = (unsigned long)f; /* p/ proteger glFinish do RTT (só in-game) */
-    SDL_Event e; while (SDL_PollEvent(&e)) if (e.type == SDL_QUIT) return;
-    pump_gamepad(); /* empurra eventos de controle pro jogo (Down/Up/Axes) */
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+      if (e.type == SDL_QUIT) return;
+      if (gptk_mode()) gptk_event(&e); /* teclado/mouse do gptokeyb */
+    }
+    if (gptk_mode()) pump_gptk();  /* botoes via gptokeyb (bully.gptk, layout PS2) */
+    else pump_gamepad();           /* fallback: controle NATIVO via SDL (sem gptokeyb) */
     if (canRender) *canRender = 1;
 
     /* completa o gate Rockstar (igual bully-NX) */

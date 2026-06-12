@@ -70,15 +70,18 @@ fi                                         # (Mali-450: BULLY_MSAA nem setado ->
 
 $ESUDO chmod +x "$GAMEDIR/bully"
 
-# Padrao PortMaster: gptokeyb2 p/ o hotkey de SAIR (SELECT+START). O jogo le o
-# controle NATIVO via SDL. Prefere gptokeyb2 (PortMaster completo, ex: Amlogic-old);
-# cai no gptokeyb, e por fim no gptokeyb do sistema (PortMaster parcial, ex: X5M).
-if [ -n "$GPTOKEYB2" ] && [ -x "$controlfolder/gptokeyb2" ]; then
-  $GPTOKEYB2 "bully" &
-elif [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
-  $GPTOKEYB "bully" &
+# Padrao PortMaster: o gptokeyb traduz o controle do CFW em TECLADO/MOUSE pelo
+# bully.gptk (layout PS2) e o binario le essas teclas (BULLY_INPUT=gptk) — o
+# mapeamento de botoes fica no .gptk, fora do binario, normalizado por device.
+# Os ANALOGICOS continuam vindo do pad via SDL quando visivel (gradiente
+# andar/correr); se o gptokeyb der grab, wasd+mouse do .gptk assumem.
+# Sem gptokeyb no device -> fallback v5: controle NATIVO direto no binario.
+if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
+  export BULLY_INPUT=gptk
+  $GPTOKEYB "bully" -c "$GAMEDIR/bully.gptk" &
 elif command -v gptokeyb >/dev/null 2>&1; then
-  gptokeyb -1 "bully" &
+  export BULLY_INPUT=gptk
+  gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
 fi
 
 command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/bully"

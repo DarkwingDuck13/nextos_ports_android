@@ -1,0 +1,41 @@
+# Bully: Anniversary Edition (NextOS Elite) — gptokeyb, layout PS2 (DualShock)
+# O gptokeyb do CFW le o controle fisico (ja normalizado pelo control.txt do
+# device) e emite estas TECLAS; o binario ('bully') le as teclas e entrega pro
+# jogo como botoes PlayStation (os icones in-game ja sao PS).
+#
+# posicao fisica -> tecla -> botao PS2 no jogo
+a = x               # Cruz (baixo)
+b = c               # Circulo (direita)
+x = q               # Quadrado (esquerda)
+y = t               # Triangulo (cima)
+
+start = enter       # START
+back = esc          # SELECT  (SELECT+START = sair do jogo)
+
+l1 = h
+r1 = j
+l2 = k
+r2 = l
+l3 = n
+r3 = m
+
+up = up
+down = down
+left = left
+right = right
+
+# Sticks: se o pad continuar visivel pro SDL, o binario le os eixos ANALOGICOS
+# direto (estas teclas/mouse viram redundancia inofensiva). Se o gptokeyb der
+# grab no device, este fallback digital assume:
+left_analog_up = w
+left_analog_down = s
+left_analog_left = a
+left_analog_right = d
+
+right_analog_up = mouse_movement_up
+right_analog_down = mouse_movement_down
+right_analog_left = mouse_movement_left
+right_analog_right = mouse_movement_right
+
+mouse_scale = 512
+deadzone_y = 15000
