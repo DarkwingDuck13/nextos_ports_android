@@ -127,11 +127,18 @@ SETEOF
 fi
 
 # ---------- ambiente ----------
-# runtime/ = glibc 2.43 bundlada (ld+libc+libm) p/ devices com glibc velha (<2.34,
-# ex: ArkOS). O binario usa interpretador RELATIVO runtime/ld-linux-aarch64.so.1
-# (patchelf no empacote) -> o cd "$GAMEDIR" acima e OBRIGATORIO. Multiarch dirs
-# no fim p/ SDL2/EGL de CFWs Debian-based. SDL2/EGL/GPU sao SEMPRE os do device.
-export LD_LIBRARY_PATH="$GAMEDIR/runtime:/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+# runtime/ = glibc 2.43 bundlada (ld+libc+libm + stubs dl/pthread/rt/util/resolv/nss)
+# p/ devices com glibc velha (<2.34, ex: ArkOS). O binario usa interpretador
+# RELATIVO runtime/ld-linux-aarch64.so.1 (patchelf no empacote) -> o cd "$GAMEDIR"
+# acima e OBRIGATORIO. Multiarch dirs no fim p/ SDL2/EGL de CFWs Debian-based.
+# SDL2/EGL/GPU sao SEMPRE os do device.
+# v7: o runtime/ vai SO no env do ./bully (prefixo na linha de exec, la embaixo),
+# NUNCA neste export global. Exportar runtime/ global fazia gptokeyb/grep (binarios
+# do SISTEMA, que sobem com o ld.so VELHO do device) carregarem a NOSSA libc 2.43;
+# ld.so e libc trocam simbolos GLIBC_PRIVATE e tem que ser do MESMO build glibc ->
+# "undefined symbol: tunable_is_initialized" no muOS (AYN) e similares.
+export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+BULLY_RUNTIME_LP="$GAMEDIR/runtime:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
@@ -139,10 +146,17 @@ export SDL_VIDEO_FULLSCREEN_DESKTOP=1
 # o pm_platform_helper ja forca SDL_VIDEODRIVER=kmsdrm; aqui garante o fbdev (Mali-450).
 if [ -e /dev/dri/card0 ]; then
   export SDL_VIDEODRIVER=kmsdrm            # device com DRM/KMS (Mali-G310 Valhall, kernel mainline)
-  # Anti-aliasing 4x OPCIONAL (v6: desligado por padrao). Ajuda em paineis
-  # 480p e custa pouco em GPU tile-based (fallback automatico se a GPU
-  # recusar). P/ LIGAR: descomente a linha abaixo (tire o "# " do inicio).
+  # Anti-aliasing 4x: v7 LIGA AUTOMATICO em painel pequeno (altura <= 600px,
+  # ex: 640x480 do R36S/RG35XX) — e o fix do "grainy/pixelated" relatado nesses
+  # devices; custa pouco em GPU tile-based e o binario tem fallback automatico
+  # p/ 0x se a GPU recusar. Paineis grandes (720p/1080p) continuam SEM MSAA.
+  # Override manual: descomente BULLY_MSAA=4 (forca) ou BULLY_MSAA=0 (desliga).
   # export BULLY_MSAA=4
+  # export BULLY_MSAA=0
+  if [ -z "$BULLY_MSAA" ]; then
+    panel_h=$(cat /sys/class/drm/card0-*/modes 2>/dev/null | head -1 | cut -dx -f2)
+    case "$panel_h" in (*[!0-9]*|'') ;; (*) [ "$panel_h" -le 600 ] && export BULLY_MSAA=4 && echo "painel ${panel_h}p -> MSAA 4x auto" ;; esac
+  fi
 else
   export SDL_VIDEODRIVER=mali              # EGL fbdev (Amlogic-old Mali-450, kernel 3.14)
   export BULLY_TEX_LIGHT=1                 # Mali-450: pula mapas _n/_s
@@ -158,6 +172,32 @@ if grep -qE "s7d|s6|s5" /proc/device-tree/compatible 2>/dev/null; then
     grep -q closed /proc/asound/card0/pcm0p/sub0/status 2>/dev/null && break
     sleep 0.25
   done
+fi
+
+# ---------- anti-OOM/freeze (v7) ----------
+# Devices de ~1GB RAM (Trimui Smart Pro, RG35XX H...) CONGELAVAM na escola /
+# bulletin board / cutscene do refeitorio = falta de memoria (mesma classe de
+# bug ja resolvida no NextOS com swap+zram). Se RAM < ~1.4GB e swap < 256MB,
+# ativa zram 512MB (comprimido em RAM, rapido, zero desgaste de SD); se nao
+# der, fallback = swapfile 512MB via loop no GAMEDIR (vfat/exfat nao aceita
+# swapon direto, loop resolve). Qualquer falha = segue sem (como era antes).
+mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+swp_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
+if [ "${mem_kb:-2000000}" -lt 1400000 ] && [ "${swp_kb:-0}" -lt 262144 ]; then
+  echo "RAM baixa (${mem_kb} kB) e pouco swap (${swp_kb} kB): ativando swap auxiliar anti-freeze"
+  $ESUDO modprobe zram 2>/dev/null
+  if [ -e /sys/block/zram0 ] && [ "$(cat /sys/block/zram0/disksize 2>/dev/null)" = "0" ]; then
+    echo 536870912 | $ESUDO tee /sys/block/zram0/disksize >/dev/null 2>&1
+    $ESUDO mkswap /dev/zram0 >/dev/null 2>&1 && $ESUDO swapon /dev/zram0 2>/dev/null && echo "zram 512MB ON"
+  fi
+  swp_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
+  if [ "${swp_kb:-0}" -lt 262144 ]; then
+    [ -f "$GAMEDIR/bully.swap" ] || dd if=/dev/zero of="$GAMEDIR/bully.swap" bs=1M count=512 2>/dev/null
+    LOOPDEV=$($ESUDO losetup -f 2>/dev/null)
+    if [ -n "$LOOPDEV" ] && $ESUDO losetup "$LOOPDEV" "$GAMEDIR/bully.swap" 2>/dev/null; then
+      $ESUDO mkswap "$LOOPDEV" >/dev/null 2>&1 && $ESUDO swapon "$LOOPDEV" 2>/dev/null && echo "swapfile 512MB ON ($LOOPDEV)"
+    fi
+  fi
 fi
 
 $ESUDO chmod +x "$GAMEDIR/bully"
@@ -177,7 +217,8 @@ elif command -v gptokeyb >/dev/null 2>&1; then
 fi
 
 command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/bully"
-./bully
+# runtime/ (glibc 2.43) SO no env do jogo — ver comentario na secao ambiente.
+LD_LIBRARY_PATH="$BULLY_RUNTIME_LP" ./bully
 
 pkill -f gptokeyb 2>/dev/null
 command -v pm_finish >/dev/null 2>&1 && pm_finish

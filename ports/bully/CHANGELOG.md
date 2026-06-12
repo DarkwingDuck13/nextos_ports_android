@@ -2,6 +2,64 @@
 
 ---
 
+## v7-test — 2026-06-12 — Build de TESTE: fix muOS/AYN + anti-freeze 1GB RAM + MSAA auto 480p
+
+> **BINARIO IDENTICO ao v6** — todas as mudancas sao no launcher (Bully.sh) e no
+> runtime/. Quem ja roda bem no v6 nao muda NADA. Build de teste p/ validar os
+> fixes dos bugs relatados no Discord; feedback bem-vindo.
+
+### 1. Fix muOS (AYN e similares): glibc bundlada envenenava o sistema
+Sintomas relatados:
+```
+gptokeyb: symbol lookup error: .../runtime/libc.so.6: undefined symbol: tunable_is_initialized, version GLIBC_PRIVATE
+./bully: error while loading shared libraries: libdl.so.2: cannot open shared object file
+grep: symbol lookup error: (idem)
+```
+Causas e fixes:
+- O `export LD_LIBRARY_PATH` GLOBAL com `runtime/` fazia binarios do SISTEMA
+  (gptokeyb, grep) subirem com o ld.so VELHO do device + a NOSSA libc 2.43 —
+  ld.so e libc trocam simbolos GLIBC_PRIVATE e tem que ser do MESMO build.
+  **Fix: runtime/ agora vai SO no env do `./bully`** (prefixo na linha de exec);
+  gptokeyb/grep/helpers voltam a usar a glibc do proprio device.
+  (Isso tambem explicava controles mortos no muOS: o gptokeyb morria no spawn,
+  mas o launcher ja tinha setado BULLY_INPUT=gptk -> jogo esperando teclas.)
+- `libdl.so.2 not found`: o SDL2 do device pede libdl.so.2, que na glibc 2.34+
+  virou stub (fundido na libc) e nao estava nem no runtime/ nem no muOS.
+  **Fix: runtime/ agora bundla os stubs** libdl.so.2, libpthread.so.0,
+  librt.so.1, libutil.so.1, libresolv.so.2, libnss_files.so.2, libnss_dns.so.2
+  (todos do MESMO build glibc 2.43 — stub de outra glibc daria o mesmo erro
+  PRIVATE de novo).
+- Pode resolver tambem o crash-no-start do X55 ROCKNIX (mesma familia de erro;
+  precisa re-teste).
+
+### 2. Anti-freeze p/ devices de ~1GB RAM (TSP, RG35XX H...)
+Freezes relatados (bulletin board, cutscene do refeitorio, sala do diretor,
+rua) = falta de MEMORIA, nao bug de GPU — mesma classe de problema ja resolvida
+no NextOS com swap+zram. O launcher agora detecta RAM < ~1.4GB com pouco swap e
+ativa sozinho: **zram 512MB** (comprimido em RAM, rapido, zero desgaste de SD)
+ou, se o kernel nao tiver zram, **swapfile 512MB via loop** no diretorio do
+port (`bully.swap`; loop porque vfat/exfat nao aceita swapon direto). Falha em
+qualquer passo = segue exatamente como antes. Devices de 2GB+ nem entram nesse
+caminho.
+
+### 3. MSAA 4x AUTOMATICO em painel pequeno (fix do "grainy/pixelated")
+Relatos de imagem serrilhada/pixelada em painel 480p (RG34XX-SP, RG35XX H,
+R36S). O MSAA 4x existe desde a v5 e resolve exatamente isso, mas vinha
+DESLIGADO na v6. Agora: painel com altura <= 600px -> MSAA 4x liga sozinho
+(barato em GPU tile-based; o binario ja tem fallback p/ 0x se a GPU recusar).
+Paineis 720p/1080p continuam sem MSAA (sem custo). Override manual no Bully.sh
+(`BULLY_MSAA=4` forca / `BULLY_MSAA=0` desliga).
+Obs: pra nitidez, alem do MSAA, confira Settings > Clarity = HIGH (desde a v6
+instalacoes novas ja vem em HIGH; instalacao antiga mantem o que voce salvou).
+
+### Notas
+- 1o boot demora MESMO (tela preta ate ~5min): e a extracao dos ~3GB de assets
+  do APK p/ o SD. So acontece uma vez.
+- Mali-450/fbdev (NextOS): caminho 100% identico ao v6 (nada das mudancas acima
+  o afeta, exceto o runtime escopado, que la e inofensivo).
+
+---
+
 ## v6 — 2026-06-12 — Controles PS2 via gptokeyb + troca de itens + binario novo
 
 ### Resumo
