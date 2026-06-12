@@ -21,11 +21,11 @@
 #define MAX_PLAYERS 16
 #define RING_BUFFER_SIZE (4 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-/* s14: buffer GRANDE de propósito. Sob carga pesada (fases) a CPU do S905X satura
- * (swap thrash + GC) e a thread do pump fica sem tempo -> buffer pequeno esvazia ->
- * underrun -> som ESTALA (feedback do NextOS). 4096 amostras (~93ms a 44.1kHz) dá
- * folga p/ a thread se atrasar sem furar. */
-#define SDL_AUDIO_SAMPLES 4096
+/* s14: 2048 amostras (~46ms). A tentativa 4096 + ring-fundo(6x) + max_calls=32 fez a
+ * thread do pump VIRAR moedor de CPU (chamava o mixer do FMOD 32x/ciclo) -> travou o
+ * device + distorceu (feedback NextOS "bugou bonito"). Voltei pro simples; a folga de
+ * verdade vem do FIX de performance (draws sem glGetIntegerv) que tira o thrash. */
+#define SDL_AUDIO_SAMPLES 2048
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -1119,16 +1119,14 @@ static void pump_callbacks_impl(void) {
     if (callback_threshold == 0 || callback_threshold > (RING_BUFFER_SIZE / 2)) {
       callback_threshold = RING_BUFFER_SIZE / 4;
     }
-    /* s14: mantém o ring FUNDO (>= ~6x o buffer do SDL = ~140KB stereo s16 ~ 0.8s)
-     * p/ sobreviver a stalls de CPU nas fases (anti-estalo do NextOS). Era 2x o
-     * último enqueue (raso) -> esvaziava no primeiro engasgo. */
+    /* folga modesta: ~2x o buffer SDL enfileirado, SEM virar moedor de CPU (o ring
+     * fundo + max_calls=32 foi o que travou). A robustez real vem do FIX dos draws. */
     uint32_t refill_threshold = callback_threshold * 2;
-    uint32_t deep = SDL_AUDIO_SAMPLES * 2 /*stereo*/ * 2 /*s16*/ * 6;
-    if (refill_threshold < deep) refill_threshold = deep;
+    uint32_t target = SDL_AUDIO_SAMPLES * 2 /*stereo*/ * 2 /*s16*/ * 2;
+    if (refill_threshold < target) refill_threshold = target;
     if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
 
-    /* Call callback multiple times to fill buffer ahead (recupera rápido pós-stall) */
-    int max_calls = 32;
+    int max_calls = 4;
     while (p->callback && readable <= refill_threshold && max_calls > 0) {
       uint32_t counter_before = p->enqueue_counter;
       /* if (p->debug_callback_logs < 16 || counter_before % 64 == 0) {

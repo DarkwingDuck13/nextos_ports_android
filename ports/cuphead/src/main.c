@@ -644,7 +644,10 @@ static void my_glLinkProgram(unsigned pr) {
  * detecta o stall (seq parado >6s) e dumpa o ring. ⚠️ sem glGetError/glFinish
  * por draw (glFinish satura o Utgard). Bisseção: CUP_SKIPFBO=1 pula draws com
  * FBO!=0 (render-to-texture); CUP_SKIPPROG=a,b,c pula programas específicos. */
-static int g_drawspy = 0;
+static int g_drawspy = 0;       /* roteamento de gl* ligado (TEXHALF e/ou DRAWSPY) */
+static int g_drawdiag = 0;      /* DIAGNÓSTICO dos DRAWS (ring + glGetIntegerv/draw) — SÓ com CUP_DRAWSPY.
+                                 * ⚠️ ds_enter faz 4 glGetIntegerv POR DRAW = sync CPU↔GPU no Mali =
+                                 * mata a performance. NUNCA em produção (TEXHALF sozinho NÃO liga isto). */
 volatile int g_render_frame = -1;          /* setado no render loop (F2) */
 static void (*ds_r_DrawElements)(unsigned, int, unsigned, const void *);
 static void (*ds_r_DrawArrays)(unsigned, int, int);
@@ -697,6 +700,7 @@ extern int rs_logical0(void); extern int rs_enabled(void);
 static void my_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
   g_frame_draws++; g_frame_verts += (unsigned)count;
   if (rs_enabled() && rs_logical0()) g_draws_lo++;
+  if (!g_drawdiag) { ds_r_DrawElements(mode, count, type, idx); return; }  /* fast path: SEM glGetIntegerv */
   ds_rec *r = ds_enter(0, mode, count, type);
   if (r->seq < 8) fprintf(stderr, "[DS] draw#%u f=%d ELM cnt=%d prog=%d fbo=%d tex=%d(%dx%d)\n",
                           r->seq, r->frame, count, r->prog, r->fbo, r->tex, r->texw, r->texh);
@@ -706,6 +710,7 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type, const voi
 }
 static void my_glDrawArrays(unsigned mode, int first, int count) {
   g_frame_draws++; g_frame_verts += (unsigned)count;
+  if (!g_drawdiag) { ds_r_DrawArrays(mode, first, count); return; }  /* fast path */
   ds_rec *r = ds_enter(1, mode, count, 0);
   if (ds_skip(r)) { r->in_progress = 0; ds_skipped++; return; }
   ds_r_DrawArrays(mode, first, count);
@@ -825,16 +830,18 @@ static void *ds_route(const char *nm, void *real) {
     if (!strcmp(nm, "glViewport"))        return (void *)rs_Viewport;
     if (!strcmp(nm, "glScissor"))         return (void *)rs_Scissor;
   }
-  /* CUP_DRAWCOUNT: roteia só os draws (contador leve), mesmo sem DRAWSPY completo */
-  if (!g_drawspy && getenv("CUP_DRAWCOUNT")) {
+  /* DRAWS: só envolve quando há contagem/diagnóstico (DRAWSPY=ring+glGetIntegerv,
+   * DRAWCOUNT=contador leve). Com TEXHALF SOZINHO os draws passam DIRETO (sem wrapper)
+   * — era a SANGRIA de performance (ds_enter fazia 4 glGetIntegerv/draw = sync GPU).
+   * O fast-path de my_glDrawElements (g_drawdiag=0) só conta; mesmo assim, sem DRAWCOUNT
+   * nem envolvemos. */
+  if (g_drawdiag || getenv("CUP_DRAWCOUNT")) {
     if (!strcmp(nm, "glDrawElements")) { ds_r_DrawElements = real; return (void *)my_glDrawElements; }
     if (!strcmp(nm, "glDrawArrays"))   { ds_r_DrawArrays = real;   return (void *)my_glDrawArrays; }
-    return real;
   }
   if (!g_drawspy) return real;
-  if (!strcmp(nm, "glDrawElements")) { ds_r_DrawElements = real; w = (void *)my_glDrawElements; }
-  else if (!strcmp(nm, "glDrawArrays"))   { ds_r_DrawArrays = real;   w = (void *)my_glDrawArrays; }
-  else if (!strcmp(nm, "glTexImage2D"))   { ds_r_TexImage2D = real;   w = (void *)my_glTexImage2D; }
+  /* TEXTURAS (TEXHALF) — só estas precisam do roteamento em produção */
+  if (!strcmp(nm, "glTexImage2D"))   { ds_r_TexImage2D = real;   w = (void *)my_glTexImage2D; }
   else if (!strcmp(nm, "glCompressedTexImage2D")) { ds_r_CompTexImage2D = real; w = (void *)my_glCompTexImage2D; }
   else if (!strcmp(nm, "glCompileShader")) { r_glCompileShader = real; w = (void *)my_glCompileShader; }
   else if (!strcmp(nm, "glLinkProgram"))   { r_glLinkProgram = real;   w = (void *)my_glLinkProgram; }
@@ -846,6 +853,7 @@ static void ds_init(void) {
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
   if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled()) return;
   g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY e/ou TEXHALF precisam de glTexImage2D) */
+  g_drawdiag = getenv("CUP_DRAWSPY") ? 1 : 0;  /* ⚠️ ring + glGetIntegerv/draw — só em diag */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;
   const char *sp = getenv("CUP_SKIPPROG");
   if (sp) {
@@ -853,8 +861,9 @@ static void ds_init(void) {
     for (char *t = strtok(buf, ","); t && g_nskipprog < 8; t = strtok(NULL, ","))
       g_skipprog[g_nskipprog++] = atoi(t);
   }
-  pthread_t th; pthread_create(&th, NULL, ds_watchdog, NULL);
-  fprintf(stderr, "[DS] drawspy ON (skipfbo=%d nskipprog=%d)\n", g_skipfbo, g_nskipprog);
+  if (g_drawdiag) { pthread_t th; pthread_create(&th, NULL, ds_watchdog, NULL); }
+  fprintf(stderr, "[DS] roteamento ON (texhalf=%d drawdiag=%d skipfbo=%d)\n",
+          g_texhalf, g_drawdiag, g_skipfbo);
 }
 
 /* my_eglGetProcAddress: o Unity resolve as funções GL/extensões via
