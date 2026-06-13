@@ -109,6 +109,9 @@ static FILE *w_fopen(const char *path, const char *mode) {
     char alt[1024]; snprintf(alt, sizeof(alt), "assets/%s", path);
     f = real(alt, mode);
   }
+  /* TRACE settings/storage.ini -> descobrir se/onde o jogo le/escreve a config */
+  if (path && (strstr(path, "settings.ini") || strstr(path, "storage.ini")))
+    fprintf(stderr, "[cfg] fopen(\"%s\",\"%s\") -> %s\n", path, mode ? mode : "?", f ? "OK" : "FALHOU");
   return f;
 }
 

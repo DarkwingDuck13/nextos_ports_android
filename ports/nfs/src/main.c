@@ -205,6 +205,13 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
       }
       fclose(mf); }
   }
+  /* dump das regiões r-x (acha o que é a região ANON onde o PC do GL crasha) */
+  fprintf(stderr, "  --- regiões r-x (%d) ---\n", nrx);
+  for (int q = 0; q < nrx; q++) {
+    int has_pc = (pc >= rx[q].s && pc < rx[q].e);
+    fprintf(stderr, "    [%08lx-%08lx %6luK] %s%s\n", (unsigned long)rx[q].s, (unsigned long)rx[q].e,
+            (unsigned long)((rx[q].e - rx[q].s) / 1024), rx[q].tag, has_pc ? "  <<< PC" : "");
+  }
   for (uintptr_t a = sp; a < sp + 0x2000 && n < 40; a += 4) {
     uintptr_t v = *(uintptr_t *)a;
     if (v >= text && v < text + text_size) {

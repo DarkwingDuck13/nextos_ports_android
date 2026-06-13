@@ -33,6 +33,13 @@ f4e0ff2c/f4e59f2c/f4ec7f2c +0xf2c). Chamado do código gráfico (stack: libapp+0
 extensão) resolvido errado/stub OU JIT de shader do Mali. **PRÓXIMO:** identificar a região anon
 (re-rodar + cat /proc/PID/maps), desmontar libapp+0xa129de (vê qual fn-ptr chama), checar
 egl_shim_GetProcAddress (retorna NULL/stub p/ extensão? r2=0xffffffff=sentinela "not found").
+MAPS no crash: a região do PC é uma anon r-x ISOLADA de **12K** (ex f4ebc000-f4ebf000), entre 2
+anon grandes; libMali.so é file-mapped (f6fb8000); nossos módulos (libapp/libc++/etc) são anon
+RWX MB-sized. Stack: `[sp+0xc] (anon)+0xf6d` (retorno DENTRO da anon) ← `[sp+0x18] libapp+0xa129de`.
+Hipótese forte: a engine resolveu uma fn GL não suportada pelo Mali-450/Utgard via eglGetProcAddress,
+o driver devolveu um STUB (na anon 12K) que crasha ao ser chamado (r0=r1=0). Ver libapp+0xa129de
+(THUMB? objdump -d simples veio vazio no range — achar o símbolo). Crash handler agora dumpa
+"--- regiões r-x ---" (com <<< PC) p/ facilitar. NFS_NORECOVER=1 p/ crash limpo.
 Walker próprio de dynamic_cast existe gateado em `NFS_DCWALK` (não usado — relocs corretas bastam).
 Rodar: `LD_LIBRARY_PATH=/usr/lib32:. SDL_VIDEODRIVER=mali NFS_INIT=1 ./nfs`. Binário+libs+OBB já
 no device .164 em /storage/roms/nfs/.
