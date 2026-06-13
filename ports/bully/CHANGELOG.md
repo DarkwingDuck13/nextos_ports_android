@@ -2,82 +2,55 @@
 
 ---
 
-## v7-test — 2026-06-12 — Build de TESTE: fix muOS/AYN/ArkOS + anti-freeze 1GB RAM + MSAA auto 480p
+## v7 — 2026-06-12 — DOIS binarios (NextOS + compat GLIBC_2.17) = roda em qualquer device; MSAA auto 480p; SEM swap
 
-> **BINARIO IDENTICO ao v6** (codigo; sem o patchelf do empacote — ver item 0).
-> Todas as mudancas sao no launcher (Bully.sh) e no runtime/. Build de teste p/
-> validar os fixes dos bugs relatados no Discord; feedback bem-vindo.
+> Codigo do jogo IDENTICO ao v6. A v7 resolve de vez a compatibilidade
+> multi-CFW com a abordagem certa: DOIS binarios nativos, sem glibc bundlada,
+> sem patchelf, sem swap.
 
-### 0. Modo DUAL: nativo (v4) onde a glibc aguenta, runtime bundlado no resto
-O v4 rodava liso em muOS/X5M/R36S porque o binario era NORMAL e o ld.so do
-PROPRIO CFW resolvia as libs do device (libgcc_s, o libmali casado com o
-kernel...). O v5/v6 trocou isso por interpretador patcheado + glibc bundlada
-pra TODOS — consertou ArkOS e quebrou sutilezas nos outros (ex: muOS RG34XX-SP
-`libgcc_s.so.1 not found`, pois o nosso ld.so nao conhece os dirs do muOS).
-v7 faz os DOIS: o binario volta a ter interpretador normal (sem patchelf) e o
-launcher detecta a glibc do device (`getconf GNU_LIBC_VERSION`):
-- glibc >= 2.38 (muOS, Knulli, ROCKNIX, NextOS, X5M...): roda `./bully` NATIVO,
-  caminho EXATAMENTE igual ao v4 que ja funcionava nesses devices;
-- glibc < 2.38 (ArkOS/dArkOS 2.27-2.30...): roda via o loader bundlado
-  (`runtime/ld-linux-aarch64.so.1 --library-path runtime:...`), que e o que o
-  v5 tentava fazer, agora sem efeitos colaterais nos demais devices.
-O runtime/ tambem ganhou libgcc_s.so.1 + libstdc++.so.6 (runtime do GCC, mesma
-logica de retrocompatibilidade) p/ o caminho bundlado ser autossuficiente.
+### Por que DOIS binarios (e por que isso encerra a saga de glibc)
+As versoes v5/v6 enviavam UM binario linkado contra glibc 2.43 (a do NextOS) +
+uma glibc bundlada em `runtime/`. Isso gerou uma cadeia de erros em outros CFWs
+(`tunable_is_initialized`, `libgcc_s.so.1 not found`, `__libc_pthread_init`,
+`libdl.so.2`...), todos sintomas da MESMA causa: misturar a nossa glibc nova
+com o sistema do device. A solucao correta (a mesma de todo port PortMaster) e
+compilar contra uma glibc VELHA. Agora o pacote traz os dois:
+- **`bully`** — build NextOS, precisa GLIBC >= 2.38. Cobre NextOS (2.43), muOS,
+  Knulli, ROCKNIX, S905X5M — todos os CFWs modernos. E o build canonico.
+- **`bully.compat`** — MESMO codigo compilado em Debian buster, precisa so de
+  **GLIBC_2.17** (de 2012) -> roda em QUALQUER device, ArkOS/dArkOS (2.27-2.30)
+  inclusive. Linka libdl/libpthread no estilo classico, que existe tanto na
+  glibc velha (lib real) quanto na nova (stub de compat).
+O launcher escolhe sozinho: glibc do device >= 2.38 usa `bully`, senao usa
+`bully.compat` (que roda em tudo). NENHUM dos dois usa runtime bundlado nem
+patchelf — rodam 100% nativos, o ld.so do proprio CFW resolve SDL2/EGL/libgcc_s
+e o libmali casado com o kernel. Adios `runtime/`.
 
-### 1. Fix muOS (AYN e similares): glibc bundlada envenenava o sistema
-Sintomas relatados:
-```
-gptokeyb: symbol lookup error: .../runtime/libc.so.6: undefined symbol: tunable_is_initialized, version GLIBC_PRIVATE
-./bully: error while loading shared libraries: libdl.so.2: cannot open shared object file
-grep: symbol lookup error: (idem)
-```
-Causas e fixes:
-- O `export LD_LIBRARY_PATH` GLOBAL com `runtime/` fazia binarios do SISTEMA
-  (gptokeyb, grep) subirem com o ld.so VELHO do device + a NOSSA libc 2.43 —
-  ld.so e libc trocam simbolos GLIBC_PRIVATE e tem que ser do MESMO build.
-  **Fix: runtime/ agora vai SO no env do `./bully`** (prefixo na linha de exec);
-  gptokeyb/grep/helpers voltam a usar a glibc do proprio device.
-  (Isso tambem explicava controles mortos no muOS: o gptokeyb morria no spawn,
-  mas o launcher ja tinha setado BULLY_INPUT=gptk -> jogo esperando teclas.)
-- `libdl.so.2 not found` (muOS) e `libpthread.so.0: __libc_pthread_init
-  GLIBC_PRIVATE` (ArkOS): libs do device de uma glibc VELHA sendo misturadas
-  com a nossa libc 2.43 — ou faltando, no caso dos stubs que a glibc 2.34+
-  fundiu na libc. **Fix: runtime/ agora bundla TODAS as libs internas da
-  glibc** (libdl, libpthread, librt, libutil, libresolv, libanl, libnsl,
-  libmvec, libBrokenLocale, libnss_*), todas do MESMO build 2.43 da libc
-  bundlada, e elas vem PRIMEIRO no path do jogo — entao o loader nunca mais
-  mistura glibc do device com a nossa. Esse conjunto e FECHADO (e tudo que a
-  glibc tem): nao existe "proxima lib" pra dar esse erro. SDL2/EGL/GPU
-  continuam sendo SEMPRE os do device (esses nao tem acoplamento PRIVATE e
-  TEM que ser os locais, sao o driver).
-- Pode resolver tambem o crash-no-start do X55 ROCKNIX (mesma familia de erro;
-  precisa re-teste).
+### SEM swap / SEM zram
+Removido por completo (decisao do projeto desde o inicio; a v7-test tinha
+reintroduzido por engano). O launcher NAO mexe mais em memoria do device —
+nada de zram, nada de swapfile, zero desgaste de SD. Em device de RAM baixa,
+use Clarity=Low e mantenha shadows off.
 
-### 2. Anti-freeze p/ devices de ~1GB RAM (TSP, RG35XX H...)
-Freezes relatados (bulletin board, cutscene do refeitorio, sala do diretor,
-rua) = falta de MEMORIA, nao bug de GPU — mesma classe de problema ja resolvida
-no NextOS com swap+zram. O launcher agora detecta RAM < ~1.4GB com pouco swap e
-ativa sozinho: **zram 512MB** (comprimido em RAM, rapido, zero desgaste de SD)
-ou, se o kernel nao tiver zram, **swapfile 512MB via loop** no diretorio do
-port (`bully.swap`; loop porque vfat/exfat nao aceita swapon direto). Falha em
-qualquer passo = segue exatamente como antes. Devices de 2GB+ nem entram nesse
-caminho.
-
-### 3. MSAA 4x AUTOMATICO em painel pequeno (fix do "grainy/pixelated")
+### MSAA 4x AUTOMATICO em painel pequeno (fix do "grainy/pixelated")
 Relatos de imagem serrilhada/pixelada em painel 480p (RG34XX-SP, RG35XX H,
-R36S). O MSAA 4x existe desde a v5 e resolve exatamente isso, mas vinha
-DESLIGADO na v6. Agora: painel com altura <= 600px -> MSAA 4x liga sozinho
-(barato em GPU tile-based; o binario ja tem fallback p/ 0x se a GPU recusar).
-Paineis 720p/1080p continuam sem MSAA (sem custo). Override manual no Bully.sh
-(`BULLY_MSAA=4` forca / `BULLY_MSAA=0` desliga).
-Obs: pra nitidez, alem do MSAA, confira Settings > Clarity = HIGH (desde a v6
-instalacoes novas ja vem em HIGH; instalacao antiga mantem o que voce salvou).
+R36S). O MSAA 4x existe desde a v5 e resolve isso, mas vinha DESLIGADO na v6.
+Agora: painel com altura <= 600px -> MSAA 4x liga sozinho (barato em GPU
+tile-based; fallback automatico p/ 0x se a GPU recusar). Paineis 720p/1080p sem
+MSAA. Override no Bully.sh (`BULLY_MSAA=4` forca / `BULLY_MSAA=0` desliga).
+Pra nitidez, confira tambem Settings > Clarity = HIGH.
+
+### Creditos
+A ideia de compilar contra glibc velha (e o binario `bully.compat` GLIBC_2.17)
+veio da comunidade, recompilando a partir do source publicado
+(`github.com/felc18-blip/nextos_ports_android`). Obrigado!
 
 ### Notas
-- 1o boot demora MESMO (tela preta ate ~5min): e a extracao dos ~3GB de assets
-  do APK p/ o SD. So acontece uma vez.
-- Mali-450/fbdev (NextOS): caminho 100% identico ao v6 (nada das mudancas acima
-  o afeta, exceto o runtime escopado, que la e inofensivo).
+- 1o boot demora (tela preta ate ~5min): extracao dos ~3GB de assets do APK p/
+  o SD. So acontece uma vez.
+- Tela preta COM audio em alguns KMSDRM (ex: RGCubeXX): e backend de display
+  (page-flip), nao glibc — em investigacao; mande as linhas `[sdl]`/`[gl]` do
+  log.txt.
 
 ---
 

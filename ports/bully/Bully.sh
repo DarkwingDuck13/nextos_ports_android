@@ -127,14 +127,10 @@ SETEOF
 fi
 
 # ---------- ambiente ----------
-# Env IDENTICO ao v4 (comprovado em campo: NextOS, muOS, X5M, R36S). O binario
-# tem interpretador NORMAL (/lib/ld-linux-aarch64.so.1, SEM patchelf): em device
-# com glibc capaz ele roda 100% nativo como no v4 — o ld.so do PROPRIO CFW acha
-# libgcc_s, o libmali casado com o kernel, tudo nos dirs default dele.
-# A glibc 2.43 bundlada (runtime/) so entra em device de glibc VELHA, via
-# invocacao EXPLICITA do loader na hora do exec (la embaixo) — nunca em export
-# global (envenenava gptokeyb/grep do sistema: ld.so velho + libc nova =
-# "undefined symbol: tunable_is_initialized" GLIBC_PRIVATE, muOS/AYN).
+# Env IDENTICO ao v4 (comprovado em campo: NextOS, muOS, X5M, R36S). Os DOIS
+# binarios tem interpretador NORMAL (/lib/ld-linux-aarch64.so.1, SEM patchelf):
+# rodam 100% nativo, o ld.so do PROPRIO CFW resolve libgcc_s, SDL2, o libmali
+# casado com o kernel, tudo nos dirs default do device. SEM runtime/ bundlado.
 export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
@@ -171,33 +167,7 @@ if grep -qE "s7d|s6|s5" /proc/device-tree/compatible 2>/dev/null; then
   done
 fi
 
-# ---------- anti-OOM/freeze (v7) ----------
-# Devices de ~1GB RAM (Trimui Smart Pro, RG35XX H...) CONGELAVAM na escola /
-# bulletin board / cutscene do refeitorio = falta de memoria (mesma classe de
-# bug ja resolvida no NextOS com swap+zram). Se RAM < ~1.4GB e swap < 256MB,
-# ativa zram 512MB (comprimido em RAM, rapido, zero desgaste de SD); se nao
-# der, fallback = swapfile 512MB via loop no GAMEDIR (vfat/exfat nao aceita
-# swapon direto, loop resolve). Qualquer falha = segue sem (como era antes).
-mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
-swp_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
-if [ "${mem_kb:-2000000}" -lt 1400000 ] && [ "${swp_kb:-0}" -lt 262144 ]; then
-  echo "RAM baixa (${mem_kb} kB) e pouco swap (${swp_kb} kB): ativando swap auxiliar anti-freeze"
-  $ESUDO modprobe zram 2>/dev/null
-  if [ -e /sys/block/zram0 ] && [ "$(cat /sys/block/zram0/disksize 2>/dev/null)" = "0" ]; then
-    echo 536870912 | $ESUDO tee /sys/block/zram0/disksize >/dev/null 2>&1
-    $ESUDO mkswap /dev/zram0 >/dev/null 2>&1 && $ESUDO swapon /dev/zram0 2>/dev/null && echo "zram 512MB ON"
-  fi
-  swp_kb=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
-  if [ "${swp_kb:-0}" -lt 262144 ]; then
-    [ -f "$GAMEDIR/bully.swap" ] || dd if=/dev/zero of="$GAMEDIR/bully.swap" bs=1M count=512 2>/dev/null
-    LOOPDEV=$($ESUDO losetup -f 2>/dev/null)
-    if [ -n "$LOOPDEV" ] && $ESUDO losetup "$LOOPDEV" "$GAMEDIR/bully.swap" 2>/dev/null; then
-      $ESUDO mkswap "$LOOPDEV" >/dev/null 2>&1 && $ESUDO swapon "$LOOPDEV" 2>/dev/null && echo "swapfile 512MB ON ($LOOPDEV)"
-    fi
-  fi
-fi
-
-$ESUDO chmod +x "$GAMEDIR/bully"
+$ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/bully.compat" 2>/dev/null
 
 # Padrao PortMaster: o gptokeyb traduz o controle do CFW em TECLADO/MOUSE pelo
 # bully.gptk (layout PS2) e o binario le essas teclas (BULLY_INPUT=gptk) — o
@@ -213,25 +183,27 @@ elif command -v gptokeyb >/dev/null 2>&1; then
   gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
 fi
 
-command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/bully"
-
-# A glibc do device aguenta o binario (precisa >= 2.38)? Roda NATIVO = modo v4,
-# o ld.so do CFW resolve as libs dele (libgcc_s, GL/libmali certos, etc).
-# Senao (ex: ArkOS 2.27/2.30), roda pelo loader BUNDLADO (glibc 2.43 completa
-# em runtime/, incl. stubs + libgcc_s/libstdc++), com runtime/ primeiro e
-# multiarch ANTES de /usr/lib (um libmali velho perdido em /usr/lib na frente
-# da multiarch dava "user 10.6, kernel 11.7 / Failed creating base context").
+# ---------- escolha do binario (DOIS binarios cobrem qualquer device) ----------
+# bully        = build NextOS, precisa GLIBC >= 2.38 (NextOS 2.43, muOS, Knulli,
+#                ROCKNIX, X5M -- todos modernos). E o nosso build canonico.
+# bully.compat = MESMO codigo compilado em Debian buster, precisa so GLIBC_2.17
+#                -> roda em QUALQUER device (ArkOS/dArkOS 2.27-2.30 inclusive),
+#                linka libdl/libpthread no estilo classico (existe em glibc
+#                velha como lib real e em glibc nova como stub de compat).
+# Regra: glibc do device >= 2.38 usa o nosso; senao usa o compat. Se o nosso
+# nao existir/nao for executavel, cai no compat (que roda em tudo).
 GLIBC_NEED=2.38
 glibc_have=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')
 [ -n "$glibc_have" ] || glibc_have=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')
 glibc_ok=$(echo "${glibc_have:-0} $GLIBC_NEED" | awk '{split($1,a,".");split($2,b,".");print (a[1]>b[1]||(a[1]==b[1]&&a[2]+0>=b[2]+0))?1:0}')
-if [ "$glibc_ok" = "1" ]; then
-  echo "[launcher] glibc do device = $glibc_have >= $GLIBC_NEED -> NATIVO (modo v4)"
-  ./bully
+if [ "$glibc_ok" = "1" ] && [ -x "$GAMEDIR/bully" ]; then
+  BIN=./bully;        echo "[launcher] glibc do device = $glibc_have >= $GLIBC_NEED -> binario NextOS (./bully)"
 else
-  echo "[launcher] glibc do device = ${glibc_have:-desconhecida} < $GLIBC_NEED -> loader bundlado (glibc 2.43)"
-  "$GAMEDIR/runtime/ld-linux-aarch64.so.1" --library-path "$GAMEDIR/runtime:$GAMEDIR:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:$LD_LIBRARY_PATH" "$GAMEDIR/bully"
+  BIN=./bully.compat; echo "[launcher] glibc do device = ${glibc_have:-desconhecida} -> binario compat GLIBC_2.17 (./bully.compat)"
 fi
+
+command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/${BIN#./}"
+"$BIN"
 
 pkill -f gptokeyb 2>/dev/null
 command -v pm_finish >/dev/null 2>&1 && pm_finish
