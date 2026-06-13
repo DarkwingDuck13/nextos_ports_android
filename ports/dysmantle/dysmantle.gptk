@@ -33,8 +33,13 @@ left_analog_down = s
 left_analog_left = a
 left_analog_right = d
 
-# stick dir: SEM mapeamento de tecla — quando o pad e visivel pro SDL o
-# binario le os DOIS sticks + gatilhos ANALOGICOS direto (gptokeyb nao da
-# grab). Mapear p/ setas dispararia os QUICK SLOTS do dpad sem querer.
+# stick dir -> MOUSE (inofensivo: o jogo NAO usa mouse; a CAMERA vem do stick
+# direito lido NATIVAMENTE pelo binario via SDL). NUNCA deixar sem mapeamento:
+# em muitos devices o gptokeyb cai pro DPAD por padrao -> o stick direito
+# dispararia os QUICK SLOTS de item (bug relatado). Mouse o jogo ignora.
+right_analog_up = mouse_movement_up
+right_analog_down = mouse_movement_down
+right_analog_left = mouse_movement_left
+right_analog_right = mouse_movement_right
 
 deadzone_y = 15000
