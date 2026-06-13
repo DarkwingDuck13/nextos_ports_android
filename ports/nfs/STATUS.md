@@ -313,3 +313,19 @@ my_mntlookup(0x410230) em NFS_FSPATHLOG. tools_armdis.py p/ desmontar. Engine bo
   loop) e fazer o jni_shim/stub retornar valor que satisfaça (ou pular a init de tracking/online).
   Setup p/ produção: extrair OBB→disco no 1º run (launcher). Ghidra pronto em ~/re-tools p/ próximas
   decompilações. Engine boota 100% + carrega dados; falta a init online não bloquear.
+
+## 🟡 PARTE 7 (2026-06-13) — fd-leak no scan de diretório (busy-loop pós-databases)
+Após o fix OBB→disco (databases carregam), a engine entra em busy-loop (94% CPU, getdents64/readdir/malloc).
+Diag (SIGUSR1 sampler em main.c + hook opendir/closedir + /proc/PID/fd + Ghidra):
+- **1011 fds abertos, TODOS para `.../files`** (limite 1024) = leak de opendir. caller fixo = libapp+0x582c3c.
+- f_582c24 (método VIRTUAL "enumerar diretório" do disk FS) = opendir+readdir(pula "."/"..")+closedir+
+  callback-visitor(*param_3) por entrada. Ela FECHA o dir. Mas é chamada repetidamente re-escaneando a
+  RAIZ "files" (~1x por arquivo, O(n²)): 1011 opens de "files" com só 65 dirs. O leak vem da recursão/loop
+  do visitor que re-escaneia a raiz em vez de descer → o closedir externo não é alcançado a tempo.
+- hook opendir mostra o padrão: opendir("files") [leak] + opendir("files/") [fechado] alternando, caller
+  sempre libapp+0x582c3c. ulimit -n 32768 NÃO resolveu (ainda trava em 516 linhas) → é loop/re-scan, não só leak.
+- **PRÓXIMO**: achar o CALLER (indireto/vtable) de f_582c24 e o visitor — por que re-escaneia a raiz "files"
+  em loop. Hipóteses: (a) engine cataloga recursos recursivamente e o path do subdir vem errado (vira "files"
+  de novo); (b) engine ESPERA a extração do OBB e re-escaneia (poll); (c) bug O(n²) que com a árvore extraída
+  no eMMC lento nunca converge. Talvez a engine queira files/ com layout/estrutura específica (ou VAZIO + ela
+  mesma extrai). Hooks: NFS_DIRLOG (opendir/closedir), SIGUSR1 sampler, NFS_FSPATHLOG. Ghidra em ~/re-tools.

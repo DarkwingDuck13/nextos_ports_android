@@ -270,6 +270,25 @@ static void *my_dlsym(void *handle, const char *name) {
   return p;
 }
 
+/* ---- opendir/closedir: rastrear o leak de fds (engine reabre files/ em loop) ---- */
+static void *(*real_opendir)(const char *);
+static int (*real_closedir)(void *);
+static int g_opendir_n, g_closedir_n;
+static void *my_opendir(const char *path) {
+  if (!real_opendir) real_opendir = (void *(*)(const char *))dlsym(RTLD_DEFAULT, "opendir");
+  void *d = real_opendir(path);
+  g_opendir_n++;
+  if (getenv("NFS_DIRLOG") && g_opendir_n < 40)
+    fprintf(stderr, "[opendir #%d] '%s' -> %p caller=%p (closes=%d)\n", g_opendir_n,
+            path ? path : "?", d, __builtin_return_address(0), g_closedir_n);
+  return d;
+}
+static int my_closedir(void *d) {
+  if (!real_closedir) real_closedir = (int (*)(void *))dlsym(RTLD_DEFAULT, "closedir");
+  g_closedir_n++;
+  return real_closedir(d);
+}
+
 /* ---- dlopen: loga o que a engine tenta carregar (rastrear o módulo anon 12K) ---- */
 static void *(*real_dlopen)(const char *, int);
 static void *my_dlopen(const char *path, int flag) {
@@ -891,6 +910,8 @@ DynLibFunction nfs_shims[] = {
     {"eglGetProcAddress", (uintptr_t)egl_shim_GetProcAddress},
     {"pthread_create", (uintptr_t)my_pthread_create},
     {"dlsym", (uintptr_t)my_dlsym},
+    {"opendir", (uintptr_t)my_opendir},
+    {"closedir", (uintptr_t)my_closedir},
     {"fopen", (uintptr_t)my_fopen},
     {"fread", (uintptr_t)my_fread},
     {"open", (uintptr_t)my_open},

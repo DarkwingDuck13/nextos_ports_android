@@ -34,6 +34,33 @@ extern void *g_real_dynamic_cast;
 /* flags cacheados (imports.c) — NÃO chamar getenv em signal/hot path (race c/ setenv) */
 extern int g_nfs_nodcastrec, g_nfs_norecover, g_nfs_noassertignore;
 extern void nfs_cache_flags(void);
+/* SIGUSR1 sampler: dumpa PC/LR + backtrace (varre stack p/ retornos em libapp) e
+ * CONTINUA. Usado p/ achar onde o busy-loop do Nimble spinna. */
+static void sample_handler(int sig, siginfo_t *info, void *uctx) {
+  (void)sig; (void)info;
+  ucontext_t *uc = (ucontext_t *)uctx; mcontext_t *m = &uc->uc_mcontext;
+  uintptr_t pc = m->arm_pc, lr = m->arm_lr, sp = m->arm_sp;
+  uintptr_t text = (uintptr_t)text_base, tend = text + text_size;
+  fprintf(stderr, "[SAMPLE] PC=%08lx LR=%08lx\n", (unsigned long)pc, (unsigned long)lr);
+  /* resolve PC/LR contra /proc/self/maps (nomeia a lib + offset) */
+  { FILE *mf = fopen("/proc/self/maps", "r"); if (mf) { char ln[400];
+    uintptr_t rr[2] = { pc, lr }; const char *rn[2] = { "PC", "LR" };
+    while (fgets(ln, sizeof ln, mf)) { unsigned long s, e; char pm[8], pa[256]; pa[0] = 0;
+      if (sscanf(ln, "%lx-%lx %7s %*x %*s %*d %255s", &s, &e, pm, pa) >= 3 && pm[2] == 'x')
+        for (int q = 0; q < 2; q++) if (rr[q] >= s && rr[q] < e) {
+          const char *b = pa[0] ? (strrchr(pa, '/') ? strrchr(pa, '/') + 1 : pa) : "(anon)";
+          fprintf(stderr, "  %s in %s+0x%lx\n", rn[q], b, rr[q] - s); }
+    } fclose(mf); } }
+  if (pc >= text && pc < tend) fprintf(stderr, "  PC=libapp+0x%lx\n", (unsigned long)(pc - text));
+  if (lr >= text && lr < tend) fprintf(stderr, "  LR=libapp+0x%lx\n", (unsigned long)(lr - text));
+  int n = 0;
+  for (uintptr_t a = sp; a < sp + 0x800 && n < 16; a += 4) {
+    uintptr_t v = *(uintptr_t *)a;
+    if (v >= text && v < tend) { fprintf(stderr, "  [sp+0x%lx] libapp+0x%lx\n",
+        (unsigned long)(a - sp), (unsigned long)(v - text)); n++; }
+  }
+  fflush(stderr);
+}
 static void crash_handler(int sig, siginfo_t *info, void *uctx) {
   ucontext_t *uc = (ucontext_t *)uctx;
   mcontext_t *m = &uc->uc_mcontext;
@@ -260,6 +287,8 @@ static void install_crash_handler(void) {
   sigaction(SIGABRT, &sa, NULL);
   sigaction(SIGILL, &sa, NULL);
   sigaction(SIGFPE, &sa, NULL);
+  { struct sigaction su; memset(&su, 0, sizeof su); su.sa_sigaction = sample_handler;
+    su.sa_flags = SA_SIGINFO; sigaction(SIGUSR1, &su, NULL); }
 }
 
 /* tabela combinada acumulada (base + snapshots dos módulos já carregados) */
