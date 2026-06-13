@@ -32,9 +32,18 @@ O teto é automático por RAM (no `Bully.sh`, ajustável em `BULLY_TEX_BUDGET_MB
 Validado no X5M: passa GameMain, renderiza, memória estável. Aplicado nos DOIS
 binários (`bully` e `bully.compat`).
 
+### Áudio: anti "broken pipe" (R36S/ArkOS) + libs de fallback
+- **`alsoft.conf` non-mmap**: em devices só-ALSA (sem PulseAudio, ex: R36S/ArkOS)
+  o OpenAL caía no caminho ALSA *mmap* que faz underrun ("broken pipe") e travava
+  o áudio em sessões longas. Agora o launcher aponta `ALSOFT_CONF` p/ um config
+  non-mmap + buffers maiores — **só quando não há PulseAudio e NÃO no X5M**
+  (cujo áudio já funciona; não é tocado).
+- **`audiolibs/` (libopenal.so.1 + libmpg123.so.0) como FALLBACK**: vão por
+  último no `LD_LIBRARY_PATH`, então o device usa as DELE; as nossas só entram se
+  faltar. Efeito colateral bom: **o S905X5M, que não tinha libmpg123, ganhou
+  música** (antes faltava a lib → sem áudio de música).
+
 ### Ainda pendente (próximas versões)
-- Áudio "broken pipe" em devices só-ALSA (R36S/ArkOS sem Pulse) — fix mapeado
-  (alsoft.conf non-mmap).
 - Tela preta no RGCubeXX/Knulli (sem `/dev/dri` → backend `mali` não apresenta).
 - Qualidade em painel 640x480.
 

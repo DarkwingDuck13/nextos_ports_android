@@ -131,7 +131,10 @@ fi
 # binarios tem interpretador NORMAL (/lib/ld-linux-aarch64.so.1, SEM patchelf):
 # rodam 100% nativo, o ld.so do PROPRIO CFW resolve libgcc_s, SDL2, o libmali
 # casado com o kernel, tudo nos dirs default do device. SEM runtime/ bundlado.
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
+# audiolibs/ no FIM = fallback: o device usa o libopenal/libmpg123 DELE (vem
+# primeiro); as nossas copias so entram se o device nao tiver (ex: X5M nao tinha
+# libmpg123 -> sem musica). Zero risco p/ quem ja tem as libs.
+export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH:$GAMEDIR/audiolibs"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
@@ -186,6 +189,24 @@ if grep -qE "s7d|s6|s5" /proc/device-tree/compatible 2>/dev/null; then
     grep -q closed /proc/asound/card0/pcm0p/sub0/status 2>/dev/null && break
     sleep 0.25
   done
+fi
+
+# ---------- audio: anti "broken pipe" em devices SO-ALSA ----------
+# Sem PulseAudio (ex: R36S/ArkOS), o OpenAL cai no caminho ALSA mmap que faz
+# underrun ("Broken pipe") e trava o audio em sessoes longas. Um alsoft.conf
+# non-mmap resolve. Aplicado SO quando NAO ha PulseAudio e NAO e o X5M
+# (s7d|s6|s5 -> audio dele ja funciona, NAO mexer). Pre-cria o dir do Pulse
+# como rede de seguranca.
+if ! grep -qE "s7d|s6|s5" /proc/device-tree/compatible 2>/dev/null; then
+  _xrd="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null || echo 0)}"
+  pulse_ok=0
+  pgrep -x pulseaudio >/dev/null 2>&1 && pulse_ok=1
+  [ -S "$_xrd/pulse/native" ] && pulse_ok=1
+  if [ "$pulse_ok" = "0" ] && [ -f "$GAMEDIR/alsoft.conf" ]; then
+    export ALSOFT_CONF="$GAMEDIR/alsoft.conf"
+    mkdir -p "$_xrd/pulse" 2>/dev/null
+    echo "device sem PulseAudio -> ALSOFT_CONF non-mmap (anti broken-pipe)"
+  fi
 fi
 
 $ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/bully.compat" 2>/dev/null
