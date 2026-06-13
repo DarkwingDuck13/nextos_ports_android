@@ -106,6 +106,7 @@ typedef struct {
   volatile uint32_t underrun_count;
   volatile uint32_t fadeout_count;
   volatile uint32_t frames_played;  /* total output frames mixed, for fade-in */
+  volatile int stopping;            /* 1 = SetPlayState(STOPPED) pediu parada -> fade-out 1 buffer e para (anti-click) */
 
   volatile SLuint32 play_state;
   float volume;
@@ -313,6 +314,15 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
       p->fadeout_count++;
     }
 
+    /* anti-click no STOP: rampa 1->0 no buffer inteiro deste callback (reusa o
+     * caminho de fade-out) e depois para de fato (ver finalize abaixo). */
+    int stopping_now = p->stopping;
+    if (stopping_now) {
+      underrun = 1;
+      fade_start = 0;
+      fade_out_len = src_frames_got;
+    }
+
     /* Fade-in: first 32 output frames of a player's lifetime */
     uint32_t fadein_remaining = (p->frames_played < 32) ? (32 - p->frames_played) : 0;
 
@@ -393,6 +403,15 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         mixed++;
       }
       p->frames_played += mixed;
+    }
+
+    /* finaliza o STOP depois do fade-out: agora sim para e descarta o resto */
+    if (stopping_now) {
+      p->play_state = SL_PLAYSTATE_STOPPED;
+      p->ring_head = 0;
+      p->ring_tail = 0;
+      queue_reset(p);
+      p->stopping = 0;
     }
   }
 
@@ -563,6 +582,7 @@ static void player_reset_meta(AudioPlayer *p) {
   p->cb_dead = 0;
   p->underrun_count = 0;
   p->fadeout_count = 0;
+  p->stopping = 0;
   p->frames_played = 0;
   p->play_state = SL_PLAYSTATE_STOPPED;
   p->volume = 1.0f;
@@ -673,20 +693,31 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
       AudioPlayer *p = &g_players[i];
       /* debugPrintf("opensles_shim: player %d SetPlayState(%u -> %u)\n",
                   i, p->play_state, state); */
+      static int nofadestop = -1;
+      if (nofadestop < 0) nofadestop = getenv("DYSMANTLE_NO_FADEOUT_STOP") ? 1 : 0;
       if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
-      if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
-        p->headatend_fired = 0;
-        p->decoder_done = 0;
-        p->ring_head = 0;
-        p->ring_tail = 0;
-        queue_reset(p);
+      if (state == SL_PLAYSTATE_STOPPED && p->play_state == SL_PLAYSTATE_PLAYING
+          && !nofadestop && ring_readable(p) > 0) {
+        /* anti-click: em vez de cortar seco (zera ring), marca stopping -> o mixer
+         * rampa 1->0 no proximo buffer e SO entao para de fato. NAO mexe no ring
+         * nem no play_state aqui (segue PLAYING durante o fade). */
+        p->stopping = 1;
+      } else {
+        if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
+          p->headatend_fired = 0;
+          p->decoder_done = 0;
+          p->ring_head = 0;
+          p->ring_tail = 0;
+          queue_reset(p);
+        }
+        if (state == SL_PLAYSTATE_PLAYING && p->play_state != SL_PLAYSTATE_PLAYING) {
+          p->frames_played = 0;
+          p->underrun_count = 0;
+          p->fadeout_count = 0;
+          p->stopping = 0;
+        }
+        p->play_state = state;
       }
-      if (state == SL_PLAYSTATE_PLAYING && p->play_state != SL_PLAYSTATE_PLAYING) {
-        p->frames_played = 0;
-        p->underrun_count = 0;
-        p->fadeout_count = 0;
-      }
-      p->play_state = state;
       if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
       return SL_RESULT_SUCCESS;
     }
