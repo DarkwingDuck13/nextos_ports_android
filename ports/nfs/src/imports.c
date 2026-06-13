@@ -429,6 +429,16 @@ static void log_path_arg(const char *tag, void *r1) {
   if (ok && c[0] >= 32) { fprintf(stderr, "  %s(cstr)=\"%.200s\"\n", tag, c); return; }
   fprintf(stderr, "  %s=<raw %08x %08x %08x>\n", tag, ((unsigned*)r1)[0], ((unsigned*)r1)[1], ((unsigned*)r1)[2]);
 }
+/* hook do mount-lookup 0x410230(r0=context, r1=key) -> mount ptr ou NULL */
+static uintptr_t g_mntlk_tramp;
+static void *my_mntlookup(void *ctx, void *key, void *r2, void *r3) {
+  void *(*real)(void *, void *, void *, void *) = (void *(*)(void *, void *, void *, void *))g_mntlk_tramp;
+  void *ret = real(ctx, key, r2, r3);
+  static int n = 0;
+  if (n < 60) { fprintf(stderr, "[mntlookup #%d] ctx=%p ret=%p\n", n, ctx, ret); log_path_arg("key", key); n++; }
+  return ret;
+}
+
 static void *my_getfspath(void *out, void *path_r1, void *r2, void *r3) {
   static int n = 0;
   int log = (n < 80);
@@ -444,6 +454,24 @@ static void *my_getfspath(void *out, void *path_r1, void *r2, void *r3) {
     }
   }
   if (log) { fprintf(stderr, "[dbopen #%d] this=%p r2=%p\n", n, out, r2); log_path_arg("path", path_r1); n++; }
+  /* 🔎 one-shot: pega o singleton VFS (getter 0x40e8e8) e loga vtable[2]/[6] como
+   * offsets de arquivo (- text_base) p/ desmontar os métodos open. */
+  { static int once = 0; extern void *text_base;
+    if (!once) { once = 1;
+      void *(*getter)(void) = (void *(*)(void))((uintptr_t)text_base + 0x40e8e8);
+      void *sing = getter();
+      fprintf(stderr, "[VFS] singleton=%p\n", sing);
+      if (sing && (uintptr_t)sing > 0x10000) {
+        uintptr_t *vt = *(uintptr_t **)sing;
+        uintptr_t tb = (uintptr_t)text_base;
+        for (int i = 0; i < 12; i++) {
+          uintptr_t m = vt[i];
+          fprintf(stderr, "  vtable[%d]=%p (libapp+0x%lx)\n", i, (void *)m,
+                  (m > tb && m < tb + 0xa00000) ? (unsigned long)(m - tb) : 0);
+        }
+      }
+    }
+  }
   void *(*real)(void *, void *, void *, void *) =
       (void *(*)(void *, void *, void *, void *))g_fsp_tramp;
   return real(out, path_r1, r2, r3);
@@ -466,6 +494,23 @@ void nfs_install_getfspath_hook(void) {
   __builtin___clear_cache((char *)fn, (char *)fn + 8);
   mprotect((void *)pbase, pg * 2, PROT_READ | PROT_EXEC);
   fprintf(stderr, "[GetFSPath-hook] @%p hooked (tramp=%p)\n", (void *)fn, (void *)g_fsp_tramp);
+
+  /* hook 2: mount-lookup 0x410230 */
+  uintptr_t fn2 = (uintptr_t)text_base + 0x410230;
+  uint8_t *tr2 = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr2 != MAP_FAILED) {
+    memcpy(tr2, (void *)fn2, 8);
+    *(uint32_t *)(tr2 + 8) = 0xe51ff004u;
+    *(uint32_t *)(tr2 + 12) = (uint32_t)(fn2 + 8);
+    __builtin___clear_cache((char *)tr2, (char *)tr2 + 16);
+    g_mntlk_tramp = (uintptr_t)tr2;
+    uintptr_t pb2 = fn2 & ~((uintptr_t)pg - 1);
+    mprotect((void *)pb2, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    hook_arm(fn2, (uintptr_t)my_mntlookup);
+    __builtin___clear_cache((char *)fn2, (char *)fn2 + 8);
+    mprotect((void *)pb2, pg * 2, PROT_READ | PROT_EXEC);
+    fprintf(stderr, "[mntlookup-hook] @%p hooked\n", (void *)fn2);
+  }
 }
 
 void nfs_install_dyncast_hook(void) {

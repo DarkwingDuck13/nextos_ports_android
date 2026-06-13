@@ -279,3 +279,16 @@ no device .164 em /storage/roms/nfs/.
 - **O bug é fundo no parse do índice do OBB / criação do objeto de asset** — precisa de RE focada
   multi-sessão (instrumentar a criação do objeto entre o header-read e o crash; entender o formato
   do índice do OBB EA; ver se o objeto é não-construído vs asset-não-achado). Cheguei a ~95% do boot.
+
+## 🔬 PARTE 5 (2026-06-13) — hook do mount-lookup: mounts achados p/ alguns paths, open ainda falha
+Hooks de 0x4f0138 (database-open) + 0x410230 (mount-lookup) via NFS_FSPATHLOG. Cadeia confirmada:
+database-open(0x4f0138, r1=path "/published/X") → VFS open vtable[6](0x411510, checa '@'→não→
+mount-lookup) → 0x410230 (busca tabela [ctx+0x150] via 0x413940) → se mount, resolve via mount[0x24]
+(0x41041c) → open no FS do mount. VFS singleton getter=0x40e8e8; vtable[6]@0x18=0x411510, vtable[2]@8=0x410808.
+**RESULTADO do hook 0x410230**: acha mount p/ `/published/data/locales.sb`→0x43e6f60, `/published/strings/
+nfsmw_android.sb`→0x43e5ee8, `/var1/last_version.txt`→ok; MAS `/published/fonts/fonts.sb`→NULL.
+→ (a) mounts são POR-SUBDIR sob /published, alguns registrados (data/strings) outros não (fonts);
+(b) MESMO onde o mount é achado (data), o open AINDA falha ("Could not open database") → o resolve do
+mount (mount[0x24]→0x41041c) + open no FS do OBB falha. **PRÓXIMO: Ghidra** (decompilar 0x41041c=resolve
+e o FS-open do OBB; tracing manual 5 níveis não converge). Hooks prontos: my_getfspath(0x4f0138),
+my_mntlookup(0x410230) em NFS_FSPATHLOG. tools_armdis.py p/ desmontar. Engine boota 100%.
