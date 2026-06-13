@@ -873,6 +873,7 @@ void jni_load(void) {
   void (*OnLowMemory)(void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnLowMemory");
   long tex_budget_mb = getenv("BULLY_TEX_BUDGET_MB") ? atol(getenv("BULLY_TEX_BUDGET_MB")) : 256;
   extern long long g_texbytes_live; int lowmem_cd = 0;
+  long long lowmem_pre = 0; int lowmem_stuck = 0; /* anti-churn: detecta piso da engine */
   fprintf(stderr, "[lowmem] OnLowMemory=%p teto=%ld MB\n", (void*)OnLowMemory, tex_budget_mb);
 
   /* loop de render */
@@ -904,14 +905,21 @@ void jni_load(void) {
     }
     if (rk_signin && f > 45) { rk_signin = 0; if (OS_SignInComplete) OS_SignInComplete(); }
 
-    /* anti-OOM: pede despejo quando a textura viva passa do teto (so in-game) */
+    /* anti-OOM: pede despejo quando a textura viva passa do teto (so in-game).
+     * ANTI-CHURN: se o despejo anterior NAO reduziu a memoria (engine ja esta no
+     * piso de working-set da cena), recua o cooldown p/ ~30s em vez de insistir
+     * a cada 2s (senao vira stutter pedindo despejo que a engine nao pode dar). */
     if (lowmem_cd > 0) lowmem_cd--;
     if (OnLowMemory && tex_budget_mb > 0 && lowmem_cd == 0 && f > 300 &&
         g_texbytes_live > (long long)tex_budget_mb * 1024 * 1024) {
-      long long before = g_texbytes_live;
+      if (lowmem_pre > 0 && g_texbytes_live >= lowmem_pre - 4LL*1024*1024) {
+        if (lowmem_stuck < 3) lowmem_stuck++;        /* nao caiu desde o ultimo -> piso */
+      } else lowmem_stuck = 0;                        /* caiu -> despejo ajudou */
+      lowmem_pre = g_texbytes_live;
       OnLowMemory(fake_env, NULL);
-      fprintf(stderr, "[lowmem] disparado @ %lld MB (teto %ld)\n", before/(1024*1024), tex_budget_mb);
-      lowmem_cd = 120; /* ~2s ate poder pedir de novo (despejo e async) */
+      fprintf(stderr, "[lowmem] disparado @ %lld MB (teto %ld, stuck=%d)\n",
+              g_texbytes_live/(1024*1024), tex_budget_mb, lowmem_stuck);
+      lowmem_cd = (lowmem_stuck >= 2) ? 1800 : 120;  /* piso: ~30s; normal: ~2s */
     }
 
     OnDrawFrame(fake_env, NULL, 1.0f/60.0f);  /* heartbeat; GL real ocorre na render thread do jogo */

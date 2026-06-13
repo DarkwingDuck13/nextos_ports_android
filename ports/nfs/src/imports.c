@@ -146,9 +146,11 @@ static int my_pthread_create(void *th, const void *attr, void *(*fn)(void *), vo
 
 /* ---- fopen/open hook: loga acessos a arquivo (ver se a engine abre o OBB) ---- */
 static void *(*real_fopen)(const char *, const char *);
+void *g_obb_fp;  /* fp do OBB, p/ diagnóstico de leitura do índice ZIP */
 static void *my_fopen(const char *path, const char *mode) {
   if (!real_fopen) real_fopen = (void *(*)(const char *, const char *))dlsym(RTLD_DEFAULT, "fopen");
   void *fp = real_fopen(path, mode);
+  if (path && strstr(path, ".obb")) g_obb_fp = fp;
   if (getenv("NFS_FOPENLOG")) {
     static int n = 0;
     if (n < 60) { fprintf(stderr, "[fopen] '%s' (%s) -> %s\n", path ? path : "?", mode ? mode : "?", fp ? "OK" : "MISS"); n++; }
@@ -158,8 +160,24 @@ static void *my_fopen(const char *path, const char *mode) {
 static size_t (*real_fread)(void *, size_t, size_t, void *);
 static size_t my_fread(void *p, size_t sz, size_t n, void *fp) {
   if (!real_fread) real_fread = (size_t(*)(void*,size_t,size_t,void*))dlsym(RTLD_DEFAULT, "fread");
+  long pos_before = (fp == g_obb_fp && getenv("NFS_OBBDUMP")) ? ftell((FILE *)fp) : -1;
   size_t r = real_fread(p, sz, n, fp);
   { extern long nfs_io_read_bytes; nfs_io_read_bytes += (long)(r * sz); }
+  /* 🔎 dump de blocos GRANDES lidos do OBB (índice ZIP) — ver se são entradas
+   * válidas (PK\1\2 = central dir, PK\3\4 = local header). NFS_OBBDUMP=1. */
+  if (pos_before >= 0 && r * sz >= 8) {
+    const unsigned char *b = (const unsigned char *)p;
+    /* só loga nomes de entrada que NÃO são texturepack (= base/databases) p/ ver
+     * se o índice inclui published/data, published/fonts, etc. */
+    char nm[80]; int L2 = (int)(r * sz); if (L2 > 79) L2 = 79;
+    int printable = (b[0] >= 32 && b[0] < 127);
+    if (printable) { memcpy(nm, b, L2); nm[L2] = 0;
+      if (!strstr(nm, "texturepack")) {
+        static int c = 0;
+        if (c < 6000) { fprintf(stderr, "[obb-name] off=%ld len=%zu '%s'\n", pos_before, r * sz, nm); c++; }
+      }
+    }
+  }
   if (getenv("NFS_FOPENLOG")) { static int c = 0; static size_t tot = 0; tot += r * sz;
     if (c < 30) { fprintf(stderr, "[fread] %zu*%zu -> %zu (fp=%p, total=%zu)\n", sz, n, r, fp, tot); c++; } }
   return r;

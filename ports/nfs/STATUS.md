@@ -1,5 +1,32 @@
 # NFS Most Wanted (2012) → NextOS Mali-450 (so-loader armhf)
 
+## 🔬 SESSÃO 2026-06-13 PARTE 3 — DIAGNÓSTICO PRECISO DO MURO DO OBB (lookup interno)
+Investigação profunda do mount do OBB. ACHADOS DEFINITIVOS:
+- A engine lê o EOCD + **central directory INTEIRO** (todas as 2411+ entradas, byte-a-byte) e indexa
+  TODAS — confirmado via dump (my_fread NFS_OBBDUMP=1): lê `published.1x/texturepacks...`,
+  `published.2x/`, `published.4x/`, `published/CC_SeedData.bin`, `published/ParticleBaseTextures/...`
+  etc. **O índice está COMPLETO.**
+- **A engine NUNCA faz seek p/ offset baixo** (= nunca lê o conteúdo de nenhum arquivo). Todos os
+  seeks ficam no central dir (~623M/731M). Logo o **lookup nome→entrada FALHA** antes de qualquer read.
+- **REPACK TESTADO E DESCARTADO** (provou que NÃO é layout): mesclei o base `published/*` (1144 arq,
+  dirs pequenos) sob `published.1x/*` no OBB (append + rsync delta; OBB no device agora 731MB com AMBOS
+  `published/data/locales.sb` E `published.1x/data/locales.sb`). A engine LÊ a entrada nova
+  `published.1x/data/locales.sb` no índice (confirmado no dump), MAS o lookup de
+  `/published/data/locales.sb` AINDA falha. → A resolução de `/published/X` NÃO gera `published/X` NEM
+  `published.1x/X` — gera uma chave que não casa NENHUMA entrada do índice. **É a `SKU::GetFileSystemPath`
+  (0x3fbac0; xref achado via scanner PIC próprio) gerando uma chave interna diferente.**
+- Ferramentas: scanner PIC ARM próprio acha xrefs a strings (objdump não anota movw/movt). GetFileSystemPath
+  em ~0x3fbac0, mount loop ~0x3fb778, AddSKU ~0x3fae7c. binário STRIPPED (1 símbolo bogus, sem fronteiras
+  de função) → RE manual inviável sem decompiler.
+- **PRÓXIMO (precisa de Ghidra/IDA ou hook runtime):** (1) decompilar SKU::GetFileSystemPath p/ ver a
+  chave gerada de "/published/X"; OU (2) hookar a função de lookup/open-in-archive e logar a chave que ela
+  busca → adicionar a entrada com ESSE nome no OBB OU reescrever a chave no hook. Possível que a chave seja
+  relativa ("data/locales.sb" sem prefixo) ou um HASH. Diagnóstico runtime pronto: NFS_OBBDUMP (dump de
+  reads/nomes do OBB via g_obb_fp), NFS_SEEKLOG, NFS_FOPENLOG. OBB merged (731MB, com ambos os paths) está
+  no device — útil p/ próximos testes. **NÃO é regressão: engine boota 100%, só não acha os dados.**
+
+---
+
 ## 🟢🟢 SESSÃO 2026-06-13 PARTE 2 — ENGINE BOOTA 100% + chega ao CARREGAMENTO DE DADOS (OBB)
 Depois dos 4 fixes (abaixo), mais 1 fix destravou o init gráfico inteiro:
 5. **JNI_OnLoad dos módulos SECUNDÁRIOS** (main.c): no Android o runtime chama JNI_OnLoad de CADA
