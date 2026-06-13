@@ -15,6 +15,8 @@ static void jb_put(jbuf *b, int v) {
   b->p[b->len++] = (unsigned char)v;
 }
 
+static const unsigned char s_jo_ZigZag[] = {0,1,5,6,14,15,27,28,2,4,7,13,16,26,29,42,3,8,12,17,25,30,41,43,9,11,18,24,31,40,44,53,10,19,23,32,39,45,52,54,20,22,33,38,46,51,55,60,21,34,37,47,50,56,59,61,35,36,48,49,57,58,62,63};
+
 static void jo_writeBits(jbuf *b, int *bitBuf, int *bitCnt, const unsigned short bs[2]) {
   *bitCnt += bs[1];
   *bitBuf |= bs[0] << (24 - *bitCnt);
@@ -47,6 +49,15 @@ static void jo_DCT(float *d0, float *d1, float *d2, float *d3, float *d4, float 
   *d1 = z11 + z4; *d7 = z11 - z4;
 }
 
+/* calcula (bits, nbits) de um valor com sinal, MASCARADO (igual jo_jpeg). */
+static void jo_calcBits(int val, unsigned short bits[2]) {
+  int tmp1 = val < 0 ? -val : val;
+  val = val < 0 ? val - 1 : val;
+  bits[1] = 1;
+  while (tmp1 >>= 1) ++bits[1];
+  bits[0] = val & ((1 << bits[1]) - 1);
+}
+
 static int jo_processDU(jbuf *b, int *bitBuf, int *bitCnt, float *CDU, float *fdtbl, int DC,
                         const unsigned short HTDC[256][2], const unsigned short HTAC[256][2]) {
   const unsigned short EOB[2] = {HTAC[0x00][0], HTAC[0x00][1]};
@@ -59,17 +70,15 @@ static int jo_processDU(jbuf *b, int *bitBuf, int *bitCnt, float *CDU, float *fd
     jo_DCT(&CDU[dataOff], &CDU[dataOff+8], &CDU[dataOff+16], &CDU[dataOff+24], &CDU[dataOff+32], &CDU[dataOff+40], &CDU[dataOff+48], &CDU[dataOff+56]);
   for (i = 0; i < 64; ++i) {
     float v = CDU[i] * fdtbl[i];
-    DU[i] = (int)(v < 0 ? v - 0.5f : v + 0.5f);
+    /* reordena p/ ZIGZAG aqui (bug se faltar: DC/AC nas posicoes erradas) */
+    DU[s_jo_ZigZag[i]] = (int)(v < 0 ? v - 0.5f : v + 0.5f);
   }
   diff = DU[0] - DC;
   if (diff == 0) jo_writeBits(b, bitBuf, bitCnt, HTDC[0]);
   else {
     unsigned short bits[2];
-    int t = diff < 0 ? -diff : diff, nbits = 0;
-    while (t) { nbits++; t >>= 1; }
-    bits[1] = nbits;
-    bits[0] = diff < 0 ? diff - 1 : diff;
-    jo_writeBits(b, bitBuf, bitCnt, HTDC[nbits]);
+    jo_calcBits(diff, bits);
+    jo_writeBits(b, bitBuf, bitCnt, HTDC[bits[1]]);
     jo_writeBits(b, bitBuf, bitCnt, bits);
   }
   end0pos = 63;
@@ -86,20 +95,14 @@ static int jo_processDU(jbuf *b, int *bitBuf, int *bitCnt, float *CDU, float *fd
     }
     {
       unsigned short bits[2];
-      int t = DU[i] < 0 ? -DU[i] : DU[i], nbits = 0;
-      while (t) { nbits++; t >>= 1; }
-      bits[1] = nbits;
-      bits[0] = DU[i] < 0 ? DU[i] - 1 : DU[i];
-      jo_writeBits(b, bitBuf, bitCnt, HTAC[(nrzeroes << 4) + nbits]);
+      jo_calcBits(DU[i], bits);
+      jo_writeBits(b, bitBuf, bitCnt, HTAC[(nrzeroes << 4) + bits[1]]);
       jo_writeBits(b, bitBuf, bitCnt, bits);
     }
   }
   if (end0pos != 63) jo_writeBits(b, bitBuf, bitCnt, EOB);
   return DU[0];
 }
-
-/* tabelas padrão (Annex K do JPEG) */
-static const unsigned char s_jo_ZigZag[] = {0,1,5,6,14,15,27,28,2,4,7,13,16,26,29,42,3,8,12,17,25,30,41,43,9,11,18,24,31,40,44,53,10,19,23,32,39,45,52,54,20,22,33,38,46,51,55,60,21,34,37,47,50,56,59,61,35,36,48,49,57,58,62,63};
 
 unsigned char *jpeg_encode_rgba(const unsigned char *data, int width, int height,
                                 int comp, int quality, long *out_len) {
