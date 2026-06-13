@@ -1,5 +1,32 @@
 # NFS Most Wanted (2012) → NextOS Mali-450 (so-loader armhf)
 
+## 🔬 SESSÃO 2026-06-13 PARTE 4 — RE com CAPSTONE: path exato capturado, lookup do archive quebrado
+Capstone (5.0.7) está instalado. Escrevi `tools_armdis.py` (desmonta ARM resolvendo refs PIC a
+strings via ldr[pc]+add pc) e um scanner de xref próprio. Achados:
+- **`SKU::GetFileSystemPath`** = 0x3fba3c (ARM): exige path começando com **`@`** (0x40) senão
+  "Invalid path"; depois compara com "published" e aplica SKU. **MAS hookada (NFS_FSPATHLOG) ela
+  NUNCA é chamada p/ os databases** — não é o caminho de resolução deles.
+- **Função database-open = 0x4f0138** (ARM; r1=path como {begin,end}, r2=flags). Faz 2 chamadas
+  virtuais de open no singleton VFS (`bl 0x40e8e8` → vtable[6]@0x18 em 0x4f0294, depois vtable[2]@8
+  em 0x4f03d0); se ambas retornam NULL → "Could not open database at %s".
+- **HOOK de 0x4f0138 (NFS_FSPATHLOG) capturou o PATH EXATO**: `/published/data/locales.sb`,
+  `/published/fonts/fonts.sb`, etc. (com barra inicial).
+- **TESTES QUE DESCARTAM forma do path** (NFS_STRIPSLASH reescreve o range {begin+1,end}):
+  com `published/data/locales.sb` (nome EXATO da entrada do OBB, SEM barra) o VFS open AINDA retorna
+  NULL. Já testado tb: com barra (mount /published), prefixo SKU published.1x (repack merged),
+  base published. NENHUM resolve. → **o lookup do índice do archive está quebrado** (a engine LÊ
+  todos os nomes do central dir mas o open por nome falha p/ TODOS, mesmo nome exato; nunca faz seek
+  baixo p/ ler conteúdo). Causa provável: índice/hash interno do objeto archive não populado/
+  inconsistente sob nosso ambiente (possível HASH de nome — ctor 186 = CPU detect p/ CRC32; OU
+  container std falhando), OU o VFS open precisa de um filesystem/mount que não foi registrado.
+- **PRÓXIMO**: hookar o método VFS open (vtable[6]@0x18 do singleton de 0x40e8e8) p/ ver a busca
+  interna e se o índice tem entradas; OU achar como o archive é registrado no VFS ("Mounting SKU"
+  só mapeia, mas o FS do OBB precisa estar montado). Ferramentas: tools_armdis.py, scanner xref,
+  hook genérico (my_getfspath, NFS_FSPATHLOG aponta p/ 0x4f0138), NFS_STRIPSLASH, NFS_OBBDUMP.
+  Decompiler (Ghidra) destravaria rápido. Engine boota 100% — só não acha os dados.
+
+---
+
 ## 🔬 SESSÃO 2026-06-13 PARTE 3 — DIAGNÓSTICO PRECISO DO MURO DO OBB (lookup interno)
 Investigação profunda do mount do OBB. ACHADOS DEFINITIVOS:
 - A engine lê o EOCD + **central directory INTEIRO** (todas as 2411+ entradas, byte-a-byte) e indexa

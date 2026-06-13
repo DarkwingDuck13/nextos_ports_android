@@ -406,6 +406,68 @@ static int ti_walk(const void *ti, int depth, int dump) {
 /* instala inline-hook na ENTRADA do __dynamic_cast da libc++ p/ que TODA chamada
  * (inclusive a recursão interna da libc++, que não passa pela GOT da libapp)
  * valide o typeinfo antes. Constrói trampolim com os 8 bytes originais. */
+/* ---- hook de SKU::GetFileSystemPath (libapp+0x3fba3c, ARM) ----
+ * Loga o path de ENTRADA (r2 = {char* begin, char* end}) e SAÍDA (r0 = std::string
+ * libc++) p/ ver a chave que a engine procura no OBB. NFS_FSPATHLOG=1. */
+static uintptr_t g_fsp_tramp;
+static void log_range(const char *tag, const char *b, const char *e) {
+  if (!b || !e || e < b || (e - b) > 300) { fprintf(stderr, "  %s=<inval %p..%p>\n", tag, b, e); return; }
+  fprintf(stderr, "  %s(%ld)=\"", tag, (long)(e - b));
+  for (const char *p = b; p < e; p++) fputc((*p >= 32 && *p < 127) ? *p : '.', stderr);
+  fprintf(stderr, "\"\n");
+}
+static void log_path_arg(const char *tag, void *r1) {
+  /* r1 pode ser: char* (null-term), ou ptr p/ {char* begin, char* end}, ou std::string */
+  if (!r1 || (uintptr_t)r1 < 0x10000) { fprintf(stderr, "  %s=<%p>\n", tag, r1); return; }
+  char **w = (char **)r1;
+  /* tenta {begin,end} */
+  if ((uintptr_t)w[0] > 0x10000 && (uintptr_t)w[1] > (uintptr_t)w[0] && (uintptr_t)w[1] - (uintptr_t)w[0] < 300)
+    { log_range(tag, w[0], w[1]); return; }
+  /* tenta char* direto */
+  const char *c = (const char *)r1; int ok = 1;
+  for (int i = 0; i < 200; i++) { if (c[i] == 0) break; if (c[i] < 9 || (unsigned char)c[i] > 126) { ok = 0; break; } }
+  if (ok && c[0] >= 32) { fprintf(stderr, "  %s(cstr)=\"%.200s\"\n", tag, c); return; }
+  fprintf(stderr, "  %s=<raw %08x %08x %08x>\n", tag, ((unsigned*)r1)[0], ((unsigned*)r1)[1], ((unsigned*)r1)[2]);
+}
+static void *my_getfspath(void *out, void *path_r1, void *r2, void *r3) {
+  static int n = 0;
+  int log = (n < 80);
+  /* 🔧 EXPERIMENTO: o OBB tem entradas "published/..." mas a engine busca
+   * "/published/..." (barra inicial). Remove a '/' inicial passando {begin+1,end}.
+   * NFS_STRIPSLASH=1. */
+  char *newrange[2];
+  if (getenv("NFS_STRIPSLASH") && path_r1 && (uintptr_t)path_r1 > 0x10000) {
+    char **w = (char **)path_r1;
+    if ((uintptr_t)w[0] > 0x10000 && (uintptr_t)w[1] > (uintptr_t)w[0] && w[0][0] == '/') {
+      newrange[0] = w[0] + 1; newrange[1] = w[1];
+      path_r1 = newrange;
+    }
+  }
+  if (log) { fprintf(stderr, "[dbopen #%d] this=%p r2=%p\n", n, out, r2); log_path_arg("path", path_r1); n++; }
+  void *(*real)(void *, void *, void *, void *) =
+      (void *(*)(void *, void *, void *, void *))g_fsp_tramp;
+  return real(out, path_r1, r2, r3);
+}
+void nfs_install_getfspath_hook(void) {
+  extern void hook_arm(uintptr_t, uintptr_t);
+  extern void *text_base;
+  uintptr_t fn = (uintptr_t)text_base + 0x4f0138;  /* database-open (ARM); r1=path */
+  uint8_t *tr = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED) return;
+  memcpy(tr, (void *)fn, 8);                       /* push{..}; add fp,sp,#0x1c (ARM, PIC-safe) */
+  *(uint32_t *)(tr + 8) = 0xe51ff004u;             /* ldr pc,[pc,#-4] */
+  *(uint32_t *)(tr + 12) = (uint32_t)(fn + 8);     /* continua em +8 */
+  __builtin___clear_cache((char *)tr, (char *)tr + 16);
+  g_fsp_tramp = (uintptr_t)tr;
+  long pg = sysconf(_SC_PAGESIZE);
+  uintptr_t pbase = fn & ~((uintptr_t)pg - 1);
+  mprotect((void *)pbase, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  hook_arm(fn, (uintptr_t)my_getfspath);           /* ARM (addr par) */
+  __builtin___clear_cache((char *)fn, (char *)fn + 8);
+  mprotect((void *)pbase, pg * 2, PROT_READ | PROT_EXEC);
+  fprintf(stderr, "[GetFSPath-hook] @%p hooked (tramp=%p)\n", (void *)fn, (void *)g_fsp_tramp);
+}
+
 void nfs_install_dyncast_hook(void) {
   extern void hook_arm(uintptr_t, uintptr_t);
   if (!g_real_dynamic_cast) return;

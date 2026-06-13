@@ -362,6 +362,11 @@ int main(int argc, char *argv[]) {
   /* módulo principal: libapp (resolve contra tudo acima + dlsym) */
   if (load_module(SO_NAME, MEMORY_MB, 0) < 0) return 1;
 
+  /* diag: hook de SKU::GetFileSystemPath p/ ver a chave de arquivo que a engine
+   * procura no OBB (NFS_FSPATHLOG=1). */
+  if (getenv("NFS_FSPATHLOG")) { extern void nfs_install_getfspath_hook(void);
+    nfs_install_getfspath_hook(); }
+
   /* NFS_RELRO=1: protege .data.rel.ro do libapp (vtables/type_infos) como RO →
    * se a corrupção dos type_infos do shadergen for overflow gravando ali, vira
    * fault no WRITE (culpado no PC) em vez de crash silencioso depois. */
