@@ -31,6 +31,9 @@ __attribute__((aligned(16))) _Thread_local char g_bionic_guard_pad[256];
 
 /* ---- crash handler ARMHF (campos arm_pc/arm_r0/arm_lr do sigcontext 32-bit) ---- */
 extern void *g_real_dynamic_cast;
+/* flags cacheados (imports.c) — NÃO chamar getenv em signal/hot path (race c/ setenv) */
+extern int g_nfs_nodcastrec, g_nfs_norecover, g_nfs_noassertignore;
+extern void nfs_cache_flags(void);
 static void crash_handler(int sig, siginfo_t *info, void *uctx) {
   ucontext_t *uc = (ucontext_t *)uctx;
   mcontext_t *m = &uc->uc_mcontext;
@@ -52,11 +55,11 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
    * por tgkill/tkill/user (NÃO um fault de memória real, que é SEGV_MAPERR=1/
    * ACCERR=2). Ignoramos (return) = "continuar" no assert → a engine segue.
    * NFS_NOASSERTIGNORE=1 desliga. */
-  if (sig == SIGSEGV && info->si_code <= 0 && !getenv("NFS_NOASSERTIGNORE")) {
+  if ((sig == SIGSEGV || sig == SIGBUS) && info->si_code <= 0 && !g_nfs_noassertignore) {
     static int a = 0;
     extern long nfs_io_last_seek, nfs_io_seeks, nfs_io_read_bytes;
-    if (a < 8) { fprintf(stderr, "[ASSERT-IGNORE] raise(SIGSEGV) deliberado (si_code=%d) -> continua "
-                 "[io: seeks=%ld last=%ld read=%ld]\n", info->si_code,
+    if (a < 8) { fprintf(stderr, "[ASSERT-IGNORE] raise(sig=%d) deliberado (si_code=%d) -> continua "
+                 "[io: seeks=%ld last=%ld read=%ld]\n", sig, info->si_code,
                  nfs_io_seeks, nfs_io_last_seek, nfs_io_read_bytes); a++; }
     return;
   }
@@ -73,7 +76,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
    * (libapp GOT), a recursão interna da libc++ escapa; aqui forçamos o retorno
    * NULL pulando p/ o epílogo (off 0xa6, `mov r0,r4; add sp,#64; pop`) com r4=0
    * — NULL é "cast falhou", resultado C++ válido. NFS_NODCASTREC=1 desliga. */
-  if (sig == SIGSEGV && g_real_dynamic_cast && !getenv("NFS_NODCASTREC")) {
+  if (sig == SIGSEGV && g_real_dynamic_cast && !g_nfs_nodcastrec) {
     uintptr_t dc = ((uintptr_t)g_real_dynamic_cast) & ~1u;
     if (pc == dc + 0x36) {
       static int dr = 0;
@@ -87,7 +90,7 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
   /* 🩹 recupera o memcpy/op com DESTINO NULO e n pequeno (padrão recorrente da
    * engine: destrutor de objeto garbage no parse de asset) — "retorna" da função
    * que crashou (PC←LR) pulando a cópia, p/ a engine seguir. NFS_NORECOVER=1 off. */
-  if (sig == SIGSEGV && !getenv("NFS_NORECOVER")) {
+  if (sig == SIGSEGV && !g_nfs_norecover) {
     uintptr_t r0 = m->arm_r0, r2 = m->arm_r2;
     static int recov = 0;
     if (r0 < 0x10000 && r2 <= 64 && lr > 0x10000 && recov < 200000) {
@@ -102,6 +105,17 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
     extern long nfs_io_last_seek, nfs_io_seeks, nfs_io_read_bytes;
     fprintf(stderr, "\n[io-state] seeks=%ld last=%ld read=%ld\n",
             nfs_io_seeks, nfs_io_last_seek, nfs_io_read_bytes);
+  }
+  /* 🔎 environ: o crash em getenv (libc+0x367ac) sugere __environ NULL/lixo
+   * (escrita selvagem). Dump p/ confirmar. */
+  { extern char **environ;
+    fprintf(stderr, "[environ] &environ=%p environ=%p", (void *)&environ, (void *)environ);
+    if (environ && (uintptr_t)environ > 0x1000) {
+      fprintf(stderr, " environ[0]=%p", (void *)environ[0]);
+      if (environ[0] && (uintptr_t)environ[0] > 0x1000)
+        fprintf(stderr, " (\"%.20s\")", environ[0]);
+    }
+    fprintf(stderr, "\n");
   }
   fprintf(stderr, "\n=== CRASH sig=%d addr=%p ===\n", sig, (void *)fault);
   fprintf(stderr, "  PC=%p", (void *)pc);
@@ -272,6 +286,7 @@ static int load_module(const char *name, int heap_mb, int snapshot) {
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
+  nfs_cache_flags(); /* lê os NFS_* UMA vez (antes de threads/setenv) → sem getenv em hot path */
   install_crash_handler();
   __asm__ volatile("" : : "r"(g_bionic_guard_pad) : "memory"); /* força o pad no TLS */
   setvbuf(stdout, NULL, _IONBF, 0); /* logs visíveis no crash (init_array era a causa, não isto) */
@@ -295,6 +310,18 @@ int main(int argc, char *argv[]) {
         g_real_dynamic_cast = (void *)g_comb[i].func; break;
       }
     debugPrintf("real __dynamic_cast=%p\n", g_real_dynamic_cast);
+    /* 🔑 captura as 3 vtables de type_info da libc++ p/ o NOSSO walker de
+     * dynamic_cast (bypassa o walk interno bugado do libcxxabi sob glibc). O
+     * type_info->[0] = (vtable_symbol + 8), por isso somamos 8. */
+    extern uintptr_t g_ti_vt_class, g_ti_vt_si, g_ti_vt_vmi;
+    const char *tn[3] = { "_ZTVN10__cxxabiv117__class_type_infoE",
+                          "_ZTVN10__cxxabiv120__si_class_type_infoE",
+                          "_ZTVN10__cxxabiv121__vmi_class_type_infoE" };
+    uintptr_t *tv[3] = { &g_ti_vt_class, &g_ti_vt_si, &g_ti_vt_vmi };
+    for (int k = 0; k < 3; k++)
+      for (int i = g_comb_n - 1; i >= 0; i--)
+        if (strcmp(g_comb[i].symbol, tn[k]) == 0 && g_comb[i].func) { *tv[k] = g_comb[i].func + 8; break; }
+    debugPrintf("ti_vt class=%p si=%p vmi=%p\n", (void*)g_ti_vt_class, (void*)g_ti_vt_si, (void*)g_ti_vt_vmi);
     extern void nfs_install_dyncast_hook(void);
     if (!getenv("NFS_NOHOOK")) nfs_install_dyncast_hook(); }
   if (load_module("libNimble.so", 4, 1) < 0) return 1;      /* bridge JNI */

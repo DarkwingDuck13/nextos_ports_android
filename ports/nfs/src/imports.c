@@ -99,6 +99,28 @@ static void *pad_calloc(size_t a, size_t b) {
 static void *pad_realloc(void *p, size_t n) { return realloc(p, n + nfs_pad_bytes()); }
 static void *pad_memalign(size_t al, size_t n) { return memalign(al, n + nfs_pad_bytes()); }
 
+/* ---- flags cacheados (NÃO chamar getenv em hot path) ----
+ * 🔑 A engine importa setenv/unsetenv e roda worker threads; glibc setenv realoca
+ * o array __environ e LIBERA o antigo. Um getenv concorrente caminhando o array
+ * velho (já liberado) lê memória morta → SIGSEGV em getenv (libc+0x367ac). O
+ * my_dynamic_cast chamava getenv 4x/cast num loop RTTI apertado → colidia com o
+ * setenv da engine. Solução: ler os flags UMA vez no início (env estável, sem
+ * threads ainda) e usar os globais. */
+int g_nfs_dcastlog, g_nfs_rclog, g_nfs_wildlog, g_nfs_tichain;
+int g_nfs_nodcastrec, g_nfs_norecover, g_nfs_noassertignore;
+int g_nfs_dcwalk;  /* NFS_DCWALK=1 usa nosso walker; default=libcxxabi nativo (relocs corretas) */
+void nfs_cache_flags(void) {
+  g_nfs_dcwalk = getenv("NFS_DCWALK") != NULL;
+  g_nfs_dcastlog = getenv("NFS_DCASTLOG") != NULL;
+  g_nfs_rclog = getenv("NFS_RCLOG") != NULL;
+  g_nfs_wildlog = getenv("NFS_WILDLOG") != NULL;
+  g_nfs_tichain = getenv("NFS_TICHAIN") != NULL;
+  g_nfs_nodcastrec = getenv("NFS_NODCASTREC") != NULL;
+  g_nfs_norecover = getenv("NFS_NORECOVER") != NULL;
+  g_nfs_noassertignore = getenv("NFS_NOASSERTIGNORE") != NULL;
+  (void)nfs_pad_bytes(); /* fixa o PAD cedo também */
+}
+
 /* ---- pthread_create hook: loga a função de entrada de cada thread (p/
  * identificar a worker thread que crasha no init). NFS_PTLOG=1 liga. ---- */
 static int (*real_pthread_create)(void *, const void *, void *(*)(void *), void *);
@@ -360,8 +382,67 @@ const void *g_last_dcast_sub, *g_last_dcast_vt, *g_last_dcast_ti, *g_last_dcast_
 struct dcrec { const void *sub, *vt, *dst, *caller; };
 struct dcrec g_dcring[DCRING];
 int g_dcring_i;
+
+/* ---- WALKER de dynamic_cast PRÓPRIO ----
+ * 🔑 O __dynamic_cast da libc++ bundled crasha caminhando a hierarquia de
+ * type_info sob nosso ambiente (re-entra p/ classificar type_infos e lê um
+ * ponteiro deslocado → blx em lixo). As ESTRUTURAS estáticas de type_info do
+ * libapp estão CORRETAS (verificado: vtable→libc++, name, base_type bem
+ * relocados). Então fazemos o walk nós mesmos, comparando type_infos por nome
+ * (cross-módulo seguro), evitando o walk interno. Cobre __class (sem base),
+ * __si (herança simples) e __vmi (múltipla/virtual). */
+uintptr_t g_ti_vt_class, g_ti_vt_si, g_ti_vt_vmi;  /* setados em main.c (vtable+8) */
+
+/* layout Itanium: ti[0]=vtable(+8), ti[1]=name(char*).
+ * __si: ti[2]=__base_type. __vmi: ti[2]=flags, ti[3]=base_count, ti[4..]=__base_class_info[]
+ * (__base_class_info = {base_type, offset_flags}; offset_flags>>8 = offset, bit0=virtual). */
+static int dc_same_type(const void *a, const void *b) {
+  if (a == b) return 1;
+  if (!a || !b || !mem_readable(a, 8) || !mem_readable(b, 8)) return 0;
+  const char *na = ((const char *const *)a)[1], *nb = ((const char *const *)b)[1];
+  if (na == nb) return 1;
+  if (!mem_readable(na, 1) || !mem_readable(nb, 1)) return 0;
+  return strcmp(na, nb) == 0;  /* nomes mangled: cross-módulo seguro */
+}
+/* procura dst na hierarquia de base de 'dyn' a partir do objeto em obj_ptr.
+ * retorna o ponteiro ajustado p/ o subobjeto dst, ou NULL. depth p/ não loopar. */
+static const void *dc_walk(const void *obj_ptr, const void *dyn, const void *dst, int depth) {
+  if (depth > 32 || !dyn || !mem_readable(dyn, 12)) return 0;
+  if (dc_same_type(dyn, dst)) return obj_ptr;
+  uintptr_t vt = ((const uintptr_t *)dyn)[0];
+  if (vt == g_ti_vt_si) {                       /* herança simples: base em offset 0 */
+    const void *base = ((const void *const *)dyn)[2];
+    return dc_walk(obj_ptr, base, dst, depth + 1);
+  }
+  if (vt == g_ti_vt_vmi) {                       /* herança múltipla/virtual */
+    if (!mem_readable(dyn, 16)) return 0;
+    unsigned base_count = ((const unsigned *)dyn)[3];
+    if (base_count > 64) return 0;
+    const uintptr_t *bi = (const uintptr_t *)dyn + 4; /* base_class_info[] */
+    for (unsigned i = 0; i < base_count; i++) {
+      if (!mem_readable(bi + 2 * i, 8)) break;
+      const void *base = (const void *)bi[2 * i];
+      long offflags = (long)bi[2 * i + 1];
+      const char *adj;
+      if (offflags & 1) {                        /* base VIRTUAL: offset via vtable */
+        if (!mem_readable(obj_ptr, 4)) continue;
+        const char *vtbl = *(const char *const *)obj_ptr;
+        long voff = (offflags >> 8);
+        if (!mem_readable(vtbl + voff, 4)) continue;
+        adj = (const char *)obj_ptr + *(const long *)(vtbl + voff);
+      } else {
+        adj = (const char *)obj_ptr + (offflags >> 8);
+      }
+      const void *r = dc_walk(adj, base, dst, depth + 1);
+      if (r) return r;
+    }
+  }
+  /* __class_type_info (g_ti_vt_class) ou vtable desconhecida: sem bases */
+  return 0;
+}
+
 static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, long s2d) {
-  int dbg = getenv("NFS_DCASTLOG") != NULL;
+  int dbg = g_nfs_dcastlog;
   static int dn = 0;
   g_last_dcast_sub = sub;
   g_last_dcast_caller = __builtin_return_address(0);
@@ -372,7 +453,7 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
     r->sub = sub; r->vt = g_last_dcast_vt; r->dst = dst; r->caller = g_last_dcast_caller; }
   /* teste UAF: loga o refcount [sub+4] e validade da vtable dos nós castados.
    * Se um nó tem vtable inválida E refcount 0/lixo = use-after-free. NFS_RCLOG=1. */
-  if (getenv("NFS_RCLOG") && sub) {
+  if (g_nfs_rclog && sub) {
     extern void *text_base, *data_base; extern size_t text_size, data_size;
     uintptr_t vt = (uintptr_t)g_last_dcast_vt;
     int in_img = ((vt >= (uintptr_t)text_base && vt < (uintptr_t)text_base + text_size) ||
@@ -388,7 +469,7 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
   /* detecta o NÓ SELVAGEM: a vtable do objeto (*sub) tem que estar na IMAGEM do
    * libapp (.rodata/.data.rel.ro). Se cair fora, sub aponta p/ heap/asset = nó
    * inválido. Loga o 1º selvagem + contexto. NFS_WILDLOG=1. */
-  if (getenv("NFS_WILDLOG") && sub && g_last_dcast_vt) {
+  if (g_nfs_wildlog && sub && g_last_dcast_vt) {
     extern void *text_base, *data_base; extern size_t text_size, data_size;
     uintptr_t vt = (uintptr_t)g_last_dcast_vt;
     int in_img = ((vt >= (uintptr_t)text_base && vt < (uintptr_t)text_base + text_size) ||
@@ -407,7 +488,7 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
     }
   }
   /* dump da cadeia de type_info do objeto p/ achar a base corrompida */
-  if (getenv("NFS_TICHAIN") && g_last_dcast_vt) {
+  if (g_nfs_tichain && g_last_dcast_vt) {
     static int tn = 0;
     const void *obj_ti = (mem_readable((const char *)g_last_dcast_vt - 4, 4))
                              ? *(const void *const *)((const char *)g_last_dcast_vt - 4) : 0;
@@ -421,6 +502,26 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
       }
     }
   }
+  /* ---- 🔑 NOSSO walker: se o type_info dinâmico é de um kind reconhecido
+   * (__class/__si/__vmi da libc++), caminhamos a hierarquia nós mesmos e
+   * NÃO delegamos ao libcxxabi (cujo walk crasha aqui). Autoritativo. ---- */
+  if (g_nfs_dcwalk && g_ti_vt_si && mem_readable(sub, 4)) {
+    const uintptr_t *vtbl = *(const uintptr_t *const *)sub;
+    if (vtbl && mem_readable(vtbl - 2, 8)) {
+      const void *dyn_ti = (const void *)vtbl[-1];
+      long off2top = (long)vtbl[-2];
+      if (mem_readable(dyn_ti, 8)) {
+        uintptr_t kind = ((const uintptr_t *)dyn_ti)[0];
+        if (kind == g_ti_vt_class || kind == g_ti_vt_si || kind == g_ti_vt_vmi) {
+          const void *r = dc_walk((const char *)sub + off2top, dyn_ti, dst, 0);
+          if (dbg && dn < 20) { fprintf(stderr, "[dcast-walk] sub=%p dyn_ti=%p dst=%p -> %p\n", sub, dyn_ti, dst, r); dn++; }
+          return (void *)r;
+        }
+      }
+    }
+  }
+  /* fallback p/ type_info de kind desconhecido (vtables não capturadas): valida
+   * a cadeia e delega ao libcxxabi real (caminho legado). */
   if (!mem_readable(sub, 4)) goto fail;
   { const char *vt = *(const char *const *)sub;
     if (!mem_readable(vt - 8, 8)) goto fail;
@@ -428,8 +529,6 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
     if (!mem_readable(ti, 4)) goto fail;
     const char *ti_vt = *(const char *const *)ti;       /* vtable do próprio typeinfo */
     if (!mem_readable(ti_vt, 28)) goto fail;            /* dynamic_cast lê ti_vt[6] (+24) */
-    /* o handler ti_vt[6] (offset 0x18) será chamado via blx — precisa ser CÓDIGO
-     * real, não dados de asset (ex: ASCII "HT=1"=0x313d5448). */
     uintptr_t handler = *(const uintptr_t *)(ti_vt + 0x18);
     if (!ptr_executable(handler & ~1u)) {
       if (dbg && dn < 20) { fprintf(stderr, "[dcast] sub=%p ti=%p handler=%p NÃO-EXEC -> NULL\n", sub, ti, (void *)handler); dn++; }
@@ -447,7 +546,41 @@ static void *my_dynamic_cast(const void *sub, const void *src, const void *dst, 
     return f(sub, src, dst, s2d);
   }
 fail:
-  if (getenv("NFS_DCASTLOG")) {
+  /* 🔬 DUMP do nó corrompido: o crash do shadergen é um nó cujo vtable aponta p/
+   * lixo. Dump one-shot (4x) do conteúdo p/ identificar a estrutura — dado de
+   * asset? chunk liberado (UAF)? type_info no lugar do objeto? */
+  { extern void *text_base, *data_base; extern size_t text_size, data_size;
+    static int nd = 0;
+    if (nd < 4 && mem_readable(sub, 32)) {
+      const uint32_t *w = (const uint32_t *)sub;
+      const unsigned char *b = (const unsigned char *)sub;
+      uintptr_t vt = w[0], tb = (uintptr_t)text_base, db = (uintptr_t)data_base;
+      int vt_text = (vt >= tb && vt < tb + text_size);
+      int vt_data = (vt >= db && vt < db + data_size);
+      fprintf(stderr, "[BADNODE] #%d sub=%p caller=%p(libapp+0x%lx) dst=%p\n", nd, sub,
+              g_last_dcast_caller,
+              (unsigned long)((uintptr_t)g_last_dcast_caller - tb), dst);
+      fprintf(stderr, "  vtable=w[0]=%08lx %s%s refcount=w[1]=%08x\n", (unsigned long)vt,
+              vt_text ? "(.text!) " : "", vt_data ? "(.data/rodata) " : (vt_text ? "" : "(HEAP/lixo) "),
+              w[1]);
+      fprintf(stderr, "  obj[0..7]:");
+      for (int q = 0; q < 8; q++) fprintf(stderr, " %08x", w[q]);
+      fprintf(stderr, "\n  ascii: ");
+      for (int q = 0; q < 32; q++) fprintf(stderr, "%c", (b[q] >= 32 && b[q] < 127) ? b[q] : '.');
+      /* se vtable aponta na imagem, o que tem em vtable[-1] (typeinfo) e seu nome? */
+      if ((vt_text || vt_data) && mem_readable((void *)(vt - 4), 4)) {
+        uintptr_t ti = *(uintptr_t *)(vt - 4);
+        fprintf(stderr, "\n  vtable[-1]=ti=%08lx", (unsigned long)ti);
+        if (mem_readable((void *)ti, 8)) {
+          uintptr_t nm = *(uintptr_t *)(ti + 4);
+          if (mem_readable((void *)nm, 4)) fprintf(stderr, " name=\"%.40s\"", (char *)nm);
+        }
+      }
+      fprintf(stderr, "\n");
+      nd++;
+    }
+  }
+  if (g_nfs_dcastlog) {
     static int n = 0;
     if (n < 20) { fprintf(stderr, "[dynamic_cast] sub=%p -> NULL (cadeia typeinfo inválida)\n", sub); n++; }
   }

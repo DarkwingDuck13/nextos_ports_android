@@ -864,6 +864,17 @@ void jni_load(void) {
   void (*OS_AppEvent)(int,void*) = (void*)so_symbol(&mod_game, "_Z19OS_ApplicationEvent11OSEventTypePv");
   void (*OnRkSetup)(void*,void*,void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnRockstarSetup");
 
+  /* ANTI-OOM: a engine so despeja textura de streaming quando recebe
+   * onLowMemory (no Android vem do SO). Nosso port nunca enviava -> as texturas
+   * do mundo acumulavam (del~0) ate OOM (~30min no R36S 1GB). Resolvemos
+   * disparando implOnLowMemory quando passa de um TETO de memoria de textura
+   * viva -> a engine roda o proprio despejo (libera com seguranca, chama
+   * glDeleteTextures). Teto via BULLY_TEX_BUDGET_MB (0=desliga). */
+  void (*OnLowMemory)(void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnLowMemory");
+  long tex_budget_mb = getenv("BULLY_TEX_BUDGET_MB") ? atol(getenv("BULLY_TEX_BUDGET_MB")) : 256;
+  extern long long g_texbytes_live; int lowmem_cd = 0;
+  fprintf(stderr, "[lowmem] OnLowMemory=%p teto=%ld MB\n", (void*)OnLowMemory, tex_budget_mb);
+
   /* loop de render */
   fprintf(stderr, "[drv] -- loop implOnDrawFrame --\n");
   extern volatile int g_rk_pending_initial, g_rk_pending_gate, g_rk_pending_gate_type;
@@ -893,8 +904,19 @@ void jni_load(void) {
     }
     if (rk_signin && f > 45) { rk_signin = 0; if (OS_SignInComplete) OS_SignInComplete(); }
 
+    /* anti-OOM: pede despejo quando a textura viva passa do teto (so in-game) */
+    if (lowmem_cd > 0) lowmem_cd--;
+    if (OnLowMemory && tex_budget_mb > 0 && lowmem_cd == 0 && f > 300 &&
+        g_texbytes_live > (long long)tex_budget_mb * 1024 * 1024) {
+      long long before = g_texbytes_live;
+      OnLowMemory(fake_env, NULL);
+      fprintf(stderr, "[lowmem] disparado @ %lld MB (teto %ld)\n", before/(1024*1024), tex_budget_mb);
+      lowmem_cd = 120; /* ~2s ate poder pedir de novo (despejo e async) */
+    }
+
     OnDrawFrame(fake_env, NULL, 1.0f/60.0f);  /* heartbeat; GL real ocorre na render thread do jogo */
-    if (f < 5 || f % 120 == 0) { extern unsigned long g_fbo_binds; fprintf(stderr, "[drv] frame %d (RTT binds=%lu)\n", f, g_fbo_binds); }
+    if (f < 5 || f % 120 == 0) { extern unsigned long g_fbo_binds; fprintf(stderr, "[drv] frame %d (RTT binds=%lu)\n", f, g_fbo_binds);
+      extern void bully_resource_report(void); bully_resource_report(); }
     SDL_Delay(16);
   }
 }

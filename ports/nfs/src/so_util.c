@@ -344,8 +344,12 @@ int so_relocate(void) {
         int type = ELF32_R_TYPE(rels[j].r_info);
         switch (type) {
         case R_ARM_ABS32:
-          /* S + A(implícito) */
-          *ptr = (uintptr_t)text_virtbase + sym->st_value + *ptr;
+          /* S + A(implícito). UNDEF (imports) são resolvidos em so_resolve, que
+           * precisa do addend ORIGINAL in-place (ex: type_info[0]=vtable+8).
+           * Se processássemos aqui, somaríamos text_virtbase ao addend e o
+           * so_resolve leria um addend corrompido → ponteiro de vtable lixo. */
+          if (sym->st_shndx != SHN_UNDEF)
+            *ptr = (uintptr_t)text_virtbase + sym->st_value + *ptr;
           break;
         case R_ARM_RELATIVE:
           /* B + A(implícito) */
@@ -417,20 +421,27 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
         case R_ARM_JUMP_SLOT:
         case R_ARM_ABS32: {
           if (sym->st_shndx == SHN_UNDEF) {
+            /* 🔑 R_ARM_ABS32 é REL: *ptr = S + A, com A = addend IMPLÍCITO (valor
+             * gravado in-place). Ex: o type_info[0] = vtable_symbol + 8 → o "8"
+             * está em *ptr. Capturar ANTES de qualquer escrita e somar p/ ABS32
+             * (GLOB_DAT/JUMP_SLOT usam A=0). Sem isso, ponteiros de vtable de
+             * type_info ficavam deslocados -8 → dispatch virtual do libcxxabi lia
+             * lixo → crash no RTTI/shadergen. */
+            uintptr_t addend = (type == R_ARM_ABS32) ? *ptr : 0;
             if (taint_missing_imports)
               *ptr = rels[j].r_offset;
             char *name = dynstrtab + sym->st_name;
             int found = 0;
             for (int k = 0; k < num_funcs; k++) {
               if (strcmp(name, funcs[k].symbol) == 0) {
-                *ptr = funcs[k].func;
+                *ptr = funcs[k].func + addend;
                 found = 1;
                 break;
               }
             }
             if (getenv("NFS_ZTVLOG") && strncmp(name, "_ZTVN10__cxxabiv1", 17) == 0)
-              fprintf(stderr, "[ZTV] %s tabela=%s val=%p\n", name, found ? "SIM" : "nao",
-                      found ? (void *)*ptr : 0);
+              fprintf(stderr, "[ZTV] %s tabela=%s val=%p (addend=%lu)\n", name, found ? "SIM" : "nao",
+                      found ? (void *)*ptr : 0, (unsigned long)addend);
             if (!found) {
               /* softfp_shim: a engine é SOFTFP (double/float em regs inteiros);
                * o glibc libm é HARDFP. Intercepta as funções math com wrappers
@@ -440,7 +451,7 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
               /* fallback geral: glibc/libs linkadas (libc, m, dl, pthread, SDL2,
                * EGL, GLESv2). A TABELA tem prioridade (shims nossos vencem). */
               if (!p) p = dlsym(RTLD_DEFAULT, name);
-              if (p) { *ptr = (uintptr_t)p; found = 1; }
+              if (p) { *ptr = (uintptr_t)p + addend; found = 1; }
               if (getenv("NFS_ZTVLOG") && strncmp(name, "_ZTVN10__cxxabiv1", 17) == 0)
                 fprintf(stderr, "[ZTV] %s -> %p (tabela=%s dlsym=%s)\n", name, p,
                         "?", p ? "ok" : "NULL");

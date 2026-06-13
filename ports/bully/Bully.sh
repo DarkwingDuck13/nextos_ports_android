@@ -156,6 +156,27 @@ else
   export BULLY_TEX_HALF=1                  # Mali-450: pula mipmaps + tex>=512 pela metade
 fi                                         # (Mali-450: BULLY_MSAA nem setado -> caminho identico ao v4)
 
+# ---------- ANTI-OOM / anti-vazamento de textura ----------
+# A engine do Bully so despeja textura de streaming quando recebe onLowMemory
+# (no Android, do SO). O nosso port nunca enviava -> as texturas do mundo
+# acumulavam (del~0) ate estourar a RAM (R36S 1GB travava em ~30min). Agora o
+# binario dispara o despejo da PROPRIA engine quando a textura viva passa de
+# BULLY_TEX_BUDGET_MB. Teto por RAM: device pequeno = teto baixo (segura a RAM);
+# device grande = teto alto (menos churn/stutter). 0 = desliga. Override: defina
+# BULLY_TEX_BUDGET_MB no ambiente.
+mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+if [ -z "$BULLY_TEX_BUDGET_MB" ]; then
+  if   [ "${mem_kb:-2000000}" -lt 1300000 ]; then export BULLY_TEX_BUDGET_MB=200   # ~1GB (R36S, TSP, RG35XX)
+  elif [ "${mem_kb:-2000000}" -lt 2200000 ]; then export BULLY_TEX_BUDGET_MB=320   # ~2GB
+  else export BULLY_TEX_BUDGET_MB=448; fi                                          # 3GB+ (X5M)
+  echo "RAM ${mem_kb:-?} kB -> teto de textura ${BULLY_TEX_BUDGET_MB} MB (anti-OOM)"
+fi
+# Device de pouca RAM no caminho kmsdrm (R36S etc): tb encolhe cada textura,
+# alem do despejo -> working set menor (no mali/fbdev ja foi ligado acima).
+if [ -e /dev/dri/card0 ] && [ "${mem_kb:-2000000}" -lt 1300000 ]; then
+  export BULLY_TEX_HALF=1
+fi
+
 # X5M (Valhall s7d/s6/s5): o modeset do jogo CONGELA o PCM HDMI se ele estiver
 # aberto durante a troca de modo (state XRUN, hw_ptr parado) -> jogo mudo.
 # SOLTA o audio antes de abrir o jogo: espera o PCM fechar (o ES fecha o stream

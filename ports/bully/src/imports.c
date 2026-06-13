@@ -242,6 +242,97 @@ static void my_glClear(unsigned mask) {
   if (g_cleardbg < 12) { fprintf(stderr, "[gl] glClear in_fbo=%d mask=0x%x -> 0x%x\n", g_in_fbo, mask, m); g_cleardbg++; }
   if (real_glClear) real_glClear(m);
 }
+/* ===== INSTRUMENTACAO DE VAZAMENTO (recursos GL vivos) =====
+ * Conta texturas/FBOs/renderbuffers vivos (gen - delete) + bytes estimados, p/
+ * descobrir O QUE vaza (testers: RAM enche e OOM em ~30min no R36S). Report a
+ * cada 120 frames via bully_resource_report(). So medicao; nao altera render. */
+long g_tex_live = 0, g_fb_live = 0, g_rb_live = 0, g_tex_gen = 0, g_tex_del = 0;
+long long g_texbytes_live = 0;
+#define RESMAP 262144
+static unsigned g_texbytes[RESMAP];   /* bytes correntes por id de textura */
+static unsigned g_rbbytes[RESMAP];    /* idem renderbuffer */
+static unsigned g_cur_tex2d = 0, g_cur_rb = 0;
+static int bpp_internal(unsigned ifmt) {
+  switch (ifmt) {
+    case 0x8056: case 0x8D62: case 0x8033: case 0x8034: case 0x8363: return 2; /* RGBA4/565/4444/5551 */
+    case 0x1907: case 0x81A6: return 3;       /* RGB / DEPTH24 */
+    default: return 4;                          /* RGBA8/RGBA/DEPTH24_STENCIL8/etc */
+  }
+}
+static long tex_chain_bytes(unsigned ifmt, int w, int h, int levels) {
+  if (levels < 1) levels = 1;
+  long bpp = bpp_internal(ifmt), t = 0;
+  for (int i = 0; i < levels && (w > 0 || h > 0); i++) {
+    int ww = w > 0 ? w : 1, hh = h > 0 ? h : 1;
+    t += (long)ww * hh * bpp; w >>= 1; h >>= 1;
+  }
+  return t;
+}
+static void (*real_glBindTexture)(unsigned, unsigned) = NULL;
+static void my_glBindTexture(unsigned target, unsigned tex) {
+  if (target == 0x0DE1) g_cur_tex2d = tex;   /* GL_TEXTURE_2D */
+  if (!real_glBindTexture) real_glBindTexture = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (real_glBindTexture) real_glBindTexture(target, tex);
+}
+static void (*real_glGenTextures)(int, unsigned*) = NULL;
+static void my_glGenTextures(int n, unsigned *ids) {
+  if (!real_glGenTextures) real_glGenTextures = dlsym(RTLD_DEFAULT, "glGenTextures");
+  if (real_glGenTextures) real_glGenTextures(n, ids);
+  g_tex_live += n; g_tex_gen += n;
+}
+static void (*real_glDeleteTextures)(int, const unsigned*) = NULL;
+static void my_glDeleteTextures(int n, const unsigned *ids) {
+  for (int i = 0; ids && i < n; i++) { unsigned id = ids[i];
+    if (id < RESMAP) { g_texbytes_live -= g_texbytes[id]; g_texbytes[id] = 0; } }
+  if (!real_glDeleteTextures) real_glDeleteTextures = dlsym(RTLD_DEFAULT, "glDeleteTextures");
+  if (real_glDeleteTextures) real_glDeleteTextures(n, ids);
+  g_tex_live -= n; g_tex_del += n;
+}
+static void (*real_glGenFramebuffers)(int, unsigned*) = NULL;
+static void my_glGenFramebuffers(int n, unsigned *ids) {
+  if (!real_glGenFramebuffers) real_glGenFramebuffers = dlsym(RTLD_DEFAULT, "glGenFramebuffers");
+  if (real_glGenFramebuffers) real_glGenFramebuffers(n, ids);
+  g_fb_live += n;
+}
+static void (*real_glDeleteFramebuffers)(int, const unsigned*) = NULL;
+static void my_glDeleteFramebuffers(int n, const unsigned *ids) {
+  if (!real_glDeleteFramebuffers) real_glDeleteFramebuffers = dlsym(RTLD_DEFAULT, "glDeleteFramebuffers");
+  if (real_glDeleteFramebuffers) real_glDeleteFramebuffers(n, ids);
+  g_fb_live -= n;
+}
+static void (*real_glGenRenderbuffers)(int, unsigned*) = NULL;
+static void my_glGenRenderbuffers(int n, unsigned *ids) {
+  if (!real_glGenRenderbuffers) real_glGenRenderbuffers = dlsym(RTLD_DEFAULT, "glGenRenderbuffers");
+  if (real_glGenRenderbuffers) real_glGenRenderbuffers(n, ids);
+  g_rb_live += n;
+}
+static void (*real_glDeleteRenderbuffers)(int, const unsigned*) = NULL;
+static void my_glDeleteRenderbuffers(int n, const unsigned *ids) {
+  for (int i = 0; ids && i < n; i++) { unsigned id = ids[i];
+    if (id < RESMAP) { g_texbytes_live -= g_rbbytes[id]; g_rbbytes[id] = 0; } }
+  if (!real_glDeleteRenderbuffers) real_glDeleteRenderbuffers = dlsym(RTLD_DEFAULT, "glDeleteRenderbuffers");
+  if (real_glDeleteRenderbuffers) real_glDeleteRenderbuffers(n, ids);
+  g_rb_live -= n;
+}
+static void (*real_glBindRenderbuffer)(unsigned, unsigned) = NULL;
+static void my_glBindRenderbuffer(unsigned target, unsigned rb) {
+  g_cur_rb = rb;
+  if (!real_glBindRenderbuffer) real_glBindRenderbuffer = dlsym(RTLD_DEFAULT, "glBindRenderbuffer");
+  if (real_glBindRenderbuffer) real_glBindRenderbuffer(target, rb);
+}
+static void (*real_glRenderbufferStorage)(unsigned, unsigned, int, int) = NULL;
+static void my_glRenderbufferStorage(unsigned target, unsigned ifmt, int w, int h) {
+  long b = (long)(w > 0 ? w : 1) * (h > 0 ? h : 1) * bpp_internal(ifmt);
+  if (g_cur_rb < RESMAP) { g_texbytes_live += b - g_rbbytes[g_cur_rb]; g_rbbytes[g_cur_rb] = b; }
+  if (!real_glRenderbufferStorage) real_glRenderbufferStorage = dlsym(RTLD_DEFAULT, "glRenderbufferStorage");
+  if (real_glRenderbufferStorage) real_glRenderbufferStorage(target, ifmt, w, h);
+}
+/* chamado pelo loop de render (jni_shim) a cada 120 frames */
+void bully_resource_report(void) {
+  fprintf(stderr, "[leak] tex_live=%ld (gen=%ld del=%ld) fbo_live=%ld rb_live=%ld | ~%lld MB em texturas/RB vivos\n",
+          g_tex_live, g_tex_gen, g_tex_del, g_fb_live, g_rb_live, g_texbytes_live / (1024*1024));
+}
+
 /* glTexStorage2D (GLES3) — a camisa do Jimmy pode vir por aqui (não pelo
  * glTexImage2D). Loga formato/níveis. */
 static void (*real_glTexStorage2D)(unsigned, int, unsigned, int, int) = NULL;
@@ -249,6 +340,8 @@ static void my_glTexStorage2D(unsigned t, int levels, unsigned ifmt, int w, int 
   if (!real_glTexStorage2D) real_glTexStorage2D = dlsym(RTLD_DEFAULT, "glTexStorage2D");
   static int n = 0;
   if (n < 30) { fprintf(stderr, "[tex] STORAGE levels=%d ifmt=0x%x %dx%d\n", levels, ifmt, w, h); n++; }
+  { long b = tex_chain_bytes(ifmt, w, h, levels);
+    if (g_cur_tex2d < RESMAP) { g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b; } }
   if (real_glTexStorage2D) real_glTexStorage2D(t, levels, ifmt, w, h);
 }
 static void (*real_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
@@ -341,6 +434,12 @@ static void (*real_glGenerateMipmap)(unsigned) = NULL;
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int bord, unsigned fmt, unsigned type, const void *px) {
   if (!real_glTexImage2D) real_glTexImage2D = dlsym(RTLD_DEFAULT, "glTexImage2D");
   if (g_tex_half < 0) g_tex_half = getenv("BULLY_TEX_HALF") ? 1 : 0;
+  /* leak-track: bytes do nível 0 da textura 2D corrente (RTT geralmente vem por aqui c/ px=NULL) */
+  if (lvl == 0 && g_cur_tex2d < RESMAP) {
+    int bb = bpp_of(fmt, type); if (bb <= 0) bb = 4;
+    long b = (long)(w > 0 ? w : 1) * (h > 0 ? h : 1) * bb;
+    g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b;
+  }
   if (ifmt == 0x8058) ifmt = 0x1908;       /* GL_RGBA8 -> GL_RGBA (GLES2 não aceita sized) */
   else if (ifmt == 0x8051) ifmt = 0x1907;  /* GL_RGB8 -> GL_RGB */
   /* pula mipmaps: como forço MIN_FILTER=LINEAR, os níveis >0 nunca são usados ->
@@ -465,6 +564,16 @@ DynLibFunction bully_stub_table[] = {
   {"glEnable", (uintptr_t)my_glEnable},
   {"glTexStorage2D", (uintptr_t)my_glTexStorage2D},
   {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+  /* leak-track (medicao do vazamento de recursos GL) */
+  {"glBindTexture", (uintptr_t)my_glBindTexture},
+  {"glGenTextures", (uintptr_t)my_glGenTextures},
+  {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
+  {"glGenFramebuffers", (uintptr_t)my_glGenFramebuffers},
+  {"glDeleteFramebuffers", (uintptr_t)my_glDeleteFramebuffers},
+  {"glGenRenderbuffers", (uintptr_t)my_glGenRenderbuffers},
+  {"glDeleteRenderbuffers", (uintptr_t)my_glDeleteRenderbuffers},
+  {"glBindRenderbuffer", (uintptr_t)my_glBindRenderbuffer},
+  {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
   {"glCheckFramebufferStatus", (uintptr_t)my_glCheckFramebufferStatus},
   {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
   {"glReadPixels", (uintptr_t)my_glReadPixels},
