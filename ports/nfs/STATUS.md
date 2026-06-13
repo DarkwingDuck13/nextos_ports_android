@@ -1,5 +1,44 @@
 # NFS Most Wanted (2012) → NextOS Mali-450 (so-loader armhf)
 
+## 🟢 SESSÃO 2026-06-13 (device .164 nextos/Mali-450) — MURO DO SHADERGEN QUEBRADO + 4 FIXES DE CAUSA-RAIZ
+O muro de 3+ sessões (crash no `dynamic_cast` do `im::isis::shadergen`) era **BUG DE
+RELOCAÇÃO no so_util**, não RTTI corrompido. Sequência de fixes (todos commitados):
+
+1. **🔑 R_ARM_ABS32 descartava o ADDEND in-place** (`so_util.c`). ABS32 é REL: `*ptr = S + A`,
+   com A = valor gravado in-place. `so_resolve` fazia `*ptr = func` (sem +A). Ex: `type_info[0] =
+   _ZTVN10__cxxabiv120__si_class_type_infoE + 8` (o "8" é o addend) → TODO ponteiro de vtable de
+   type_info ficava **-8** → o dispatch virtual do libcxxabi (`__do_dyncast`) lia lixo → crash.
+   Maioria dos ABS32 tem A=0 (por isso bootava até o RTTI). Fix em 2 pontos: (a) `so_relocate`
+   PULA UNDEF no ABS32 (senão somava text_virtbase ao addend antes do resolve); (b) `so_resolve`
+   captura o addend in-place e soma p/ ABS32 (tabela + dlsym). **AFETA TODOS OS SO-LOADERS deste
+   so_util** — bug genérico. Diagnóstico: DC-ENTRY log mostrou `kind=si-8` (off-by-8 exato).
+2. **getenv race** (`imports.c`): `my_dynamic_cast` chamava getenv 4x/cast num loop RTTI; a engine
+   roda `setenv` em worker thread (realoca+libera o array `__environ`) → getenv concorrente lia
+   array morto → SIGSEGV em getenv. Fix: cachear flags NFS_* uma vez (`nfs_cache_flags`).
+3. **pthread bionic↔glibc** (`pthread_shim.c` NOVO): bionic mutex/cond/sem ~4B, glibc 24/48/16B →
+   a engine alocava no tamanho bionic, glibc acessava além + ldrd desalinhado → SIGBUS em
+   `pthread_cond_wait`. Fix: side-table (endereço bionic→objeto glibc real, lazy). Mutex/cond/
+   rwlock/once/sem. Mutexes RECURSIVE.
+4. **__sF stride 0x54** (`imports.c`): bionic `__sFILE`=84B; a engine faz `fflush(__sF+0x54)`
+   (=stdout). Nosso `bionic_sF[3][512]` (stride 512) → `map_sF` não casava → fflush(FILE* lixo)
+   → SIGSEGV. Fix: stride 0x54 + offsets 0/0x54/0xA8.
+
+**ESTADO ATUAL:** engine boota → init_array → JNI/GameActivity → OBB → **shadergen RTTI 100% OK
+(centenas de dynamic_cast)** → fontes/Paint (jni_shim) → allocator EA (NimbleWrapper Init/
+FinishInitialization/InitNimble) → **`[Graphics] OpenGLES20::OpenGLES20()` + `OpenGLES20Ext::
+LoadExtensions()` (init GRÁFICO!)**. **MURO ATUAL:** após LoadExtensions, crash sig=11 addr=nil
+(r0=r1=0, r2=0xffffffff) com **PC numa região ANON r-x de 12KB** (endereço randomiza por ASLR:
+f4e0ff2c/f4e59f2c/f4ec7f2c +0xf2c). Chamado do código gráfico (stack: libapp+0xa129de ← 0x96acd5
+← 0x97a633 ← 0x96ebb5 ← 0x7bbe78...). Hipótese: ponteiro de função GL (eglGetProcAddress de uma
+extensão) resolvido errado/stub OU JIT de shader do Mali. **PRÓXIMO:** identificar a região anon
+(re-rodar + cat /proc/PID/maps), desmontar libapp+0xa129de (vê qual fn-ptr chama), checar
+egl_shim_GetProcAddress (retorna NULL/stub p/ extensão? r2=0xffffffff=sentinela "not found").
+Walker próprio de dynamic_cast existe gateado em `NFS_DCWALK` (não usado — relocs corretas bastam).
+Rodar: `LD_LIBRARY_PATH=/usr/lib32:. SDL_VIDEODRIVER=mali NFS_INIT=1 ./nfs`. Binário+libs+OBB já
+no device .164 em /storage/roms/nfs/.
+
+---
+
 **Jogo:** Need for Speed Most Wanted, `com.ea.games.nfs13_row` v1.3.128 (EA/Firemonkeys/Ironmonkey).
 **APK:** `~/Downloads/need-for-speed-most-wanted-v1.3.128.apk` (19.5MB).
 **OBB/dados:** `~/Downloads/need-for-speed-most-wanted-v1.3.128-cache-apkvision.zip` → `main.1003128.com.ea.games.nfs13_row.obb` (623MB).
