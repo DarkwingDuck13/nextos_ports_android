@@ -1,5 +1,42 @@
 # NFS Most Wanted (2012) → NextOS Mali-450 (so-loader armhf)
 
+## 🟢🟢 SESSÃO 2026-06-13 PARTE 2 — ENGINE BOOTA 100% + chega ao CARREGAMENTO DE DADOS (OBB)
+Depois dos 4 fixes (abaixo), mais 1 fix destravou o init gráfico inteiro:
+5. **JNI_OnLoad dos módulos SECUNDÁRIOS** (main.c): no Android o runtime chama JNI_OnLoad de CADA
+   .so (System.loadLibrary). Só chamávamos o do libapp. **libNimble.so** (bridge JNI da EA) cacheia
+   o JavaVM no SEU JNI_OnLoad; sem chamar, g_vm=NULL → `EA::Nimble::getEnv` deref NULL → SIGSEGV no
+   texto do libNimble (a região anon r-x 12K do crash pós-LoadExtensions = libNimble, identificado
+   via strings da região). Fix: iterar g_comb e chamar JNI_OnLoad de cada secundário ANTES do libapp.
+
+**ESTADO ATUAL (enorme):** engine boota 100% → shadergen → OpenGLES20+LoadExtensions → libNimble
+InitNimble/SetLanguage/SLG3 → **AttachCurrentThread + carregamento de dados do jogo** (Tier=Low
+detectado ✅). **600+ frames SEM crash (EXIT=0).** AINDA SEM IMAGEM porque trava no **carregamento
+de assets do OBB**, ANTES do 1º eglSwapBuffers.
+
+**MURO ATUAL = MOUNT DO OBB (não é crash):** A engine abre o OBB, lê o EOCD + central directory
+(ZIP, 2411 arquivos, parse byte-a-byte funciona — seek p/ central dir em ~623120127), faz
+`[trace] AddSKU: 1x` + `[trace] Mounting SKU: 1x to /published`. Mas TODOS os lookups falham:
+`Could not open database at /published/{data/locales.sb,fonts/fonts.sb,layouts/layouts.sb,
+flow/default.sb,sounds/music/playlists.sb}` → `[fatal] ScreenFactory: Cannot create object NULL`.
+**CAUSA:** o OBB tem `published/` (base, 1514MB: data/fonts/layouts/flow/sounds/stringdata/models/
+textures...) E `published.1x/.2x/.4x` (texturas: 48/141/295MB). A engine monta SÓ o SKU
+`published.1x`→`/published` (overlay de texturas), mas os databases estão em `published/` (base),
+que **nunca é montado**. No Android a engine monta base `published/`→`/published` E sobrepõe o SKU.
+Confirmado: todos os arquivos que falham EXISTEM no OBB em `published/X`; `published.1x/fonts/fonts.sb`
+NÃO existe. **`SKU::GetFileSystemPath`** (sem símbolo; strings 0x9e45bf "Mounting SKU: ", 0x9e45ff
+"published", 0x9e45d0 "Invalid path given to SKU::GetFileSystemPath") faz o mapeamento.
+**Tentado e DESCARTADO:** useAssetsFileSystem=1 (NFS_USEASSETSFS — piora, tenta AAssetManager/crash);
+hooks mmap/mprotect/dlopen (a engine não os usa p/ o OBB; removidos). **PRÓXIMO (2 caminhos):**
+(A) RE da SKU::GetFileSystemPath com decompiler (Ghidra/IDA — sem símbolo, strings via movw/movt, não
+dá p/ xref por grep) p/ ver por que o base não monta / forçar mount do base; talvez hookar a função
+de mount p/ adicionar o base; (B) WORKAROUND repack: mesclar `published/*` dentro de `published.1x/*`
+no OBB (+drop 2x/4x) → SKU mount acha tudo (~1.56GB, repack store + transfer). Possível tb HASH dos
+nomes (ctor 186 = CPU detect p/ CRC32 HW; ver getauxval shim) se o índice usar hash. Device S905X tem
+CRC32 ARMv8. **Hipótese de hash: improvável** (parse byte-a-byte do índice funciona). Flags úteis:
+NFS_FOPENLOG/NFS_SEEKLOG (padrão de IO do OBB confirma EOCD+central dir lidos certo).
+
+---
+
 ## 🟢 SESSÃO 2026-06-13 (device .164 nextos/Mali-450) — MURO DO SHADERGEN QUEBRADO + 4 FIXES DE CAUSA-RAIZ
 O muro de 3+ sessões (crash no `dynamic_cast` do `im::isis::shadergen`) era **BUG DE
 RELOCAÇÃO no so_util**, não RTTI corrompido. Sequência de fixes (todos commitados):

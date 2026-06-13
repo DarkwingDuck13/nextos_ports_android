@@ -276,7 +276,12 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
     debugPrintf("jni_shim: isObbAssets -> 1\n");
     return 1; /* assets estão no OBB */
   }
-  return 0; /* useAssetsFileSystem/isFullApkAssets -> 0 */
+  if (methodID == &g_method_tags[MID_USE_ASSETS_FS]) {
+    int v = getenv("NFS_USEASSETSFS") ? 1 : 0;  /* experimento: montar base published/ */
+    debugPrintf("jni_shim: useAssetsFileSystem -> %d\n", v);
+    return v;
+  }
+  return 0; /* isFullApkAssets -> 0 */
 }
 
 /* CallIntMethod (index 61) */
