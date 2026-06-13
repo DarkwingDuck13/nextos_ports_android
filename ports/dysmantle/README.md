@@ -11,27 +11,27 @@ framebuffer do device automaticamente.
   CFW (layout em `dysmantle.gptk`); sticks/gatilhos continuam **analógicos**.
 - **Sair do jogo:** **SELECT+START**.
 
-## BYO-data (dados NÃO inclusos)
+## BYO-data (dados NÃO inclusos) — tudo automático
 
-Este zip tem só o port. Você precisa da **sua cópia legal** do DYSMANTLE Android 1.4.1.12:
+Este zip tem só o port (sem os dados do jogo). Você precisa da **sua cópia legal**
+do **APK do DYSMANTLE Android 1.4.1.12**. O processo é automático:
 
-1. Do seu APK/instalação, extraia:
-   - `lib/arm64-v8a/libNativeGame.so`
-   - `lib/arm64-v8a/libc++_shared.so`
-   - a pasta `assets/` completa (data.pak, data-gfx1200.pak, data-localizations.pak, ...)
-2. Copie tudo para a pasta `dysmantle/` do port:
+1. Copie o seu `.apk` para a pasta do port:
    ```
-   ports/dysmantle/libNativeGame.so
-   ports/dysmantle/libc++_shared.so
-   ports/dysmantle/assets/data.pak
-   ports/dysmantle/assets/...
+   ports/dysmantle/SEU_DYSMANTLE.apk
    ```
-3. Abra **DYSMANTLE** na lista de ports.
+2. Abra **DYSMANTLE** na lista de ports. Na **1ª vez** o launcher faz tudo sozinho:
+   - **extrai** do APK o `libNativeGame.so`, o `libc++_shared.so` e os `assets/` (~700MB);
+   - **conserta as texturas** com o `fixpak` (veja abaixo) — leva ~1-2 min, só uma vez;
+   - abre o jogo.
+3. Pode demorar alguns minutos na 1ª abertura (extração + conserto). As próximas são
+   instantâneas (um marcador `.textures_fixed` evita repetir).
 
-> ⚠️ Alguns APKs modificados vêm com as texturas JPEG/PNG **vazias** dentro do
-> `data.pak` (só as versões `.ktx` ETC2). Sintoma: erros "Not a JPEG" no log e UI sem
-> imagem. Conserto no PC: `tools/fix_empty_textures.py` (precisa Python +
-> `texture2ddecoder` + `Pillow`) decodifica os ETC2 e preenche os slots vazios do pak.
+> 🧊 **Por que o conserto?** Vários APKs vêm com as texturas JPEG/PNG **vazias** dentro
+> do pak (só a versão `.ktx` ETC2 tem dados) → personagem/itens/chão sairiam **brancos**.
+> O `fixpak` (incluído) decodifica o ETC2 **no próprio device** e regrava as texturas
+> em JPEG/PNG, usando a libturbojpeg/libz do seu CFW. **Não precisa de PC nem Python.**
+> (O `tools/fix_empty_textures.py` é só a versão de PC, opcional, p/ quem preferir.)
 
 ## Opções (edite no topo do `DYSMANTLE.sh`)
 
