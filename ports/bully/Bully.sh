@@ -137,7 +137,12 @@ fi
 # do SISTEMA, que sobem com o ld.so VELHO do device) carregarem a NOSSA libc 2.43;
 # ld.so e libc trocam simbolos GLIBC_PRIVATE e tem que ser do MESMO build glibc ->
 # "undefined symbol: tunable_is_initialized" no muOS (AYN) e similares.
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+# Ordem: multiarch ANTES de /usr/lib — em CFW Debian-based (ArkOS...) a stack
+# GL correta (libmali/Mesa casada com o kernel) vive em /usr/lib/aarch64-linux-gnu;
+# um libmali velho perdido em /usr/lib na frente da multiarch da "user 10.6,
+# kernel 11.7 / Failed creating base context" (R36S ArkOS). Em devices SEM
+# multiarch (NextOS, Trimui, muOS...) os dirs nem existem -> ordem identica.
+export LD_LIBRARY_PATH="$GAMEDIR:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:$LD_LIBRARY_PATH"
 BULLY_RUNTIME_LP="$GAMEDIR/runtime:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
