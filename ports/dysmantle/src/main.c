@@ -1171,7 +1171,10 @@ int main(int argc, char *argv[]) {
   hook_getshader();  /* 🌍 diag + FIX B: alias *Shadows.xml -> variante s/ sombra */
   hook_inittrans();  /* 🌍 diag + FIX A: log/override do ShaderTarget */
   start_perfcpu();   /* [PERFCPU] sampler de CPU por thread (diag lag) */
-  hook_kvfloat();    /* 🏎️ DYSMANTLE_RENDERSCALE via setting nativo render_scale */
+  /* ⚠️ hook_kvfloat() REMOVIDO: o RENDERSCALE era zoom de câmera (abandonado) e
+   * o hook interferia no parser de config (strcmp render_scale) → crash em
+   * ScreenManager::DoScreenEnterProcedure (Options/telas). TEXSCALE já cobre perf. */
+  if (getenv("DYSMANTLE_RENDERSCALE")) hook_kvfloat();
   /* skip do skinned-actor: NÃO é a solução real (o crash vem de config LOW;
    * reverter as configs pro default resolve). Fica como rede de segurança
    * opcional via DYSMANTLE_SKIP_BADACTORS=1 (corrompe o importer, usar só p/
