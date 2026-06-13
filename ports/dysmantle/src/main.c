@@ -899,6 +899,62 @@ static void hook_getproductvalue(void) {
   fprintf(stderr, "hook: NXI_GetProductValue GOT %p orig=%p\n", (void *)slot, (void *)orig_getprod);
 }
 
+/* 🏎️ RENDER SCALE nativo da engine: "render_scale" é um setting float
+ * persistido (default 1.0) que escala o render interno. GOT-hook nos getters
+ * do KeyValueStore: DYSMANTLE_RENDERSCALE=0.7 etc. (X5M 1080p GPU-bound). */
+static float (*orig_kvf)(void *, const char *) = NULL;
+static float (*orig_kvfv)(void *, const char *, const float *) = NULL;
+static float kv_override(const char *name, float val) {
+  static float rs = -2.0f;
+  if (rs < -1.0f) {
+    const char *e = getenv("DYSMANTLE_RENDERSCALE");
+    rs = e ? (float)atof(e) : -1.0f;
+    if (rs > 0.0f) fprintf(stderr, "[RENDERSCALE] override=%.2f\n", rs);
+  }
+  if (rs > 0.0f && name && strcmp(name, "render_scale") == 0) {
+    static int z = 0;
+    if (z < 4) { fprintf(stderr, "[RENDERSCALE] lido (era %.2f) -> %.2f\n", val, rs); z++; }
+    return rs;
+  }
+  return val;
+}
+static float my_kvf(void *self, const char *name) {
+  float v = orig_kvf ? orig_kvf(self, name) : 0.0f;
+  return kv_override(name, v);
+}
+static float my_kvfv(void *self, const char *name, const float *def) {
+  float v = orig_kvfv ? orig_kvfv(self, name, def) : (def ? *def : 0.0f);
+  return kv_override(name, v);
+}
+/* o config (settings) é lido via DMArray::GetNodeValue("render_scale")+atof —
+ * intercepta e devolve a string do env (cobre o caminho real de load). */
+static const char *(*orig_dmgetnode)(void *, const char *, const char *) = NULL;
+static const char *my_dmgetnode(void *self, const char *a, const char *b) {
+  const char *r = orig_dmgetnode ? orig_dmgetnode(self, a, b) : NULL;
+  static char rsbuf[16] = "";
+  if (a && strcmp(a, "render_scale") == 0) {
+    const char *e = getenv("DYSMANTLE_RENDERSCALE");
+    if (e && e[0]) {
+      snprintf(rsbuf, sizeof(rsbuf), "%s", e);
+      static int z = 0;
+      if (z < 4) { fprintf(stderr, "[RENDERSCALE] GetNodeValue('%s' era '%s') -> '%s'\n",
+                           a, r ? r : "(null)", rsbuf); z++; }
+      return rsbuf;
+    }
+  }
+  return r;
+}
+static void hook_kvfloat(void) {
+  uintptr_t s1 = so_find_rel_addr_safe("_ZNK13KeyValueStore16GetKeyValueFloatEPKc");
+  if (s1) { uintptr_t *p = (uintptr_t *)s1; orig_kvf = (void *)*p; *p = (uintptr_t)my_kvf; }
+  uintptr_t s2 = so_find_rel_addr_safe("_ZNK13KeyValueStore21GetKeyValueFloatValueEPKcRKf");
+  if (s2) { uintptr_t *p = (uintptr_t *)s2; orig_kvfv = (void *)*p; *p = (uintptr_t)my_kvfv; }
+  uintptr_t s3 = so_find_rel_addr_safe("_ZNK7DMArray12GetNodeValueEPKcS1_");
+  if (s3) { uintptr_t *p = (uintptr_t *)s3; orig_dmgetnode = (void *)*p; *p = (uintptr_t)my_dmgetnode; }
+  fprintf(stderr, "hook: KeyValueStore float GOT %p/%p DMArray %p\n",
+          (void *)s1, (void *)s2, (void *)s3);
+}
+
 /* [PERFCPU] sampler de CPU por thread: a cada 5s lê /proc/self/task/STAT e
  * imprime as 6 threads que mais usaram CPU no intervalo (% de 1 core).
  * Diagnóstico do lag — acha busy-spin/thread moedora. */
@@ -1092,6 +1148,7 @@ int main(int argc, char *argv[]) {
   hook_getshader();  /* 🌍 diag + FIX B: alias *Shadows.xml -> variante s/ sombra */
   hook_inittrans();  /* 🌍 diag + FIX A: log/override do ShaderTarget */
   start_perfcpu();   /* [PERFCPU] sampler de CPU por thread (diag lag) */
+  hook_kvfloat();    /* 🏎️ DYSMANTLE_RENDERSCALE via setting nativo render_scale */
   /* skip do skinned-actor: NÃO é a solução real (o crash vem de config LOW;
    * reverter as configs pro default resolve). Fica como rede de segurança
    * opcional via DYSMANTLE_SKIP_BADACTORS=1 (corrompe o importer, usar só p/

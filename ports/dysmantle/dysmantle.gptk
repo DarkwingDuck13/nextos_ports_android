@@ -1,0 +1,40 @@
+# DYSMANTLE (NextOS Elite) — gptokeyb
+# ATENCAO: o parser do gptokeyb NAO aceita comentario na linha do valor —
+# comentarios SEMPRE em linha propria.
+#
+# Teclas->acoes do binario (android_shim, DYSMANTLE_INPUT=gptk):
+#   x=A c=B q=X t=Y enter=START esc=SELECT
+#   h=L1 j=R1 k=L2 l=R2 n=L3 m=R3 setas=dpad wasd=stick esq
+# Sair: SELECT+START
+
+a = x
+b = c
+x = q
+y = t
+
+start = enter
+back = esc
+
+l1 = h
+l2 = k
+r1 = j
+r2 = l
+l3 = n
+r3 = m
+
+up = up
+down = down
+left = left
+right = right
+
+# stick esq -> wasd (digital; diagonal normalizada no binario)
+left_analog_up = w
+left_analog_down = s
+left_analog_left = a
+left_analog_right = d
+
+# stick dir: SEM mapeamento de tecla — quando o pad e visivel pro SDL o
+# binario le os DOIS sticks + gatilhos ANALOGICOS direto (gptokeyb nao da
+# grab). Mapear p/ setas dispararia os QUICK SLOTS do dpad sem querer.
+
+deadzone_y = 15000

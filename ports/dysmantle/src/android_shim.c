@@ -330,6 +330,19 @@ static void update_hat_from_dpad(int button, int down) {
   g_motion_dirty = 1;
 }
 
+/* modo gptokeyb (launcher seta DYSMANTLE_INPUT=gptk): botões vêm do TECLADO
+ * (uinput do gptokeyb via dysmantle.gptk); botões nativos do pad são ignorados
+ * (duplicariam). Eixos analógicos continuam nativos quando o pad é visível. */
+static int gptk_on(void) {
+  static int g = -1;
+  if (g < 0) {
+    const char *ie = getenv("DYSMANTLE_INPUT");
+    g = (ie && strcmp(ie, "gptk") == 0) ? 1 : 0;
+    if (g) debugPrintf("android_shim: modo GPTOKEYB (teclado via dysmantle.gptk)\n");
+  }
+  return g;
+}
+
 static void process_sdl_events(void) {
   // Try to open a gamepad if we don't have one yet
   init_gamecontroller();
@@ -397,7 +410,64 @@ static void process_sdl_events(void) {
       g_app.destroyRequested = 1;
       break;
 
+    /* 🎮 modo GPTOKEYB (DYSMANTLE_INPUT=gptk, padrão PortMaster): o gptokeyb
+     * do CFW lê o controle físico e emite TECLADO via uinput conforme o
+     * dysmantle.gptk. Traduzimos as teclas pros MESMOS eventos Paddleboat:
+     *   x=A c=B q=X t=Y enter=START esc=SELECT h=L1 j=R1 k=L2 l=R2
+     *   n=L3 m=R3 setas=dpad wasd=stick esq (digital)
+     * Sair: SELECT+START (esc+enter). */
+    case SDL_KEYDOWN:
+    case SDL_KEYUP: {
+      if (!gptk_on() || e.key.repeat) break;
+      int dn = (e.type == SDL_KEYDOWN);
+      int act = dn ? AKEY_EVENT_ACTION_DOWN : AKEY_EVENT_ACTION_UP;
+      static int kb_w = 0, kb_a = 0, kb_s = 0, kb_d = 0;
+      static int kb_esc = 0, kb_ent = 0;
+      static float kb_lt = 0, kb_rt = 0;
+      int kc = -1, stick = 0, dpadbtn = -1;
+      switch (e.key.keysym.scancode) {
+      case SDL_SCANCODE_X:      kc = AKEYCODE_BUTTON_A; break;
+      case SDL_SCANCODE_C:      kc = AKEYCODE_BUTTON_B; break;
+      case SDL_SCANCODE_Q:      kc = AKEYCODE_BUTTON_X; break;
+      case SDL_SCANCODE_T:      kc = AKEYCODE_BUTTON_Y; break;
+      case SDL_SCANCODE_RETURN: kc = AKEYCODE_BUTTON_START; kb_ent = dn; break;
+      case SDL_SCANCODE_ESCAPE: kc = AKEYCODE_BUTTON_SELECT; kb_esc = dn; break;
+      case SDL_SCANCODE_H:      kc = AKEYCODE_BUTTON_L1; break;
+      case SDL_SCANCODE_J:      kc = AKEYCODE_BUTTON_R1; break;
+      case SDL_SCANCODE_K:      kc = AKEYCODE_BUTTON_L2; kb_lt = dn ? 1.0f : 0.0f; stick = 1; break;
+      case SDL_SCANCODE_L:      kc = AKEYCODE_BUTTON_R2; kb_rt = dn ? 1.0f : 0.0f; stick = 1; break;
+      case SDL_SCANCODE_N:      kc = AKEYCODE_BUTTON_THUMBL; break;
+      case SDL_SCANCODE_M:      kc = AKEYCODE_BUTTON_THUMBR; break;
+      case SDL_SCANCODE_UP:     kc = AKEYCODE_DPAD_UP;    dpadbtn = SDL_CONTROLLER_BUTTON_DPAD_UP; break;
+      case SDL_SCANCODE_DOWN:   kc = AKEYCODE_DPAD_DOWN;  dpadbtn = SDL_CONTROLLER_BUTTON_DPAD_DOWN; break;
+      case SDL_SCANCODE_LEFT:   kc = AKEYCODE_DPAD_LEFT;  dpadbtn = SDL_CONTROLLER_BUTTON_DPAD_LEFT; break;
+      case SDL_SCANCODE_RIGHT:  kc = AKEYCODE_DPAD_RIGHT; dpadbtn = SDL_CONTROLLER_BUTTON_DPAD_RIGHT; break;
+      case SDL_SCANCODE_W:      kb_w = dn; stick = 1; break;
+      case SDL_SCANCODE_A:      kb_a = dn; stick = 1; break;
+      case SDL_SCANCODE_S:      kb_s = dn; stick = 1; break;
+      case SDL_SCANCODE_D:      kb_d = dn; stick = 1; break;
+      default: break;
+      }
+      if (kb_esc && kb_ent) {
+        debugPrintf("android_shim: SELECT+START (gptk) -> saindo\n");
+        _exit(0);
+      }
+      if (kc >= 0) {
+        push_key_event(act, kc);
+        pb_send_key(act, kc);
+      }
+      if (dpadbtn >= 0) update_hat_from_dpad(dpadbtn, dn);
+      if (stick) {
+        float lx = (kb_d ? 1.0f : 0.0f) - (kb_a ? 1.0f : 0.0f);
+        float ly = (kb_s ? 1.0f : 0.0f) - (kb_w ? 1.0f : 0.0f);
+        if (lx != 0.0f && ly != 0.0f) { lx *= 0.7071f; ly *= 0.7071f; }
+        pb_send_motion(lx, ly, 0, 0, g_hat_x, g_hat_y, kb_lt, kb_rt);
+      }
+      break;
+    }
+
     case SDL_CONTROLLERBUTTONDOWN: {
+      if (gptk_on()) break; /* botões vêm do teclado (gptokeyb) */
       int kc = sdl_button_to_keycode(e.cbutton.button);
       if (kc >= 0) {
         push_key_event(AKEY_EVENT_ACTION_DOWN, kc);
@@ -412,6 +482,7 @@ static void process_sdl_events(void) {
     }
 
     case SDL_CONTROLLERBUTTONUP: {
+      if (gptk_on()) break; /* botões vêm do teclado (gptokeyb) */
       int kc = sdl_button_to_keycode(e.cbutton.button);
       if (kc >= 0) {
         push_key_event(AKEY_EVENT_ACTION_UP, kc);

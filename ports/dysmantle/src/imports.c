@@ -767,6 +767,57 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
       default: break;
     }
   }
+  /* 🏎️ DYSMANTLE_TEXSCALE=F: reduz TODA textura RGBA grande por fator F
+   * (ex 1.2 = ~83% das dimensões, bilinear). Menos banda de memória/cache de
+   * textura na GPU — ideia do NextOS p/ os milhares de itens no mapa. */
+  {
+    static float texscale = -1.0f;
+    if (texscale < 0.0f) {
+      const char *e = getenv("DYSMANTLE_TEXSCALE");
+      texscale = e ? (float)atof(e) : 0.0f;
+      if (texscale != 0.0f && texscale < 1.05f) texscale = 0.0f;
+      if (texscale > 0.0f) fprintf(stderr, "[TEXSCALE] fator=%.2f\n", texscale);
+    }
+    if (texscale > 0.0f && px && lvl == 0 && fmt == 0x1908 && typ == 0x1401 &&
+        w >= 128 && h >= 128) {
+      int nw = (int)((float)w / texscale), nh = (int)((float)h / texscale);
+      if (nw >= 16 && nh >= 16 && (nw < w || nh < h)) {
+        static unsigned char *sb = NULL; static long scap = 0;
+        long need = (long)nw * nh * 4;
+        if (scap < need) { free(sb); sb = malloc(need); scap = need; }
+        if (sb) {
+          const unsigned char *src = (const unsigned char *)px;
+          for (int y = 0; y < nh; y++) {
+            float fy = ((float)y + 0.5f) * h / nh - 0.5f;
+            int y0 = (int)fy; if (y0 < 0) y0 = 0;
+            int y1 = y0 + 1 < h ? y0 + 1 : h - 1;
+            float wy = fy - y0;
+            for (int x = 0; x < nw; x++) {
+              float fx = ((float)x + 0.5f) * w / nw - 0.5f;
+              int x0 = (int)fx; if (x0 < 0) x0 = 0;
+              int x1 = x0 + 1 < w ? x0 + 1 : w - 1;
+              float wx = fx - x0;
+              const unsigned char *p00 = src + ((long)y0 * w + x0) * 4;
+              const unsigned char *p01 = src + ((long)y0 * w + x1) * 4;
+              const unsigned char *p10 = src + ((long)y1 * w + x0) * 4;
+              const unsigned char *p11 = src + ((long)y1 * w + x1) * 4;
+              unsigned char *d = sb + ((long)y * nw + x) * 4;
+              for (int c = 0; c < 4; c++) {
+                float t = p00[c] * (1 - wx) * (1 - wy) + p01[c] * wx * (1 - wy) +
+                          p10[c] * (1 - wx) * wy + p11[c] * wx * wy;
+                d[c] = (unsigned char)(t + 0.5f);
+              }
+            }
+          }
+          if (gerr) while (gerr()) {}
+          if (real) real(tgt, lvl, ifmt, nw, nh, border, fmt, typ, sb);
+          static int sn = 0;
+          if (sn < 6) { fprintf(stderr, "[TEXSCALE] %dx%d -> %dx%d\n", w, h, nw, nh); sn++; }
+          return;
+        }
+      }
+    }
+  }
   /* 🧠 TEORIA MEMÓRIA UTGARD (Bully): muitas/grandes texturas estouram a memória
    * de textura da GPU → uploads tardios (terreno) falham/somem. DYSMANTLE_TEX_HALF
    * reduz texturas grandes pela metade (box 2x2) p/ liberar memória. */
