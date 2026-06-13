@@ -66,6 +66,18 @@ if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; 
   exit 1
 fi
 
+# ---------- conserto de texturas (1a vez) ----------
+# Muitos APKs deixam os JPEG/PNG VAZIOS dentro do pak (so o .ktx ETC2 tem dados)
+# -> personagens/itens/chao ficariam BRANCOS. O fixpak decodifica o ETC2 no
+# device e preenche os slots (reencoda JPEG/PNG via libturbojpeg+libz do CFW).
+# Roda 1x; o marcador .textures_fixed evita repetir. Pode levar ~1-2 min.
+if [ -x "$GAMEDIR/fixpak" ] && [ ! -f "$GAMEDIR/.textures_fixed" ] && [ -f "$GAMEDIR/assets/data.pak" ]; then
+  echo "Consertando texturas (1a vez, ~1-2 min)... nao desligue."
+  ( cd "$GAMEDIR" && LD_LIBRARY_PATH="/usr/lib:/lib" $ESUDO ./fixpak assets/data.pak assets/data-gfx1200.pak ) && \
+    $ESUDO touch "$GAMEDIR/.textures_fixed"
+  sync
+fi
+
 # ---------- ambiente ----------
 export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
