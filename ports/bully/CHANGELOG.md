@@ -23,12 +23,17 @@ Causas e fixes:
   gptokeyb/grep/helpers voltam a usar a glibc do proprio device.
   (Isso tambem explicava controles mortos no muOS: o gptokeyb morria no spawn,
   mas o launcher ja tinha setado BULLY_INPUT=gptk -> jogo esperando teclas.)
-- `libdl.so.2 not found`: o SDL2 do device pede libdl.so.2, que na glibc 2.34+
-  virou stub (fundido na libc) e nao estava nem no runtime/ nem no muOS.
-  **Fix: runtime/ agora bundla os stubs** libdl.so.2, libpthread.so.0,
-  librt.so.1, libutil.so.1, libresolv.so.2, libnss_files.so.2, libnss_dns.so.2
-  (todos do MESMO build glibc 2.43 — stub de outra glibc daria o mesmo erro
-  PRIVATE de novo).
+- `libdl.so.2 not found` (muOS) e `libpthread.so.0: __libc_pthread_init
+  GLIBC_PRIVATE` (ArkOS): libs do device de uma glibc VELHA sendo misturadas
+  com a nossa libc 2.43 — ou faltando, no caso dos stubs que a glibc 2.34+
+  fundiu na libc. **Fix: runtime/ agora bundla TODAS as libs internas da
+  glibc** (libdl, libpthread, librt, libutil, libresolv, libanl, libnsl,
+  libmvec, libBrokenLocale, libnss_*), todas do MESMO build 2.43 da libc
+  bundlada, e elas vem PRIMEIRO no path do jogo — entao o loader nunca mais
+  mistura glibc do device com a nossa. Esse conjunto e FECHADO (e tudo que a
+  glibc tem): nao existe "proxima lib" pra dar esse erro. SDL2/EGL/GPU
+  continuam sendo SEMPRE os do device (esses nao tem acoplamento PRIVATE e
+  TEM que ser os locais, sao o driver).
 - Pode resolver tambem o crash-no-start do X55 ROCKNIX (mesma familia de erro;
   precisa re-teste).
 
