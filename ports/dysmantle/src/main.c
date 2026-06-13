@@ -776,6 +776,29 @@ static void my_setbmpname(void *bmp, const char *p, size_t n) {
   if (p && n > 0 && n < sizeof(g_last_bmp_name)) {
     memcpy(g_last_bmp_name, p, n); g_last_bmp_name[n] = 0;
   }
+  /* 🧊 KTX REDIRECT (DYSMANTLE_KTX_REDIRECT=1, default ligado no launcher):
+   * APKs modados deixam os .jpg/.png VAZIOS no pak (só o irmão "<nome>.jpg.ktx"
+   * ETC2 tem dados). Acrescenta ".ktx" ao nome → engine usa o KtxImageLoader →
+   * glCompressedTexImage2D(ETC2) → nosso decoder (imports.c) sobe RGBA. Cobre o
+   * caso BYO direto do APK cru, sem reescrever o pak nem tool de PC. Se o .ktx
+   * não existir, o bitmap fica branco (= comportamento atual; não piora). */
+  static int redir = -1;
+  if (redir < 0) redir = getenv("DYSMANTLE_KTX_REDIRECT") ? 1 : 0;
+  if (redir && p && n > 4 && n + 5 < sizeof(g_last_bmp_name)) {
+    const char *ext = p + n - 4;
+    int is_jpg = (ext[0] == '.' && ext[1] == 'j' && ext[2] == 'p' && ext[3] == 'g');
+    int is_png = (ext[0] == '.' && ext[1] == 'p' && ext[2] == 'n' && ext[3] == 'g');
+    if (is_jpg || is_png) {
+      char buf[256];
+      memcpy(buf, p, n);
+      memcpy(buf + n, ".ktx", 4);
+      static int z = 0;
+      if (z < 6) { fprintf(stderr, "[KTXREDIR] '%.*s' -> '%.*s'\n",
+                           (int)n, p, (int)(n + 4), buf); z++; }
+      if (orig_setbmpname) orig_setbmpname(bmp, buf, n + 4);
+      return;
+    }
+  }
   if (orig_setbmpname) orig_setbmpname(bmp, p, n);
 }
 static unsigned char (*orig_loadbmpint)(void *, int, int, unsigned) = NULL;

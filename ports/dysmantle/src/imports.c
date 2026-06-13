@@ -354,8 +354,14 @@ void *dysmantle_gl_proc_override(const char *name) {
   if (name && strcmp(name, "glTexStorage2D") == 0) return (void *)my_glTexStorage2D;
   return NULL;
 }
-/* loga textura COMPRIMIDA + erro GL pós-upload (ETC2/ASTC que o Mali rejeita
- * → textura branca). Mali-450 só aceita ETC1 (0x8d64). */
+/* 🧊 ETC2 → RGBA na CPU (GLES2-universal, até Utgard): com FORCE_ETC2 a engine
+ * carrega os .ktx (ETC2) — resolve os APKs com JPEG vazio SEM tool no PC.
+ * Decodificamos o bloco ETC2 e subimos via my_glTexImage2D (ganha TEXSCALE).
+ * Formatos: 0x9274/75 RGB8, 0x9276/77 punchthrough, 0x9278/79 RGBA8. */
+extern unsigned char *etc2_decode_rgba(unsigned fmt, int w, int h,
+                                       const void *data, int size);
+static void my_glTexImage2D(unsigned, int, int, int, int, int, unsigned,
+                            unsigned, const void *);
 static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                                       int w, int h, int border, int sz,
                                       const void *px) {
@@ -363,6 +369,18 @@ static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                       const void *) = NULL;
   rgl("glCompressedTexImage2D", (void **)&real);
   static unsigned (*gerr)(void) = NULL; rgl("glGetError", (void **)&gerr);
+  if (px && ifmt >= 0x9274 && ifmt <= 0x9279) {
+    unsigned char *rgba = etc2_decode_rgba(ifmt, w, h, px, sz);
+    if (rgba) {
+      my_glTexImage2D(tgt, lvl, 0x1908 /*RGBA*/, w, h, border,
+                      0x1908, 0x1401 /*UBYTE*/, rgba);
+      free(rgba);
+      static int dn = 0;
+      if (dn < 8) { fprintf(stderr, "[ETC2] decode 0x%x %dx%d lvl=%d -> RGBA\n",
+                            ifmt, w, h, lvl); dn++; }
+      return;
+    }
+  }
   if (gerr) while (gerr()) {}
   if (real) real(tgt, lvl, ifmt, w, h, border, sz, px);
   unsigned e = gerr ? gerr() : 0;

@@ -40,13 +40,25 @@ cd "$GAMEDIR"
 mkdir -p "$GAMEDIR/gamedata"
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-# ---------- dados ----------
+# ---------- BYO-DATA: extrai do APK do usuario na 1a vez ----------
+# Coloque seu APK (DYSMANTLE 1.4.1.12) em $GAMEDIR/ e abra o jogo: ele extrai
+# sozinho (libNativeGame.so + libc++_shared.so na raiz, assets/ com os .pak).
+if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
+  APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK "$GAMEDIR"/*.xapk 2>/dev/null | head -1)
+  if [ -n "$APK" ]; then
+    echo "Extraindo os dados do seu APK (~700MB, pode demorar minutos na 1a vez)..."
+    $ESUDO unzip -o -j "$APK" "lib/arm64-v8a/libNativeGame.so" "lib/arm64-v8a/libc++_shared.so" -d "$GAMEDIR" 2>/dev/null
+    $ESUDO unzip -o "$APK" "assets/*" -d "$GAMEDIR" 2>/dev/null
+    sync
+  fi
+fi
 if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
   echo "############################################################"
   echo " FALTAM OS DADOS DO JOGO (BYO-data)."
-  echo " Copie libNativeGame.so + libc++_shared.so + assets/ do"
-  echo " DYSMANTLE 1.4.1.12 (sua copia legal) para:"
+  echo " 1) Tenha o APK do DYSMANTLE v1.4.1.12 (sua copia legal)."
+  echo " 2) Copie-o para:"
   echo "      $GAMEDIR/"
+  echo " 3) Abra 'DYSMANTLE' de novo: ele extrai e roda sozinho."
   echo " Detalhes: $GAMEDIR/README.md"
   echo "############################################################"
   sleep 15
@@ -65,6 +77,13 @@ export DYSMANTLE_ASSETS=assets
 # cuida do pacing; vsync por cima = double-pacing = trava em 30fps).
 export DYSMANTLE_GLVER=2.0
 export DYSMANTLE_SWAPINT=0
+# Texturas direto dos .ktx ETC2 do pak, decodificadas na CPU (universal GLES2).
+# Resolve APKs que vem com os JPEG/PNG vazios dentro do data.pak (sem tool de PC):
+#  FORCE_ETC2  = renderer aceita o formato ETC2
+#  KTX_REDIRECT= engine carrega o irmao "<nome>.jpg.ktx" em vez do .jpg vazio
+# (o decoder ETC2->RGBA esta no binario, GLES2-universal ate Mali-450 Utgard).
+#export DYSMANTLE_FORCE_ETC2=1
+#export DYSMANTLE_KTX_REDIRECT=1
 
 # Backend de display ADAPTATIVO: a resolucao segue o framebuffer do device
 # (desktop mode dinamico no binario, igual o Bully).
