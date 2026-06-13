@@ -22,12 +22,17 @@
 #include "so_util.h"
 #include "egl_shim.h"
 
-/* ---- bionic __sF[3] = stdin/out/err (libc++ usa p/ std::cerr/cout) ---- */
-static char bionic_sF[3][512];
+/* ---- bionic __sF[3] = stdin/out/err (libc++/EAStdC usam p/ cerr/cout/fflush) ----
+ * 🔑 O struct __sFILE do BIONIC tem 84 bytes (0x54): __sF[0]=base+0, __sF[1]
+ * (stdout)=base+0x54, __sF[2] (stderr)=base+0xA8. (A engine faz fflush(__sF+0x54).)
+ * O buffer precisa do stride 0x54 senão map_sF não casa o ponteiro → fflush
+ * recebe um FILE* lixo → SIGSEGV. */
+#define BIONIC_FILE_SZ 0x54
+static char bionic_sF[3 * BIONIC_FILE_SZ + 64];
 static FILE *map_sF(void *fp) {
-  if (fp == (void *)&bionic_sF[0]) return stdin;
-  if (fp == (void *)&bionic_sF[1]) return stdout;
-  if (fp == (void *)&bionic_sF[2]) return stderr;
+  if (fp == (void *)(bionic_sF + 0 * BIONIC_FILE_SZ)) return stdin;
+  if (fp == (void *)(bionic_sF + 1 * BIONIC_FILE_SZ)) return stdout;
+  if (fp == (void *)(bionic_sF + 2 * BIONIC_FILE_SZ)) return stderr;
   return (FILE *)fp;
 }
 static int w_fprintf(void *fp, const char *fmt, ...) {
