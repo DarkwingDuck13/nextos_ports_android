@@ -18,7 +18,11 @@
 #include "util.h"
 
 #define MAX_PLAYERS 16
-#define RING_BUFFER_SIZE (4 * 1024 * 1024)
+/* Ring por player. ANTES 4MB (~23s áudio) × 16 = 64MB ESTÁTICOS (BSS) reservados
+ * SEMPRE -> peso morto num device de ~833MB. O Oboe enfileira buffers pequenos
+ * (~2×1024 frames); 1MB (~6s, cabe os 64 buffers da fila) sobra de folga. Agora
+ * 16×1MB = 16MB (economia de 48MB p/ adiar OOM). DEVE ser potência de 2 (& MASK). */
+#define RING_BUFFER_SIZE (1 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
 #define SDL_AUDIO_SAMPLES 4096
 
@@ -97,6 +101,8 @@ typedef struct {
   int ever_enqueued;
   int headatend_fired;
   int decoder_done;
+  int cb_noenq;   /* callbacks consecutivos que NÃO enfileiraram (anti-spam Oboe blocking-mode) */
+  int cb_dead;    /* 1 = callback improdutivo -> parar de chamar (dados vêm via Enqueue) */
   volatile uint32_t underrun_count;
   volatile uint32_t fadeout_count;
   volatile uint32_t frames_played;  /* total output frames mixed, for fade-in */
@@ -553,6 +559,8 @@ static void player_reset_meta(AudioPlayer *p) {
   p->ever_enqueued = 0;
   p->headatend_fired = 0;
   p->decoder_done = 0;
+  p->cb_noenq = 0;
+  p->cb_dead = 0;
   p->underrun_count = 0;
   p->fadeout_count = 0;
   p->frames_played = 0;
@@ -1133,6 +1141,13 @@ void opensles_shim_pump_callbacks(void) {
   pthread_mutex_unlock(&g_pump_lock);
 }
 static void opensles_pump_locked(void) {
+  /* anti-spam: streams Oboe em modo blocking-write registram callback mas os
+   * dados vêm por Enqueue; chamar o callback (até 4×/4ms) faz o Oboe spammar
+   * "fireDataCallback disabled" -> storm de log/I/O -> choppy. Se o callback
+   * de um player não enfileira por N chamadas, marcamos cb_dead e paramos de
+   * chamá-lo (os dados continuam vindo pelo Enqueue). Gate p/ debug. */
+  static int cbguard = -1;
+  if (cbguard < 0) cbguard = getenv("DYSMANTLE_AUDIO_NOCBGUARD") ? 0 : 1;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
@@ -1148,7 +1163,7 @@ static void opensles_pump_locked(void) {
 
     /* Call callback multiple times to fill buffer ahead */
     int max_calls = 4;
-    while (p->callback && readable <= refill_threshold && max_calls > 0) {
+    while (p->callback && !(cbguard && p->cb_dead) && readable <= refill_threshold && max_calls > 0) {
       uint32_t counter_before = p->enqueue_counter;
       /* if (p->debug_callback_logs < 16 || counter_before % 64 == 0) {
         debugPrintf("opensles_shim: player %d callback readable=%u threshold=%u counter=%u\n",
@@ -1156,6 +1171,17 @@ static void opensles_pump_locked(void) {
         p->debug_callback_logs++;
       } */
       p->callback(&p->bq_ptr, p->callback_context);
+
+      /* anti-spam: callback não produziu dado? conta. Muitos seguidos = modo
+       * blocking (dados via Enqueue) -> marca morto e para de chamar. */
+      if (p->enqueue_counter == counter_before) {
+        if (++p->cb_noenq >= 24 && !p->cb_dead) {
+          p->cb_dead = 1;
+          debugPrintf("opensles_shim: player %d callback IMPRODUTIVO (24x sem enqueue) -> cb_dead (modo blocking/Oboe; dados via Enqueue)\n", i);
+        }
+      } else {
+        p->cb_noenq = 0;
+      }
 
       if (p->ever_enqueued && !p->decoder_done &&
           p->enqueue_counter == counter_before) {
