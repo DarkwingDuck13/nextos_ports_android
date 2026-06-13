@@ -137,10 +137,12 @@ fi
 # binarios tem interpretador NORMAL (/lib/ld-linux-aarch64.so.1, SEM patchelf):
 # rodam 100% nativo, o ld.so do PROPRIO CFW resolve libgcc_s, SDL2, o libmali
 # casado com o kernel, tudo nos dirs default do device. SEM runtime/ bundlado.
-# audiolibs/ no FIM = fallback: o device usa o libopenal/libmpg123 DELE (vem
-# primeiro); as nossas copias so entram se o device nao tiver (ex: X5M nao tinha
-# libmpg123 -> sem musica). Zero risco p/ quem ja tem as libs.
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH:$GAMEDIR/audiolibs"
+# NOTA v8.1: o bundle audiolibs/ (libopenal/libmpg123) foi REMOVIDO. Era glibc
+# 2.43/2.38; em device de glibc velha o preload pegava a NOSSA copia e falhava
+# (GLIBC_2.38 not found) -> o jogo NAO ABRIA (regressao v8 reportada). Sem o
+# bundle, o preload dessas libs falha de boa (como no v7) e o jogo abre. SDL2/
+# EGL/GPU/openal/mpg123 = sempre os do device.
+export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1

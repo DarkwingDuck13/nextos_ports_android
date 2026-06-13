@@ -43,10 +43,13 @@ Aplicado nos DOIS binários (`bully` e `bully.compat`).
   o áudio em sessões longas. Agora o launcher aponta `ALSOFT_CONF` p/ um config
   non-mmap + buffers maiores — **só quando não há PulseAudio e NÃO no X5M**
   (cujo áudio já funciona; não é tocado).
-- **`audiolibs/` (libopenal.so.1 + libmpg123.so.0) como FALLBACK**: vão por
-  último no `LD_LIBRARY_PATH`, então o device usa as DELE; as nossas só entram se
-  faltar. Efeito colateral bom: **o S905X5M, que não tinha libmpg123, ganhou
-  música** (antes faltava a lib → sem áudio de música).
+- **`audiolibs/` (libopenal/libmpg123) REMOVIDO (v8.1)**: o bundle era glibc
+  2.43/2.38; em device de glibc velha o preload pegava a NOSSA cópia e falhava
+  (`GLIBC_2.38 not found`) → **o jogo não abria** (regressão reportada no v8:
+  Nicolas/mik "abria no v7, não no v8"). Sem o bundle, o preload dessas libs
+  falha de boa (como no v7) e o jogo abre. (A música extra do X5M foi sacrificada
+  pra não quebrar o launch dos outros; se quiser de volta, recompilar libmpg123
+  contra glibc baixa via zig, como o bully.compat.)
 
 ### Clarity (resolution) preso em Low — FIX DO TOKEN (VALIDADO no Mali-450)
 Causa: o jogo LÊ o nosso `settings.ini` (confirmado: `fopen ./settings.ini OK`)
