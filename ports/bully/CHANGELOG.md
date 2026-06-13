@@ -43,19 +43,20 @@ binários (`bully` e `bully.compat`).
   faltar. Efeito colateral bom: **o S905X5M, que não tinha libmpg123, ganhou
   música** (antes faltava a lib → sem áudio de música).
 
-### Clarity (resolution) preso em Low — fix do token (EM VALIDAÇÃO)
-Causa confirmada: o jogo LÊ o nosso `settings.ini` mas só aplica os enums em
-MAIÚSCULO (`RS_High`, `SS_Off`...). O seed antigo escrevia minúsculo (`rs_high`)
-→ o parser ignorava → caía no default (Low). Agora o launcher semeia em
-maiúsculo + migra `settings.ini` antigos. ⚠️ Validação só num Mali-450/device
-fraco (no X5M o setting é ignorado — perfil sempre alto). Pode haver ainda um
-clamp por `maxResolution` do perfil em hardware fraco (se for, precisa do force
-de escala de GPU).
+### Clarity (resolution) preso em Low — FIX DO TOKEN (VALIDADO no Mali-450)
+Causa: o jogo LÊ o nosso `settings.ini` (confirmado: `fopen ./settings.ini OK`)
+mas só aplica os enums em MAIÚSCULO (`RS_High`, `SS_Off`...). O seed antigo
+escrevia minúsculo (`rs_high`) → o parser ignorava → caía no default (Low). O
+binário só contém os tokens maiúsculos; minúsculo NUNCA casava. Agora o launcher
+semeia em maiúsculo + migra `settings.ini` antigos (sed). VALIDADO no Mali-450
+(.164): com `RS_High` a cena renderiza nítida (lapVar ~305) vs `RS_Low` borrado
+(~34) — o token maiúsculo É respeitado e o perfil NÃO clampa em hardware fraco.
+(No X5M o setting é ignorado — o perfil já dá alta resolução, por isso "1080p
+fica ótimo".)
 
 ### Ainda pendente (próximas versões)
-- Confirmar o Clarity High no Mali-450 (reinstalar + testar).
 - Tela preta no RGCubeXX/Knulli (sem `/dev/dri` → backend `mali` não apresenta).
-- Qualidade em painel 640x480 (ligada ao Clarity acima).
+- Qualidade fina em 640x480 (separado; o Clarity acima já ajuda muito).
 
 ---
 

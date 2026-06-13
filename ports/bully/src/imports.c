@@ -400,7 +400,10 @@ static void my_glFramebufferTexture2D(unsigned t,unsigned att,unsigned tt,unsign
   if (n < 14) {
     unsigned (*chk)(unsigned) = dlsym(RTLD_DEFAULT, "glCheckFramebufferStatus");
     unsigned s = chk ? chk(0x8D40) : 0;
-    fprintf(stderr, "[fbo] ATTACH att=0x%x tex=%u lvl=%d -> status=0x%x %s\n", att, tex, lvl, s, s == 0x8CD5 ? "OK" : "INCOMPLETO");
+    unsigned tb = (tex < RESMAP) ? g_texbytes[tex] : 0;  /* bytes da textura -> infere a resolucao do RT */
+    fprintf(stderr, "[fbo] ATTACH att=0x%x tex=%u lvl=%d -> status=0x%x %s | RT~%u KB (%s)\n",
+            att, tex, lvl, s, s == 0x8CD5 ? "OK" : "INCOMPLETO", tb/1024,
+            tb > 2500000 ? "ALTA" : tb > 800000 ? "media" : "baixa");
     n++;
   }
 }
