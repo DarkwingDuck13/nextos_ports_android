@@ -112,59 +112,85 @@ static unsigned char *rgba_to_png(const unsigned char *rgba, int w, int h, long 
 
 typedef struct { char name[256]; long fpos; uint32_t off, size; } Ent;
 
+/* lê `n` bytes de `f` no offset `off` para `buf` */
+static int pread_at(FILE *f, long off, void *buf, long n) {
+  if (fseek(f, off, SEEK_SET) != 0) return -1;
+  return fread(buf, 1, n, f) == (size_t)n ? 0 : -1;
+}
+
 static int fix_one(const char *path) {
+  /* 🪶 STREAMING/baixa-memória: NUNCA carrega o pak inteiro (eram 549MB ->
+   * OOM-kill em device de 1GB). Lê só o índice + cada .ktx sob demanda; copia
+   * o resto em blocos de 1MB. Pico de RAM ~ 1 textura (~3MB). */
   FILE *f = fopen(path, "rb");
   if (!f) { fprintf(stderr, "fixpak: abrir %s falhou\n", path); return -1; }
-  fseek(f, 0, SEEK_END); long flen = ftell(f); fseek(f, 0, SEEK_SET);
-  unsigned char *d = malloc(flen);
-  if (!d || fread(d, 1, flen, f) != (size_t)flen) { fprintf(stderr, "fixpak: ler %s\n", path); fclose(f); free(d); return -1; }
-  fclose(f);
-  if (memcmp(d, "PAK\0V11\0", 8) != 0) { fprintf(stderr, "fixpak: %s nao e pak\n", path); free(d); return -1; }
-  uint32_t idx = *(uint32_t *)(d + 8);
+  fseek(f, 0, SEEK_END); long flen = ftell(f);
+  unsigned char hdr[12];
+  if (pread_at(f, 0, hdr, 12) != 0 || memcmp(hdr, "PAK\0V11\0", 8) != 0) {
+    fprintf(stderr, "fixpak: %s nao e pak\n", path); fclose(f); return -1;
+  }
+  uint32_t idx = *(uint32_t *)(hdr + 8);
+  long idxlen = flen - idx;
+  if (idxlen <= 0 || idxlen > 64L * 1024 * 1024) { fprintf(stderr, "fixpak: indice invalido %s\n", path); fclose(f); return -1; }
 
-  /* parse índice */
+  /* índice na RAM (pequeno: ~1-2MB) */
+  unsigned char *idxbuf = malloc(idxlen);
+  if (!idxbuf || pread_at(f, idx, idxbuf, idxlen) != 0) { fprintf(stderr, "fixpak: ler indice %s\n", path); fclose(f); free(idxbuf); return -1; }
+
+  /* parse entradas (offsets relativos ao idxbuf) */
   long cap = 4096; Ent *ent = malloc(cap * sizeof(Ent)); int ne = 0;
-  long p = idx;
-  while (p < flen - 16) {
-    long e = p; while (e < flen && d[e]) e++;
-    if (e >= flen || e == p || e - p > 250) break;
+  long p = 0;
+  while (p < idxlen - 16) {
+    long e = p; while (e < idxlen && idxbuf[e]) e++;
+    if (e >= idxlen || e == p || e - p > 250) break;
     if (ne >= cap) { cap *= 2; ent = realloc(ent, cap * sizeof(Ent)); }
     int n = (int)(e - p);
-    memcpy(ent[ne].name, d + p, n); ent[ne].name[n] = 0;
-    ent[ne].fpos = e + 1;
-    ent[ne].off = *(uint32_t *)(d + e + 1);
-    ent[ne].size = *(uint32_t *)(d + e + 5);
+    memcpy(ent[ne].name, idxbuf + p, n); ent[ne].name[n] = 0;
+    ent[ne].fpos = e + 1;  /* rel ao idxbuf */
+    ent[ne].off = *(uint32_t *)(idxbuf + e + 1);
+    ent[ne].size = *(uint32_t *)(idxbuf + e + 5);
     ne++;
     p = e + 1 + 16;
   }
 
-  /* mapa nome->idx (linear ok p/ 1x; ne ~ 18k, mas só consultamos p/ vazios) */
   long fixed = 0;
-  /* coleta blobs novos: escrevemos d[:idx] + blobs + índice patchado */
-  FILE *out = NULL;
   char tmp[512]; snprintf(tmp, sizeof(tmp), "%s.fixtmp", path);
-  out = fopen(tmp, "wb");
-  if (!out) { fprintf(stderr, "fixpak: criar %s\n", tmp); free(d); free(ent); return -1; }
-  fwrite(d, 1, idx, out);
+  FILE *out = fopen(tmp, "wb");
+  if (!out) { fprintf(stderr, "fixpak: criar %s\n", tmp); fclose(f); free(idxbuf); free(ent); return -1; }
+
+  /* copia [0..idx) em blocos de 1MB (dados originais, verbatim) */
+  { unsigned char *cp = malloc(1 << 20); long left = idx, o = 0;
+    while (left > 0) { long c = left < (1 << 20) ? left : (1 << 20);
+      if (pread_at(f, o, cp, c) != 0) { fprintf(stderr, "fixpak: COPIA FALHOU em o=%ld c=%ld (idx=%u flen=%ld)\n", o, c, idx, flen); c = 0; }
+      if (c <= 0) break;
+      size_t wr = fwrite(cp, 1, c, out);
+      if (wr != (size_t)c) { fprintf(stderr, "fixpak: WRITE curto wr=%zu c=%ld o=%ld (disco cheio?)\n", wr, c, o); fclose(out); fclose(f); free(cp); free(idxbuf); free(ent); remove(tmp); return -1; }
+      o += c; left -= c; }
+    free(cp);
+    if (o != idx) { fprintf(stderr, "fixpak: copia incompleta (%ld/%u) — abortando, pak intacto\n", o, idx); fclose(out); fclose(f); free(idxbuf); free(ent); remove(tmp); return -1; }
+  }
   long blob_base = idx, running = 0;
 
   for (int i = 0; i < ne; i++) {
     char *nm = ent[i].name; int L = (int)strlen(nm);
     if (ent[i].size != 0) continue;
     if (!(L > 4 && (!strcmp(nm + L - 4, ".jpg") || !strcmp(nm + L - 4, ".png")))) continue;
-    /* acha o .ktx irmão */
     char kn[260]; snprintf(kn, sizeof(kn), "%s.ktx", nm);
     int ki = -1;
     for (int j = 0; j < ne; j++) if (!strcmp(ent[j].name, kn)) { ki = j; break; }
     if (ki < 0 || ent[ki].size == 0) continue;
-    /* inflate ktx */
+    /* lê o .ktx comprimido do arquivo (só ele) */
+    unsigned char *kc = malloc(ent[ki].size);
+    if (!kc) continue;
+    if (pread_at(f, ent[ki].off, kc, ent[ki].size) != 0) { free(kc); continue; }
     unsigned long usz = (unsigned long)ent[ki].size * 12 + 1024;
     unsigned char *ktx = malloc(usz);
-    if (!ktx) continue;
-    while (z_uncompress(ktx, &usz, d + ent[ki].off, ent[ki].size) == -5 /*Z_BUF_ERROR*/) {
+    if (!ktx) { free(kc); continue; }
+    while (z_uncompress(ktx, &usz, kc, ent[ki].size) == -5 /*Z_BUF_ERROR*/) {
       usz *= 2; unsigned char *nk = realloc(ktx, usz); if (!nk) { free(ktx); ktx = NULL; break; }
       ktx = nk;
     }
+    free(kc);
     if (!ktx) continue;
     int w, h, alpha;
     unsigned char *rgba = ktx_to_rgba(ktx, (int)usz, &w, &h, &alpha);
@@ -188,25 +214,23 @@ static int fix_one(const char *path) {
     if (tjfree) tj_free(blob); else free(blob);
     fixed++;
   }
+  fclose(f);
 
-  /* índice patchado (offsets dos vazios agora apontam pros blobs) */
-  unsigned char *idxbuf = malloc(flen - idx);
-  memcpy(idxbuf, d + idx, flen - idx);
+  /* índice patchado */
   for (int i = 0; i < ne; i++) {
-    long rel = ent[i].fpos - idx;
+    long rel = ent[i].fpos;
     *(uint32_t *)(idxbuf + rel) = ent[i].off;
     *(uint32_t *)(idxbuf + rel + 4) = ent[i].size;
   }
-  fwrite(idxbuf, 1, flen - idx, out);
+  fwrite(idxbuf, 1, idxlen, out);
   free(idxbuf);
 
-  /* header: idx_offset += running ; filesize = novo */
   long newlen = ftell(out);
   fseek(out, 8, SEEK_SET);
   uint32_t nidx = idx + (uint32_t)running, nlen = (uint32_t)newlen;
   fwrite(&nidx, 4, 1, out); fwrite(&nlen, 4, 1, out);
   fclose(out);
-  free(d); free(ent);
+  free(ent);
 
   if (fixed > 0) {
     if (rename(tmp, path) != 0) { fprintf(stderr, "fixpak: rename %s falhou\n", tmp); return -1; }
