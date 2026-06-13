@@ -29,8 +29,13 @@ O teto é automático por RAM (no `Bully.sh`, ajustável em `BULLY_TEX_BUDGET_MB
 - **~2GB**: 320 MB.
 - **3GB+** (X5M): 448 MB (quase nunca dispara → sem churn/stutter).
 
-Validado no X5M: passa GameMain, renderiza, memória estável. Aplicado nos DOIS
-binários (`bully` e `bully.compat`).
+ANTI-CHURN: se o despejo não reduz a memória (engine já no piso de working-set
+da cena), o cooldown recua de ~2s p/ ~30s — evita pedir despejo repetido que
+viraria stutter. (Validado no Mali-450: de 56 disparos/126s p/ 6 disparos/120s.)
+
+Validado no X5M (eviction dispara, del 7→748) E no Mali-450/833MB (eviction
+funciona no Utgard sem crash, memória estável ~187MB parado, anti-churn ok).
+Aplicado nos DOIS binários (`bully` e `bully.compat`).
 
 ### Áudio: anti "broken pipe" (R36S/ArkOS) + libs de fallback
 - **`alsoft.conf` non-mmap**: em devices só-ALSA (sem PulseAudio, ex: R36S/ArkOS)
