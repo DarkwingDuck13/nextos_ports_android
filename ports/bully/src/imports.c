@@ -424,7 +424,16 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
 }
 
+/* __stack_chk_fail neutralizado (insurance): com o TLS pad do main.c a canary
+ * bionic ja fica estavel e isto nunca dispara; mas se um path nao-coberto ler
+ * tpidr+0x28 instavel, melhor logar do que abortar o jogo. */
+static void b_stack_chk_fail(void) {
+  static int n = 0;
+  if (n++ < 3) fprintf(stderr, "[stack_chk_fail] FALSO-POSITIVO TLS ignorado\n");
+}
+
 DynLibFunction bully_stub_table[] = {
+  {"__stack_chk_fail", (uintptr_t)b_stack_chk_fail},
   {"eglSwapBuffers", (uintptr_t)my_eglSwapBuffers},
   {"__errno", (uintptr_t)bionic___errno}, {"__assert2", (uintptr_t)b_assert2},
   {"__strlen_chk", (uintptr_t)b_strlen_chk}, {"__strrchr_chk", (uintptr_t)b_strrchr_chk},

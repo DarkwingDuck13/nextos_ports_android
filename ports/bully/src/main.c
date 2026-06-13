@@ -28,6 +28,18 @@
 /* dummy Module p/ os externs do jni_shim (compat so_util_x64.h) */
 int mod_game, mod_cxx;
 
+/* 🩹 CANARY BIONIC (causa-raiz do "stack smashing detected" em alguns devices,
+ * ex: H700/Mali-G31 Knulli/muOS): o libGame (compilado p/ bionic) le a
+ * stack-guard de tpidr_el0+0x28 (TLS_SLOT_STACK_GUARD do Android). Sob glibc
+ * esse endereco cai num campo do TCB que MUDA durante a execucao (instavel em
+ * threads recem-criadas como a GameMain) -> prologo le X, epilogo le Y ->
+ * __stack_chk_fail -> abort. Em outras glibc (NextOS 2.43, X5M) o slot calhava
+ * estavel, por isso so quebrava em alguns devices. FIX (proven no Dysmantle):
+ * reservar um TLS local NA IMAGEM com um pad NUNCA escrito -> tpidr+0x28 fica
+ * estavel p/ toda thread -> a canary nunca mais da mismatch. `used` impede o
+ * linker de descartar; ancorado por leitura volatil no main(). */
+__attribute__((used, aligned(16))) _Thread_local char g_bionic_guard_pad[256];
+
 extern DynLibFunction bully_stub_table[];
 extern const int bully_stub_count;
 extern DynLibFunction revc_pthread_table[];
@@ -106,6 +118,7 @@ static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int 
 
 int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
+  { volatile char c = g_bionic_guard_pad[0]; (void)c; } /* ancora o TLS pad (nunca escreve) */
   install_crash_handler();
   fprintf(stderr, "=== Bully (Android) so-loader / NextOS aarch64 Mali-450 ===\n");
 

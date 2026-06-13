@@ -40,6 +40,19 @@ tile-based; fallback automatico p/ 0x se a GPU recusar). Paineis 720p/1080p sem
 MSAA. Override no Bully.sh (`BULLY_MSAA=4` forca / `BULLY_MSAA=0` desliga).
 Pra nitidez, confira tambem Settings > Clarity = HIGH.
 
+### Fix do "stack smashing detected" (H700/Mali-G31 — Knulli/muOS)
+Em alguns devices o jogo abortava com `*** stack smashing detected ***` logo
+ao subir a thread GameMain (depois do gate Rockstar, quase no gameplay). Causa:
+o libGame (bionic) le a stack-guard de `tpidr_el0+0x28`; sob a glibc desses
+devices esse slot do TCB e instavel em threads novas -> a canary "muda" no meio
+da funcao -> abort. (Em outras glibc, ex. NextOS/X5M, o slot calhava estavel,
+por isso so quebrava em alguns aparelhos.) FIX: o binario `bully` reserva um
+TLS pad fixo que estabiliza esse slot (mesma solucao ja validada no Dysmantle)
++ `__stack_chk_fail` neutralizado como insurance. Confirmado SEM regressao no
+X5M (segue rodando o gameplay). `bully.compat` (build da comunidade) ainda nao
+tem esse pad; se um device de glibc antiga abortar igual, basta recompilar com
+a mesma linha de TLS pad.
+
 ### Creditos
 A ideia de compilar contra glibc velha (e o binario `bully.compat` GLIBC_2.17)
 veio da comunidade, recompilando a partir do source publicado
