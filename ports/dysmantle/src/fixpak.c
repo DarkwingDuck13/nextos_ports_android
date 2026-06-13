@@ -23,33 +23,22 @@ static int (*z_uncompress)(unsigned char *, unsigned long *, const unsigned char
 static int (*z_compress2)(unsigned char *, unsigned long *, const unsigned char *, unsigned long, int);
 static unsigned long (*z_crc32)(unsigned long, const unsigned char *, unsigned);
 static unsigned long (*z_compressBound)(unsigned long);
-/* ---- libturbojpeg via dlopen ---- */
-static void *(*tj_init)(void);
-static int (*tj_compress2)(void *, const unsigned char *, int, int, int, int,
-                           unsigned char **, unsigned long *, int, int, int);
-static void (*tj_free)(unsigned char *);
-static int (*tj_destroy)(void *);
-static void *g_tj;
-
-#define TJPF_RGBA 7
-#define TJSAMP_420 2
+/* JPEG: encoder EMBUTIDO (jpeg_enc.c) — NÃO depende de lib do device. Devices
+ * como o Amlogic-old só têm libpng/libz, sem libjpeg/turbojpeg. */
+extern unsigned char *jpeg_encode_rgba(const unsigned char *, int, int, int, int, long *);
 
 static int load_libs(void) {
-  void *z = dlopen("libz.so.1", RTLD_NOW) ?: dlopen("libz.so", RTLD_NOW);
-  void *t = dlopen("libturbojpeg.so.0", RTLD_NOW) ?: dlopen("libturbojpeg.so", RTLD_NOW);
-  if (!z || !t) { fprintf(stderr, "fixpak: dlopen libz=%p tj=%p\n", z, t); return -1; }
+  /* só precisa do libz (universal: inflate do .ktx + deflate do PNG). */
+  void *z = dlopen("libz.so.1", RTLD_NOW);
+  if (!z) z = dlopen("libz.so", RTLD_NOW);
+  if (!z) { fprintf(stderr, "fixpak: dlopen libz falhou\n"); return -1; }
   z_uncompress = dlsym(z, "uncompress");
   z_compress2 = dlsym(z, "compress2");
   z_crc32 = dlsym(z, "crc32");
   z_compressBound = dlsym(z, "compressBound");
-  tj_init = dlsym(t, "tjInitCompress");
-  tj_compress2 = dlsym(t, "tjCompress2");
-  tj_free = dlsym(t, "tjFree");
-  tj_destroy = dlsym(t, "tjDestroy");
-  if (!z_uncompress || !z_compress2 || !z_crc32 || !tj_init || !tj_compress2) {
-    fprintf(stderr, "fixpak: dlsym falhou\n"); return -1;
+  if (!z_uncompress || !z_compress2 || !z_crc32) {
+    fprintf(stderr, "fixpak: dlsym libz falhou\n"); return -1;
   }
-  g_tj = tj_init();
   return 0;
 }
 
@@ -196,22 +185,18 @@ static int fix_one(const char *path) {
     unsigned char *rgba = ktx_to_rgba(ktx, (int)usz, &w, &h, &alpha);
     free(ktx);
     if (!rgba) continue;
-    unsigned char *blob = NULL; long blen = 0; int tjfree = 0;
-    if (!strcmp(nm + L - 4, ".png")) {
+    unsigned char *blob = NULL; long blen = 0;
+    if (!strcmp(nm + L - 4, ".png"))
       blob = rgba_to_png(rgba, w, h, &blen);
-    } else {
-      unsigned long js = 0; unsigned char *jb = NULL;
-      if (tj_compress2(g_tj, rgba, w, w * 4, h, TJPF_RGBA, &jb, &js, TJSAMP_420, 88, 0) == 0) {
-        blob = jb; blen = (long)js; tjfree = 1;
-      }
-    }
+    else
+      blob = jpeg_encode_rgba(rgba, w, h, 4, 88, &blen);
     free(rgba);
-    if (!blob || blen <= 0) { if (blob && tjfree) tj_free(blob); else free(blob); continue; }
+    if (!blob || blen <= 0) { free(blob); continue; }
     fwrite(blob, 1, blen, out);
     ent[i].off = (uint32_t)(blob_base + running);
     ent[i].size = (uint32_t)blen;
     running += blen;
-    if (tjfree) tj_free(blob); else free(blob);
+    free(blob);
     fixed++;
   }
   fclose(f);
@@ -246,6 +231,5 @@ int main(int argc, char **argv) {
   if (argc < 2) { fprintf(stderr, "uso: fixpak <pak>...\n"); return 2; }
   if (load_libs() != 0) return 1;
   for (int i = 1; i < argc; i++) fix_one(argv[i]);
-  if (g_tj && tj_destroy) tj_destroy(g_tj);
   return 0;
 }
