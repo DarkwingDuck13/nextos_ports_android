@@ -248,9 +248,9 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
     SDL_GL_SwapWindow(egl_window);
     int fc = ++frame_count;
-    if (fc <= 10 || fc % 60 == 0) {
-      //debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",
-      //            fc, (unsigned long)pthread_self());
+    if (fc <= 5 || fc % 120 == 0) {
+      debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",
+                  fc, (unsigned long)pthread_self());
     }
   } else {
     static int noswap_log = 0;

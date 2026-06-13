@@ -292,12 +292,17 @@ int main(int argc, char *argv[]) {
   setvbuf(stdout, NULL, _IONBF, 0); /* logs visíveis no crash (init_array era a causa, não isto) */
   debugPrintf("=== NFS Most Wanted — loader ARMHF (Mali-450) ===\n");
 
-  /* base = shims bionic→glibc (os 18 que o dlsym fallback não cobre) */
+  /* base = shims bionic→glibc (os 18 que o dlsym fallback não cobre)
+   * + shims pthread (tradução de layout das primitivas de sincronização) */
   extern DynLibFunction nfs_shims[];
   extern int nfs_shims_count;
-  g_comb = malloc(sizeof(DynLibFunction) * nfs_shims_count);
+  extern DynLibFunction nfs_pthread_shims[];
+  extern int nfs_pthread_shims_count;
+  g_comb = malloc(sizeof(DynLibFunction) * (nfs_shims_count + nfs_pthread_shims_count));
   memcpy(g_comb, nfs_shims, sizeof(DynLibFunction) * nfs_shims_count);
-  g_comb_n = nfs_shims_count;
+  memcpy(g_comb + nfs_shims_count, nfs_pthread_shims,
+         sizeof(DynLibFunction) * nfs_pthread_shims_count);
+  g_comb_n = nfs_shims_count + nfs_pthread_shims_count;
 
   /* dependências primeiro (cada uma vira fonte de símbolos p/ as seguintes) */
   if (load_module("libc++_shared.so", 24, 1) < 0) return 1; /* std::__ndk1 */
