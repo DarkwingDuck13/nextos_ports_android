@@ -212,6 +212,25 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
     fprintf(stderr, "    [%08lx-%08lx %6luK] %s%s\n", (unsigned long)rx[q].s, (unsigned long)rx[q].e,
             (unsigned long)((rx[q].e - rx[q].s) / 1024), rx[q].tag, has_pc ? "  <<< PC" : "");
   }
+  /* 🔎 a região do PC é um .so pequeno r-x anon (não sabemos qual) — varre por
+   * strings ASCII p/ identificar o módulo (nomes de função, "libXXX", etc.) */
+  for (int q = 0; q < nrx; q++) {
+    if (!(pc >= rx[q].s && pc < rx[q].e)) continue;
+    fprintf(stderr, "  --- strings na região do PC [%08lx-%08lx] ---\n",
+            (unsigned long)rx[q].s, (unsigned long)rx[q].e);
+    int shown = 0;
+    for (uintptr_t a = rx[q].s; a < rx[q].e && shown < 30; a++) {
+      const unsigned char *s = (const unsigned char *)a;
+      int len = 0;
+      while (a + len < rx[q].e && s[len] >= 32 && s[len] < 127 && len < 80) len++;
+      if (len >= 5) {
+        fprintf(stderr, "    +0x%05lx: %.*s\n", (unsigned long)(a - rx[q].s), len, s);
+        shown++;
+      }
+      a += len;
+    }
+    break;
+  }
   for (uintptr_t a = sp; a < sp + 0x2000 && n < 40; a += 4) {
     uintptr_t v = *(uintptr_t *)a;
     if (v >= text && v < text + text_size) {
@@ -362,6 +381,25 @@ int main(int argc, char *argv[]) {
   void *vm = 0, *env = 0;
   jni_shim_init(&vm, &env);
   debugPrintf("jni_shim: vm=%p env=%p\n", vm, env);
+
+  /* 🔑 JNI_OnLoad dos MÓDULOS SECUNDÁRIOS (libNimble/fmod): no Android o runtime
+   * chama JNI_OnLoad de CADA .so carregado via System.loadLibrary. libNimble
+   * (bridge JNI da EA) cacheia o JavaVM no seu JNI_OnLoad; se não chamarmos, o
+   * global g_vm fica NULL → Nimble::getEnv deref NULL → SIGSEGV (região anon r-x
+   * = texto do libNimble). Chamamos os do g_comb (snapshots) ANTES do libapp.
+   * (libapp não está no g_comb — snapshot=0 — então não duplica.) */
+  { uintptr_t called[8]; int nc = 0;
+    for (int i = 0; i < g_comb_n && nc < 8; i++) {
+      if (strcmp(g_comb[i].symbol, "JNI_OnLoad") != 0 || !g_comb[i].func) continue;
+      int dup = 0;
+      for (int k = 0; k < nc; k++) if (called[k] == g_comb[i].func) dup = 1;
+      if (dup) continue;
+      called[nc++] = g_comb[i].func;
+      int (*fn)(void *, void *) = (int (*)(void *, void *))g_comb[i].func;
+      int v = fn(vm, 0);
+      debugPrintf("JNI_OnLoad[secundário %p] -> 0x%x\n", (void *)g_comb[i].func, v);
+    }
+  }
 
   if (jni_onload) {
     int (*JNI_OnLoad)(void *, void *) = (int (*)(void *, void *))jni_onload;

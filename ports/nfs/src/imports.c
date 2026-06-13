@@ -252,6 +252,37 @@ static void *my_dlsym(void *handle, const char *name) {
   return p;
 }
 
+/* ---- dlopen: loga o que a engine tenta carregar (rastrear o módulo anon 12K) ---- */
+static void *(*real_dlopen)(const char *, int);
+static void *my_dlopen(const char *path, int flag) {
+  if (!real_dlopen) real_dlopen = (void *(*)(const char *, int))dlsym(RTLD_DEFAULT, "dlopen");
+  void *h = real_dlopen(path, flag);
+  fprintf(stderr, "[dlopen] '%s' flag=0x%x -> %p\n", path ? path : "(NULL)", flag, h);
+  return h;
+}
+
+/* ---- mmap: loga mapeamentos EXECUTÁVEIS (engine faz codegen/carrega .so da memória?) ---- */
+#include <sys/mman.h>
+static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long off) {
+  void *p = mmap(addr, len, prot, flags, fd, off);
+  if (prot & PROT_EXEC) {
+    static int n = 0;
+    if (n < 40) { fprintf(stderr, "[mmap-EXEC] addr=%p len=%zu(%zuK) prot=0x%x flags=0x%x fd=%d off=0x%lx -> %p\n",
+                          addr, len, len / 1024, prot, flags, fd, off, p); n++; }
+  }
+  return p;
+}
+
+static int my_mprotect(void *addr, size_t len, int prot) {
+  int r = mprotect(addr, len, prot);
+  if (prot & PROT_EXEC) {
+    static int n = 0;
+    if (n < 40) { fprintf(stderr, "[mprotect-EXEC] addr=%p len=%zu(%zuK) prot=0x%x -> %d\n",
+                          addr, len, len / 1024, prot, r); n++; }
+  }
+  return r;
+}
+
 /* ---- __dynamic_cast SEGURO ----
  * A engine, no parse de asset, chama dynamic_cast em objetos cujo ponteiro de
  * vtable está corrompido/deslocado (vtable[-1]=typeinfo aponta p/ CÓDIGO em vez
@@ -695,6 +726,9 @@ DynLibFunction nfs_shims[] = {
     {"eglGetProcAddress", (uintptr_t)egl_shim_GetProcAddress},
     {"pthread_create", (uintptr_t)my_pthread_create},
     {"dlsym", (uintptr_t)my_dlsym},
+    {"dlopen", (uintptr_t)my_dlopen},
+    {"mmap", (uintptr_t)my_mmap},
+    {"mprotect", (uintptr_t)my_mprotect},
     {"fopen", (uintptr_t)my_fopen},
     {"fread", (uintptr_t)my_fread},
     {"open", (uintptr_t)my_open},

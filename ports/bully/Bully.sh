@@ -60,9 +60,15 @@ if [ ! -f "$GAMEDIR/libGame.so" ] || [ ! -f "$GAMEDIR/assets/data_0.zip" ]; then
 fi
 
 # ---------- settings padrao da 1a execucao ----------
-# O jogo cria o settings.ini com Clarity (resolution) = rs_low em instalacao
-# nova. Semeia um padrao com rs_high (template gerado pelo proprio engine).
-# So age quando NAO existe settings.ini — depois a escolha do usuario manda.
+# O jogo so aplica os enums do settings.ini se vierem MAIUSCULOS (RS_High,
+# SS_Off, ...). Versoes antigas do nosso seed escreviam minusculo (rs_high) ->
+# o parser ignorava -> caia no default (Clarity Low). Aqui: 1a execucao semeia
+# MAIUSCULO; e migramos qualquer settings.ini antigo com token minusculo.
+if [ -f "$GAMEDIR/settings.ini" ]; then
+  # migracao: capitaliza tokens minusculos que SO o nosso seed antigo gerava
+  # (o jogo sempre escreve maiusculo -> nao toca em escolha do usuario).
+  sed -i -E 's/=rs_high/=RS_High/; s/=rs_med/=RS_Med/; s/=rs_low/=RS_Low/; s/=ss_off/=SS_Off/; s/=ss_low/=SS_Low/; s/=ss_medium/=SS_Medium/; s/=ss_high/=SS_High/; s/=ls_english/=LS_English/; s/=vs_high/=VS_High/; s/=vs_low/=VS_Low/; s/=vs_off/=VS_Off/; s/=vsm_digital/=VSM_Digital/; s/=vsm_analog/=VSM_Analog/; s/=vsm_flick/=VSM_Flick/' "$GAMEDIR/settings.ini" 2>/dev/null
+fi
 if [ ! -f "$GAMEDIR/settings.ini" ]; then
   cat > "$GAMEDIR/settings.ini" <<'SETEOF'
 bullysettings={
@@ -70,19 +76,19 @@ bullysettings={
 	musicvolume=0.600000,
 	speechvolume=0.700000,
 	brightness=0.800000,
-	shadow=ss_off,
-	resolution=rs_high,
-	language=ls_english,
+	shadow=SS_Off,
+	resolution=RS_High,
+	language=LS_English,
 	sensitivity=0.400000,
 	invertx=false,
 	inverty=false,
-	vibrate=vs_high,
+	vibrate=VS_High,
 	subtitles=false,
 	lefthanded=false,
 	autoclimb=false,
 	recording=false,
 	hasrated=false,
-	steeringmode=vsm_digital,
+	steeringmode=VSM_Digital,
 	positions=[6,{
 		center={
 			x=0.830000,
@@ -123,7 +129,7 @@ bullysettings={
 	vehiclesensitivity=0.800000
 }
 SETEOF
-  echo "settings.ini semeado com Clarity=rs_high (1a execucao)"
+  echo "settings.ini semeado com Clarity=RS_High (1a execucao)"
 fi
 
 # ---------- ambiente ----------
