@@ -48,10 +48,12 @@ devices esse slot do TCB e instavel em threads novas -> a canary "muda" no meio
 da funcao -> abort. (Em outras glibc, ex. NextOS/X5M, o slot calhava estavel,
 por isso so quebrava em alguns aparelhos.) FIX: o binario `bully` reserva um
 TLS pad fixo que estabiliza esse slot (mesma solucao ja validada no Dysmantle)
-+ `__stack_chk_fail` neutralizado como insurance. Confirmado SEM regressao no
-X5M (segue rodando o gameplay). `bully.compat` (build da comunidade) ainda nao
-tem esse pad; se um device de glibc antiga abortar igual, basta recompilar com
-a mesma linha de TLS pad.
++ `__stack_chk_fail` neutralizado como insurance. Aplicado nos DOIS binarios
+(`bully` e `bully.compat`) -- ambos confirmados SEM regressao (passam GameMain
+e renderizam o gameplay no Mali-450 e no Mali-G310). O `bully.compat` foi
+RECOMPILADO do nosso source com `zig cc -target aarch64-linux-gnu.2.17` (ver
+build_compat.sh) -> GLIBC_2.17 + o TLS pad, roda em qualquer device de glibc
+antiga (ArkOS/dArkOS) sem o stack smashing.
 
 ### Creditos
 A ideia de compilar contra glibc velha (e o binario `bully.compat` GLIBC_2.17)
