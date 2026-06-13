@@ -292,3 +292,24 @@ nfsmw_android.sb`→0x43e5ee8, `/var1/last_version.txt`→ok; MAS `/published/fo
 mount (mount[0x24]→0x41041c) + open no FS do OBB falha. **PRÓXIMO: Ghidra** (decompilar 0x41041c=resolve
 e o FS-open do OBB; tracing manual 5 níveis não converge). Hooks prontos: my_getfspath(0x4f0138),
 my_mntlookup(0x410230) em NFS_FSPATHLOG. tools_armdis.py p/ desmontar. Engine boota 100%.
+
+## 🟢🎯 PARTE 6 (2026-06-13) — OBB RESOLVIDO: engine lê assets do DISCO (extração). Novo muro=Nimble online
+**GHIDRA instalado** (~/re-tools: JDK21 + ghidra 12.1.2 + pyghidra; tools_armdis.py). Decompilei a cadeia:
+- VFS open vtable[6] (0x411510): path '@'→SKU; senão mount-lookup(0x410230, árvore de dirs [ctx+0x150]),
+  resolve(0x41041c, tira prefixo+prepende fs-path do mount), depois **FS open = vtable[6] de mount[0x24][8]**.
+- **FS open (0x582ac0) é DISK fs**: `stat(*p3)` + `open(*p3,O_RDONLY)` — abre arquivo de DISCO! (mesmo
+  método usado p/ /var1 que FUNCIONA = arquivos no disco). Hook (my_fsopen, NFS_FSPATHLOG) capturou o
+  path de DISCO exato: `/storage/roms/nfs/data/Android/data/com.ea.games.nfs13_row/files/published.1x/
+  data/locales.sb` (data→SKU published.1x) e `.../files/published/stringdata/ENG_US/nfsmw_android.sb`
+  (strings→base+locale). **No Android o instalador EXTRAI o OBB pro disco; a engine lê do disco, NÃO do
+  archive.** Por isso o open falhava (nada extraído).
+- **FIX VALIDADO**: extraí published/{data,fonts,layouts,flow,stringdata,sounds,tweaks,...} + published.1x/*
+  do OBB pro `.../files/` no device (540MB, unzip on-device). → **TODOS os "Could not open database"
+  SUMIRAM**; engine passou ScreenFactory → carregou locales/regions/strings → avançou até a init do
+  **Nimble (online/tracking EA)**: refreshcatalog/restorepurchases/pushtng/Tracking/sendTrackingMessage.
+- **MURO ATUAL**: o 1º RunLoop tick NUNCA retorna (0 frames logados, nfs a 94% CPU = BUSY-LOOP). A engine
+  spinna na init do Nimble esperando um componente online (getComponent(ITracking)→NULL via jni_shim) que
+  os stubs não fornecem. **PRÓXIMO**: decompilar/instrumentar o loop do Nimble (achar o que ele checa em
+  loop) e fazer o jni_shim/stub retornar valor que satisfaça (ou pular a init de tracking/online).
+  Setup p/ produção: extrair OBB→disco no 1º run (launcher). Ghidra pronto em ~/re-tools p/ próximas
+  decompilações. Engine boota 100% + carrega dados; falta a init online não bloquear.

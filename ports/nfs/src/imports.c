@@ -435,7 +435,18 @@ static void *my_mntlookup(void *ctx, void *key, void *r2, void *r3) {
   void *(*real)(void *, void *, void *, void *) = (void *(*)(void *, void *, void *, void *))g_mntlk_tramp;
   void *ret = real(ctx, key, r2, r3);
   static int n = 0;
-  if (n < 60) { fprintf(stderr, "[mntlookup #%d] ctx=%p ret=%p\n", n, ctx, ret); log_path_arg("key", key); n++; }
+  if (n < 60) { fprintf(stderr, "[mntlookup #%d] ctx=%p ret=%p\n", n, ctx, ret); log_path_arg("key", key);
+    /* se mount achado, computa o método FS open (vtable[6] de mount[0x24][8]) como offset */
+    if (ret && (uintptr_t)ret > 0x10000) { extern void *text_base; uintptr_t tb = (uintptr_t)text_base;
+      uintptr_t r10 = *(uintptr_t *)((char *)ret + 0x24);
+      fprintf(stderr, "  mount[0x24]=%p", (void *)r10);
+      if (r10 > 0x10000) { uintptr_t fs = *(uintptr_t *)((char *)r10 + 8);
+        fprintf(stderr, " fsobj=%p", (void *)fs);
+        if (fs > 0x10000) { uintptr_t vt = *(uintptr_t *)fs; uintptr_t open6 = *(uintptr_t *)(vt + 0x18);
+          fprintf(stderr, " vt=%p open6=%p (libapp+0x%lx)", (void *)vt, (void *)open6,
+                  (open6 > tb && open6 < tb + 0xa00000) ? (unsigned long)(open6 - tb) : 0); } }
+      fprintf(stderr, "\n"); }
+    n++; }
   return ret;
 }
 
@@ -476,6 +487,18 @@ static void *my_getfspath(void *out, void *path_r1, void *r2, void *r3) {
       (void *(*)(void *, void *, void *, void *))g_fsp_tramp;
   return real(out, path_r1, r2, r3);
 }
+/* hook do FS open (0x582ac0, disk fs): loga *param_3 = path de DISCO (stat/open) */
+static uintptr_t g_fsopen_tramp;
+static void *my_fsopen(void *out, void *p2, void **p3, void *r3) {
+  static int n = 0;
+  if (n < 80 && p3 && (uintptr_t)p3 > 0x10000) {
+    char *path = (char *)*p3;
+    fprintf(stderr, "[fsopen #%d] disk-path=\"%.160s\"\n", n, (path && (uintptr_t)path > 0x10000) ? path : "?"); n++;
+  }
+  void *(*real)(void *, void *, void **, void *) = (void *(*)(void *, void *, void **, void *))g_fsopen_tramp;
+  return real(out, p2, p3, r3);
+}
+
 void nfs_install_getfspath_hook(void) {
   extern void hook_arm(uintptr_t, uintptr_t);
   extern void *text_base;
@@ -510,6 +533,23 @@ void nfs_install_getfspath_hook(void) {
     __builtin___clear_cache((char *)fn2, (char *)fn2 + 8);
     mprotect((void *)pb2, pg * 2, PROT_READ | PROT_EXEC);
     fprintf(stderr, "[mntlookup-hook] @%p hooked\n", (void *)fn2);
+  }
+
+  /* hook 3: FS open (disk) 0x582ac0 */
+  uintptr_t fn3 = (uintptr_t)text_base + 0x582ac0;
+  uint8_t *tr3 = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr3 != MAP_FAILED) {
+    memcpy(tr3, (void *)fn3, 8);
+    *(uint32_t *)(tr3 + 8) = 0xe51ff004u;
+    *(uint32_t *)(tr3 + 12) = (uint32_t)(fn3 + 8);
+    __builtin___clear_cache((char *)tr3, (char *)tr3 + 16);
+    g_fsopen_tramp = (uintptr_t)tr3;
+    uintptr_t pb3 = fn3 & ~((uintptr_t)pg - 1);
+    mprotect((void *)pb3, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    hook_arm(fn3, (uintptr_t)my_fsopen);
+    __builtin___clear_cache((char *)fn3, (char *)fn3 + 8);
+    mprotect((void *)pb3, pg * 2, PROT_READ | PROT_EXEC);
+    fprintf(stderr, "[fsopen-hook] @%p hooked\n", (void *)fn3);
   }
 }
 
