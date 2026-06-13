@@ -2,6 +2,44 @@
 
 ---
 
+## v8 — 2026-06-13 — FIX do vazamento de memória (OOM / "trava depois de ~30min")
+
+> Resolve o problema relatado por vários testers de R36S/1GB: o jogo roda mas a
+> RAM enche e ele crasha/congela depois de ~20-30 min (clássico: trava no portão
+> da escola). zram/swap só adiavam. Agora é resolvido na raiz.
+
+### Causa
+A engine do Bully faz **streaming de textura** do mundo (carrega conforme você
+anda). No Android, ela **despeja** as texturas antigas quando o SO manda
+`onLowMemory`. O nosso port nunca enviava esse sinal → a engine achava que tinha
+RAM infinita e **nunca chamava `glDeleteTextures`** → as texturas acumulavam até
+OOM. Medido na instrumentação: o jogo criava 2300+ texturas e deletava **7**;
+~390 MB de textura viva e só subindo.
+
+### Fix
+O binário agora monitora a memória de textura viva e, quando passa de um teto,
+**dispara o `implOnLowMemory` da própria engine** — que roda o despejo de
+streaming dela (seguro, ela sabe o que não está em uso) e chama `glDeleteTextures`.
+Medido depois do fix: deletes saltaram de 7 → 748, e a memória **para de crescer**
+(fica oscilando numa banda em vez de ir ao infinito).
+
+O teto é automático por RAM (no `Bully.sh`, ajustável em `BULLY_TEX_BUDGET_MB`):
+- **~1GB** (R36S, TSP, RG35XX): 200 MB + encolhe texturas (`TEX_HALF`) também no
+  kmsdrm → working set menor.
+- **~2GB**: 320 MB.
+- **3GB+** (X5M): 448 MB (quase nunca dispara → sem churn/stutter).
+
+Validado no X5M: passa GameMain, renderiza, memória estável. Aplicado nos DOIS
+binários (`bully` e `bully.compat`).
+
+### Ainda pendente (próximas versões)
+- Áudio "broken pipe" em devices só-ALSA (R36S/ArkOS sem Pulse) — fix mapeado
+  (alsoft.conf non-mmap).
+- Tela preta no RGCubeXX/Knulli (sem `/dev/dri` → backend `mali` não apresenta).
+- Qualidade em painel 640x480.
+
+---
+
 ## v7 — 2026-06-12 — DOIS binarios (NextOS + compat GLIBC_2.17) = roda em qualquer device; MSAA auto 480p; SEM swap
 
 > Codigo do jogo IDENTICO ao v6. A v7 resolve de vez a compatibilidade
