@@ -636,6 +636,29 @@ static void hook_cxa(void) {
   hook_x64(so_symbol(&mod_game, "__cxa_guard_abort"), (uintptr_t)my_cxa_guard_abort);
 }
 
+/* ---- CLARITY (resolution scale) HIGH forcada ----
+ * BullySettings::GetResolutionDefault() faz uma VERIFICACAO DE HARDWARE
+ * (perfprofile: std::map<ProfileResolution,ResolutionSetting>) e devolve o
+ * ResolutionSetting do perfil do aparelho: potente (X5M 4GB) -> 2 (RS_High),
+ * fraco (Mali-450 1GB) -> 0 (RS_Low). Por isso a Clarity nao "pega" pelo
+ * settings.ini nem persiste -- a engine sobrescreve pela verificacao toda vez.
+ * Aqui forcamos o retorno = RS_High em TODOS os devices. Enum confirmado na
+ * tabela .rodata 0x5e4834: RS_Low=0, RS_Med=1, RS_High=2.
+ * Override: BULLY_CLARITY=low|med|high (default high). */
+static int my_GetResolutionDefault(void *self) {
+  (void)self;
+  const char *e = getenv("BULLY_CLARITY");
+  if (e) { if (!strcmp(e, "low")) return 0; if (!strcmp(e, "med")) return 1; }
+  return 2; /* RS_High */
+}
+static void hook_clarity(void) {
+  uintptr_t s = so_symbol(&mod_game, "_ZN13BullySettings20GetResolutionDefaultEv");
+  if (s) {
+    hook_x64(s, (uintptr_t)my_GetResolutionDefault);
+    fprintf(stderr, "[clarity] GetResolutionDefault hooked -> RS_High (verificacao de hw ignorada)\n");
+  }
+}
+
 /* ---- ASYNC FILE WORKER (porta do bully-NX) — A PEÇA QUE FALTAVA ----
  * No Android os arquivos carregam ASSÍNCRONO: uma fila (AndroidFile::
  * firstAsyncFile) é avançada por AND_FileUpdated(delta) a cada frame por um
@@ -752,6 +775,19 @@ static void hook_nvapk(void) {
 #undef HK
 }
 
+/* v8.3: le MemAvailable do /proc/meminfo em MB; -1 se indisponivel (kernel<3.14).
+ * Usado pelo despejo anti-OOM p/ disparar por PRESSAO REAL de RAM (raro) em vez
+ * de teto fixo de textura (que disparava a cada 2s e estourava o audio no A53). */
+static long bully_memavail_mb(void) {
+  FILE *mf = fopen("/proc/meminfo", "r");
+  if (!mf) return -1;
+  char line[160]; long kb = -1;
+  while (fgets(line, sizeof line, mf))
+    if (sscanf(line, "MemAvailable: %ld kB", &kb) == 1) break;
+  fclose(mf);
+  return kb < 0 ? -1 : kb / 1024;
+}
+
 void jni_load(void) {
   build_env();
   for (unsigned i = 0; i < sizeof(fake_vm)/sizeof(uintptr_t); i++)
@@ -770,6 +806,7 @@ void jni_load(void) {
   hook_threads(); /* gerência de thread Switch-safe -> destrava GameMain/whitetexture */
   hook_screen();  /* OS_ScreenGetWidth/Height + render gates como função */
   hook_cxa();     /* __cxa_guard simples -> statics C++ (whitetexture?) inicializam */
+  hook_clarity(); /* GetResolutionDefault -> RS_High (engine sempre poe Low em 1GB) */
   so_make_text_executable();
   so_flush_caches();
   asset_archive_init();
@@ -871,10 +908,22 @@ void jni_load(void) {
    * viva -> a engine roda o proprio despejo (libera com seguranca, chama
    * glDeleteTextures). Teto via BULLY_TEX_BUDGET_MB (0=desliga). */
   void (*OnLowMemory)(void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnLowMemory");
-  long tex_budget_mb = getenv("BULLY_TEX_BUDGET_MB") ? atol(getenv("BULLY_TEX_BUDGET_MB")) : 256;
+  /* v8.3: o gatilho do despejo passou a ser PRESSAO REAL de RAM (MemAvailable),
+   * nao teto fixo de textura. O teto antigo (200MB no Mali-450) era MENOR que o
+   * working-set normal (~200MB) mesmo com 220MB+ ainda LIVRES -> disparava a cada
+   * 2s SEM pressao real, e cada implOnLowMemory trava a render thread (sweep
+   * sincrono de glDeleteTextures) -> estourava o audio no A53. Agora so despeja
+   * quando MemAvailable cai abaixo do piso (raro) -> audio limpo + anti-OOM.
+   * Piso via BULLY_LOWMEM_MB (default 96; 0=desliga). Se o kernel nao tiver
+   * MemAvailable (<3.14), cai no teto de textura antigo (BULLY_TEX_BUDGET_MB). */
+  long lowmem_floor_mb = getenv("BULLY_LOWMEM_MB") ? atol(getenv("BULLY_LOWMEM_MB")) : 150;
+  long tex_budget_mb = getenv("BULLY_TEX_BUDGET_MB") ? atol(getenv("BULLY_TEX_BUDGET_MB")) : 300;
   extern long long g_texbytes_live; int lowmem_cd = 0;
   long long lowmem_pre = 0; int lowmem_stuck = 0; /* anti-churn: detecta piso da engine */
-  fprintf(stderr, "[lowmem] OnLowMemory=%p teto=%ld MB\n", (void*)OnLowMemory, tex_budget_mb);
+  int lowmem_have_avail = (bully_memavail_mb() > 0); /* kernel expoe MemAvailable? */
+  fprintf(stderr, "[lowmem] OnLowMemory=%p modo=%s piso=%ld MB (teto-textura fallback=%ld MB)\n",
+          (void*)OnLowMemory, lowmem_have_avail ? "MemAvailable" : "teto-textura",
+          lowmem_floor_mb, tex_budget_mb);
 
   /* loop de render */
   fprintf(stderr, "[drv] -- loop implOnDrawFrame --\n");
@@ -905,21 +954,33 @@ void jni_load(void) {
     }
     if (rk_signin && f > 45) { rk_signin = 0; if (OS_SignInComplete) OS_SignInComplete(); }
 
-    /* anti-OOM: pede despejo quando a textura viva passa do teto (so in-game).
-     * ANTI-CHURN: se o despejo anterior NAO reduziu a memoria (engine ja esta no
-     * piso de working-set da cena), recua o cooldown p/ ~30s em vez de insistir
-     * a cada 2s (senao vira stutter pedindo despejo que a engine nao pode dar). */
+    /* anti-OOM v8.3: DOIS gatilhos, pra nao travar (escola/mapa pesados) E nao
+     * estourar o audio (disparo a toa). (1) TETO DE TEXTURA proativo, checado
+     * todo frame -- mas ACIMA do working-set normal (~180MB) pra so disparar em
+     * area pesada (escola), trimando a streaming cache ANTES de esgotar a RAM;
+     * (2) PRESSAO REAL de RAM (MemAvailable) como rede de seguranca, a cada 10
+     * frames. O teto antigo (200MB == working-set) disparava a cada 2s mesmo com
+     * RAM livre -> estourava o audio; o teto novo (300MB) so dispara no pico.
+     * ANTI-CHURN: se o despejo nao reduziu a memoria, recua o cooldown p/ ~30s. */
     if (lowmem_cd > 0) lowmem_cd--;
-    if (OnLowMemory && tex_budget_mb > 0 && lowmem_cd == 0 && f > 300 &&
-        g_texbytes_live > (long long)tex_budget_mb * 1024 * 1024) {
-      if (lowmem_pre > 0 && g_texbytes_live >= lowmem_pre - 4LL*1024*1024) {
-        if (lowmem_stuck < 3) lowmem_stuck++;        /* nao caiu desde o ultimo -> piso */
-      } else lowmem_stuck = 0;                        /* caiu -> despejo ajudou */
-      lowmem_pre = g_texbytes_live;
-      OnLowMemory(fake_env, NULL);
-      fprintf(stderr, "[lowmem] disparado @ %lld MB (teto %ld, stuck=%d)\n",
-              g_texbytes_live/(1024*1024), tex_budget_mb, lowmem_stuck);
-      lowmem_cd = (lowmem_stuck >= 2) ? 1800 : 120;  /* piso: ~30s; normal: ~2s */
+    if (OnLowMemory && lowmem_cd == 0 && f > 300) {
+      int over = 0; long avail = -1;
+      if (tex_budget_mb > 0 && g_texbytes_live > (long long)tex_budget_mb * 1024 * 1024)
+        over = 1;                                       /* (1) teto de textura (todo frame) */
+      if (!over && lowmem_have_avail && lowmem_floor_mb > 0 && (f % 10 == 0)) {
+        avail = bully_memavail_mb();                    /* (2) pressao de RAM (a cada 10 frames) */
+        if (avail >= 0 && avail < lowmem_floor_mb) over = 1;
+      }
+      if (over) {
+        if (lowmem_pre > 0 && g_texbytes_live >= lowmem_pre - 4LL*1024*1024) {
+          if (lowmem_stuck < 3) lowmem_stuck++;        /* nao caiu desde o ultimo -> piso */
+        } else lowmem_stuck = 0;                        /* caiu -> despejo ajudou */
+        lowmem_pre = g_texbytes_live;
+        OnLowMemory(fake_env, NULL);
+        fprintf(stderr, "[lowmem] disparado: avail=%ld MB (piso %ld) tex=%lld MB stuck=%d\n",
+                avail, lowmem_floor_mb, g_texbytes_live/(1024*1024), lowmem_stuck);
+        lowmem_cd = (lowmem_stuck >= 2) ? 1800 : 120;  /* piso: ~30s; normal: ~2s */
+      }
     }
 
     OnDrawFrame(fake_env, NULL, 1.0f/60.0f);  /* heartbeat; GL real ocorre na render thread do jogo */
