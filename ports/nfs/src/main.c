@@ -355,6 +355,11 @@ int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
   nfs_cache_flags(); /* lê os NFS_* UMA vez (antes de threads/setenv) → sem getenv em hot path */
+  /* argv[1] = nº de frames (robusto: argv não é afetado pela corrupção do environ
+   * pela engine; NFS_FRAMES por getenv estava falhando no hot path). */
+  fprintf(stderr, "[ARGV] argc=%d argv1=%s\n", argc, argc > 1 ? argv[1] : "(none)");
+  if (argc > 1) { extern int g_nfs_frames; int n = atoi(argv[1]); if (n > 0) g_nfs_frames = n;
+    fprintf(stderr, "[ARGV] g_nfs_frames set to %d\n", g_nfs_frames); }
   install_crash_handler();
   __asm__ volatile("" : : "r"(g_bionic_guard_pad) : "memory"); /* força o pad no TLS */
   setvbuf(stdout, NULL, _IONBF, 0); /* logs visíveis no crash (init_array era a causa, não isto) */
@@ -484,7 +489,12 @@ int main(int argc, char *argv[]) {
      * eglSwapBuffers -> egl_shim -> SDL_GL_SwapWindow) */
     uintptr_t tick = so_find_addr_safe("Java_com_ea_ironmonkey_RunLoop_nativeOnRunLoopTick");
     debugPrintf(">> entrando no render loop (tick=%p)\n", (void *)tick);
-    int frames = getenv("NFS_FRAMES") ? atoi(getenv("NFS_FRAMES")) : 600;
+    extern int g_nfs_frames; /* cacheado em nfs_cache_flags (environ corrompido aqui) */
+    int frames = g_nfs_frames;
+    fprintf(stderr, "[FRAMES] cap no render loop = %d\n", frames);
+    /* 🔑 torna o contexto GL current NESTA thread (a engine assume que o
+     * GLSurfaceView já fez isso) — sem isso toda chamada GL vai pro vazio. */
+    { extern int egl_shim_make_root_current(void); egl_shim_make_root_current(); }
     int recov = getenv("NFS_TICKRECOVER") != NULL;
     for (int f = 0; f < frames && tick; f++) {
       if (recov) {
@@ -502,6 +512,9 @@ int main(int argc, char *argv[]) {
       } else {
         ((void(*)(void*,void*))tick)(env, fake_this);
       }
+      /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
+       * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
+      { extern void egl_shim_force_present(void); egl_shim_force_present(); }
       if (f < 5 || f % 60 == 0) debugPrintf("[frame %d]\n", f);
       usleep(16000);
     }

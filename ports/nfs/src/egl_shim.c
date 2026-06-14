@@ -69,8 +69,30 @@ void egl_shim_create_window(void) {
   }
   debugPrintf("egl_shim: GL share-root context created\n");
 
-  SDL_GL_MakeCurrent(egl_window, NULL);
-  debugPrintf("egl_shim: Context released, ready for game\n");
+  /* MANTÉM o share_root current desde já (a engine NÃO cria contexto próprio nem
+   * faz MakeCurrent — assume o GLSurfaceView; sem isso glGetString=NULL no init do
+   * renderer e tudo vai pro vazio). has_real_gl=1 p/ o SwapBuffers apresentar. */
+  if (SDL_GL_MakeCurrent(egl_window, egl_share_root) == 0) has_real_gl = 1;
+  debugPrintf("egl_shim: share_root MANTIDO current (has_real_gl=%d), ready for game\n", has_real_gl);
+}
+
+/* 🔑 No Android o GLSurfaceView cria o contexto GL e o torna CURRENT na render
+ * thread; a engine nativa só USA o contexto corrente. No nosso port ninguém faz
+ * isso → nenhum contexto current → toda chamada GL falha (glGetString=NULL,
+ * texturas/shaders no vazio) → fb0 preto. Esta fn torna o share_root current na
+ * thread chamadora (nossa render thread) e o MANTÉM. Chamada antes do render loop. */
+extern const unsigned char *glGetString(unsigned int name);
+int egl_shim_make_root_current(void) {
+  if (!egl_window || !egl_share_root) {
+    fprintf(stderr, "[egl] make_root_current: window=%p root=%p (FALHOU)\n",
+            (void *)egl_window, (void *)egl_share_root);
+    return 0;
+  }
+  int r = SDL_GL_MakeCurrent(egl_window, egl_share_root);
+  has_real_gl = (r == 0);
+  fprintf(stderr, "[egl] make_root_current: r=%d err=%s | RENDERER=%s\n", r,
+          r ? SDL_GetError() : "ok", (const char *)glGetString(0x1F01)/*GL_RENDERER*/);
+  return r == 0;
 }
 
 /* --- Mutex hooks (called from imports.c pthread wrappers) --- */
@@ -241,6 +263,36 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
   return EGL_TRUE;
 }
 
+/* present FORÇADO chamado pelo nosso render loop após cada tick. No Android quem
+ * faz eglSwapBuffers é o GLSurfaceView (framework Java) — a engine nativa NÃO
+ * chama swap. Sem framework, NÓS apresentamos. Não gateia em has_real_gl
+ * (thread-local; o tick roda na nossa thread c/ o contexto da engine current). */
+void egl_shim_force_present(void) {
+  if (!egl_window) { static int w=0; if(!w){w=1;fprintf(stderr,"[present] egl_window NULL!\n");} return; }
+  static int fc = 0; fc++;
+  if (fc <= 3) {
+    void *cur = SDL_GL_GetCurrentContext();
+    fprintf(stderr, "[present] #%d window=%p curctx=%p tid=%lx\n", fc, (void*)egl_window, cur,
+            (unsigned long)pthread_self());
+    if (!cur) { /* sem contexto current na nossa thread → torna o share-root current p/ apresentar */
+      SDL_GL_MakeCurrent(egl_window, egl_share_root);
+      fprintf(stderr, "[present] make share-root current: err=%s\n", SDL_GetError());
+    }
+  }
+  /* TESTE do pipe de present: NFS_TESTRED=1 limpa VERMELHO antes do swap.
+   * fb0 vermelho => present OK (engine não desenha). fb0 preto => contexto/thread errado. */
+  static int testred = -1;
+  if (testred < 0) testred = getenv("NFS_TESTRED") ? 1 : 0;
+  if (testred) {
+    void *cur = SDL_GL_GetCurrentContext();
+    if (!cur) SDL_GL_MakeCurrent(egl_window, egl_share_root);
+    extern void glClearColor(float,float,float,float); extern void glClear(unsigned);
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(0x4000 /*GL_COLOR_BUFFER_BIT*/);
+  }
+  SDL_GL_SwapWindow(egl_window);
+}
+
 EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (!egl_window) return EGL_TRUE;
@@ -307,6 +359,34 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
 
 void *egl_shim_GetProcAddress(const char *procname) {
+  /* 🔑 EGL via eglGetProcAddress: a engine importa SÓ eglGetProcAddress e pega
+   * eglCreateContext/eglMakeCurrent/eglSwapBuffers/... por aqui. DEVE retornar
+   * NOSSOS shims (SDL2-backed/Mali fbdev) — SDL_GL_GetProcAddress devolveria o
+   * libEGL REAL, que precisa de ANativeWindow (inexistente) → surface/contexto
+   * falham → "Renderer: NULL" → fb0 preto. Roteando p/ os shims, o pipeline EGL
+   * inteiro passa pelo SDL2 → renderiza no fb0. */
+  if (procname[0] == 'e' && procname[1] == 'g' && procname[2] == 'l') {
+    static const struct { const char *n; void *f; } egltab[] = {
+      {"eglGetDisplay", egl_shim_GetDisplay}, {"eglInitialize", egl_shim_Initialize},
+      {"eglTerminate", egl_shim_Terminate}, {"eglChooseConfig", egl_shim_ChooseConfig},
+      {"eglGetConfigAttrib", egl_shim_GetConfigAttrib},
+      {"eglCreateWindowSurface", egl_shim_CreateWindowSurface},
+      {"eglCreatePbufferSurface", egl_shim_CreatePbufferSurface},
+      {"eglDestroySurface", egl_shim_DestroySurface}, {"eglCreateContext", egl_shim_CreateContext},
+      {"eglDestroyContext", egl_shim_DestroyContext}, {"eglMakeCurrent", egl_shim_MakeCurrent},
+      {"eglSwapBuffers", egl_shim_SwapBuffers}, {"eglSwapInterval", egl_shim_SwapInterval},
+      {"eglGetCurrentContext", egl_shim_GetCurrentContext},
+      {"eglGetCurrentSurface", egl_shim_GetCurrentSurface}, {"eglGetError", egl_shim_GetError},
+      {"eglQueryString", egl_shim_QueryString}, {"eglQuerySurface", egl_shim_QuerySurface},
+      {"eglBindAPI", egl_shim_BindAPI}, {"eglSurfaceAttrib", egl_shim_SurfaceAttrib},
+      {"eglGetProcAddress", egl_shim_GetProcAddress}, {0, 0}
+    };
+    for (int i = 0; egltab[i].n; i++)
+      if (strcmp(procname, egltab[i].n) == 0) {
+        debugPrintf("egl_shim: eglGetProcAddress(%s) -> shim %p\n", procname, egltab[i].f);
+        return egltab[i].f;
+      }
+  }
   void *ptr = SDL_GL_GetProcAddress(procname);
   if (ptr) return ptr;
 

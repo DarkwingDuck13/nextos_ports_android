@@ -7,6 +7,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "util.h"
 
@@ -14,19 +15,17 @@
 
 int debugPrintf(const char *text, ...) {
   va_list list;
-
-  FILE *f = fopen(LOG_NAME, "a");
-  if (f) {
-    va_start(list, text);
-    vfprintf(f, text, list);
-    va_end(list);
-    fclose(f);
+  /* NÃO escrever em arquivo (fopen/fclose por chamada na vfat = lento + enche
+   * disco com o spam da engine). NFS_DEBUGFILE=1 reativa p/ debug pontual. */
+  static int filelog = -1;
+  if (filelog < 0) filelog = getenv("NFS_DEBUGFILE") ? 1 : 0;
+  if (filelog) {
+    FILE *f = fopen(LOG_NAME, "a");
+    if (f) { va_start(list, text); vfprintf(f, text, list); va_end(list); fclose(f); }
   }
-
   va_start(list, text);
   vprintf(text, list);
   va_end(list);
-
   return 0;
 }
 
