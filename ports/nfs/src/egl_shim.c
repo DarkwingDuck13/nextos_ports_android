@@ -11,6 +11,7 @@
 #include <SDL2/SDL.h>
 #include <GLES2/gl2.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -41,6 +42,9 @@ SDL_Window *egl_shim_get_window(void) { return egl_window; }
 void egl_shim_create_window(void) {
   if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0)
     debugPrintf("egl_shim: SDL_Init falhou: %s\n", SDL_GetError());
+  { const char *drv = SDL_GetCurrentVideoDriver();
+    FILE *vf = fopen("/tmp/nfs_video.txt", "w");
+    if (vf) { fprintf(vf, "video_driver=%s\n", drv ? drv : "(NULL)"); fclose(vf); } }
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -55,7 +59,7 @@ void egl_shim_create_window(void) {
   egl_window = SDL_CreateWindow(
       PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
       SCREEN_WIDTH, SCREEN_HEIGHT,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
   if (!egl_window) {
     debugPrintf("egl_shim: SDL_CreateWindow FAILED: %s\n", SDL_GetError());
     return;
@@ -268,6 +272,9 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
  * chama swap. Sem framework, NÓS apresentamos. Não gateia em has_real_gl
  * (thread-local; o tick roda na nossa thread c/ o contexto da engine current). */
 void egl_shim_force_present(void) {
+  { static int hb = 0; hb++;
+    if (hb == 1 || hb % 30 == 0) { FILE *h = fopen("/tmp/present.txt", "w");
+      if (h) { fprintf(h, "present_calls=%d window=%p\n", hb, (void *)egl_window); fclose(h); } } }
   if (!egl_window) { static int w=0; if(!w){w=1;fprintf(stderr,"[present] egl_window NULL!\n");} return; }
   static int fc = 0; fc++;
   if (fc <= 3) {
@@ -289,6 +296,20 @@ void egl_shim_force_present(void) {
     extern void glClearColor(float,float,float,float); extern void glClear(unsigned);
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
     glClear(0x4000 /*GL_COLOR_BUFFER_BIT*/);
+  }
+  /* 📸 screenshot via glReadPixels (lê o BACKBUFFER GL real — o que a engine
+   * desenhou, independente de /dev/fb0). Trigger: existe /tmp/nfs_shot.
+   * Bully usa o mesmo método; ler fb0 pode não refletir o render Mali/EGL. */
+  if (access("/tmp/nfs_shot", F_OK) == 0) {
+    static unsigned char *shot;
+    int W = SCREEN_WIDTH, H = SCREEN_HEIGHT;
+    if (!shot) shot = malloc(W * H * 4);
+    extern void glReadPixels(int, int, int, int, unsigned, unsigned, void *);
+    glReadPixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, shot);
+    FILE *sf = fopen("/tmp/nfs_shot.raw", "wb");
+    if (sf) { fwrite(shot, 1, W * H * 4, sf); fclose(sf); }
+    unlink("/tmp/nfs_shot");
+    fprintf(stderr, "[shot] glReadPixels %dx%d -> /tmp/nfs_shot.raw\n", W, H);
   }
   SDL_GL_SwapWindow(egl_window);
 }

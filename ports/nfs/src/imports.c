@@ -36,12 +36,59 @@ static FILE *map_sF(void *fp) {
   if (fp == (void *)(bionic_sF + 2 * BIONIC_FILE_SZ)) return stderr;
   return (FILE *)fp;
 }
-static int w_fprintf(void *fp, const char *fmt, ...) {
-  va_list ap; va_start(ap, fmt); int r = vfprintf(map_sF(fp), fmt, ap); va_end(ap); return r;
+/* 🔑 filtro de SPAM de log da engine: "EventSystem is null" (SoundManager) é
+ * emitido ~1000x/frame (EventSystem do FMOD nulo) → enche o tmpfs (OOM/SIGKILL) e
+ * trava a engine a ~1fps no I/O. Dropa essas linhas na fonte. NFS_NOQUIET=1 off. */
+static int g_quiet = -1;
+static int nfs_log_spam(const char *s, size_t n) {
+  if (!s) return 0;
+  if (g_quiet < 0) g_quiet = getenv("NFS_NOQUIET") ? 0 : 1;
+  if (!g_quiet) return 0;
+  size_t lim = n < 160 ? n : 160;
+  for (size_t i = 0; i + 11 <= lim; i++)
+    if (s[i] == 'E' && memcmp(s + i, "EventSystem", 11) == 0) return 1;
+  return 0;
 }
-static int w_vfprintf(void *fp, const char *fmt, va_list ap) { return vfprintf(map_sF(fp), fmt, ap); }
-static size_t w_fwrite(const void *p, size_t s, size_t n, void *fp) { return fwrite(p, s, n, map_sF(fp)); }
-static int w_fputs(const char *str, void *fp) { return fputs(str, map_sF(fp)); }
+static int w_fprintf(void *fp, const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  char buf[600]; int r = vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+  if (nfs_log_spam(buf, r > 0 ? (size_t)r : 0)) return r;
+  return fputs(buf, map_sF(fp));
+}
+static int w_vfprintf(void *fp, const char *fmt, va_list ap) {
+  char buf[600]; int r = vsnprintf(buf, sizeof buf, fmt, ap);
+  if (nfs_log_spam(buf, r > 0 ? (size_t)r : 0)) return r;
+  return fputs(buf, map_sF(fp));
+}
+static size_t w_fwrite(const void *p, size_t s, size_t n, void *fp) {
+  if (nfs_log_spam((const char *)p, s * n)) return n;
+  return fwrite(p, s, n, map_sF(fp));
+}
+static int w_fputs(const char *str, void *fp) {
+  if (nfs_log_spam(str, str ? strlen(str) : 0)) return 0;
+  return fputs(str, map_sF(fp));
+}
+/* hooks diretos (a engine importa printf/puts/vprintf do libc) com mesmo filtro */
+static int my_puts(const char *s) { if (nfs_log_spam(s, s ? strlen(s) : 0)) return 0; return puts(s); }
+static int my_printf(const char *fmt, ...) {
+  char buf[512]; va_list ap; va_start(ap, fmt); int r = vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+  if (nfs_log_spam(buf, r > 0 ? (size_t)r : 0)) return r;
+  return fputs(buf, stdout);
+}
+static int my_vprintf(const char *fmt, va_list ap) {
+  char buf[512]; int r = vsnprintf(buf, sizeof buf, fmt, ap);
+  if (nfs_log_spam(buf, r > 0 ? (size_t)r : 0)) return r;
+  return fputs(buf, stdout);
+}
+/* write(2) catch-all: pega QUALQUER saída da engine p/ stdout/stderr (fd 1/2)
+ * independente do caminho stdio (printf/puts/EA log/etc) e dropa o spam. Outros
+ * fds (arquivos) passam direto. */
+static ssize_t (*real_write)(int, const void *, size_t);
+static ssize_t my_write(int fd, const void *buf, size_t n) {
+  if (!real_write) real_write = (ssize_t (*)(int, const void *, size_t))dlsym(RTLD_DEFAULT, "write");
+  if ((fd == 1 || fd == 2) && nfs_log_spam((const char *)buf, n)) return (ssize_t)n;
+  return real_write(fd, buf, n);
+}
 static int w_fputc(int c, void *fp) { return fputc(c, map_sF(fp)); }
 static int w_fflush(void *fp) { return fflush(fp ? map_sF(fp) : NULL); }
 
@@ -53,11 +100,16 @@ static void b_assert2(const char *f, int l, const char *fn, const char *m) {
 }
 static int b_log_print(int prio, const char *tag, const char *fmt, ...) {
   (void)prio; va_list ap; va_start(ap, fmt);
-  fprintf(stderr, "[%s] ", tag ? tag : "nfs"); vfprintf(stderr, fmt, ap);
-  fprintf(stderr, "\n"); va_end(ap); return 0;
+  char buf[600]; int r = vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+  if (nfs_log_spam(buf, r > 0 ? (size_t)r : 0)) return 0;
+  if (tag && nfs_log_spam(tag, strlen(tag))) return 0;
+  fprintf(stderr, "[%s] %s\n", tag ? tag : "nfs", buf);
+  return 0;
 }
 static int b_log_write(int prio, const char *tag, const char *msg) {
-  (void)prio; fprintf(stderr, "[%s] %s\n", tag ? tag : "nfs", msg ? msg : ""); return 0;
+  (void)prio;
+  if (msg && nfs_log_spam(msg, strlen(msg))) return 0;
+  fprintf(stderr, "[%s] %s\n", tag ? tag : "nfs", msg ? msg : ""); return 0;
 }
 static void b_log_assert(const char *cond, const char *tag, const char *fmt, ...) {
   (void)cond; va_list ap; va_start(ap, fmt);
@@ -115,7 +167,9 @@ static void *pad_memalign(size_t al, size_t n) { return memalign(al, n + nfs_pad
 int g_nfs_dcastlog, g_nfs_rclog, g_nfs_wildlog, g_nfs_tichain;
 int g_nfs_nodcastrec, g_nfs_norecover, g_nfs_noassertignore;
 int g_nfs_dcwalk;  /* NFS_DCWALK=1 usa nosso walker; default=libcxxabi nativo (relocs corretas) */
+int g_nfs_frames = 600; /* NFS_FRAMES cacheado cedo (a engine corrompe environ depois) */
 void nfs_cache_flags(void) {
+  { const char *f = getenv("NFS_FRAMES"); if (f && *f) g_nfs_frames = atoi(f); }
   g_nfs_dcwalk = getenv("NFS_DCWALK") != NULL;
   g_nfs_dcastlog = getenv("NFS_DCASTLOG") != NULL;
   g_nfs_rclog = getenv("NFS_RCLOG") != NULL;
@@ -259,9 +313,29 @@ static int my_open(const char *path, int flags, ...) {
  * (softfp). Retornamos o wrapper softfp_resolve ANTES do dlsym real (senão
  * pega a versão HARDFP do glibc → crash). NFS_DLSYMLOG=1 loga. ---- */
 extern void *softfp_resolve(const char *);
+/* OpenSL ES shim (opensles_shim.c) p/ o FMOD: ele dlopen("libOpenSLES.so") +
+ * dlsym(slCreateEngine, SL_IID_*). O device não tem libOpenSLES → FMOD falha →
+ * EventSystem::init falha → jogo trava no spam. Roteamos p/ o nosso shim SDL2. */
+extern int slCreateEngine_shim();          /* SLresult slCreateEngine_shim(void**,...) */
+extern const void *sl_IID_ENGINE, *sl_IID_PLAY, *sl_IID_VOLUME, *sl_IID_BUFFERQUEUE,
+                   *sl_IID_EFFECTSEND;
+#define NFS_OPENSLES_SENTINEL ((void *)0x05105105)
+static void *my_opensles_dlsym(const char *name) {
+  if (!name) return NULL;
+  if (strcmp(name, "slCreateEngine") == 0) return (void *)slCreateEngine_shim;
+  if (strcmp(name, "SL_IID_ENGINE") == 0) return (void *)&sl_IID_ENGINE;
+  if (strcmp(name, "SL_IID_PLAY") == 0) return (void *)&sl_IID_PLAY;
+  if (strcmp(name, "SL_IID_VOLUME") == 0) return (void *)&sl_IID_VOLUME;
+  if (strcmp(name, "SL_IID_ANDROIDSIMPLEBUFFERQUEUE") == 0 || strcmp(name, "SL_IID_BUFFERQUEUE") == 0)
+    return (void *)&sl_IID_BUFFERQUEUE;
+  /* ANDROIDCONFIGURATION/RECORD/etc: IID dummy (GetInterface do shim aceita qualquer) */
+  if (strncmp(name, "SL_IID_", 7) == 0) return (void *)&sl_IID_EFFECTSEND;
+  return NULL;
+}
 static void *(*real_dlsym)(void *, const char *);
 static void *my_dlsym(void *handle, const char *name) {
   if (!real_dlsym) real_dlsym = (void *(*)(void *, const char *))dlsym(RTLD_DEFAULT, "dlsym");
+  if (handle == NFS_OPENSLES_SENTINEL) { void *s = my_opensles_dlsym(name); if (s) return s; }
   void *p = softfp_resolve(name);
   if (!p) p = real_dlsym(handle, name);
   if (getenv("NFS_DLSYMLOG")) {
@@ -337,10 +411,26 @@ static int my_readdir_r(void *dirp, void *entry, void **result) {
   return real_readdir64_r(dirp, entry, result);
 }
 
+/* stub do FMOD EventSystem::init → FMOD_OK (0). Faz o EventSystem ficar não-nulo
+ * no SoundManager → mata o spam "EventSystem is null" + destrava o jogo (sem som). */
+static int fmod_es_init_stub(void *self, int maxchannels, unsigned int flags,
+                             void *extradriverdata, unsigned int eventflags) {
+  (void)self; (void)maxchannels; (void)flags; (void)extradriverdata; (void)eventflags;
+  static int once = 0;
+  if (!once) { fprintf(stderr, "[FMOD] EventSystem::init STUBADO -> FMOD_OK (sem som)\n"); once = 1; }
+  return 0; /* FMOD_OK */
+}
+
 /* ---- dlopen: loga o que a engine tenta carregar (rastrear o módulo anon 12K) ---- */
 static void *(*real_dlopen)(const char *, int);
 static void *my_dlopen(const char *path, int flag) {
   if (!real_dlopen) real_dlopen = (void *(*)(const char *, int))dlsym(RTLD_DEFAULT, "dlopen");
+  /* FMOD dlopen("libOpenSLES.so") → sentinela (device não tem a lib); o dlsym
+   * subsequente é roteado p/ o nosso opensles_shim. */
+  if (path && strstr(path, "libOpenSLES")) {
+    fprintf(stderr, "[dlopen] '%s' -> OpenSLES SHIM sentinel\n", path);
+    return NFS_OPENSLES_SENTINEL;
+  }
   void *h = real_dlopen(path, flag);
   fprintf(stderr, "[dlopen] '%s' flag=0x%x -> %p\n", path ? path : "(NULL)", flag, h);
   return h;
@@ -986,6 +1076,12 @@ DynLibFunction nfs_shims[] = {
     {"eglGetProcAddress", (uintptr_t)egl_shim_GetProcAddress},
     {"pthread_create", (uintptr_t)my_pthread_create},
     {"dlsym", (uintptr_t)my_dlsym},
+    {"dlopen", (uintptr_t)my_dlopen},
+    /* FMOD EventSystem::init falha (sem áudio no device) → EventSystem nulo →
+     * SoundManager spama SetVolume/SetMute (syscall direta, não filtrável) +
+     * thrasha o device. NFS_FMODSTUB=1 força init=FMOD_OK p/ o EventSystem ficar
+     * não-nulo (sem som, mas para o spam e destrava o jogo). */
+    {"_ZN4FMOD11EventSystem4initEijPvj", (uintptr_t)fmod_es_init_stub},
     {"opendir", (uintptr_t)my_opendir},
     {"closedir", (uintptr_t)my_closedir},
     {"readdir", (uintptr_t)my_readdir},
@@ -1007,6 +1103,7 @@ DynLibFunction nfs_shims[] = {
     {"__sF", (uintptr_t)bionic_sF},
     {"fprintf", (uintptr_t)w_fprintf}, {"vfprintf", (uintptr_t)w_vfprintf},
     {"fwrite", (uintptr_t)w_fwrite}, {"fputs", (uintptr_t)w_fputs},
+    {"write", (uintptr_t)my_write}, {"puts", (uintptr_t)my_puts}, {"printf", (uintptr_t)my_printf},
     {"fputc", (uintptr_t)w_fputc}, {"fflush", (uintptr_t)w_fflush},
     {"__errno", (uintptr_t)b_errno},
     {"__assert2", (uintptr_t)b_assert2},
