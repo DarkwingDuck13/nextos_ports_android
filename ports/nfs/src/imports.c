@@ -425,11 +425,13 @@ static int fmod_es_init_stub(void *self, int maxchannels, unsigned int flags,
 static void *(*real_dlopen)(const char *, int);
 static void *my_dlopen(const char *path, int flag) {
   if (!real_dlopen) real_dlopen = (void *(*)(const char *, int))dlsym(RTLD_DEFAULT, "dlopen");
-  /* FMOD dlopen("libOpenSLES.so") → sentinela (device não tem a lib); o dlsym
-   * subsequente é roteado p/ o nosso opensles_shim. */
+  /* FMOD dlopen("libOpenSLES.so"): rotear p/ o opensles_shim quebrava o boot
+   * (FMOD usava a sentinela e crashava ANTES da janela). NFS_OPENSLES=1 reativa
+   * p/ experimentar; default = deixa falhar (FMOD trata e segue, render OK). */
   if (path && strstr(path, "libOpenSLES")) {
-    fprintf(stderr, "[dlopen] '%s' -> OpenSLES SHIM sentinel\n", path);
-    return NFS_OPENSLES_SENTINEL;
+    static int en = -1; if (en < 0) en = getenv("NFS_OPENSLES") ? 1 : 0;
+    if (en) { fprintf(stderr, "[dlopen] '%s' -> OpenSLES SHIM sentinel\n", path);
+      return NFS_OPENSLES_SENTINEL; }
   }
   void *h = real_dlopen(path, flag);
   fprintf(stderr, "[dlopen] '%s' flag=0x%x -> %p\n", path ? path : "(NULL)", flag, h);

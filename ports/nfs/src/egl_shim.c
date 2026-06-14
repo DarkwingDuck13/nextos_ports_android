@@ -297,19 +297,25 @@ void egl_shim_force_present(void) {
     glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
     glClear(0x4000 /*GL_COLOR_BUFFER_BIT*/);
   }
-  /* 📸 screenshot via glReadPixels (lê o BACKBUFFER GL real — o que a engine
-   * desenhou, independente de /dev/fb0). Trigger: existe /tmp/nfs_shot.
-   * Bully usa o mesmo método; ler fb0 pode não refletir o render Mali/EGL. */
-  if (access("/tmp/nfs_shot", F_OK) == 0) {
-    static unsigned char *shot;
-    int W = SCREEN_WIDTH, H = SCREEN_HEIGHT;
-    if (!shot) shot = malloc(W * H * 4);
-    extern void glReadPixels(int, int, int, int, unsigned, unsigned, void *);
-    glReadPixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, shot);
-    FILE *sf = fopen("/tmp/nfs_shot.raw", "wb");
-    if (sf) { fwrite(shot, 1, W * H * 4, sf); fclose(sf); }
-    unlink("/tmp/nfs_shot");
-    fprintf(stderr, "[shot] glReadPixels %dx%d -> /tmp/nfs_shot.raw\n", W, H);
+  /* 📸 screenshot AUTOMÁTICO via glReadPixels (lê o BACKBUFFER GL real — o que a
+   * engine desenhou, independente de /dev/fb0 que não reflete o Mali/EGL). Salva
+   * a cada 100 frames (overwrite) → o último frame antes do crash fica capturado.
+   * Bully usa o mesmo método. NFS_NOAUTOSHOT=1 desliga. */
+  {
+    static int sc = 0, off = -1;
+    if (off < 0) off = getenv("NFS_NOAUTOSHOT") ? 1 : 0;
+    if (!off && (++sc % 50 == 0 || sc == 5)) {
+      static unsigned char *shot;
+      int W = SCREEN_WIDTH, H = SCREEN_HEIGHT;
+      if (!shot) shot = malloc(W * H * 4);
+      extern void glReadPixels(int, int, int, int, unsigned, unsigned, void *);
+      extern void glGetIntegerv(unsigned, int *);
+      int fbo = -1; glGetIntegerv(0x8CA6 /*GL_FRAMEBUFFER_BINDING*/, &fbo);
+      glReadPixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, shot);
+      FILE *sf = fopen("auto.raw", "wb"); if (sf) { fwrite(shot, 1, W * H * 4, sf); fclose(sf); }
+      FILE *st = fopen("shotstats.txt", "w");
+      if (st) { fprintf(st, "frame=%d fbo_bound=%d\n", sc, fbo); fclose(st); }
+    }
   }
   SDL_GL_SwapWindow(egl_window);
 }
