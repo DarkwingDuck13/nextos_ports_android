@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <malloc.h>
 #include <dlfcn.h>
 #include <string.h>
@@ -274,19 +275,66 @@ static void *my_dlsym(void *handle, const char *name) {
 static void *(*real_opendir)(const char *);
 static int (*real_closedir)(void *);
 static int g_opendir_n, g_closedir_n;
+static int g_dir_depth_max;
 static void *my_opendir(const char *path) {
   if (!real_opendir) real_opendir = (void *(*)(const char *))dlsym(RTLD_DEFAULT, "opendir");
+  int depth = g_opendir_n - g_closedir_n; /* fds atualmente abertos = profundidade da recursão */
+  /* NFS_DIRCAP=N: quando a recursão passa de N níveis abertos, falha o opendir
+   * (retorna NULL) p/ QUEBRAR a recursão infinita na raiz. Diagnóstico+workaround:
+   * se a engine prossegue, o walk era não-essencial / bug de self-recursão. */
+  static int cap = -2;
+  if (cap == -2) { const char *c = getenv("NFS_DIRCAP"); cap = c ? atoi(c) : -1; }
+  if (cap > 0 && depth >= cap) {
+    static int capped;
+    if (capped < 8) {
+      fprintf(stderr, "[opendir CAP] depth=%d >= %d, falhando '%s' caller=%p\n",
+              depth, cap, path ? path : "?", __builtin_return_address(0));
+      capped++;
+    }
+    errno = EMFILE;
+    return NULL;
+  }
   void *d = real_opendir(path);
   g_opendir_n++;
-  if (getenv("NFS_DIRLOG") && g_opendir_n < 40)
-    fprintf(stderr, "[opendir #%d] '%s' -> %p caller=%p (closes=%d)\n", g_opendir_n,
-            path ? path : "?", d, __builtin_return_address(0), g_closedir_n);
+  if (depth + 1 > g_dir_depth_max) g_dir_depth_max = depth + 1;
+  if (getenv("NFS_DIRLOG")) {
+    /* loga as 40 primeiras + toda vez que a profundidade bate novo recorde
+     * (captura o crescimento da recursão sem storm de log) */
+    if (g_opendir_n < 40 || (depth + 1) == g_dir_depth_max)
+      fprintf(stderr, "[opendir #%d depth=%d] '%s' -> %p caller=%p\n", g_opendir_n,
+              depth + 1, path ? path : "?", d, __builtin_return_address(0));
+  }
   return d;
 }
 static int my_closedir(void *d) {
   if (!real_closedir) real_closedir = (int (*)(void *))dlsym(RTLD_DEFAULT, "closedir");
   g_closedir_n++;
   return real_closedir(d);
+}
+
+/* ---- readdir → readdir64 (FIX do busy-loop / fd-leak da PARTE 7) ----
+ * A engine (bionic) lê dirent->d_name no OFFSET 19 (visto no disassembly de
+ * enumerate@0x582c24: `ldrb r1,[r9,#19]!`). Layout bionic 32-bit:
+ *   d_ino(8) d_off(8) d_reclen(2) d_type(1) d_name@19.
+ * Mas o `readdir` da glibc (sem _FILE_OFFSET_BITS=64) usa `struct dirent` com
+ * ino/off de 4 bytes → d_name@11. A engine lendo @19 pega 8 bytes adiante →
+ * nomes ≤8 chars (data/fonts/flow/sounds…) viram VAZIO → o walk recursivo
+ * desce com basename "" → child==parent → re-scan infinito da raiz "files"
+ * (1011 fds abertos = profundidade da recursão). O `struct dirent64` da glibc
+ * tem EXATAMENTE o layout bionic (ino/off 8B, reclen@16, type@18, d_name@19),
+ * então basta rotear readdir→readdir64. Mesma classe do fix stat→stat64. */
+static void *(*real_readdir64)(void *);
+static void *my_readdir(void *dirp) {
+  if (!real_readdir64) real_readdir64 = (void *(*)(void *))dlsym(RTLD_DEFAULT, "readdir64");
+  return real_readdir64(dirp);
+}
+/* idem p/ readdir_r (a engine tb o importa): readdir64_r preenche dirent64
+ * (d_name@19) no buffer do chamador, que é dimensionado p/ dirent bionic. */
+static int (*real_readdir64_r)(void *, void *, void **);
+static int my_readdir_r(void *dirp, void *entry, void **result) {
+  if (!real_readdir64_r)
+    real_readdir64_r = (int (*)(void *, void *, void **))dlsym(RTLD_DEFAULT, "readdir64_r");
+  return real_readdir64_r(dirp, entry, result);
 }
 
 /* ---- dlopen: loga o que a engine tenta carregar (rastrear o módulo anon 12K) ---- */
@@ -912,6 +960,8 @@ DynLibFunction nfs_shims[] = {
     {"dlsym", (uintptr_t)my_dlsym},
     {"opendir", (uintptr_t)my_opendir},
     {"closedir", (uintptr_t)my_closedir},
+    {"readdir", (uintptr_t)my_readdir},
+    {"readdir_r", (uintptr_t)my_readdir_r},
     {"fopen", (uintptr_t)my_fopen},
     {"fread", (uintptr_t)my_fread},
     {"open", (uintptr_t)my_open},

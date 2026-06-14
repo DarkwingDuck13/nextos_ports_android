@@ -1,5 +1,28 @@
 # NFS Most Wanted (2012) → NextOS Mali-450 (so-loader armhf)
 
+## 🟢 PARTE 8 (2026-06-14) — fd-leak/busy-loop RESOLVIDO via análise estática: readdir→readdir64 (layout dirent bionic≠glibc)
+CAUSA-RAIZ achada SEM rodar, só decompilando `enumerate@0x582c24` (a fn virtual do disk FS,
+vtable em file_off 0xab7328: slot−1=0x582ac0 open, slot0=0x582c24 enumerate, slot+1=0x582dcc stat).
+- `enumerate(path, visitor)` = opendir(*path) → p/ cada entry (pula só `.`/`..`) → `std::string` do
+  d_name → `visitor->vtable[1](visitor+4, &name)` (blx em 582d78) → closedir. SEMPRE fecha.
+- **A engine lê `d_name` no OFFSET 19** (`582c84: ldrb r1,[r9,#19]!`) e `d_name[1]` em 20, e usa
+  `d_type`@18 — = layout **bionic** (d_ino8+d_off8+d_reclen2+d_type1→d_name@19).
+- Mas o `readdir` da **glibc** (sem _FILE_OFFSET_BITS=64) usa `struct dirent` ino/off de 4B →
+  **d_name@11, d_type@10**. A engine lendo @19 pega 8 bytes adiante → nomes ≤8 chars
+  (data/fonts/flow/sounds/models…) viram **VAZIO**. A engine NÃO pula nome vazio → constrói
+  basename "" → o visitor recursa com child==parent → **re-scan infinito da raiz "files"**
+  (os 1011 fds abertos = profundidade da recursão; closedir externo nunca alcançado).
+- **FIX (mesma classe do stat→stat64): hookar readdir→readdir64 e readdir_r→readdir64_r.** O
+  `struct dirent64` da glibc tem EXATAMENTE o layout bionic (ino/off 8B, reclen@16, type@18,
+  d_name@19). src/imports.c: my_readdir/my_readdir_r (dlsym readdir64/readdir64_r), registrados
+  na tabela. Tb melhorei my_opendir: loga profundidade (open−close) + NFS_DIRCAP=N (falha opendir
+  acima de N níveis = quebra recursão, diag/workaround de reserva).
+- ⚠️ DEPLOYMENT FOI PERDIDO (corrupção da vfat /storage/roms no device .164, desmonte sujo):
+  redeployado via rsync de ~/nfs-stage (bin+5 .so+devlibs + files/published+published.1x extraídos
+  do OBB local, 1.6G). NÃO pus o OBB no device (engine lê do disco, Parte 6). Rodar:
+  `cd /storage/roms/nfs && LD_LIBRARY_PATH=/usr/lib32:. SDL_VIDEODRIVER=mali NFS_INIT=1 ./nfs`.
+  PRÓXIMO: validar que passa o walk e chega ao 1º eglSwapBuffers (imagem!).
+
 ## 🔬 SESSÃO 2026-06-13 PARTE 4 — RE com CAPSTONE: path exato capturado, lookup do archive quebrado
 Capstone (5.0.7) está instalado. Escrevi `tools_armdis.py` (desmonta ARM resolvendo refs PIC a
 strings via ldr[pc]+add pc) e um scanner de xref próprio. Achados:
