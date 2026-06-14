@@ -49,6 +49,9 @@ enum {
   MID_LOCALE,
   MID_LANGUAGE,
   MID_OS_VERSION,
+  MID_GET_BITMAP,
+  MID_GET_WIDTH,
+  MID_GET_HEIGHT,
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -144,6 +147,9 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_GET_FILES_DIR];
   if (strcmp(name, "getPackageName") == 0 || strcmp(name, "getPackName") == 0)
     return &g_method_tags[MID_GET_PACK_NAME];
+  if (strcmp(name, "getBitmap") == 0) return &g_method_tags[MID_GET_BITMAP];
+  if (strcmp(name, "getWidth") == 0) return &g_method_tags[MID_GET_WIDTH];
+  if (strcmp(name, "getHeight") == 0) return &g_method_tags[MID_GET_HEIGHT];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -262,6 +268,11 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
     debugPrintf("jni_shim: CallObjectMethod -> packageName = %s\n", g_package_name);
     return make_jstring(g_package_name);
   }
+  if (methodID == &g_method_tags[MID_GET_BITMAP]) {
+    static int bitmap_obj; /* handle distinto p/ o Bitmap (abm_* ignoram o ptr) */
+    if (getenv("NFS_BMPLOG")) fprintf(stderr, "[jni getBitmap] -> %p\n", (void *)&bitmap_obj);
+    return &bitmap_obj;
+  }
   debugPrintf("jni_shim: CallObjectMethod(mid=%p)\n", methodID);
   static int fake_obj;
   return &fake_obj;
@@ -284,7 +295,8 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   return 0; /* isFullApkAssets -> 0 */
 }
 
-/* CallIntMethod (index 61) */
+/* CallIntMethod (index 61) — getWidth/getHeight NÃO são forçados (há chamadas
+ * precoces não-Bitmap que esperam 0); o caminho do Bitmap usa abm_getInfo. */
 static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;

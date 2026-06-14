@@ -114,6 +114,19 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
     }
   }
 
+  /* 🩹 recupera CHAMADA a ponteiro de função NULL/inválido (blx NULL): a engine
+   * itera listas de objetos chamando virtual vtable[N]; algum objeto tem o slot
+   * NULL (virtual não-implementada / reloc não-resolvida). PC vira ~0 → faulta.
+   * Pula a virtual-call (PC←LR, r0=0) → o caller avança o iterador e segue.
+   * NFS_NORECOVER=1 desliga. */
+  if (sig == SIGSEGV && !g_nfs_norecover && pc < 0x1000 && lr > 0x10000) {
+    static int nrec = 0;
+    m->arm_pc = lr; m->arm_r0 = 0; nrec++;
+    if (nrec <= 8) fprintf(stderr, "[RECOVER-NULLCALL] blx NULL (pc=%lx) lr=%lx -> skip (#%d)\n",
+                           (unsigned long)pc, (unsigned long)lr, nrec);
+    return;
+  }
+
   /* 🩹 recupera o memcpy/op com DESTINO NULO e n pequeno (padrão recorrente da
    * engine: destrutor de objeto garbage no parse de asset) — "retorna" da função
    * que crashou (PC←LR) pulando a cópia, p/ a engine seguir. NFS_NORECOVER=1 off. */

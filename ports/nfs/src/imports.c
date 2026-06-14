@@ -928,9 +928,37 @@ static unsigned long my_getauxval(unsigned long t) {
 static int b_dso_handle;                       /* __dso_handle = endereço dummy */
 static void *b_cxa_type_match(void *a, void *b, char c) { (void)a; (void)b; (void)c; return (void *)0; }
 /* __sigsetjmp: declarado por <setjmp.h> (via so_util.h); bionic sigsetjmp == isso */
-/* AndroidBitmap (jnigraphics) — stub: sinaliza erro p/ a engine cair no fallback */
-static int abm_getInfo(void *env, void *bmp, void *info) { (void)env; (void)bmp; (void)info; return -1; }
-static int abm_lock(void *env, void *bmp, void **pix) { (void)env; (void)bmp; if (pix) *pix = 0; return -1; }
+/* AndroidBitmap (jnigraphics): a engine usa getBitmap()->Bitmap p/ renderizar
+ * texto/fonte (no Android o framework desenha; aqui não há framework). Antes os
+ * stubs sinalizavam erro (-1, pixels NULL) esperando fallback, mas a engine NÃO
+ * tem fallback gracioso — fazia memcpy dos pixels NULL → SIGSEGV (PARTE 8). Agora
+ * retornamos SUCESSO com um buffer REAL zerado: o texto/glifo fica em branco mas
+ * a engine prossegue e RENDERIZA. */
+#define ABM_W 1024
+#define ABM_H 1024
+#define ABM_STRIDE (ABM_W * 4)
+static unsigned char *abm_buf(void) {
+  static unsigned char *buf;
+  if (!buf) buf = (unsigned char *)calloc(1, 16 * 1024 * 1024); /* 16MB: folga contra over-read */
+  return buf;
+}
+static int abm_getInfo(void *env, void *bmp, void *info) {
+  (void)env; (void)bmp;
+  if (info) {
+    unsigned int *p = (unsigned int *)info; /* AndroidBitmapInfo: w,h,stride,format,flags */
+    p[0] = ABM_W; p[1] = ABM_H; p[2] = ABM_STRIDE;
+    p[3] = 1; /* ANDROID_BITMAP_FORMAT_RGBA_8888 */
+    p[4] = 0;
+  }
+  if (getenv("NFS_BMPLOG")) fprintf(stderr, "[abm_getInfo] bmp=%p -> %dx%d stride=%d\n", bmp, ABM_W, ABM_H, ABM_STRIDE);
+  return 0; /* ANDROID_BITMAP_RESULT_SUCCESS */
+}
+static int abm_lock(void *env, void *bmp, void **pix) {
+  (void)env; (void)bmp;
+  if (pix) *pix = abm_buf();
+  if (getenv("NFS_BMPLOG")) fprintf(stderr, "[abm_lock] bmp=%p -> pix=%p\n", bmp, pix ? *pix : 0);
+  return 0;
+}
 static int abm_unlock(void *env, void *bmp) { (void)env; (void)bmp; return 0; }
 
 DynLibFunction nfs_shims[] = {
