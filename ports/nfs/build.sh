@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 
 SRCS="src/main.c src/imports.c src/imports.gen.c src/android_shim.c src/jni_shim.c \
       src/so_util.c src/egl_shim.c src/opensles_shim.c src/util.c src/error.c src/softfp_shim.c \
-      src/pthread_shim.c"
+      src/pthread_shim.c src/font_shim.c"
 
 $CC --sysroot="$SR" -march=armv7-a -mfpu=neon -mfloat-abi=hard \
     -D_GNU_SOURCE -I src -O2 -fPIC \

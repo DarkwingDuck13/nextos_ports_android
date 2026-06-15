@@ -14,9 +14,21 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 #include "jni_shim.h"
 #include "util.h"
+
+/* ---- font_shim (rasterização de texto) e bitmap (imports.c) ---- */
+extern void *font_create_from_file(const char *path, float size);
+extern void *font_create_from_family(const char *fontsdir, const char *family, float size);
+extern void font_set_size(void *paint, float size);
+extern float font_get_size(void *paint);
+extern float font_measure(void *paint, const char *str);
+extern void font_draw(void *paint, const char *str, int x, int y,
+                      unsigned char *buf, int bw, int bh, int stride);
+extern unsigned char *nfs_abm_buf(void);
+extern int nfs_abm_w(void); extern int nfs_abm_h(void); extern int nfs_abm_stride(void);
 
 #define JNI_VTABLE_SIZE 512
 
@@ -54,16 +66,30 @@ enum {
   MID_GET_HEIGHT,
   MID_GET_TOTAL_MEMORY,
   MID_GET_PERF_SCORE,
+  /* fonte/texto (BitmapGraphics/Paint) */
+  MID_CREATE_PAINT_FILE,
+  MID_CREATE_PAINT_FAMILY,
+  MID_SET_TEXT_SIZE,
+  MID_GET_TEXT_SIZE,
+  MID_GET_FONT_METRICS,
+  MID_MEASURE_TEXT,
+  MID_DRAW_STRING,
+  MID_BMG_CLEAR,
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
   FID_HEIGHT,
   FID_DENSITY,
   FID_DENSITY_DPI,
+  FID_FM_ASCENT,
+  FID_FM_DESCENT,
+  FID_FM_TOP,
+  FID_FM_BOTTOM,
+  FID_FM_LEADING,
   FID_GENERIC,
 };
 
-static int g_method_tags[32]; /* unique addresses used as method IDs */
+static int g_method_tags[64]; /* unique addresses used as method IDs */
 
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
@@ -76,20 +102,23 @@ void jni_shim_set_package(const char *package_name, int obb_version) {
 
 /* ---- Fake jstring tracking ---- */
 /* We return tagged pointers as jstrings and map them to C strings */
-#define MAX_JSTRINGS 32
+#define MAX_JSTRINGS 512
 static struct {
   void *handle;
-  const char *value;
+  char *value; /* CÓPIA própria (não ponteiro do buffer da engine, que é reusado) */
 } g_jstrings[MAX_JSTRINGS];
 static int g_jstring_count = 0;
 
+/* 🔑 COPIA o conteúdo: NewStringUTF recebe um buffer da engine que é reusado/
+ * liberado; guardar o ponteiro fazia o texto virar LIXO no drawString. */
 static void *make_jstring(const char *value) {
   static char jstring_storage[MAX_JSTRINGS];
   if (g_jstring_count >= MAX_JSTRINGS)
     g_jstring_count = 0; /* wrap around */
   int idx = g_jstring_count++;
+  free(g_jstrings[idx].value);
+  g_jstrings[idx].value = strdup(value ? value : "");
   g_jstrings[idx].handle = &jstring_storage[idx];
-  g_jstrings[idx].value = value;
   return g_jstrings[idx].handle;
 }
 
@@ -157,6 +186,13 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
    * Reportar memória real (MB) mantém os texturepacks residentes. */
   if (strcmp(name, "getTotalMemory") == 0) return &g_method_tags[MID_GET_TOTAL_MEMORY];
   if (strcmp(name, "getPerformanceScore") == 0) return &g_method_tags[MID_GET_PERF_SCORE];
+  /* fonte/texto (BitmapGraphics/Paint) */
+  if (strcmp(name, "setTextSize") == 0) return &g_method_tags[MID_SET_TEXT_SIZE];
+  if (strcmp(name, "getTextSize") == 0) return &g_method_tags[MID_GET_TEXT_SIZE];
+  if (strcmp(name, "getFontMetricsInt") == 0) return &g_method_tags[MID_GET_FONT_METRICS];
+  if (strcmp(name, "measureText") == 0) return &g_method_tags[MID_MEASURE_TEXT];
+  if (strcmp(name, "drawString") == 0) return &g_method_tags[MID_DRAW_STRING];
+  if (strcmp(name, "clear") == 0) return &g_method_tags[MID_BMG_CLEAR];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -175,6 +211,8 @@ static void *jni_GetStaticMethodID(void *env, void *clazz, const char *name,
   (void)clazz;
   debugPrintf("jni_shim: GetStaticMethodID(%s, %s)\n", name, sig);
   { void *cfg = jni_match_config(name); if (cfg) return cfg; }
+  if (strcmp(name, "createPaintFromFile") == 0) return &g_method_tags[MID_CREATE_PAINT_FILE];
+  if (strcmp(name, "createPaintFromFamilyName") == 0) return &g_method_tags[MID_CREATE_PAINT_FAMILY];
   if (strcmp(name, "getStorageDir") == 0)
     return &g_method_tags[MID_GET_STORAGE_DIR];
   if (strstr(name, "ObbFullPath") || strstr(name, "ObbPath"))
@@ -199,8 +237,18 @@ static void *jni_GetFieldID(void *env, void *clazz, const char *name,
   if (strcmp(name, "heightPixels") == 0) return &g_method_tags[FID_HEIGHT];
   if (strcmp(name, "density") == 0) return &g_method_tags[FID_DENSITY];
   if (strcmp(name, "densityDpi") == 0) return &g_method_tags[FID_DENSITY_DPI];
+  /* campos do Paint$FontMetricsInt (ints): ascent/descent/top/bottom/leading */
+  if (strcmp(name, "ascent") == 0) return &g_method_tags[FID_FM_ASCENT];
+  if (strcmp(name, "descent") == 0) return &g_method_tags[FID_FM_DESCENT];
+  if (strcmp(name, "top") == 0) return &g_method_tags[FID_FM_TOP];
+  if (strcmp(name, "bottom") == 0) return &g_method_tags[FID_FM_BOTTOM];
+  if (strcmp(name, "leading") == 0) return &g_method_tags[FID_FM_LEADING];
   return &g_method_tags[FID_GENERIC];
 }
+
+/* métricas da fonte correntes (setadas por getFontMetricsInt) p/ os GetIntField */
+extern void font_metrics(void *paint, int *a, int *d, int *t, int *b, int *l);
+static void *g_fm_paint; /* Paint cujo getFontMetricsInt foi chamado por último */
 
 /* GetIntField/GetFloatField: tela 1280x720, densidade 2.0/320dpi */
 static jint jni_GetIntField(void *env, void *obj, void *fid) {
@@ -208,6 +256,16 @@ static jint jni_GetIntField(void *env, void *obj, void *fid) {
   if (fid == &g_method_tags[FID_WIDTH]) return 1280;
   if (fid == &g_method_tags[FID_HEIGHT]) return 720;
   if (fid == &g_method_tags[FID_DENSITY_DPI]) return 320;
+  if (fid == &g_method_tags[FID_FM_ASCENT] || fid == &g_method_tags[FID_FM_DESCENT] ||
+      fid == &g_method_tags[FID_FM_TOP] || fid == &g_method_tags[FID_FM_BOTTOM] ||
+      fid == &g_method_tags[FID_FM_LEADING]) {
+    int a, d, t, b, l; font_metrics(g_fm_paint, &a, &d, &t, &b, &l);
+    if (fid == &g_method_tags[FID_FM_ASCENT]) return a;
+    if (fid == &g_method_tags[FID_FM_DESCENT]) return d;
+    if (fid == &g_method_tags[FID_FM_TOP]) return t;
+    if (fid == &g_method_tags[FID_FM_BOTTOM]) return b;
+    return l;
+  }
   return 0;
 }
 /* 🔑 A engine é SOFTFP (float de retorno em r0); nosso loader é HARDFP (float em
@@ -285,6 +343,13 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
     if (getenv("NFS_BMPLOG")) fprintf(stderr, "[jni getBitmap] -> %p\n", (void *)&bitmap_obj);
     return &bitmap_obj;
   }
+  if (methodID == &g_method_tags[MID_GET_FONT_METRICS]) {
+    /* getFontMetricsInt() do Paint (obj). Lembra o paint p/ os GetIntField
+     * (ascent/descent/...) e devolve um handle do FontMetricsInt. */
+    static int fm_obj;
+    g_fm_paint = obj;
+    return &fm_obj;
+  }
   debugPrintf("jni_shim: CallObjectMethod(mid=%p)\n", methodID);
   static int fake_obj;
   return &fake_obj;
@@ -336,26 +401,75 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 /* CallFloatMethod (index 55) — getPerformanceScore()F. 0 força Tier=Low (ok p/
  * Mali-450). Mantém 0 por padrão; NFS_PERF=N permite forçar score maior. */
 __attribute__((pcs("aapcs")))
-static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
+static float jni_CallFloatMethod_v(void *env, void *obj, void *methodID, va_list ap) {
   (void)env; (void)obj;
   if (methodID == &g_method_tags[MID_GET_PERF_SCORE]) {
     float s = getenv("NFS_PERF") ? (float)atof(getenv("NFS_PERF")) : 0.0f;
     debugPrintf("jni_shim: getPerformanceScore -> %f\n", s);
     return s;
   }
+  if (methodID == &g_method_tags[MID_GET_TEXT_SIZE])
+    return font_get_size(obj);
+  if (methodID == &g_method_tags[MID_MEASURE_TEXT]) {
+    void *jstr = va_arg(ap, void *);
+    return font_measure(obj, resolve_jstring(jstr));
+  }
   return 0.0f;
 }
-
-/* CallVoidMethod (index 94) */
-static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
-  (void)env;
-  (void)obj;
-  (void)methodID;
+__attribute__((pcs("aapcs")))
+static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  float r = jni_CallFloatMethod_v(env, obj, methodID, ap);
+  va_end(ap);
+  return r;
+}
+__attribute__((pcs("aapcs")))
+static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list ap) {
+  return jni_CallFloatMethod_v(env, obj, methodID, ap);
 }
 
-/* CallStaticObjectMethod (index 113) */
-static void *jni_CallStaticObjectMethod(void *env, void *clazz,
-                                        void *methodID, ...) {
+/* core: recebe um va_list (compartilhado entre CallVoidMethod e ...V) */
+static void jni_CallVoidMethod_v(void *env, void *obj, void *methodID, va_list ap) {
+  (void)env;
+  if (methodID == &g_method_tags[MID_SET_TEXT_SIZE]) {
+    double sz = va_arg(ap, double); /* float promovido a double em varargs */
+    font_set_size(obj, (float)sz);
+    return;
+  }
+  if (methodID == &g_method_tags[MID_BMG_CLEAR]) {
+    /* BitmapGraphics.clear() → zera o bitmap antes de desenhar texto */
+    unsigned char *b = nfs_abm_buf();
+    if (b) memset(b, 0, (size_t)nfs_abm_h() * nfs_abm_stride());
+    return;
+  }
+  if (methodID == &g_method_tags[MID_DRAW_STRING]) {
+    /* drawString(Paint, String, int x, int y) — obj = BitmapGraphics */
+    void *paint = va_arg(ap, void *);
+    void *jstr = va_arg(ap, void *);
+    int x = va_arg(ap, int);
+    int y = va_arg(ap, int);
+    const char *s = resolve_jstring(jstr);
+    if (getenv("NFS_FONTLOG"))
+      fprintf(stderr, "[drawString] paint=%p x=%d y=%d '%s'\n", paint, x, y, s ? s : "");
+    font_draw(paint, s, x, y, nfs_abm_buf(), nfs_abm_w(), nfs_abm_h(), nfs_abm_stride());
+    return;
+  }
+  (void)obj;
+}
+/* CallVoidMethod (index 61) — varargs */
+static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  jni_CallVoidMethod_v(env, obj, methodID, ap);
+  va_end(ap);
+}
+/* CallVoidMethodV (index 62) — recebe va_list (a engine usa esta p/ drawString!) */
+static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
+  jni_CallVoidMethod_v(env, obj, methodID, ap);
+}
+
+/* CallStaticObjectMethod core (va_list) */
+static void *jni_CallStaticObjectMethod_v(void *env, void *clazz,
+                                          void *methodID, va_list ap) {
   (void)env;
   (void)clazz;
   { void *cv = jni_config_jstr(methodID); if (cv) return cv; }
@@ -374,10 +488,37 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz,
         g_package_name);
     return make_jstring(g_package_name);
   }
+  static int fake_result;
+  if (methodID == &g_method_tags[MID_CREATE_PAINT_FILE] ||
+      methodID == &g_method_tags[MID_CREATE_PAINT_FAMILY]) {
+    /* createPaintFromFile(String path, float size) / FromFamilyName(String, float) */
+    void *jstr = va_arg(ap, void *);
+    double size = va_arg(ap, double); /* float promovido a double em varargs */
+    const char *s = resolve_jstring(jstr);
+    void *paint;
+    if (methodID == &g_method_tags[MID_CREATE_PAINT_FILE]) {
+      paint = font_create_from_file(s, (float)size);
+    } else {
+      static char fdir[600];
+      snprintf(fdir, sizeof fdir, "%s/files/published/fonts", nfs_data_dir());
+      paint = font_create_from_family(fdir, s, (float)size);
+    }
+    return paint ? paint : &fake_result;
+  }
 
   debugPrintf("jni_shim: CallStaticObjectMethod(mid=%p) -> NULL\n", methodID);
-  static int fake_result;
   return &fake_result;
+}
+/* CallStaticObjectMethod (index 113) — varargs */
+static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  void *r = jni_CallStaticObjectMethod_v(env, clazz, methodID, ap);
+  va_end(ap);
+  return r;
+}
+/* CallStaticObjectMethodV (index 114) — va_list */
+static void *jni_CallStaticObjectMethodV(void *env, void *clazz, void *methodID, va_list ap) {
+  return jni_CallStaticObjectMethod_v(env, clazz, methodID, ap);
 }
 
 /* CallStaticBooleanMethod (index 124) */
@@ -605,15 +746,15 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
   jni_env_vtable[50] = (uintptr_t)jni_CallIntMethod;       /* V */
   jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;
-  jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethod;     /* V */
+  jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethodV;    /* V (va_list) */
   jni_env_vtable[61] = (uintptr_t)jni_CallVoidMethod;
-  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethod;      /* V */
+  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethodV;     /* V (va_list) - drawString */
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;
   jni_env_vtable[100] = (uintptr_t)jni_GetIntField;
   jni_env_vtable[102] = (uintptr_t)jni_GetFloatField;
   jni_env_vtable[113] = (uintptr_t)jni_GetStaticMethodID;
   jni_env_vtable[114] = (uintptr_t)jni_CallStaticObjectMethod;
-  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethod; /* V */
+  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethodV; /* V (va_list) - createPaint */
   jni_env_vtable[117] = (uintptr_t)jni_CallStaticBooleanMethod;
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethod; /* V */
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;

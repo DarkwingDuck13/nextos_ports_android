@@ -1055,6 +1055,12 @@ static int abm_lock(void *env, void *bmp, void **pix) {
 }
 static int abm_unlock(void *env, void *bmp) { (void)env; (void)bmp; return 0; }
 
+/* expõe o bitmap p/ o font_shim rasterizar texto (via jni_shim drawString) */
+unsigned char *nfs_abm_buf(void) { return abm_buf(); }
+int nfs_abm_w(void) { return ABM_W; }
+int nfs_abm_h(void) { return ABM_H; }
+int nfs_abm_stride(void) { return ABM_STRIDE; }
+
 /* GL trace wrappers (egl_shim.c): contam draws/binds/clears por frame p/ achar
  * EM QUAL FBO a engine desenha. Resolvidos pela TABELA (vencem o dlsym). */
 extern void my_glBindFramebuffer(unsigned, unsigned);
