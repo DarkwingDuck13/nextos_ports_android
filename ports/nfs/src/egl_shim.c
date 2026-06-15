@@ -548,6 +548,13 @@ void my_glShaderSource(unsigned sh,int count,const char*const*str,const int*len)
   free(s);
 }
 unsigned egl_cur_tex0(void){ return g_unit_tex[g_active_unit&7]; }
+typedef void (*pfn_glDeleteTextures)(int,const unsigned*);
+static pfn_glDeleteTextures real_glDeleteTextures;
+void my_glDeleteTextures(int n,const unsigned*t){
+  if(!real_glDeleteTextures) real_glDeleteTextures=(pfn_glDeleteTextures)SDL_GL_GetProcAddress("glDeleteTextures");
+  if(getenv("NFS_DELLOG")&&t){ static int c=0; for(int i=0;i<n&&c<60;i++){ fprintf(stderr,"[glDeleteTextures] id=%u\n",t[i]); c++; } }
+  real_glDeleteTextures(n,t);
+}
 void my_glActiveTexture(unsigned u){
   if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
   int idx=(int)(u-0x84C0); if(idx>=0&&idx<8) g_active_unit=idx; real_glActiveTexture(u);
@@ -574,16 +581,32 @@ static void drawlog(const char*k,int n){
   if(g_drawlog<0) g_drawlog=getenv("NFS_DRAWLOG")?1:0;
   if(g_drawlog&&g_drawn<90){ fprintf(stderr,"[draw %s n=%d] fbo=%u u0=%u u1=%u au=%d prog=%u blend=%d\n",k,n,g_cur_fbo,g_unit_tex[0],g_unit_tex[1],g_active_unit,g_cur_prog,g_blend); g_drawn++; }
 }
+static void atlas_rebind(void);
 void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("arr",c);
+  atlas_rebind();
   real_glDrawArrays(m, f, c);
+}
+/* ATLASHACK: religa o atlas quando um draw texturizado tem tex=0 (link sprite->
+ * atlas null no .sba). Só afeta shaders que amostram (solid usa shader sem
+ * texture2D, não importa). */
+unsigned g_nfs_atlas_tex = 0;
+static int g_atlashack = -1;
+static void atlas_rebind(void){
+  if(g_atlashack<0) g_atlashack=getenv("NFS_NOATLASHACK")?0:1; /* PADRÃO ligado */
+  if(g_atlashack && g_unit_tex[0]==0 && g_nfs_atlas_tex){
+    if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
+    if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
+    real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,g_nfs_atlas_tex);
+  }
 }
 void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("elt",c);
+  atlas_rebind();
   real_glDrawElements(m, c, t, i);
 }
 void my_glClear(unsigned mask) {
@@ -600,6 +623,13 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
   if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<60){ extern unsigned egl_cur_tex0(void); fprintf(stderr,"[texImage2D tex=%u] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",egl_cur_tex0(),w,h,ifmt,fmt,ty,px); g_teximg_n++; }
+  /* rastreia o ÚLTIMO atlas de sprite (RGBA grande, NÃO-quadrado = não é
+   * glyph/RT) p/ o ATLASHACK religar nos draws texturizados sem textura. */
+  { extern unsigned g_nfs_atlas_tex; extern unsigned egl_cur_tex0(void);
+    if (l==0 && w>=256 && h>=256 && w!=h && (ifmt==0x1908||fmt==0x1908)) {
+      g_nfs_atlas_tex = egl_cur_tex0();
+      if(getenv("NFS_TEXLOG")) fprintf(stderr,"[ATLAS candidate tex=%u %dx%d]\n",g_nfs_atlas_tex,w,h);
+    } }
   /* NFS_TEXDUMP=1: salva as 1as texturas grandes (atlas) p/ inspeção do que a
    * engine SOBE de verdade (preto vs colorido). */
   if (getenv("NFS_TEXDUMP") && l==0 && w>=256 && h>=256 && px && ty==0x1401) {

@@ -1078,6 +1078,7 @@ extern void my_glUniform1i(int,int);
 extern void my_glUniform4fv(int,int,const float*);
 extern void my_glShaderSource(unsigned,int,const char*const*,const int*);
 extern void my_glTexSubImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+extern void my_glDeleteTextures(int,const unsigned*);
 extern void my_glCompileShader(unsigned);
 extern void my_glLinkProgram(unsigned);
 extern void my_glVertexAttrib4f(unsigned,float,float,float,float);
@@ -1101,6 +1102,7 @@ DynLibFunction nfs_shims[] = {
     {"glUniform4fv", (uintptr_t)my_glUniform4fv},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+    {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
     {"glCompileShader", (uintptr_t)my_glCompileShader},
     {"glLinkProgram", (uintptr_t)my_glLinkProgram},
     {"glVertexAttrib4f", (uintptr_t)my_glVertexAttrib4f},
