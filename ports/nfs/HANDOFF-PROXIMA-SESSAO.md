@@ -31,6 +31,20 @@ fora de vista; (2) cena 3D renderiza em FBO offscreen não-composto (só HUD che
 NFS_DRAWLOG (fbo/prog por draw), capturar GL_FRAMEBUFFER_BINDING dos draws 3D, ver se a
 geometria 3D é submetida (glDrawElements com contagem >0) e p/ qual FBO. Modelos .m3g
 (formato M3G/JSR-184) carregam "directly" (warning). gnet.sh `<netstatus>` = launcher.
+**🔬 DIAGNÓSTICO 3D FEITO (PARTE 14):** NFS_GLTRACE → `bind0=60 bindN=0 draw_fbo0=2512
+draw_fboN=0` = **TODOS os draws vão pro FBO 0 (tela), ZERO offscreen** (não é problema de
+composição FBO). clears=60 mask=0x4500 (color+depth+stencil). NFS_DRAWLOG (BIGDRAW n≥64) →
+geometria 3D É desenhada no FBO 0: draws n=162/n=606 texturados (u0=7) prog=53 blend=1
+(max n visto = 606, PEQUENO p/ pista inteira → talvez malha grande da pista não submetida,
+só objetos menores/carros). NFS_SHADERLOG → **shaders 3D compilam+linkam OK** (os "NOT FOUND"
+são extensões opcionais de program-pipeline que o Mali-450 não tem, benignos). CONCLUSÃO: 3D
+não é FBO nem shader-compile → **câmera/transform 3D errado (geometria off-screen; locators
+de câmera faltando) OU estado (blend=1 em geometria opaca, depth/cull)**. PRÓXIMO: (a) dumpar
+a MVP/projeção dos draws 3D (uniforms via NFS_UNILOG) — ver se a matriz é degenerada/zero;
+(b) testar glDisable(GL_BLEND)+glDisable(DEPTH_TEST)+glDisable(CULL_FACE) nos BIGDRAWs p/ ver
+se a geometria aparece; (c) checar se a malha grande da pista é submetida (max n só 606);
+(d) por que os locators de câmera (locator_camera_rearview etc) não são achados na cena.
+Diag em egl_shim.c: NFS_DRAWLOG/GLTRACE/SHADERLOG/SHADERDUMP/UNILOG; gdraw.sh/gsh.sh launchers.
 
 ## PARTE 13 (2026-06-15) — GAMEPAD FUNCIONA + CONECTIVIDADE; muro = checkbox do EULA
 **INPUT DO MENU = GAMEPAD (MogaController), não toque nem physicalKey.** O log da engine

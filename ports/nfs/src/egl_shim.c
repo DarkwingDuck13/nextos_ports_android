@@ -577,9 +577,13 @@ void my_glDisable(unsigned c){
   if(!real_glDisable) real_glDisable=(pfn_glEnable)SDL_GL_GetProcAddress("glDisable");
   if(c==0x0BE2) g_blend=0; real_glDisable(c);
 }
+static int g_bigdraw_max=0, g_bigdraw_n=0;
 static void drawlog(const char*k,int n){
   if(g_drawlog<0) g_drawlog=getenv("NFS_DRAWLOG")?1:0;
   if(g_drawlog&&g_drawn<90){ fprintf(stderr,"[draw %s n=%d] fbo=%u u0=%u u1=%u au=%d prog=%u blend=%d\n",k,n,g_cur_fbo,g_unit_tex[0],g_unit_tex[1],g_active_unit,g_cur_prog,g_blend); g_drawn++; }
+  /* 🔎 geometria 3D = draws GRANDES. Loga os maiores vistos (NFS_DRAWLOG). */
+  if(g_drawlog){ if(n>g_bigdraw_max) g_bigdraw_max=n;
+    if(n>=64 && g_bigdraw_n<60){ fprintf(stderr,"[BIGDRAW %s n=%d] fbo=%u u0=%u prog=%u blend=%d (max=%d)\n",k,n,g_cur_fbo,g_unit_tex[0],g_cur_prog,g_blend,g_bigdraw_max); g_bigdraw_n++; } }
 }
 static void atlas_rebind(void);
 void my_glDrawArrays(unsigned m, int f, int c) {
