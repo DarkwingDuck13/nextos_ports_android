@@ -60,17 +60,21 @@ cd "$GAMEDIR"
 mkdir -p "$GAMEDIR/gamedata"
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-# ---------- escolha do binario (DOIS binarios cobrem qualquer device, igual Bully) ----------
-# dysmantle = build NextOS (GLIBC >= 2.38: NextOS/muOS/Knulli/ROCKNIX/X5M).
-# dysmantle.compat = MESMO codigo em Debian (GLIBC_2.27 -> roda em ArkOS/dArkOS/R36S).
-GLIBC_NEED=2.38
-glibc_have=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')
-[ -n "$glibc_have" ] || glibc_have=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')
-glibc_ok=$(echo "${glibc_have:-0} $GLIBC_NEED" | awk '{split($1,a,".");split($2,b,".");print (a[1]>b[1]||(a[1]==b[1]&&a[2]+0>=b[2]+0))?1:0}')
-if [ "$glibc_ok" = "1" ] && [ -x "$GAMEDIR/dysmantle" ]; then
-  BIN="dysmantle";        echo "[launcher] glibc $glibc_have >= $GLIBC_NEED -> binario NextOS (dysmantle)"
+# ---------- escolha do binario (DOIS binarios cobrem qualquer device) ----------
+# dysmantle = build NextOS (precisa GLIBC_2.38: NextOS/muOS/Knulli/ROCKNIX/X5M).
+# dysmantle.compat = MESMO codigo em Debian (GLIBC_2.27 -> ArkOS/dArkOS/R36S; roda
+# em QUALQUER glibc >= 2.27). Metodo ROBUSTO: ve se a libc.so.6 DO SISTEMA exporta o
+# simbolo "GLIBC_2.38" (independe do formato de getconf/ldd, que varia por CFW e dava
+# selecao errada). Achou -> native; senao / na duvida -> compat (mais compativel).
+GLIBC_NEED="GLIBC_2.38"
+syslibc=$(ldd /bin/sh 2>/dev/null | grep -oE '/[^ ]*/libc\.so\.6' | head -1)
+[ -n "$syslibc" ] || for d in /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib /lib /lib64; do
+  [ -e "$d/libc.so.6" ] && { syslibc="$d/libc.so.6"; break; }
+done
+if [ -n "$syslibc" ] && grep -qaF "$GLIBC_NEED" "$syslibc" 2>/dev/null && [ -x "$GAMEDIR/dysmantle" ]; then
+  BIN="dysmantle";        echo "[launcher] $syslibc tem $GLIBC_NEED -> binario NextOS (dysmantle)"
 else
-  BIN="dysmantle.compat"; echo "[launcher] glibc ${glibc_have:-?} -> binario compat GLIBC_2.27 (dysmantle.compat)"
+  BIN="dysmantle.compat"; echo "[launcher] sem $GLIBC_NEED (libc=${syslibc:-nao-achada}) -> compat GLIBC_2.27 (dysmantle.compat)"
 fi
 
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
