@@ -9,7 +9,30 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
-## 🆕🆕 PARTE 13 (2026-06-15) — GAMEPAD FUNCIONA + CONECTIVIDADE; muro = checkbox do EULA
+## 🏁🏁 PARTE 14 (2026-06-15) — EULA BYPASSED → DENTRO DA CORRIDA (HUD ok, mundo 3D PRETO)
+**🎉 CHEGAMOS AO GAMEPLAY!** Bypass do EULA = criar o arquivo de aceite `/active_accepted`
+no disco → o flow PULA a tela active_accept (inacessível: checkbox touch-only + navegação de
+foco NÃO funciona p/ NENHUM input — touch/DPAD/stick, só A=confirm como evento). O check do
+aceite é via **stat/access** (não open/fopen — por isso não aparecia no FOPENLOG). Paths
+criados (accept-setup.sh, chamado por grun.sh/gnet.sh): `data/Android/data/com.ea.games.nfs13_row/files/active_accepted`
++ `data/files/active_accepted` + `data/files/var/active_accepted` (mantidos todos; qual exato
+= TODO via NFS_SEEKLOG/stat). **PRECISA netstatus=3** (default no binário) p/ não cair no
+NO_CONNECTION_PROMPT. Boot: EULA(skip)→tutorial_check→**race tutorial**. HUD 2D RENDERIZA
+(posição P, timer, minimapa c/ seta, velocímetro 888, NITRO/boost) — pipeline 2D ok.
+**❌ MURO ATUAL = MUNDO 3D PRETO (só ~6% non-black = HUD).** O renderer **Isis** (3D) roda
+(log: "Isis Renderer Capabilities", Tier=Low, PERFORMANCE level=0, "BoundShader: 0/4",
+"VertexBufferData", carrega race.m3g + modelos de carros bmw/camaro/etc) mas a cena 3D não
+aparece. Sem erro de shader compile/link no log. Warnings suspeitos: "OnSceneChanged: could
+not find spike strip locator", "SetTarget: could not find locator_camera_rearview, using
+existing rear view camera position" (locators de CÂMERA faltando → câmera pode estar errada/
+cena off-screen). Hipóteses 3D: (1) câmera/projeção 3D errada (locators faltando) → mundo
+fora de vista; (2) cena 3D renderiza em FBO offscreen não-composto (só HUD chega à tela);
+(3) shaders 3D (m3g) do Isis rodam mas saída preta (lighting/depth/clear). Investigar:
+NFS_DRAWLOG (fbo/prog por draw), capturar GL_FRAMEBUFFER_BINDING dos draws 3D, ver se a
+geometria 3D é submetida (glDrawElements com contagem >0) e p/ qual FBO. Modelos .m3g
+(formato M3G/JSR-184) carregam "directly" (warning). gnet.sh `<netstatus>` = launcher.
+
+## PARTE 13 (2026-06-15) — GAMEPAD FUNCIONA + CONECTIVIDADE; muro = checkbox do EULA
 **INPUT DO MENU = GAMEPAD (MogaController), não toque nem physicalKey.** O log da engine
 mostra `ShowMogaHighlight` no EULA. Caminho: `Java_..._MogaController_nativeOnKeyEvent`
 (0x265ea0) recebe (env, thiz, **KeyEvent**) e lê `KeyEvent.getKeyCode()` + `getAction()`
@@ -37,12 +60,20 @@ sempre toca btn_generic_accept; nenhum botão 19-109 marca o checkbox — todos 
 EULA: active_accept/aas_inner/frame/**btn_options_small2** (provável CHECKBOX)/btn_options_large_active
 (=CONFIRM focado)/btn_options_large_idle. Após aceite o flow vai p/ tutorial_check → carrega
 garage.m3g (cena 3D). 3 telas: active_accept{,_eula,_privacy}.sb.
+**RE do accept handler FALHOU (tentado): ** stack scan (NFS_STACKSCAN) = MUITO ruidoso
+(0x388438/0x7af998 etc = valores STALE na stack; 0x388428 é só um setter trivial,
+não o handler). __builtin_return_address(1+) = NULL (engine omite frame pointers, só dá
+nível 0 = 0x96afb0 = wrapper Nimble da conectividade). Ghidra decompila ARM/Thumb dessa
+região como LIXO (jump tables/Thumb mal-analisado). NÃO persistir nessas vias.
 **PRÓXIMO (forçar o aceite — em ordem de promessa):**
-  1. **Forçar o flag do checkbox.** O accept handler checa um byte da tela (candidato:
-     screen[0x4c], visto em f_388428 mas decompile não-confiável). Achar o objeto da tela
-     active_accept (via observer KEYOBS=obs) e setar o flag, OU hookar o accept handler.
-     Accept handler está na cadeia do getStatus() — stack scan (NFS_STACKSCAN=1) deu
-     +0x388438/+0x4dae84/+0x4d09c8 (app-level; 0x96xxxx/0x7bxxxx=wrappers Nimble).
+  1. **Causa-raiz provável = TOUCH-TAP não é POLLED pelo menu.** O tap-detector 0x54b99c
+     (UP subtype 3) DETECTA o tap (retorna 1) mas o caller (nativeTouchScreenEvent) IGNORA
+     o retorno e o detector NÃO seta um flag persistente "tap occurred" que o menu leia. No
+     Android real o Java usa o retorno OU há um flag. Achar onde o menu LÊ o tap (poll por
+     frame) e fazer o detector setá-lo / injetar lá. Isso destravaria o checkbox por toque.
+  2. **Forçar o flag do checkbox.** Achar o objeto da tela active_accept (via observer
+     KEYOBS=obs do probe) e setar o byte do checkbox, OU achar/patchar o accept handler
+     (não pela stack — usar Ghidra com auto-análise melhor OU hook no flow-output-fire).
   2. **Fix navegação POLLED:** achar onde o menu LÊ o estado do DPAD/foco por frame (não
      via evento) e injetar lá — destrava navegar até btn_options_small2 e marcá-lo.
   3. Bypass do flow: forçar avanço de active_accept p/ o próximo node.
