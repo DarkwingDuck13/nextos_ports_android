@@ -559,6 +559,32 @@ int main(int argc, char *argv[]) {
             pend_xi = ux.i; pend_yi = uy.i; pend_up = 1; }
           fclose(tf); remove("/storage/roms/nfs/tap.txt"); }
       }
+      /* ⌨️🎮 INJETOR DE TECLA/GAMEPAD: lê key.txt (keycode Android int) e chama
+       * nativeOnPhysicalKeyDown(env, obj, keycode, 0) + Up no frame seguinte.
+       * Keycodes: 19=UP 20=DOWN 21=LEFT 22=RIGHT 23=CENTER 66=ENTER 96=BUTTON_A
+       * 97=BUTTON_B 4=BACK. NFS suporta gamepad (MogaController) → menus navegáveis. */
+      {
+        typedef void (*keyfn_t)(void*,void*,int,int);
+        static keyfn_t kdown=NULL, kup=NULL; static int kinit=0;
+        static volatile char *g_inflag=NULL;
+        if(!kinit){ kinit=1;
+          kdown=(keyfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_GameActivityMain_nativeOnPhysicalKeyDown");
+          kup=(keyfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_GameActivityMain_nativeOnPhysicalKeyUp");
+          /* flag global "input desabilitado" (guarda do nativeOnPhysicalKeyDown:
+           * if(*flag) return). VA da flag=0xadfd44; base=kdown-0x54cb98. */
+          if(kdown) g_inflag=(volatile char*)((uintptr_t)kdown - 0x54cb98 + 0xadfd44); }
+        /* NFS_FORCEINPUT=1: zera a flag todo frame (habilita touch/tecla) */
+        if(g_inflag && getenv("NFS_FORCEINPUT")) *g_inflag = 0;
+        static int pend_key=0, pend_kc=0;
+        if(pend_key){ pend_key=0; if(kup) kup(env, fake_this, pend_kc, 0); }
+        FILE *kf = fopen("/storage/roms/nfs/key.txt","r");
+        if(kf){ int kc; if(fscanf(kf,"%d",&kc)==1 && kdown){
+            FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a");
+            if(lg){ fprintf(lg,"KEY %d kdown=%p kup=%p\n",kc,(void*)kdown,(void*)kup); fclose(lg); }
+            kdown(env, fake_this, kc, 0);
+            pend_kc=kc; pend_key=1; }
+          fclose(kf); remove("/storage/roms/nfs/key.txt"); }
+      }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
       { extern void egl_shim_force_present(void); egl_shim_force_present(); }
