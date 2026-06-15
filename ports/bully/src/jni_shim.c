@@ -653,6 +653,11 @@ static int my_GetResolutionDefault(void *self) {
 }
 static void hook_clarity(void) {
   uintptr_t s = so_symbol(&mod_game, "_ZN13BullySettings20GetResolutionDefaultEv");
+  /* o build compat (GCC Debian) nao resolve esse simbolo C++ pelo nome (so_symbol=0,
+   * embora os outros resolvam) -> fallback pelo OFFSET FIXO no libGame 1.4.311
+   * (BuildID 6139a628): o .text comeca no vaddr 0, entao text_base + 0x1034040. */
+  if (!s && text_base) s = (uintptr_t)text_base + 0x1034040;
+  fprintf(stderr, "[clarity] hook_clarity: s=%p (text_base=%p)\n", (void*)s, (void*)text_base);
   if (s) {
     hook_x64(s, (uintptr_t)my_GetResolutionDefault);
     fprintf(stderr, "[clarity] GetResolutionDefault hooked -> RS_High (verificacao de hw ignorada)\n");
