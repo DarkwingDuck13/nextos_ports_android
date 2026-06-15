@@ -1070,6 +1070,18 @@ extern void my_glClear(unsigned);
 extern void my_glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
 extern void my_glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
 extern void my_glViewport(int,int,int,int);
+extern void my_glBindTexture(unsigned,unsigned);
+extern void my_glActiveTexture(unsigned);
+extern void my_glTexParameteri(unsigned,unsigned,int);
+extern void my_glUniform4f(int,float,float,float,float);
+extern void my_glUniform1i(int,int);
+extern void my_glUniform4fv(int,int,const float*);
+extern void my_glCompileShader(unsigned);
+extern void my_glLinkProgram(unsigned);
+extern void my_glVertexAttrib4f(unsigned,float,float,float,float);
+extern void my_glUseProgram(unsigned);
+extern void my_glEnable(unsigned);
+extern void my_glDisable(unsigned);
 
 DynLibFunction nfs_shims[] = {
     {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
@@ -1079,6 +1091,18 @@ DynLibFunction nfs_shims[] = {
     {"glTexImage2D", (uintptr_t)my_glTexImage2D},
     {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},
     {"glViewport", (uintptr_t)my_glViewport},
+    {"glBindTexture", (uintptr_t)my_glBindTexture},
+    {"glActiveTexture", (uintptr_t)my_glActiveTexture},
+    {"glTexParameteri", (uintptr_t)my_glTexParameteri},
+    {"glUniform4f", (uintptr_t)my_glUniform4f},
+    {"glUniform1i", (uintptr_t)my_glUniform1i},
+    {"glUniform4fv", (uintptr_t)my_glUniform4fv},
+    {"glCompileShader", (uintptr_t)my_glCompileShader},
+    {"glLinkProgram", (uintptr_t)my_glLinkProgram},
+    {"glVertexAttrib4f", (uintptr_t)my_glVertexAttrib4f},
+    {"glUseProgram", (uintptr_t)my_glUseProgram},
+    {"glEnable", (uintptr_t)my_glEnable},
+    {"glDisable", (uintptr_t)my_glDisable},
     /* EGL → SDL2 (Mali fbdev): a engine cria contexto/surface via egl_shim */
     {"eglGetDisplay", (uintptr_t)egl_shim_GetDisplay},
     {"eglInitialize", (uintptr_t)egl_shim_Initialize},

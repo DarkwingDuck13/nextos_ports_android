@@ -418,14 +418,134 @@ void my_glBindFramebuffer(unsigned target, unsigned fb) {
   if (fb == 0) g_bind0++; else g_bindN++;
   real_glBindFramebuffer(target, fb);
 }
+/* estado p/ diagnóstico do draw (NFS_DRAWLOG): textura/programa/blend ligados */
+static unsigned g_cur_prog = 0; static int g_blend = 0;
+static unsigned g_unit_tex[8]; static int g_active_unit = 0; /* textura por unidade */
+typedef void (*pfn_glBindTexture)(unsigned, unsigned);
+typedef void (*pfn_glActiveTexture)(unsigned);
+typedef void (*pfn_glUseProgram)(unsigned);
+typedef void (*pfn_glEnable)(unsigned);
+static pfn_glBindTexture real_glBindTexture;
+static pfn_glActiveTexture real_glActiveTexture;
+static pfn_glUseProgram real_glUseProgram;
+static pfn_glEnable real_glEnable, real_glDisable;
+static int g_drawlog = -1, g_drawn = 0;
+/* 🔑 textura INCOMPLETA = preto no GLES2: se min-filter pede mipmap mas só o
+ * nível 0 foi enviado (sem glGenerateMipmap), a amostragem vira PRETO. O .sba do
+ * splash pede LINEAR_MIPMAP_* mas a engine não gera mips → logos pretos. Força
+ * min-filter p/ GL_LINEAR (NFS_NOMIPFIX desliga). */
+typedef void (*pfn_glTexParameteri)(unsigned,unsigned,int);
+static pfn_glTexParameteri real_glTexParameteri;
+void my_glTexParameteri(unsigned tgt, unsigned pname, int param){
+  if(!real_glTexParameteri) real_glTexParameteri=(pfn_glTexParameteri)SDL_GL_GetProcAddress("glTexParameteri");
+  static int off=-1; if(off<0) off=getenv("NFS_NOMIPFIX")?1:0;
+  if(!off && pname==0x2801 /*MIN_FILTER*/ &&
+     (param==0x2700||param==0x2701||param==0x2702||param==0x2703)) /* *_MIPMAP_* */
+    param = (param==0x2700||param==0x2701) ? 0x2600 /*NEAREST*/ : 0x2601 /*LINEAR*/;
+  real_glTexParameteri(tgt,pname,param);
+}
+typedef void (*pfn_glUniform4f)(int,float,float,float,float);
+typedef void (*pfn_glUniform1i)(int,int);
+typedef void (*pfn_glVertexAttrib4f)(unsigned,float,float,float,float);
+static pfn_glUniform4f real_glUniform4f;
+static pfn_glUniform1i real_glUniform1i;
+static pfn_glVertexAttrib4f real_glVertexAttrib4f;
+static int g_unilog=-1, g_unin=0;
+void my_glUniform4f(int loc,float a,float b,float c,float d){
+  if(!real_glUniform4f) real_glUniform4f=(pfn_glUniform4f)SDL_GL_GetProcAddress("glUniform4f");
+  if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
+  if(g_unilog&&g_unin<60){ fprintf(stderr,"[uni4f loc=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,a,b,c,d,g_cur_prog); g_unin++; }
+  real_glUniform4f(loc,a,b,c,d);
+}
+typedef void (*pfn_glUniform4fv)(int,int,const float*);
+static pfn_glUniform4fv real_glUniform4fv;
+void my_glUniform4fv(int loc,int cnt,const float*v){
+  if(!real_glUniform4fv) real_glUniform4fv=(pfn_glUniform4fv)SDL_GL_GetProcAddress("glUniform4fv");
+  if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
+  if(g_unilog&&g_unin<60&&v&&cnt>=1){ fprintf(stderr,"[uni4fv loc=%d cnt=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,cnt,v[0],v[1],v[2],v[3],g_cur_prog); g_unin++; }
+  real_glUniform4fv(loc,cnt,v);
+}
+void my_glUniform1i(int loc,int v){
+  if(!real_glUniform1i) real_glUniform1i=(pfn_glUniform1i)SDL_GL_GetProcAddress("glUniform1i");
+  if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
+  if(g_unilog&&g_unin<60){ fprintf(stderr,"[uni1i loc=%d]=%d (sampler) prog=%u\n",loc,v,g_cur_prog); g_unin++; }
+  real_glUniform1i(loc,v);
+}
+void my_glVertexAttrib4f(unsigned idx,float a,float b,float c,float d){
+  if(!real_glVertexAttrib4f) real_glVertexAttrib4f=(pfn_glVertexAttrib4f)SDL_GL_GetProcAddress("glVertexAttrib4f");
+  if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
+  if(g_unilog&&g_unin<60){ fprintf(stderr,"[vattr%u] %.2f %.2f %.2f %.2f prog=%u\n",idx,a,b,c,d,g_cur_prog); g_unin++; }
+  real_glVertexAttrib4f(idx,a,b,c,d);
+}
+/* checa compile/link de shaders — falha = sprite preto (shadergen por-material) */
+typedef void (*pfn_glCompileShader)(unsigned);
+typedef void (*pfn_glGetShaderiv)(unsigned,unsigned,int*);
+typedef void (*pfn_glGetShaderInfoLog)(unsigned,int,int*,char*);
+typedef void (*pfn_glLinkProgram)(unsigned);
+typedef void (*pfn_glGetProgramiv)(unsigned,unsigned,int*);
+typedef void (*pfn_glGetProgramInfoLog)(unsigned,int,int*,char*);
+static pfn_glCompileShader real_glCompileShader;
+static pfn_glGetShaderiv real_glGetShaderiv;
+static pfn_glGetShaderInfoLog real_glGetShaderInfoLog;
+static pfn_glLinkProgram real_glLinkProgram;
+static pfn_glGetProgramiv real_glGetProgramiv;
+static pfn_glGetProgramInfoLog real_glGetProgramInfoLog;
+void my_glCompileShader(unsigned sh){
+  if(!real_glCompileShader){ real_glCompileShader=(pfn_glCompileShader)SDL_GL_GetProcAddress("glCompileShader");
+    real_glGetShaderiv=(pfn_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
+    real_glGetShaderInfoLog=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog"); }
+  real_glCompileShader(sh);
+  if(getenv("NFS_SHADERLOG")){ int ok=1; real_glGetShaderiv(sh,0x8B81,&ok);
+    if(!ok){ char log[1024]={0}; int n=0; real_glGetShaderInfoLog(sh,1024,&n,log);
+      fprintf(stderr,"[SHADER COMPILE FAIL sh=%u] %s\n",sh,log);
+      char src[4096]={0}; pfn_glGetShaderInfoLog gss=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderSource");
+      if(gss){ gss(sh,4096,&n,src); fprintf(stderr,"  SRC: %.1500s\n",src); } } }
+}
+void my_glLinkProgram(unsigned p){
+  if(!real_glLinkProgram){ real_glLinkProgram=(pfn_glLinkProgram)SDL_GL_GetProcAddress("glLinkProgram");
+    real_glGetProgramiv=(pfn_glGetProgramiv)SDL_GL_GetProcAddress("glGetProgramiv");
+    real_glGetProgramInfoLog=(pfn_glGetProgramInfoLog)SDL_GL_GetProcAddress("glGetProgramInfoLog"); }
+  real_glLinkProgram(p);
+  if(getenv("NFS_SHADERLOG")){ int ok=1; real_glGetProgramiv(p,0x8B82,&ok);
+    if(!ok){ char log[1024]={0}; int n=0; real_glGetProgramInfoLog(p,1024,&n,log);
+      fprintf(stderr,"[PROGRAM LINK FAIL p=%u] %s\n",p,log); } }
+}
+void my_glActiveTexture(unsigned u){
+  if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
+  int idx=(int)(u-0x84C0); if(idx>=0&&idx<8) g_active_unit=idx; real_glActiveTexture(u);
+}
+void my_glBindTexture(unsigned tgt, unsigned tex){
+  if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
+  if(tgt==0x0DE1 && g_active_unit>=0 && g_active_unit<8) g_unit_tex[g_active_unit]=tex;
+  real_glBindTexture(tgt,tex);
+}
+#define g_cur_tex g_unit_tex[0]
+void my_glUseProgram(unsigned p){
+  if(!real_glUseProgram) real_glUseProgram=(pfn_glUseProgram)SDL_GL_GetProcAddress("glUseProgram");
+  g_cur_prog=p; real_glUseProgram(p);
+}
+void my_glEnable(unsigned c){
+  if(!real_glEnable) real_glEnable=(pfn_glEnable)SDL_GL_GetProcAddress("glEnable");
+  if(c==0x0BE2) g_blend=1; real_glEnable(c);
+}
+void my_glDisable(unsigned c){
+  if(!real_glDisable) real_glDisable=(pfn_glEnable)SDL_GL_GetProcAddress("glDisable");
+  if(c==0x0BE2) g_blend=0; real_glDisable(c);
+}
+static void drawlog(const char*k,int n){
+  if(g_drawlog<0) g_drawlog=getenv("NFS_DRAWLOG")?1:0;
+  if(g_drawlog&&g_drawn<90){ fprintf(stderr,"[draw %s n=%d] fbo=%u u0=%u u1=%u au=%d prog=%u blend=%d\n",k,n,g_cur_fbo,g_unit_tex[0],g_unit_tex[1],g_active_unit,g_cur_prog,g_blend); g_drawn++; }
+}
 void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
+  drawlog("arr",c);
   real_glDrawArrays(m, f, c);
 }
 void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
+  drawlog("elt",c);
   real_glDrawElements(m, c, t, i);
 }
 void my_glClear(unsigned mask) {
@@ -442,6 +562,13 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
   if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<40){ fprintf(stderr,"[texImage2D] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",w,h,ifmt,fmt,ty,px); g_teximg_n++; }
+  /* NFS_TEXDUMP=1: salva as 1as texturas grandes (atlas) p/ inspeção do que a
+   * engine SOBE de verdade (preto vs colorido). */
+  if (getenv("NFS_TEXDUMP") && l==0 && w>=256 && h>=256 && px && ty==0x1401) {
+    static int dn=0;
+    if (dn<8){ char nm[64]; snprintf(nm,sizeof nm,"tex_%d_%dx%d.raw",dn,w,h);
+      FILE*f=fopen(nm,"wb"); if(f){ fwrite(px,1,(size_t)w*h*4,f); fclose(f);} dn++; }
+  }
   real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,px);
 }
 typedef void (*pfn_glViewport)(int,int,int,int);
