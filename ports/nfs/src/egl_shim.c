@@ -594,6 +594,11 @@ void my_glDrawArrays(unsigned m, int f, int c) {
  * texture2D, não importa). */
 unsigned g_nfs_atlas_tex = 0;
 static int g_atlashack = -1;
+/* 🔑 PER-PROGRAMA: cada shader lembra a última textura REAL usada com ele. A
+ * engine liga a textura no 1º draw do batch e desenha os seguintes com tex=0
+ * (link sprite->atlas null no .sba) → religamos a textura DAQUELE shader. Tela-
+ * agnóstico: corrige logos após MOST WANTED, spinner de loading, etc. (o "último
+ * atlas global" errava quando novos packs carregavam). */
 static void atlas_rebind(void){
   if(g_atlashack<0) g_atlashack=getenv("NFS_NOATLASHACK")?0:1; /* PADRÃO ligado */
   if(g_atlashack && g_unit_tex[0]==0 && g_nfs_atlas_tex){
