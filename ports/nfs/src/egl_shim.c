@@ -438,8 +438,9 @@ typedef void (*pfn_glTexParameteri)(unsigned,unsigned,int);
 static pfn_glTexParameteri real_glTexParameteri;
 void my_glTexParameteri(unsigned tgt, unsigned pname, int param){
   if(!real_glTexParameteri) real_glTexParameteri=(pfn_glTexParameteri)SDL_GL_GetProcAddress("glTexParameteri");
+  if(pname==0x813D) return; /* GL_TEXTURE_MAX_LEVEL: não existe em GLES2 (gera erro) */
   static int off=-1; if(off<0) off=getenv("NFS_NOMIPFIX")?1:0;
-  if(!off && pname==0x2801 /*MIN_FILTER*/ &&
+  if(!off && (pname==0x2801/*MIN*/||pname==0x2800/*MAG*/) &&
      (param==0x2700||param==0x2701||param==0x2702||param==0x2703)) /* *_MIPMAP_* */
     param = (param==0x2700||param==0x2701) ? 0x2600 /*NEAREST*/ : 0x2601 /*LINEAR*/;
   real_glTexParameteri(tgt,pname,param);
@@ -495,6 +496,10 @@ void my_glCompileShader(unsigned sh){
     real_glGetShaderiv=(pfn_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     real_glGetShaderInfoLog=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog"); }
   real_glCompileShader(sh);
+  if(getenv("NFS_SHADERDUMP")){ static int dn=0; if(dn<6){
+    pfn_glGetShaderInfoLog gss=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderSource");
+    if(gss){ char *src=malloc(8192); int n=0; src[0]=0; gss(sh,8192,&n,src);
+      fprintf(stderr,"===SHADER sh=%u (%s)===\n%s\n===END===\n",sh, strstr(src,"gl_Position")?"VERT":"FRAG", src); free(src); dn++; } } }
   if(getenv("NFS_SHADERLOG")){ int ok=1; real_glGetShaderiv(sh,0x8B81,&ok);
     if(!ok){ char log[1024]={0}; int n=0; real_glGetShaderInfoLog(sh,1024,&n,log);
       fprintf(stderr,"[SHADER COMPILE FAIL sh=%u] %s\n",sh,log);
@@ -510,6 +515,39 @@ void my_glLinkProgram(unsigned p){
     if(!ok){ char log[1024]={0}; int n=0; real_glGetProgramInfoLog(p,1024,&n,log);
       fprintf(stderr,"[PROGRAM LINK FAIL p=%u] %s\n",p,log); } }
 }
+/* === Receitas Mali-450 Utgard (do port do Bully) ===
+ * highp→mediump no FRAGMENT (a PP do Utgard não tem highp → resultados errados/
+ * pretos; o VERTEX mantém highp pois a GP é FP32 e o skinning precisa). */
+static char *str_replace_all(const char *src, const char *find, const char *repl){
+  size_t fl=strlen(find), rl=strlen(repl), n=0;
+  for(const char*p=src;(p=strstr(p,find));p+=fl) n++;
+  char *out=malloc(strlen(src)+n*(rl>fl?rl-fl:0)+1); char*o=out; const char*p=src,*q;
+  while((q=strstr(p,find))){ memcpy(o,p,q-p); o+=q-p; memcpy(o,repl,rl); o+=rl; p=q+fl; }
+  strcpy(o,p); return out;
+}
+typedef void (*pfn_glShaderSource)(unsigned,int,const char*const*,const int*);
+static pfn_glShaderSource real_glShaderSource;
+void my_glShaderSource(unsigned sh,int count,const char*const*str,const int*len){
+  (void)len;
+  if(!real_glShaderSource) real_glShaderSource=(pfn_glShaderSource)SDL_GL_GetProcAddress("glShaderSource");
+  size_t total=1; for(int i=0;i<count;i++) if(str&&str[i]) total+=strlen(str[i]);
+  char *cat=malloc(total); cat[0]=0;
+  for(int i=0;i<count;i++) if(str&&str[i]) strcat(cat,str[i]);
+  int is_vertex = strstr(cat,"gl_Position")!=NULL;
+  static int off=-1; if(off<0) off=getenv("NFS_NOPREC")?1:0;
+  char *s = (is_vertex||off) ? cat : str_replace_all(cat,"highp","mediump");
+  if(s!=cat) free(cat);
+  /* DIAGNÓSTICO NFS_FORCETEX: ignora a cor (varColor/constantColor) no multiply
+   * → se os logos aparecerem, a cor do sprite vinha PRETA. */
+  if(!is_vertex && getenv("NFS_FORCETEX")){
+    char *a=str_replace_all(s,"varColor*texture2D","texture2D"); free(s);
+    char *b=str_replace_all(a,"constantColor*texture2D","texture2D"); free(a); s=b;
+  }
+  const char *one=s;
+  if(real_glShaderSource) real_glShaderSource(sh,1,&one,NULL);
+  free(s);
+}
+unsigned egl_cur_tex0(void){ return g_unit_tex[g_active_unit&7]; }
 void my_glActiveTexture(unsigned u){
   if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
   int idx=(int)(u-0x84C0); if(idx>=0&&idx<8) g_active_unit=idx; real_glActiveTexture(u);
@@ -561,7 +599,7 @@ static int g_teximg_log = -1, g_teximg_n = 0;
 void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,unsigned ty,const void*px){
   if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
-  if (g_teximg_log&&l==0&&g_teximg_n<40){ fprintf(stderr,"[texImage2D] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",w,h,ifmt,fmt,ty,px); g_teximg_n++; }
+  if (g_teximg_log&&l==0&&g_teximg_n<60){ extern unsigned egl_cur_tex0(void); fprintf(stderr,"[texImage2D tex=%u] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",egl_cur_tex0(),w,h,ifmt,fmt,ty,px); g_teximg_n++; }
   /* NFS_TEXDUMP=1: salva as 1as texturas grandes (atlas) p/ inspeção do que a
    * engine SOBE de verdade (preto vs colorido). */
   if (getenv("NFS_TEXDUMP") && l==0 && w>=256 && h>=256 && px && ty==0x1401) {
@@ -580,6 +618,16 @@ void my_glViewport(int x,int y,int w,int h){
   if(g_vp_log<0) g_vp_log=getenv("NFS_VPLOG")?1:0;
   if(g_vp_log&&g_vp_n<40){ fprintf(stderr,"[viewport] %d,%d %dx%d\n",x,y,w,h); g_vp_n++; }
   real_glViewport(x,y,w,h);
+}
+/* páginas dinâmicas: a engine cria textura 512x512 vazia e preenche via SubImage */
+typedef void (*pfn_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+static pfn_glTexSubImage2D real_glTexSubImage2D;
+void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsigned fmt,unsigned ty,const void*px){
+  if(!real_glTexSubImage2D) real_glTexSubImage2D=(pfn_glTexSubImage2D)SDL_GL_GetProcAddress("glTexSubImage2D");
+  if(getenv("NFS_TEXLOG")){ static int n=0; if(n<50){ extern unsigned egl_cur_tex0(void);
+    long nb=0; const unsigned char*p=px; if(p) for(long i=0;i<(long)w*h;i++) if(p[i*4]|p[i*4+1]|p[i*4+2]) nb++;
+    fprintf(stderr,"[texSub tex=%u] +%d,%d %dx%d fmt=0x%x nonblack=%ld\n",egl_cur_tex0(),xo,yo,w,h,fmt,nb); n++; } }
+  real_glTexSubImage2D(t,l,xo,yo,w,h,fmt,ty,px);
 }
 void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,int b,int sz,const void*px){
   if (!real_glCompressedTexImage2D) real_glCompressedTexImage2D=(pfn_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
