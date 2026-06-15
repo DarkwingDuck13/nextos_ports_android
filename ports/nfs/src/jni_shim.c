@@ -75,6 +75,8 @@ enum {
   MID_MEASURE_TEXT,
   MID_DRAW_STRING,
   MID_BMG_CLEAR,
+  MID_GET_KEYCODE,   /* KeyEvent.getKeyCode() — gamepad/Moga */
+  MID_GET_ACTION,    /* KeyEvent.getAction() */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -90,6 +92,13 @@ enum {
 };
 
 static int g_method_tags[64]; /* unique addresses used as method IDs */
+
+/* 🎮 injeção de gamepad (Moga): main.c seta estes antes de chamar
+ * MogaController_nativeOnKeyEvent. A engine lê KeyEvent.getKeyCode()/getAction()
+ * via CallIntMethodV — durante a janela g_moga_active retornamos o valor. */
+int g_moga_active = 0;
+int g_moga_keycode = 0;
+int g_moga_action = 0;
 
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
@@ -193,6 +202,8 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "measureText") == 0) return &g_method_tags[MID_MEASURE_TEXT];
   if (strcmp(name, "drawString") == 0) return &g_method_tags[MID_DRAW_STRING];
   if (strcmp(name, "clear") == 0) return &g_method_tags[MID_BMG_CLEAR];
+  if (strcmp(name, "getKeyCode") == 0) return &g_method_tags[MID_GET_KEYCODE];
+  if (strcmp(name, "getAction") == 0) return &g_method_tags[MID_GET_ACTION];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -382,6 +393,16 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
 static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
+  /* 🎮 durante a injeção de gamepad, KeyEvent.getKeyCode()/getAction() do
+   * nativeOnKeyEvent caem aqui (CallIntMethodV slot 50). Respondemos com o
+   * keycode/ação injetados. Cobrimos tanto o methodID cacheado via nosso
+   * GetMethodID quanto o caso de methodID não-resolvido (g_moga_active). */
+  if (g_moga_active) {
+    if (methodID == &g_method_tags[MID_GET_ACTION]) return g_moga_action;
+    return g_moga_keycode; /* getKeyCode (ou qualquer int call na janela) */
+  }
+  if (methodID == &g_method_tags[MID_GET_KEYCODE]) return g_moga_keycode;
+  if (methodID == &g_method_tags[MID_GET_ACTION]) return g_moga_action;
   if (methodID == &g_method_tags[MID_GET_TOTAL_MEMORY]) {
     int mb = getenv("NFS_MEMMB") ? atoi(getenv("NFS_MEMMB")) : 2048;
     debugPrintf("jni_shim: getTotalMemory -> %d MB\n", mb);

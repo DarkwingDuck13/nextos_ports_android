@@ -672,6 +672,33 @@ int main(int argc, char *argv[]) {
             pend_kc=kc; pend_key=1; }
           fclose(kf); remove("/storage/roms/nfs/key.txt"); }
       }
+      /* 🎮 INJETOR DE GAMEPAD (MogaController) — CAMINHO DO MENU. O log da engine
+       * mostra "ShowMogaHighlight" no EULA → os menus navegam por gamepad, não
+       * por toque (nativeTouchScreenEvent não é consumido pelo menu).
+       * MogaController_nativeOnKeyEvent(env, thiz, KeyEvent) lê getKeyCode() via
+       * CallIntMethodV → g_moga_active faz nosso jni_shim devolver o keycode.
+       * moga.txt = keycode Android (19=UP 20=DOWN 21=L 22=R 23=CENTER 66=ENTER
+       * 96=A 97=B 4=BACK 108=START). DOWN(action0) este frame + UP(action1) no
+       * próximo (alguns menus disparam no ACTION_UP). */
+      {
+        typedef void (*mogafn_t)(void*,void*,void*);
+        static mogafn_t moga=NULL; static int minit=0;
+        static char fake_keyevent[16];
+        extern int g_moga_active, g_moga_keycode, g_moga_action;
+        if(!minit){ minit=1;
+          moga=(mogafn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnKeyEvent"); }
+        static int mpend=0, mkc=0;
+        if(mpend){ mpend=0; if(moga){ g_moga_active=1; g_moga_keycode=mkc; g_moga_action=1/*UP*/;
+            moga(env, fake_this, fake_keyevent); g_moga_active=0; } }
+        FILE *mf = fopen("/storage/roms/nfs/moga.txt","r");
+        if(mf){ int kc; if(fscanf(mf,"%d",&kc)==1 && moga){
+            FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a");
+            if(lg){ fprintf(lg,"MOGA %d moga=%p\n",kc,(void*)moga); fclose(lg); }
+            g_moga_active=1; g_moga_keycode=kc; g_moga_action=0/*DOWN*/;
+            moga(env, fake_this, fake_keyevent); g_moga_active=0;
+            mkc=kc; mpend=1; }
+          fclose(mf); remove("/storage/roms/nfs/moga.txt"); }
+      }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
       { extern void egl_shim_force_present(void); egl_shim_force_present(); }
