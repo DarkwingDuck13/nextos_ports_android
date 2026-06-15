@@ -66,18 +66,18 @@ cd "$GAMEDIR"
 mkdir -p "$GAMEDIR/gamedata"
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-# ---------- escolhe o binario certo p/ a glibc do device ----------
-# native precisa glibc>=2.38; CFW mais velho (ArkOS/R36S ~2.27) usa o .compat.
-# Deteccao robusta: ldd --version (presente em todo glibc; getconf falta em alguns
-# CFWs ex: X5M). Vazio/desconhecido -> default native (maioria dos CFWs e >=2.38).
-BIN="dysmantle"
-GLIBC_VER=$( { ldd --version 2>/dev/null || getconf GNU_LIBC_VERSION 2>/dev/null; } | grep -oE '[0-9]+\.[0-9]+' | head -1)
-if [ -n "$GLIBC_VER" ] && [ -x "$GAMEDIR/dysmantle.compat" ]; then
-  older=$(printf '%s\n%s\n' "2.38" "$GLIBC_VER" | sort -V | head -1)
-  # older==GLIBC_VER e != 2.38  => glibc do device < 2.38 => usa o compat
-  [ "$older" = "$GLIBC_VER" ] && [ "$GLIBC_VER" != "2.38" ] && BIN="dysmantle.compat"
+# ---------- escolha do binario (DOIS binarios cobrem qualquer device, igual Bully) ----------
+# dysmantle = build NextOS (GLIBC >= 2.38: NextOS/muOS/Knulli/ROCKNIX/X5M).
+# dysmantle.compat = MESMO codigo em Debian (GLIBC_2.27 -> roda em ArkOS/dArkOS/R36S).
+GLIBC_NEED=2.38
+glibc_have=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')
+[ -n "$glibc_have" ] || glibc_have=$(ldd --version 2>/dev/null | head -1 | awk '{print $NF}')
+glibc_ok=$(echo "${glibc_have:-0} $GLIBC_NEED" | awk '{split($1,a,".");split($2,b,".");print (a[1]>b[1]||(a[1]==b[1]&&a[2]+0>=b[2]+0))?1:0}')
+if [ "$glibc_ok" = "1" ] && [ -x "$GAMEDIR/dysmantle" ]; then
+  BIN="dysmantle";        echo "[launcher] glibc $glibc_have >= $GLIBC_NEED -> binario NextOS (dysmantle)"
+else
+  BIN="dysmantle.compat"; echo "[launcher] glibc ${glibc_have:-?} -> binario compat GLIBC_2.27 (dysmantle.compat)"
 fi
-echo "glibc=${GLIBC_VER:-?} -> binario=$BIN"
 
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
 # Igual ao Bully/TMNT: a logica toda fica no tools/dysmantle_extract.src; aqui so
@@ -122,15 +122,13 @@ export DYSMANTLE_ASSETS=assets
 export DYSMANTLE_GLVER=2.0
 export DYSMANTLE_SWAPINT=0
 
-# Backend de display ADAPTATIVO: a resolucao segue o framebuffer do device.
-if [ -e /dev/dri/card0 ]; then
-  export SDL_VIDEODRIVER=kmsdrm            # device com DRM/KMS (Mali novo)
-else
-  export SDL_VIDEODRIVER=mali              # EGL fbdev (Amlogic-old Mali-450)
-fi
+# NAO setamos SDL_VIDEODRIVER de proposito (padrao PortMaster, igual o Bully): o
+# SDL2 do device AUTO-DETECTA o backend -- mali/fbdev no Amlogic-old (sem /dev/dri)
+# e kmsdrm em device com KMS. Forcar era desnecessario e podia quebrar algum device.
 
-# X5M (Valhall): o modeset congela o PCM HDMI se aberto durante a troca de modo ->
-# jogo mudo. Espera o PCM fechar antes de abrir o jogo. So neste device.
+# X5M (Valhall): o Dysmantle usa audio SDL/ALSA direto, e o modeset congela o PCM
+# HDMI aberto na troca de modo -> mudo. Espera o PCM FECHAR antes de abrir o jogo.
+# So neste device (s7d|s6|s5); nos demais o bloco nem executa.
 if grep -qE "s7d|s6|s5" /proc/device-tree/compatible 2>/dev/null; then
   for i in $(seq 1 32); do
     grep -q closed /proc/asound/card0/pcm0p/sub0/status 2>/dev/null && break
@@ -151,8 +149,6 @@ elif command -v gptokeyb >/dev/null 2>&1; then
   export DYSMANTLE_INPUT=gptk
   gptokeyb -1 "dysmantle" -c "$GAMEDIR/dysmantle.gptk" &
 fi
-
-command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/$BIN"
 
 "./$BIN"
 
