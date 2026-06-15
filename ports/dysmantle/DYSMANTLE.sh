@@ -15,17 +15,11 @@ XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 #   1.3 = recomendado (quase imperceptivel)  |  1.0 = qualidade total
 export DYSMANTLE_TEXSCALE="${DYSMANTLE_TEXSCALE:-1.3}"
 # ============================================================
-#__DLC_PRIVATE_BEGIN__  (REMOVIDO no pacote dos testers -- nao distribuir)
-# DLC ON/OFF -- PRIVADO. OFF = padrao (so o jogo base, igual ao pacote publico).
-# ON = destrava SOMENTE os DLC que a POSSE LEGITIMA do jogador comprovar:
-#   (a) save com PROGRESSO no DLC (copia legal Android importada p/ gamedata/), ou
-#   (b) o arquivo _in-app-item-entitlements.xml do Android copiado p/ gamedata/.
-# Nao e cheat: so restaura o que a pessoa realmente tem. Conteudo ja vem no data.pak.
-DLC="${DLC:-OFF}"
-[ "$DLC" = "ON" ] && export DYSMANTLE_DLC=1
-# (teste interno: DLC_FORCE=1 libera os 3 ignorando a checagem do save)
-[ "$DLC_FORCE" = "1" ] && export DYSMANTLE_DLC=1 DYSMANTLE_DLC_FORCE=1
-#__DLC_PRIVATE_END__
+# DLC (Underworld / Doomsday / Pets and Dungeons) -- automatico e seguro:
+# se voce TEM os DLC na sua copia legal, copie o seu SAVE do Android (com o
+# progresso do DLC) para  $GAMEDIR/gamedata/10tons/DYSMANTLE/save/0/  -> os DLC
+# que o seu save COMPROVA destravam sozinhos. Sem save de DLC = so o jogo base.
+# (Nao destrava nada que voce nao tenha. Desligar de vez: DYSMANTLE_NO_DLC=1)
 # ============================================================
 
 if [ -d "/opt/system/Tools/PortMaster/" ]; then

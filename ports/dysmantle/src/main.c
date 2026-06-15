@@ -820,10 +820,10 @@ static void my_iap_postinit(void *self) {
   }
 }
 static void hook_iap_dlc(void) {
-  /* DLC OFF por PADRAO: a feature so liga com DYSMANTLE_DLC setado (o launcher
-   * PRIVADO faz isso com DLC=ON). Sem isso, o hook nem instala -> nada de DLC
-   * (o pacote dos testers nao tem o DLC=ON, entao roda so o jogo base). */
-  if (!getenv("DYSMANTLE_DLC")) return;
+  /* DLC SEMPRE ON (publico) -- e SEGURO porque a deteccao so destrava o DLC que o
+   * SAVE LEGITIMO do jogador comprova (anti-pirataria): quem nao tem o save com DLC
+   * nao destrava nada. Kill-switch: DYSMANTLE_NO_DLC=1. Teste interno: DLC_FORCE=1. */
+  if (getenv("DYSMANTLE_NO_DLC")) { fprintf(stderr, "[dlc] desligado (DYSMANTLE_NO_DLC)\n"); return; }
   uintptr_t addr = so_find_addr("_ZN34AndroidInAppPurchaseImplementation14PostInitializeEv");
   iap_set_cached = (void (*)(void *, const char *, unsigned long, int))so_find_addr(
       "_ZN33CachedInAppPurchaseImplementation20SetCachedEntitlementENSt6__ndk117basic_string_viewIcNS0_11char_traitsIcEEEEb");
