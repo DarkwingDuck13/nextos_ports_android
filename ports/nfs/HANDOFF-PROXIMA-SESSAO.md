@@ -1,8 +1,49 @@
 # NFS Most Wanted (Mali-450 so-loader) — HANDOFF p/ próxima sessão (2026-06-15)
 
-Device .164 (senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
+Device em **192.168.31.164** (subnet .31, NÃO .0/.1; senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
 Build: `./build.sh`. Rodar no device: `cd /storage/roms/nfs && ./go.sh` (ou os g*.sh).
 Ghidra: `~/re-tools` (`export GHIDRA_INSTALL_DIR=~/re-tools/ghidra_12.1.2_PUBLIC JAVA_HOME=~/re-tools/jdk-21.0.11+10`).
+RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
+`python3 ~/re-tools/dec_an.py <addr>`; capstone confiável p/ Thumb c/ `python3 ~/re-tools/fdis.py <addr> [N]`
+(libapp é mistura ARM/Thumb; .text VA=file offset 1:1; addr PAR=ARM, ÍMPAR=Thumb).
+Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
+auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
+
+## 🆕 PARTE 12 (2026-06-15) — CONTROLES: toque DESPACHA mas menu não consome; tecla CHEGA na engine
+**FIX REAL aplicado (jni_shim.c): `IsSameObject` (JNIEnv slot 24) estava NO `jni_stub`→retornava 0.**
+O dispatch de toque (`nativeTouchScreenEvent` 0x54d764 → getter `0x54a244` itera lista
+intrusiva de handlers @VA 0xadfd24 → `IsSameObject(env, handler->view, thiz)`) SEMPRE
+falhava o match → todo toque descartado. Agora `IsSameObject` compara ponteiros + passamos
+a VIEW REAL do handler como `thiz` (handler->vtable[2]() = 0x3e1cc) → match OK, getter
+retorna handler ≠0, vtable9-check passa, evento entregue ao input-target via `r4->vtable[2]`
+(=`0x54b99c`, detector de TAP: grava round(coord+0.5) no DOWN, checa |down-up|<14/15px no UP).
+**COORDS = PIXELS de tela (NÃO normalizado):** vtable7()=1 (sem escala) → passar px crus
+(640,454 p/ CONFIRM). Default agora é raw (NFS_TAPNORM=1 normaliza=ERRADO, só p/ comparar).
+**MAS:** mesmo com toque despachando 100% certo (verificado: getter/handler/r4/ev2 logados em
+taplog.txt), **o EULA NÃO reage a tap limpo** (CONFIRM/USER AGREEMENT/PRIVACY → tela
+IDÊNTICA ee19cc3c; press longo de 1s → mid sem highlight; sem-MOVE idem). Tela do EULA é
+ESTÁVEL sem input (ee19cc3c), então o menu NÃO consome o caminho `nativeTouchScreenEvent`.
+**Tecla:** `nativeOnPhysicalKeyDown` (0x54cb98) CHEGA na engine — BACK(4) é processado e
+sai/quita o app (prova end-to-end!); mas DPAD/ENTER/A/etc (19/20/23/66/96/...) NÃO navegam
+o EULA (touch-only accept). Flag de input-disable @0xadfd44 (compartilhada touch+key); NFS_FORCEINPUT zera.
+**EULA-bypass por arquivo NÃO serve:** o aceite NÃO é checado via open/stat/VFS (log amplo
+NFS_FOPENLOG+SEEKLOG só mostra os flow .sb /published/flow/active_accept*.sb) → é ação
+in-engine do flow, sem persistência em arquivo.
+**HIPÓTESE p/ continuar (em ordem):**
+  1. **Menu usa input POLLED, não o evento.** O detector 0x54b99c só GRAVA estado no
+     input-target (offsets +4=state, +8=down_x, +0xc=down_y por ponteiro) e RETORNA bool
+     que o caller IGNORA. Algo no `nativeOnRunLoopTick` deve LER esse estado (ou um input
+     global diferente). Achar o leitor: hookar métodos do input-target durante o tick, OU
+     procurar quem lê os offsets +4/+8/+0xc. Talvez o menu leia OUTRO objeto de input.
+  2. **Flow travado em loading/online** (handoff antigo: busy-loop init Nimble/ITracking
+     stubado). EULA pode estar não-interativo até load/online completar. Render avança
+     (frame 13000+) mas a interatividade do flow pode estar gated. Ver se há overlay de
+     loading ativo / destravar o getComponent(ITracking).
+  3. Forçar o flow a avançar programaticamente (achar fn "advance flow"/"set accepted" do
+     active_accept.sb e chamar), OU passar o GameGLSurfaceView REAL (não 0x3e1cc fake).
+Infra de input em main.c: tap.txt "x y"(px), key.txt keycode; NFS_TAPHOLD(frames, default
+6), NFS_TAPMOVE(reativa MOVE no hold), NFS_TAPNORM, NFS_TAPRAW, NFS_FORCEINPUT. Logs em taplog.txt.
+graw.sh/grun.sh = launchers; gprobe.sh = NFS_INPROBE (estado da lista de toque).
 
 ## ✅ O QUE JÁ FUNCIONA (não regredir!)
 - **Render completo** (era 100% preto). Causas resolvidas: getTotalMemory=0→2048MB;

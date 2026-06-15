@@ -614,6 +614,14 @@ static void *jni_NewLocalRef(void *env, void *obj) {
   (void)env;
   return obj;
 }
+/* 🔑 IsSameObject (slot 24): o dispatch de TOQUE (nativeTouchScreenEvent ->
+ * 0x54a284) faz IsSameObject(env, handler->view, thiz) p/ casar o handler
+ * registrado com a view do evento. Sem isto caía no jni_stub (=0) → match
+ * SEMPRE falhava → todo toque era descartado. Compara ponteiros de jobject. */
+static unsigned char jni_IsSameObject(void *env, void *a, void *b) {
+  (void)env;
+  return (a == b) ? 1 : 0;
+}
 static void jni_DeleteGlobalRef(void *env, void *obj) {
   (void)env;
   (void)obj;
@@ -736,6 +744,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[21] = (uintptr_t)jni_NewGlobalRef;
   jni_env_vtable[22] = (uintptr_t)jni_DeleteGlobalRef;
   jni_env_vtable[23] = (uintptr_t)jni_DeleteLocalRef;
+  jni_env_vtable[24] = (uintptr_t)jni_IsSameObject;       /* match de view no toque */
   jni_env_vtable[25] = (uintptr_t)jni_NewLocalRef;
   jni_env_vtable[31] = (uintptr_t)jni_GetObjectClass;
   jni_env_vtable[33] = (uintptr_t)jni_GetMethodID;

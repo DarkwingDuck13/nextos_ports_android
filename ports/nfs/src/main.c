@@ -525,6 +525,24 @@ int main(int argc, char *argv[]) {
       } else {
         ((void(*)(void*,void*))tick)(env, fake_this);
       }
+      /* 🔎 PROBE de INPUT (NFS_INPROBE=1): nos frames 5/30/120 reporta o estado
+       * da lista de handlers de TOQUE (sentinel intrusivo @0xadfd24: vazia ⟺
+       * *(sentinel)==sentinel) e do flag de toque-desabilitado (*(*0xac696c)). */
+      if (getenv("NFS_INPROBE") && (f == 5 || f == 30 || f == 120 || f == 300)) {
+        extern void *text_base;
+        uintptr_t tb = (uintptr_t)text_base;
+        uintptr_t sentinel = tb + 0xadfd24;
+        uintptr_t first = *(uintptr_t *)sentinel;
+        uintptr_t flagpp = tb + 0xac696c;
+        uintptr_t flagp = *(uintptr_t *)flagpp;
+        int flagb = (flagp > 0x10000) ? *(unsigned char *)flagp : -1;
+        int nnodes = 0;
+        for (uintptr_t p = first; p != sentinel && p > 0x10000 && nnodes < 64; nnodes++)
+          p = *(uintptr_t *)p; /* next em offset 0 (circular) */
+        fprintf(stderr, "[INPROBE f=%d] touchlist %s (first=%#lx sentinel=%#lx nodes=%d) tdisable=%d(flagp=%#lx)\n",
+                f, (first == sentinel) ? "EMPTY" : "NONEMPTY",
+                (unsigned long)(first - tb), (unsigned long)(sentinel - tb), nnodes, flagb, (unsigned long)(flagp ? flagp - tb : 0));
+      }
       /* 🔑 RE-EMITE nativeSurfaceChanged nos primeiros frames: a fn começa com
        * `if (graphics_singleton()==0) return;` — quando a chamamos logo após
        * nativeOnCreate o singleton de gráficos ainda não existe (criado no 1º
@@ -546,17 +564,86 @@ int main(int argc, char *argv[]) {
         static touchfn_t touch = NULL; static int tinit = 0;
         if (!tinit) { tinit = 1;
           touch = (touchfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_GameGLSurfaceView_nativeTouchScreenEvent"); }
+        /* 🔑 VIEW REAL: nativeTouchScreenEvent IGNORA o `thiz` que passamos e
+         * busca o handler registrado na lista intrusiva @0xadfd24; o dispatch
+         * faz IsSameObject(env, handler->view, thiz). Com fake_this o match
+         * FALHA → toque descartado. Resolvemos a view real do 1º handler
+         * (handler->vtable[2]() retorna o jobject da view) e passamos COMO thiz
+         * → IsSameObject(view,view)=TRUE → match → dispatch. NFS_FAKEVIEW=1 volta
+         * ao comportamento antigo (fake_this) p/ comparar. */
+        void *tobj = fake_this;
+        if (!getenv("NFS_FAKEVIEW")) {
+          extern void *text_base; uintptr_t tb = (uintptr_t)text_base;
+          uintptr_t sentinel = tb + 0xadfd24;
+          uintptr_t node = *(uintptr_t *)sentinel;
+          if (node != sentinel && node > 0x10000) {
+            uintptr_t handler = *(uintptr_t *)(node + 8);
+            if (handler > 0x10000) {
+              uintptr_t hvt = *(uintptr_t *)handler;
+              if (hvt > 0x10000) {
+                void *(*get_view)(void *) = (void *(*)(void *))(*(uintptr_t *)(hvt + 8));
+                void *v = get_view((void *)handler);
+                if (v) tobj = v;
+              }
+            }
+          }
+        }
+        /* 🔑 PRÉ-NORMALIZAÇÃO: nativeTouchScreenEvent faz x' = x / vtable7(),
+         * y' = y / vtable7(). No nosso port vtable7 (dims da view p/ toque)
+         * retorna 1 (não 1280/720) → o engine espera coords JÁ normalizadas
+         * (0..1). tap.txt traz PIXELS (0..1280, 0..720); convertemos p/
+         * (px/1280)*div e (py/720)*div (div=vtable7, robusto se algum dia ≠1).
+         * NFS_TAPRAW=1 desliga (passa pixels crus). */
         union { float f; int i; } ux, uy;
+        /* 🔑 HOLD do press: o botão destaca no DOWN mas o clique só dispara no
+         * UP se a engine registrou o press ao longo de ticks. UP no frame
+         * seguinte é cedo demais → seguramos NFS_TAPHOLD frames (default 6)
+         * antes de soltar. Durante o hold reemitimos MOVE p/ manter o tracking. */
         static int pend_xi, pend_yi, pend_up = 0;
-        if (pend_up) { pend_up = 0; if (touch) touch(env, fake_this, 1/*UP*/, 0, pend_xi, pend_yi); }
+        static void *pend_obj;
+        if (pend_up > 0) {
+          pend_up--;
+          /* só DOWN…(espera)…UP. MOVE durante o hold pode ser visto como DRAG
+           * e cancelar o tap. NFS_TAPMOVE=1 reativa o MOVE p/ comparar. */
+          if (pend_up == 0) { if (touch) touch(env, pend_obj, 1/*UP*/, 0, pend_xi, pend_yi); }
+          else if (getenv("NFS_TAPMOVE")) { if (touch) touch(env, pend_obj, 2/*MOVE*/, 0, pend_xi, pend_yi); }
+        }
         FILE *tf = fopen("/storage/roms/nfs/tap.txt", "r");
         if (tf) { float x, y; int ok = fscanf(tf, "%f %f", &x, &y);
           if (ok == 2 && touch) {
-            ux.f = x; uy.f = y;
+            float nx = x, ny = y;
+            int d1 = 1, d2 = 1;
+            extern void *text_base; uintptr_t tb = (uintptr_t)text_base;
+            void *(*getter)(void *, void *) = (void *(*)(void *, void *))(tb + 0x54a244);
+            void *h = getter(env, tobj);
+            void *r4 = NULL; uintptr_t ev2off = 0;
+            if (h && (uintptr_t)h > 0x10000) {
+              uintptr_t hvt = *(uintptr_t *)h;
+              int (*dim)(void *) = (int (*)(void *))(*(uintptr_t *)(hvt + 0x1c));
+              d1 = dim(h); d2 = dim(h);
+              /* r4 = h->vtable[9]() = input-target; r4->vtable[2] = receptor de
+               * evento (down/move/up). Logamos o offset em libapp p/ decompilar. */
+              void *(*v9)(void *) = (void *(*)(void *))(*(uintptr_t *)(hvt + 0x24));
+              r4 = v9(h);
+              if (r4 && (uintptr_t)r4 > 0x10000) {
+                uintptr_t r4vt = *(uintptr_t *)r4;
+                uintptr_t ev2 = *(uintptr_t *)(r4vt + 8);
+                ev2off = ev2 - tb;
+              }
+            }
+            /* DEFAULT = pixels crus: o tap-detector (0x54b99c) grava
+             * round(coord+0.5) e compara |down-up|<14px, e vtable7()=1 (sem
+             * escala) → a engine espera PIXELS de tela, não normalizado.
+             * NFS_TAPNORM=1 normaliza (errado p/ este engine; só p/ comparar). */
+            if (getenv("NFS_TAPNORM")) { nx = (x / 1280.0f) * d1; ny = (y / 720.0f) * d2; }
+            ux.f = nx; uy.f = ny;
             FILE *lg = fopen("/storage/roms/nfs/taplog.txt", "a");
-            if (lg) { fprintf(lg, "TAP x=%g y=%g (down)\n", x, y); fclose(lg); }
-            touch(env, fake_this, 0/*DOWN*/, 0, ux.i, uy.i);
-            pend_xi = ux.i; pend_yi = uy.i; pend_up = 1; }
+            if (lg) { fprintf(lg, "TAP px=(%g,%g) -> norm=(%.4f,%.4f) div=(%d,%d) view=%p h=%p r4=%p ev2=libapp+0x%lx\n",
+                              x, y, nx, ny, d1, d2, tobj, h, r4, (unsigned long)ev2off); fclose(lg); }
+            touch(env, tobj, 0/*DOWN*/, 0, ux.i, uy.i);
+            { const char *hs = getenv("NFS_TAPHOLD"); int hold = hs ? atoi(hs) : 6;
+              if (hold < 2) hold = 2; pend_up = hold; }
+            pend_xi = ux.i; pend_yi = uy.i; pend_obj = tobj; }
           fclose(tf); remove("/storage/roms/nfs/tap.txt"); }
       }
       /* ⌨️🎮 INJETOR DE TECLA/GAMEPAD: lê key.txt (keycode Android int) e chama
