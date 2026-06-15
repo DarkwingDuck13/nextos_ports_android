@@ -79,6 +79,7 @@ enum {
   MID_GET_ACTION,    /* KeyEvent.getAction() */
   MID_GET_STATUS,    /* INetwork.getStatus() -> Network$Status (conectividade) */
   MID_ORDINAL,       /* Enum.ordinal() — usado p/ Network$Status */
+  MID_GET_AXIS,      /* MotionEvent.getAxisValue(int) — analog stick (Moga) */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -102,6 +103,10 @@ int g_moga_active = 0;
 int g_moga_keycode = 0;
 int g_moga_action = 0;
 int g_moga_calln = 0;  /* main.c zera antes de cada nativeOnKeyEvent */
+/* 🕹️ injeção de analog stick (MotionEvent): main.c seta os eixos antes de chamar
+ * nativeOnMotionEvent. getAxisValue(axis) via CallFloatMethodV devolve g_axis[axis]. */
+int g_motion_active = 0;
+float g_axis[32] = {0};
 
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
@@ -209,6 +214,7 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "getAction") == 0) return &g_method_tags[MID_GET_ACTION];
   if (strcmp(name, "getStatus") == 0) return &g_method_tags[MID_GET_STATUS];
   if (strcmp(name, "ordinal") == 0) return &g_method_tags[MID_ORDINAL];
+  if (strcmp(name, "getAxisValue") == 0) return &g_method_tags[MID_GET_AXIS];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -431,10 +437,15 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
        * 3 não dispara NO_CONNECTION_PROMPT). NFS_NETSTATUS sobrescreve. */
       if (getenv("NFS_STACKSCAN")) {
         extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
-        uintptr_t *sp; __asm__("mov %0, sp":"=r"(sp));
-        int n=0; fprintf(stderr, "[STACK] ordinal callers:");
-        for (int i=0;i<256 && n<10;i++){ uintptr_t v=sp[i];
-          if (v>tb && v<tb+0xa00000){ fprintf(stderr," +0x%lx",(unsigned long)(v-tb)); n++; } }
+        void *ra[6]={0};
+        ra[0]=__builtin_return_address(0);
+        ra[1]=__builtin_return_address(1);
+        ra[2]=__builtin_return_address(2);
+        ra[3]=__builtin_return_address(3);
+        ra[4]=__builtin_return_address(4);
+        fprintf(stderr, "[RACHAIN]");
+        for(int i=0;i<5;i++){ uintptr_t v=(uintptr_t)ra[i];
+          if(v>tb && v<tb+0xa00000) fprintf(stderr," +0x%lx",(unsigned long)(v-tb)); else fprintf(stderr," (%p)",ra[i]); }
         fprintf(stderr,"\n");
       }
       const char *e = getenv("NFS_NETSTATUS");
@@ -463,6 +474,16 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 __attribute__((pcs("aapcs")))
 static float jni_CallFloatMethod_v(void *env, void *obj, void *methodID, va_list ap) {
   (void)env; (void)obj;
+  /* 🕹️ MotionEvent.getAxisValue(axis) — durante injeção de stick devolve o eixo
+   * setado. O methodID de getAxisValue pode NÃO estar cacheado via nosso
+   * GetMethodID (sem Java MogaController), então durante g_motion_active tratamos
+   * QUALQUER CallFloat como getAxisValue (na janela, nativeOnMotionEvent só chama
+   * getAxisValue) e lemos o axis do vararg. */
+  if (g_motion_active || methodID == &g_method_tags[MID_GET_AXIS]) {
+    int axis = va_arg(ap, int);
+    if (axis >= 0 && axis < 32) return g_axis[axis];
+    return 0.0f;
+  }
   if (methodID == &g_method_tags[MID_GET_PERF_SCORE]) {
     float s = getenv("NFS_PERF") ? (float)atof(getenv("NFS_PERF")) : 0.0f;
     debugPrintf("jni_shim: getPerformanceScore -> %f\n", s);

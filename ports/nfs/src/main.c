@@ -721,6 +721,31 @@ int main(int argc, char *argv[]) {
             mkc=kc; mpend=1; }
           fclose(mf); remove("/storage/roms/nfs/moga.txt"); }
       }
+      /* 🕹️ INJETOR DE STICK (nativeOnMotionEvent) — a navegação do MENU pode usar
+       * o analog stick (eixos lidos via getAxisValue, armazenados em [ctx+0x138/
+       * 0x13c] e processados por 0x7566c), não o DPAD-evento. stick.txt = "x y"
+       * floats (eixo 0/1 do stick esquerdo; y=-1 cima, y=+1 baixo). Pulsa: envia o
+       * valor 1 frame, depois neutro (p/ o menu detectar a borda e navegar 1 passo). */
+      {
+        typedef void (*motionfn_t)(void*,void*,void*);
+        static motionfn_t motion=NULL; static int motinit=0;
+        static char fake_motionevent[16];
+        extern int g_motion_active; extern float g_axis[32];
+        if(!motinit){ motinit=1;
+          motion=(motionfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnMotionEvent"); }
+        static int spend=0;
+        if(spend){ spend=0; if(motion){ /* frame neutro (solta o stick) */
+            for(int i=0;i<32;i++) g_axis[i]=0.0f; g_motion_active=1;
+            motion(env, fake_this, fake_motionevent); g_motion_active=0; } }
+        FILE *sf = fopen("/storage/roms/nfs/stick.txt","r");
+        if(sf){ float sx,sy; if(fscanf(sf,"%f %f",&sx,&sy)==2 && motion){
+            FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a");
+            if(lg){ fprintf(lg,"STICK x=%g y=%g motion=%p\n",sx,sy,(void*)motion); fclose(lg); }
+            for(int i=0;i<32;i++) g_axis[i]=0.0f; g_axis[0]=sx; g_axis[1]=sy;
+            g_motion_active=1; motion(env, fake_this, fake_motionevent); g_motion_active=0;
+            spend=1; }
+          fclose(sf); remove("/storage/roms/nfs/stick.txt"); }
+      }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
       { extern void egl_shim_force_present(void); egl_shim_force_present(); }
