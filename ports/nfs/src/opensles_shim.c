@@ -325,25 +325,32 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     uint32_t got = ring_read(p, tmp, src_bytes_want);
     got = (got / frame_size) * frame_size;
     uint32_t src_frames_got = got / frame_size;
-    if (src_frames_got == 0) continue;
-    int bufs_done = queue_consume(p, got);
-    /* 🔑 dispara o callback do buffer-queue p/ o FMOD enfileirar o próximo buffer.
-     * 🔊 latência: normalmente 1:1 por buffer consumido (mantém o ritmo). MAS se o
-     * ring está acima do alvo, disparamos MENOS (drena o excesso) → backpressure
-     * que limita a latência e mata a deriva (~280ms→alvo). Robusto p/ callback
-     * sync OU async (é baseado em taxa, não em checar profundidade pós-callback). */
-    if (p->callback && bufs_done > 0) {
-      int to_fire = bufs_done;
-      uint32_t depth = ring_readable(p);
-      uint32_t target = target_ring_bytes();
-      if (depth > target) {
-        uint32_t blk = p->last_enqueue_size ? p->last_enqueue_size : 4096;
-        uint32_t excess = (depth - target) / blk; /* buffers a drenar */
-        to_fire = (excess >= (uint32_t)to_fire) ? 0 : (to_fire - (int)excess);
+    int bufs_done = (got > 0) ? queue_consume(p, got) : 0;
+    /* 🔑 COLD-START / anti-stall: SEMPRE manter o FMOD "chutado" p/ produzir o
+     * próximo buffer — INCLUSIVE com o ring VAZIO. Sem isto, se nada está tocando
+     * (ring vazio) o callback nunca disparava → o mixer/stream do FMOD nunca
+     * acordava → nada tocava E o load da corrida TRAVAVA esperando a música.
+     * Acima do alvo: drena (latência). Abaixo: garante refill. Vazio: 1 kick. */
+    if (p->callback) {
+      int to_fire;
+      if (src_frames_got == 0) {
+        to_fire = 1; /* ring vazio: acorda o FMOD */
+      } else {
+        to_fire = bufs_done;
+        uint32_t depth = ring_readable(p);
+        uint32_t target = target_ring_bytes();
+        if (depth > target) {
+          uint32_t blk = p->last_enqueue_size ? p->last_enqueue_size : 4096;
+          uint32_t excess = (depth - target) / blk;
+          to_fire = (excess >= (uint32_t)to_fire) ? 0 : (to_fire - (int)excess);
+        } else if (to_fire < 1) {
+          to_fire = 1; /* abaixo do alvo: garante refill (não deixa esvaziar) */
+        }
       }
       for (int c = 0; c < to_fire; c++)
         p->callback((void *)&p->bq_ptr, p->callback_context);
     }
+    if (src_frames_got == 0) continue; /* nada p/ mixar (silêncio neste round) */
     p->played_bytes += got;
 
     /* Detect underrun: got less than requested = fade out last frames to avoid click */

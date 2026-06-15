@@ -235,6 +235,18 @@ static void *my_fopen(const char *path, const char *mode) {
   }
   return fp;
 }
+/* 🔑 read() ROBUSTO: o FMOD usa read() cru p/ carregar .fev/.fsb. Sob carga (a
+ * thread de áudio/mixer + o loader rodando), o read() pode retornar EINTR (sinal)
+ * ou CURTO. Se o FMOD não retenta → leitura incompleta → o .fsb/.fev falha com
+ * FORMAT(19) de forma ALEATÓRIA (set diferente a cada run). Aqui retentamos EINTR e
+ * completamos a leitura (loop) p/ arquivos regulares → cargas confiáveis. */
+static ssize_t (*real_read)(int, void *, size_t);
+static ssize_t my_read(int fd, void *buf, size_t count) {
+  if (!real_read) real_read = (ssize_t (*)(int, void *, size_t))dlsym(RTLD_DEFAULT, "read");
+  ssize_t r;
+  do { r = real_read(fd, buf, count); } while (r < 0 && errno == EINTR);
+  return r; /* só retry de EINTR (seguro p/ socket/pipe; não muda short-read) */
+}
 static size_t (*real_fread)(void *, size_t, size_t, void *);
 static size_t my_fread(void *p, size_t sz, size_t n, void *fp) {
   if (!real_fread) real_fread = (size_t(*)(void*,size_t,size_t,void*))dlsym(RTLD_DEFAULT, "fread");
@@ -596,10 +608,29 @@ extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
  * achar por que SFX/eventos falham ("Error loading file" / "Event not found").
  * Wrappers registrados em nfs_shims[]; chamam o real via g_comb (skip=si próprio). */
 static int (*real_es_load)(void *, const char *, void *, void **);
+/* 🔑 mutex de carga de áudio: os .fev/.fsb falham com FORMAT(19) de forma ALEATÓRIA
+ * (set diferente a cada run) = CONCORRÊNCIA (loads em threads diferentes + a thread
+ * de áudio/mixer corrompendo leituras compartilhadas do FMOD). Serializa as cargas. */
+static pthread_mutex_t g_audio_load_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int my_es_load(void *self, const char *fn, void *li, void **proj) {
   if (!real_es_load) real_es_load = (int (*)(void *, const char *, void *, void **))
       nfs_comb_lookup_real("_ZN4FMOD11EventSystem4loadEPKcP19FMOD_EVENT_LOADINFOPPNS_12EventProjectE", (uintptr_t)my_es_load);
+  extern int gettid(void);
+  if (getenv("NFS_SNDLOG")) fprintf(stderr, "[ESLOAD-tid %d] entrando '%s'\n", gettid(), fn?fn:"?");
+  pthread_mutex_lock(&g_audio_load_mtx);
   int r = real_es_load ? real_es_load(self, fn, li, proj) : -1;
+  /* 🔑 RETRY: effects.fev/ui.fev às vezes falham com FORMAT (19) de forma RACY (os
+   * outros .fev carregam) → eventos de colisão/nitro/cop/tráfego ficam "não
+   * encontrados" (89). Se o load falha, tenta de novo algumas vezes — se for
+   * transiente (race c/ a thread de áudio/loader), o retry pega. NFS_NOESRETRY desliga. */
+  if (r != 0 && real_es_load && !getenv("NFS_NOESRETRY")) {
+    for (int try = 0; try < 4 && r != 0; try++) {
+      if (proj) *proj = 0;
+      r = real_es_load(self, fn, li, proj);
+      if (getenv("NFS_SNDLOG")) fprintf(stderr, "[ESLOAD-RETRY %d] '%s' -> %d\n", try + 1, fn ? fn : "?", r);
+    }
+  }
+  pthread_mutex_unlock(&g_audio_load_mtx);
   if (getenv("NFS_SNDLOG")) fprintf(stderr, "[ESLOAD] load('%s') -> %d\n", fn ? fn : "(null)", r);
   return r;
 }
@@ -617,13 +648,12 @@ static int my_set_mediapath(void *self, const char *p) {
  * (0x20) por SOFTWARE (0x40) → mixer de software do FMOD decodifica. NFS_NOFMODSW desliga. */
 static unsigned int fmod_fix_mode(const char *name, unsigned int mode) {
   if (!getenv("NFS_NOFMODSW")) { mode &= ~0x20u; mode |= 0x40u; } /* HARDWARE→SOFTWARE */
-  /* 🎵🔑 MP3 = NONBLOCKING (0x10000): o decode do MP3 roda em thread de stream do
-   * FMOD; se o createStream BLOQUEIA esperando a stream ficar pronta, a thread
-   * principal trava (busy-loop) e o load da CORRIDA nunca termina → tela branca,
-   * sem carro. NONBLOCKING faz o createStream retornar na hora (decode em bg) →
-   * a thread principal segue → corrida carrega. NFS_NOMP3NB desliga. */
+  /* 🎵 MP3 NONBLOCKING (0x10000) = OPT-IN (NFS_MP3NB): destrava o load MAS o jogo
+   * checa a prontidão na hora → acha que a faixa falhou → CICLA o playlist (sem
+   * música). O fix REAL é o cold-start do opensles_shim (FMOD sempre acordado) →
+   * blocking funciona sem travar e a música toca. Mantido como fallback. */
   if (name && !(mode & 0x800u) && (strstr(name, ".mp3") || strstr(name, ".MP3")) &&
-      !getenv("NFS_NOMP3NB"))
+      getenv("NFS_MP3NB"))
     mode |= 0x10000u;
   return mode;
 }
@@ -1517,6 +1547,7 @@ DynLibFunction nfs_shims[] = {
     {"readdir_r", (uintptr_t)my_readdir_r},
     {"fopen", (uintptr_t)my_fopen},
     {"fread", (uintptr_t)my_fread},
+    {"read", (uintptr_t)my_read},
     {"open", (uintptr_t)my_open},
     {"stat", (uintptr_t)b_stat},
     {"fstat", (uintptr_t)b_fstat},
