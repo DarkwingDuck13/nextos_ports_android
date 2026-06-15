@@ -457,10 +457,15 @@ static pfn_glUniform4f real_glUniform4f;
 static pfn_glUniform1i real_glUniform1i;
 static pfn_glVertexAttrib4f real_glVertexAttrib4f;
 static int g_unilog=-1, g_unin=0;
+/* 🎨🔑 A engine é SOFTFP (float args em r0-r3), nosso loader HARDFP (floats em VFP).
+ * Sem pcs("aapcs"), my_glUniform4f/glVertexAttrib4f liam os floats do VFP = LIXO →
+ * cores de material/vértice garbage → cenário magenta/verde saturado por objeto.
+ * pcs("aapcs") faz a função ler os floats dos registradores CORE (softfp). */
+__attribute__((pcs("aapcs")))
 void my_glUniform4f(int loc,float a,float b,float c,float d){
   if(!real_glUniform4f) real_glUniform4f=(pfn_glUniform4f)SDL_GL_GetProcAddress("glUniform4f");
   if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
-  if(g_unilog&&g_unin<60){ fprintf(stderr,"[uni4f loc=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,a,b,c,d,g_cur_prog); g_unin++; }
+  if(g_unilog&&g_unin<5000){ fprintf(stderr,"[uni4f loc=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,a,b,c,d,g_cur_prog); g_unin++; }
   real_glUniform4f(loc,a,b,c,d);
 }
 typedef void (*pfn_glUniform4fv)(int,int,const float*);
@@ -468,21 +473,42 @@ static pfn_glUniform4fv real_glUniform4fv;
 void my_glUniform4fv(int loc,int cnt,const float*v){
   if(!real_glUniform4fv) real_glUniform4fv=(pfn_glUniform4fv)SDL_GL_GetProcAddress("glUniform4fv");
   if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
-  if(g_unilog&&g_unin<60&&v&&cnt>=1){ fprintf(stderr,"[uni4fv loc=%d cnt=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,cnt,v[0],v[1],v[2],v[3],g_cur_prog); g_unin++; }
+  if(g_unilog&&g_unin<5000&&v&&cnt>=1){ fprintf(stderr,"[uni4fv loc=%d cnt=%d] %.2f %.2f %.2f %.2f prog=%u\n",loc,cnt,v[0],v[1],v[2],v[3],g_cur_prog); g_unin++; }
   real_glUniform4fv(loc,cnt,v);
 }
 void my_glUniform1i(int loc,int v){
   if(!real_glUniform1i) real_glUniform1i=(pfn_glUniform1i)SDL_GL_GetProcAddress("glUniform1i");
   if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
-  if(g_unilog&&g_unin<60){ fprintf(stderr,"[uni1i loc=%d]=%d (sampler) prog=%u\n",loc,v,g_cur_prog); g_unin++; }
+  if(g_unilog&&g_unin<5000){ fprintf(stderr,"[uni1i loc=%d]=%d (sampler) prog=%u\n",loc,v,g_cur_prog); g_unin++; }
   real_glUniform1i(loc,v);
 }
+__attribute__((pcs("aapcs")))
 void my_glVertexAttrib4f(unsigned idx,float a,float b,float c,float d){
   if(!real_glVertexAttrib4f) real_glVertexAttrib4f=(pfn_glVertexAttrib4f)SDL_GL_GetProcAddress("glVertexAttrib4f");
   if(g_unilog<0) g_unilog=getenv("NFS_UNILOG")?1:0;
-  if(g_unilog&&g_unin<60){ fprintf(stderr,"[vattr%u] %.2f %.2f %.2f %.2f prog=%u\n",idx,a,b,c,d,g_cur_prog); g_unin++; }
+  if(g_unilog&&g_unin<5000){ fprintf(stderr,"[vattr%u] %.2f %.2f %.2f %.2f prog=%u\n",idx,a,b,c,d,g_cur_prog); g_unin++; }
   real_glVertexAttrib4f(idx,a,b,c,d);
 }
+/* 🎨🔑 TODAS as funções GL com float args precisam de pcs("aapcs") (engine SOFTFP,
+ * Mali HARDFP). As não-wrapped iam DIRETO pro Mali hardfp lendo VFP=lixo. As *fv e
+ * Matrix*fv usam ponteiro (sem float arg) → não precisam. SDL_GL_GetProcAddress
+ * retorna a função hardfp real; o compilador converte softfp→hardfp na chamada. */
+#define PCS __attribute__((pcs("aapcs")))
+#define GLP(nm) SDL_GL_GetProcAddress(nm)
+PCS void my_glUniform1f(int l,float a){ static void(*r)(int,float); if(!r)r=(void(*)(int,float))GLP("glUniform1f"); r(l,a);}
+PCS void my_glUniform2f(int l,float a,float b){ static void(*r)(int,float,float); if(!r)r=(void(*)(int,float,float))GLP("glUniform2f"); r(l,a,b);}
+PCS void my_glUniform3f(int l,float a,float b,float c){ static void(*r)(int,float,float,float); if(!r)r=(void(*)(int,float,float,float))GLP("glUniform3f"); r(l,a,b,c);}
+PCS void my_glVertexAttrib1f(unsigned i,float a){ static void(*r)(unsigned,float); if(!r)r=(void(*)(unsigned,float))GLP("glVertexAttrib1f"); r(i,a);}
+PCS void my_glVertexAttrib2f(unsigned i,float a,float b){ static void(*r)(unsigned,float,float); if(!r)r=(void(*)(unsigned,float,float))GLP("glVertexAttrib2f"); r(i,a,b);}
+PCS void my_glVertexAttrib3f(unsigned i,float a,float b,float c){ static void(*r)(unsigned,float,float,float); if(!r)r=(void(*)(unsigned,float,float,float))GLP("glVertexAttrib3f"); r(i,a,b,c);}
+PCS void my_glClearColor(float a,float b,float c,float d){ static void(*r)(float,float,float,float); if(!r)r=(void(*)(float,float,float,float))GLP("glClearColor"); r(a,b,c,d);}
+PCS void my_glBlendColor(float a,float b,float c,float d){ static void(*r)(float,float,float,float); if(!r)r=(void(*)(float,float,float,float))GLP("glBlendColor"); r(a,b,c,d);}
+PCS void my_glClearDepthf(float a){ static void(*r)(float); if(!r)r=(void(*)(float))GLP("glClearDepthf"); r(a);}
+PCS void my_glDepthRangef(float a,float b){ static void(*r)(float,float); if(!r)r=(void(*)(float,float))GLP("glDepthRangef"); r(a,b);}
+PCS void my_glLineWidth(float a){ static void(*r)(float); if(!r)r=(void(*)(float))GLP("glLineWidth"); r(a);}
+PCS void my_glPolygonOffset(float a,float b){ static void(*r)(float,float); if(!r)r=(void(*)(float,float))GLP("glPolygonOffset"); r(a,b);}
+PCS void my_glSampleCoverage(float a,unsigned char b){ static void(*r)(float,unsigned char); if(!r)r=(void(*)(float,unsigned char))GLP("glSampleCoverage"); r(a,b);}
+PCS void my_glTexParameterf(unsigned t,unsigned p,float a){ static void(*r)(unsigned,unsigned,float); if(!r)r=(void(*)(unsigned,unsigned,float))GLP("glTexParameterf"); r(t,p,a);}
 /* checa compile/link de shaders — falha = sprite preto (shadergen por-material) */
 typedef void (*pfn_glCompileShader)(unsigned);
 typedef void (*pfn_glGetShaderiv)(unsigned,unsigned,int*);
@@ -501,9 +527,9 @@ void my_glCompileShader(unsigned sh){
     real_glGetShaderiv=(pfn_glGetShaderiv)SDL_GL_GetProcAddress("glGetShaderiv");
     real_glGetShaderInfoLog=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderInfoLog"); }
   real_glCompileShader(sh);
-  if(getenv("NFS_SHADERDUMP")){ static int dn=0; if(dn<6){
+  if(getenv("NFS_SHADERDUMP")){ static int dn=0; if(dn<400){
     pfn_glGetShaderInfoLog gss=(pfn_glGetShaderInfoLog)SDL_GL_GetProcAddress("glGetShaderSource");
-    if(gss){ char *src=malloc(8192); int n=0; src[0]=0; gss(sh,8192,&n,src);
+    if(gss){ char *src=malloc(16384); int n=0; src[0]=0; gss(sh,16384,&n,src);
       fprintf(stderr,"===SHADER sh=%u (%s)===\n%s\n===END===\n",sh, strstr(src,"gl_Position")?"VERT":"FRAG", src); free(src); dn++; } } }
   if(getenv("NFS_SHADERLOG")){ int ok=1; real_glGetShaderiv(sh,0x8B81,&ok);
     if(!ok){ char log[1024]={0}; int n=0; real_glGetShaderInfoLog(sh,1024,&n,log);
@@ -542,6 +568,23 @@ void my_glShaderSource(unsigned sh,int count,const char*const*str,const int*len)
   static int off=-1; if(off<0) off=getenv("NFS_NOPREC")?1:0;
   char *s = (is_vertex||off) ? cat : str_replace_all(cat,"highp","mediump");
   if(s!=cat) free(cat);
+  /* 🎨 DIAG NFS_NOLIGHT: força a luz do mundo = branca (ambient+diffuse=1) e mata o
+   * termo hemisphere → mostra a textura crua. Se o magenta SUMIR, a cor vem do
+   * lighting (ambient/hemisphere magenta), não da textura. */
+  if(!is_vertex && getenv("NFS_NOLIGHT")){
+    char *a=str_replace_all(s,"g_AmbientColor.rgb + g_DiffuseColor.rgb","vec3(1.0,1.0,1.0)"); free(s); s=a;
+  }
+  /* 🎨 DIAG NFS_NOVCOL: força a cor de vértice (v_1) = branca no fragment → se o
+   * céu/cena corrigir, o magenta vem da COR DE VÉRTICE (a_Color0, verde perdido). */
+  if(!is_vertex && getenv("NFS_NOVCOL")){
+    char *a=str_replace_all(s,"* v_1)","* vec4(1.0))"); free(s);
+    char *b=str_replace_all(a,"= v_1;","= vec4(1.0);"); free(a); s=b;
+  }
+  /* 🎨 DIAG NFS_NOHEMI: #define mix→1º arg (mata o termo hemisphere) → mostra a
+   * base (textura*luz) crua. Se o magenta sumir, vem do hemisphere/mix. */
+  if(!is_vertex && getenv("NFS_NOHEMI")){
+    size_t L=strlen(s); char *a=malloc(L+64); strcpy(a,"#define mix(a,b,c) (a)\n"); strcat(a,s); free(s); s=a;
+  }
   /* DIAGNÓSTICO NFS_FORCETEX: ignora a cor (varColor/constantColor) no multiply
    * → se os logos aparecerem, a cor do sprite vinha PRETA. */
   if(!is_vertex && getenv("NFS_FORCETEX")){
@@ -581,6 +624,19 @@ void my_glEnable(unsigned c){
 void my_glDisable(unsigned c){
   if(!real_glDisable) real_glDisable=(pfn_glEnable)SDL_GL_GetProcAddress("glDisable");
   if(c==0x0BE2) g_blend=0; real_glDisable(c);
+}
+/* 🎨 glColorMask: o céu/cenário sai com VERDE=0 (magenta). A engine usa glColorMask
+ * p/ um pass que (sem FBO offscreen no nosso port) mascara o verde no FBO 0 (tela).
+ * NFS_CMASKLOG loga máscaras parciais; NFS_FORCEGREEN força o verde sempre ligado. */
+typedef void (*pfn_glColorMask)(unsigned char,unsigned char,unsigned char,unsigned char);
+static pfn_glColorMask real_glColorMask;
+void my_glColorMask(unsigned char r,unsigned char g,unsigned char b,unsigned char a){
+  if(!real_glColorMask) real_glColorMask=(pfn_glColorMask)SDL_GL_GetProcAddress("glColorMask");
+  if(getenv("NFS_CMASKLOG")){ static int n=0; if(n<300 && !(r&&g&&b&&a)){ fprintf(stderr,"[colorMask] r=%d g=%d b=%d a=%d\n",r,g,b,a); n++; } }
+  /* só liga o verde quando É um write de cor (R ou B ligados) — NÃO mexe no pass
+   * depth-only (0,0,0,0) p/ não quebrar o loading. */
+  if(getenv("NFS_FORCEGREEN") && (r||b) && !g){ g=1; static int fn=0; if(fn<20){fprintf(stderr,"[FORCEGREEN] verde religado (era r=%d g=0 b=%d)\n",r,b);fn++;} }
+  real_glColorMask(r,g,b,a);
 }
 static int g_bigdraw_max=0, g_bigdraw_n=0;
 static void drawlog(const char*k,int n){
@@ -680,6 +736,16 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
     if (dn<8){ char nm[64]; snprintf(nm,sizeof nm,"tex_%d_%dx%d.raw",dn,w,h);
       FILE*f=fopen(nm,"wb"); if(f){ fwrite(px,1,(size_t)w*h*4,f); fclose(f);} dn++; }
   }
+  /* 🎨 TESTE NFS_SWAPRB: troca R↔B em texturas não-comprimidas (RGBA/RGB,
+   * UNSIGNED_BYTE) → diagnostica se o magenta do cenário é canal trocado (azul→
+   * magenta). Cópia em scratch p/ não mexer no buffer da engine. */
+  if (px && getenv("NFS_SWAPRB") && ty==0x1401 && (fmt==0x1908||fmt==0x1907)) {
+    int nc = (fmt==0x1908)?4:3; long npx=(long)w*h;
+    unsigned char *sb=malloc(npx*nc); /* thread-safe: por chamada */
+    if (sb){ memcpy(sb,px,npx*nc);
+      for(long i=0;i<npx;i++){ unsigned char tmp=sb[i*nc]; sb[i*nc]=sb[i*nc+2]; sb[i*nc+2]=tmp; }
+      real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,sb); free(sb); return; }
+  }
   real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,px);
 }
 typedef void (*pfn_glViewport)(int,int,int,int);
@@ -706,6 +772,10 @@ void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,int b,
   if (!real_glCompressedTexImage2D) real_glCompressedTexImage2D=(pfn_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<40){ fprintf(stderr,"[compTexImage2D] %dx%d ifmt=0x%x size=%d px=%p\n",w,h,ifmt,sz,px); g_teximg_n++; }
+  /* 🎨 NFS_ETCDUMP: salva o ETC1 cru (p/ decodificar no PC e ver se já é magenta). */
+  if(getenv("NFS_ETCDUMP") && l==0 && px && w>=512){ static int en=0;
+    if(en<40){ char nm[64]; snprintf(nm,sizeof nm,"etc_%d_%dx%d_%x.raw",en,w,h,ifmt);
+      FILE*f=fopen(nm,"wb"); if(f){fwrite(px,1,sz,f); fclose(f);} en++; } }
   real_glCompressedTexImage2D(t,l,ifmt,w,h,b,sz,px);
 }
 void egl_shim_gltrace_dump(int frame) {

@@ -1396,6 +1396,13 @@ extern void my_glLinkProgram(unsigned);
 extern void my_glVertexAttrib4f(unsigned,float,float,float,float);
 extern void my_glUseProgram(unsigned);
 extern void my_glEnable(unsigned);
+extern void my_glColorMask(unsigned char,unsigned char,unsigned char,unsigned char);
+/* wrappers pcs("aapcs") p/ GL com float args (engine softfp / Mali hardfp) */
+extern void my_glUniform1f(int,float), my_glUniform2f(int,float,float), my_glUniform3f(int,float,float,float);
+extern void my_glVertexAttrib1f(unsigned,float), my_glVertexAttrib2f(unsigned,float,float), my_glVertexAttrib3f(unsigned,float,float,float);
+extern void my_glClearColor(float,float,float,float), my_glBlendColor(float,float,float,float);
+extern void my_glClearDepthf(float), my_glDepthRangef(float,float), my_glLineWidth(float);
+extern void my_glPolygonOffset(float,float), my_glSampleCoverage(float,unsigned char), my_glTexParameterf(unsigned,unsigned,float);
 extern void my_glDisable(unsigned);
 
 DynLibFunction nfs_shims[] = {
@@ -1412,6 +1419,20 @@ DynLibFunction nfs_shims[] = {
     {"glUniform4f", (uintptr_t)my_glUniform4f},
     {"glUniform1i", (uintptr_t)my_glUniform1i},
     {"glUniform4fv", (uintptr_t)my_glUniform4fv},
+    {"glUniform1f", (uintptr_t)my_glUniform1f},
+    {"glUniform2f", (uintptr_t)my_glUniform2f},
+    {"glUniform3f", (uintptr_t)my_glUniform3f},
+    {"glVertexAttrib1f", (uintptr_t)my_glVertexAttrib1f},
+    {"glVertexAttrib2f", (uintptr_t)my_glVertexAttrib2f},
+    {"glVertexAttrib3f", (uintptr_t)my_glVertexAttrib3f},
+    {"glClearColor", (uintptr_t)my_glClearColor},
+    {"glBlendColor", (uintptr_t)my_glBlendColor},
+    {"glClearDepthf", (uintptr_t)my_glClearDepthf},
+    {"glDepthRangef", (uintptr_t)my_glDepthRangef},
+    {"glLineWidth", (uintptr_t)my_glLineWidth},
+    {"glPolygonOffset", (uintptr_t)my_glPolygonOffset},
+    {"glSampleCoverage", (uintptr_t)my_glSampleCoverage},
+    {"glTexParameterf", (uintptr_t)my_glTexParameterf},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
     {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
@@ -1421,6 +1442,7 @@ DynLibFunction nfs_shims[] = {
     {"glUseProgram", (uintptr_t)my_glUseProgram},
     {"glEnable", (uintptr_t)my_glEnable},
     {"glDisable", (uintptr_t)my_glDisable},
+    {"glColorMask", (uintptr_t)my_glColorMask},
     /* EGL → SDL2 (Mali fbdev): a engine cria contexto/surface via egl_shim */
     {"eglGetDisplay", (uintptr_t)egl_shim_GetDisplay},
     {"eglInitialize", (uintptr_t)egl_shim_Initialize},

@@ -9,6 +9,26 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
+## 🎨🟢🏆 PARTE 18 (2026-06-15) — TEXTURAS MAGENTA/VERDE DO CENÁRIO RESOLVIDAS (ABI softfp/hardfp)
+NextOS: "todas as texturas estão ok, bonito mesmo". **CAUSA-RAIZ = mismatch de ABI de float.**
+`readelf -h`: libapp.so (engine) = **SOFT-FLOAT** (0x5000200, float args nos regs CORE r0-r3);
+nosso binário/shim = **HARD-FLOAT** (0x5000400, float no VFP). Os wrappers GL com **float args**
+(egl_shim.c) liam os floats do VFP = LIXO → cor de material (glUniform4f) e **cor de vértice
+default (glVertexAttrib4f)** garbage → céu/prédios **magenta/verde saturados, DIFERENTES por
+objeto** (carro/estrada usam ARRAY de cor/textura, não float-arg → corretos; por isso só o cenário).
+**FIX:** `__attribute__((pcs("aapcs")))` em TODOS os wrappers GL com float args (lê os floats dos
+regs CORE = softfp, igual ao engine) + wrappar os que faltavam e registrar em nfs_shims:
+glUniform1f/2f/3f, glVertexAttrib1f/2f/3f, glClearColor, glBlendColor, glClearDepthf, glDepthRangef,
+glLineWidth, glPolygonOffset, glSampleCoverage, glTexParameterf (+ pcs nos já-existentes
+glUniform4f/glVertexAttrib4f). Mesma técnica que jni_shim já usava p/ ScreenDensity (float de
+retorno softfp). **🔑 LIÇÃO p/ TODO so-loader: binário Android=softfp, runtime armhf=hardfp →
+qualquer fn do shim que o engine chama passando FLOAT precisa pcs("aapcs"); as *fv/Matrix*fv (só
+ponteiro) NÃO.** Diag (default-off) p/ chegar aqui: NFS_SWAPRB/ETCDUMP/NOLIGHT/NOHEMI/NOVCOL/CMASKLOG/
+FORCEGREEN/UNILOG. Becos descartados: ETC1 do cenário decodifica normal (texture2ddecoder), colorMask
+(0 no CMASKLOG), R/B swap (magenta simétrico, listras do carro azuis ok), lighting (NOLIGHT/NOHEMI
+não corrigiram). Commit 80921ad. ⚠️ Os HANGS no boot (frame ~1260/1350) eram o **emustation
+voltando**→`systemctl mask emustation` resolve (não só stop). FALTA POUCO (NextOS).
+
 ## 🔊🟢🏆 PARTE 17 (2026-06-15) — ÁUDIO FUNCIONANDO! init + latência + música + SFX
 
 **O "33" do init NÃO era INVALID_SPEAKER — era falha de criação de thread.** Via Ghidra
