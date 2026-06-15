@@ -314,7 +314,10 @@ void egl_shim_force_present(void) {
    * Bully usa o mesmo método. NFS_NOAUTOSHOT=1 desliga. */
   {
     static int sc = 0, off = -1, seq = -1;
-    if (off < 0) off = getenv("NFS_NOAUTOSHOT") ? 1 : 0;
+    /* 🔑 DEFAULT-OFF: escrever auto.raw (3.6MB) a cada 30 frames no vfat MARTELAVA o
+     * FAT32 → erro → remount READ-ONLY → 2º lançamento não entrava no gameplay (e
+     * crashes ao escrever no fs ro, ex. ao usar nitro). Só liga com NFS_AUTOSHOT=1. */
+    if (off < 0) off = getenv("NFS_AUTOSHOT") ? 0 : 1;
     if (seq < 0) seq = getenv("NFS_SEQSHOT") ? 1 : 0;
     ++sc;
     if (!off && (sc % 30 == 0 || sc == 5)) {
@@ -746,6 +749,37 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
       for(long i=0;i<npx;i++){ unsigned char tmp=sb[i*nc]; sb[i*nc]=sb[i*nc+2]; sb[i*nc+2]=tmp; }
       real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,sb); free(sb); return; }
   }
+  /* 🗜️ NFS_TEXSCALE=1.3: reduz texturas RGBA/RGB grandes por um fator (box-filter)
+   * → menos memória de GPU (Mali usa RAM compartilhada do device, 832MB) + perf.
+   * Só nível 0, não-comprimidas, w/h>=128. ETC1 (comprimido) não dá p/ reduzir aqui. */
+  { static float texscale=0; if(texscale==0){ const char*e=getenv("NFS_TEXSCALE"); texscale=e?(float)atof(e):1.0f; if(texscale<1.0f)texscale=1.0f; }
+    /* 🗜️ reduz TODOS os níveis de mip de forma CONSISTENTE: deriva o tamanho-alvo
+     * do nível 0 reconstruído (W0=w<<l) e desce por >>l → level k = level0>>k
+     * (regra de mip válida; reduzir só o nível 0 quebrava a cadeia → travava o Mali). */
+    if(texscale>1.01f && px && ty==0x1401 && (fmt==0x1908||fmt==0x1907)){
+      int W0=w<<l, H0=h<<l;
+      if(W0>=512 && H0>=512){  /* só texturas grandes */
+        int nc=(fmt==0x1908)?4:3;
+        /* 🔑 Mali-450 (Utgard/GLES2) NÃO suporta NPOT com mipmap → snap o tamanho-
+         * alvo do nível 0 pra POTÊNCIA-DE-2 ≤ W0/scale (mantém POT, mip válido). */
+        int tW=(int)(W0/texscale), tH=(int)(H0/texscale);
+        int nW0=1; while(nW0*2<=tW) nW0*=2;
+        int nH0=1; while(nH0*2<=tH) nH0*=2;
+        int nw=nW0>>l; if(nw<1)nw=1;
+        int nh=nH0>>l; if(nh<1)nh=1;
+        if(nw<w || nh<h){
+          unsigned char*dst=malloc((size_t)nw*nh*nc);
+          if(dst){ const unsigned char*src=px;
+            for(int y=0;y<nh;y++){ int sy0=y*h/nh, sy1=(y+1)*h/nh; if(sy1<=sy0)sy1=sy0+1;
+              for(int x=0;x<nw;x++){ int sx0=x*w/nw, sx1=(x+1)*w/nw; if(sx1<=sx0)sx1=sx0+1;
+                for(int c=0;c<nc;c++){ unsigned acc=0,cnt=0;
+                  for(int yy=sy0;yy<sy1;yy++) for(int xx=sx0;xx<sx1;xx++){ acc+=src[((size_t)yy*w+xx)*nc+c]; cnt++; }
+                  dst[((size_t)y*nw+x)*nc+c]=(unsigned char)(cnt?acc/cnt:0); } } }
+            real_glTexImage2D(t,l,ifmt,nw,nh,b,fmt,ty,dst); free(dst); return;
+          }
+        }
+      }
+    } }
   real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,px);
 }
 typedef void (*pfn_glViewport)(int,int,int,int);
