@@ -10,6 +10,28 @@ estável. Conseguido em 2026-06-08.
 
 ---
 
+## 🎮 Como instalar e jogar (BYO-DATA)
+
+Este pacote **não contém os dados do jogo** — você fornece o seu APK legal.
+
+1. Instale o port (PortMaster / copie a pasta pra `ports/`).
+2. Coloque o seu **APK do Bully: Anniversary Edition v1.4.311** (o
+   `Bully_1.4.311-60FPS-...apk`, que tem `lib/arm64-v8a/libGame.so` + `assets/data_0-4.zip`)
+   dentro de **`ports/bully/`**.
+3. Abra o **Bully** na lista de Ports. Na **1ª vez** abre uma **janela de extração**
+   com **barra de %** (extrai a data inteira, ~3 GB — leva alguns minutos no Mali-450).
+   Ao terminar, o APK é liberado e o **jogo inicia sozinho**.
+4. Da 2ª vez em diante abre direto no jogo.
+
+- **Clarity (nitidez): HIGH automático em todos os devices** (forçado no binário). Se
+  quiser baixar pra ganhar performance num device fraco: `BULLY_CLARITY=low` (ou `med`).
+- **Controles:** estilo PS2 via gptokeyb (`bully.gptk`). Sair: **SELECT+START**.
+- **Vídeo/áudio:** auto-detectados (KMSDRM no X5M, mali/fbdev no Mali-450; PulseAudio/ALSA).
+- **Dois binários** no pacote: `bully` (glibc novo: NextOS/muOS/ROCKNIX/X5M) e
+  `bully.compat` (GLIBC_2.17: ArkOS/dArkOS/R36S). O launcher escolhe sozinho.
+
+---
+
 ## 1. O que é
 
 Port via **so-loader**: carregar o `libGame.so` (Android arm64) dentro de um ELF Linux glibc,

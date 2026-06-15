@@ -2,6 +2,160 @@
 
 ---
 
+## v9.0 FINAL — 2026-06-14 (noite) — JANELA DE EXTRAÇÃO na tela + CLARITY HIGH automática
+
+> Atualização grande do v9.0: novo sistema de instalação **BYO-DATA com janela e
+> barra de % na tela** (estilo dos ports oficiais do PortMaster) e a **Clarity HIGH
+> forçada em todos os devices** direto no binário. Validado no **X5M** (KMSDRM) e no
+> **Mali-450** (fbdev). Os dois binários (`bully` + `bully.compat`) atualizados.
+
+### 🪟 Janela de extração (BYO-DATA com imagem + progresso)
+- Você coloca o seu **APK do Bully 1.4.311** na pasta `ports/bully/` e abre o port.
+  Na 1ª vez abre uma **JANELA** (ferramenta `progressor`) mostrando a extração com
+  **barra de porcentagem** (`Dados 3/5… [#######…..] 36%`). Ao terminar, libera o APK
+  (~3 GB de disco) e o **jogo inicia sozinho**. Não precisa fazer mais nada.
+- Funciona no **X5M (KMSDRM/Valhall)** e no **Mali-450 (fbdev/Utgard)**. (A "patcher
+  UI" love2d do PortMaster não cria janela no KMSDRM do X5M — pede alpha que o
+  scanout XRGB não tem; o `progressor` cria, por isso é o usado.)
+- O `Bully.sh` ficou **limpo**: só chama a janela; toda a lógica de extração está no
+  `tools/bully_extract.src`.
+
+### 🔆 Clarity HIGH automática em TODOS os devices (no binário)
+- 🔑 **A Clarity NÃO vinha do settings.ini** (a teoria antiga estava errada). A
+  própria engine decide a Clarity por uma **verificação de hardware**: aparelho
+  potente (X5M 4 GB) → **High**; aparelho de 1 GB (Mali-450) → **Low**. Essa
+  verificação **ignora o settings.ini e não persiste** (mudar no menu volta pra Low
+  ao reabrir).
+- **Fix:** hookamos a função dessa verificação (`GetResolutionDefault`) no binário →
+  **força High sempre**, em todos os devices. Quem quiser baixar p/ ganhar
+  performance: `BULLY_CLARITY=low` (ou `med`) no ambiente.
+- Por isso o **`settings.ini` saiu do pacote** (não controla a Clarity; o jogo cria o
+  resto do default sozinho).
+
+### 🧱 Binário compat (R36S/ArkOS) com GCC Debian
+- `bully.compat` (glibc-velha) agora é **GCC Debian 10 → GLIBC_2.17, ~110 KB** (não o
+  zig gordo de 1.1 MB, que era o que sumia com as fontes no R36S — o "texto
+  invisível" era o COMPAT, não o MSAA). Ambos os binários já trazem o hook da Clarity.
+
+### 📺 Vídeo
+- **Auto-detectado** (sem `SDL_VIDEODRIVER`): X5M sobe **KMSDRM**, Mali-450 sobe
+  **mali/fbdev** sozinhos.
+
+### 🙏 Créditos da janela de extração
+- A ferramenta `progressor` + fonte `FiraCode-Regular.ttf` + `common.src` vêm do port
+  **TMNT: Shredder's Revenge** do PortMaster (método de extração reaproveitado).
+  Licenças em `licenses/`.
+
+> ⚠️ As seções v9.0 anteriores abaixo citam "MSAA" como causa do texto invisível e
+> "settings.ini RS_High" como controle da Clarity — **ambas foram revisadas**: o texto
+> invisível era o binário compat (zig→GCC) e a Clarity é a verificação de hardware
+> (resolvida pelo hook acima).
+
+---
+
+## v9.0 — 2026-06-14 — TEXTO INVISÍVEL resolvido (MSAA) + compat anti-freeze + multi-device
+
+> Versão única que cobre **todos os devices** (fbdev Mali-450, KMSDRM Mali novo/X5M,
+> ArkOS/R36S glibc-velha). Junta os fixes do v8.3 (áudio/escola Mali-450) e resolve
+> o **texto invisível** que os testers relatavam no R36S e a **trava de ~30 min** no
+> binário compat. Validado: Mali-450 (fbdev, texto OK, sem swap) + X5M (KMSDRM
+> auto-detect, áudio limpo).
+
+### O texto invisível ERA o MSAA (você estava certo)
+- **Causa-raiz:** o MSAA 4x automático em painel ≤600px (R36S 480p), combinado com
+  `Clarity=RS_High` (render target em resolução cheia), fazia o Mali-G31/GLES3.2 do
+  R36S **perder o texto**. Prova cruzada decisiva: **Mali-450** (RS_High, 720p, SEM
+  MSAA) = texto **OK**; **R36S** (RS_High, 480p, COM MSAA) = texto **some**. O único
+  diferenciador era o MSAA.
+- **Fix:** MSAA auto **REMOVIDO** (default `BULLY_MSAA=0`). Sem MSAA, o R36S fica
+  igual ao Mali-450 (texto OK) **e mantemos `RS_High` (nitidez) em todos** — não
+  precisei sacrificar a nitidez de nenhum device. Quem quiser AA força `BULLY_MSAA=4`.
+- Confirmação de que NÃO era diferença de "commits" perdida: o diff v7→v8.1 mostra
+  que o MSAA já existia nas DUAS (não era a diferença de launcher); o que mudou e
+  expôs o bug foi o `RS_High` passar a ser de fato aplicado (enum MAIÚSCULO).
+
+### bully.compat rebuildado (R36S/ArkOS finalmente com anti-freeze)
+- O `bully.compat` (glibc 2.17, usado por ArkOS/dArkOS/R36S) estava SEM o despejo por
+  `MemAvailable` — tinha só o despejo antigo por teto fixo (que faz churn). Era
+  **justamente** o device que travava aos ~30 min e o binário dele não tinha o fix.
+- **Recompilado com zig** (do mesmo `src/`): agora os DOIS binários têm o despejo por
+  **pressão real de RAM** (`MemAvailable` < piso) → o R36S ganha o anti-OOM/anti-freeze.
+
+### Multi-device / launcher
+- **`controlfolder` robusto:** itera os candidatos e escolhe o que REALMENTE tem
+  `control.txt` (não só o 1º diretório que existe). O X5M só tem `control.txt` em
+  `/storage/.config/PortMaster` → o bloco simples (gtavc) caía em `/roms/ports/...`
+  sem control.txt → `$directory` vazio → `//ports/bully` → não abria. **Corrigido.**
+- **Auto-detect de vídeo validado:** sem `SDL_VIDEODRIVER`/`pm_platform_helper`, o
+  X5M sobe **KMSDRM** (Mali-G310 GLES3.2) e o Mali-450 sobe **mali/fbdev** sozinhos.
+- **`settings.ini` vem pronto no zip, SEM seds/migração** (Clarity `RS_High`
+  MAIÚSCULO = o único formato que o parser do jogo aplica). O launcher só recria por
+  segurança se o arquivo for apagado.
+- **`alsoft.conf` (non-mmap) re-incluído** p/ devices ALSA-puro (R36S/ArkOS):
+  evita o "Broken pipe" sob carga. Devices com PulseAudio (Mali-450) seguem no
+  **pulse direto** (`ALSOFT_DRIVERS=pulse`); o X5M (ALSA) já era limpo (neutro).
+
+### Pendência conhecida (não-bloqueante)
+- **Música mp3 no X5M:** o bundle `libmpg123` foi removido no v8.1 (quebrava o LAUNCH
+  em glibc-velha). Sem ele o X5M não toca o rádio (sfx/vozes via OpenAL funcionam). Um
+  re-bundle SEGURO (lib glibc 2.17 via zig) fica p/ v9.1.
+
+---
+
+## v8.3 — 2026-06-14 — FIX do áudio estourado + trava da escola no Mali-450 (Amlogic-old)
+
+> Resolve o "áudio estourado" e a "tela preta/trava na escola" que apareceram nas
+> versões v6→v8 no Mali-450/Utgard (Amlogic-old, A53 1GB), mantendo TODOS os fixes
+> multi-device do v8 (binário dual glibc, alsoft.conf, Clarity). Validado por ouvido
+> no device: som ok, mapa sem travadas, escola entra de boa.
+
+### Causa-raiz (duas, independentes)
+1. **Áudio estourado:** o **despejo de RAM** (anti-OOM do v8) disparava por um teto
+   FIXO de textura (200MB) que o working-set normal já ultrapassava — disparava a
+   cada ~2s MESMO com RAM livre. Cada `implOnLowMemory` é uma varredura síncrona na
+   thread de render → trava → starva a mixagem do OpenAL → underrun ("Broken pipe")
+   contínuo = estouro. (E o `glFinish` por render-to-texture agrava em movimento.)
+2. **Trava da escola:** no Mali-450 a escola CABE via `BULLY_TEX_LIGHT/HALF` (como
+   no v4, que não tinha despejo e rodava liso). O despejo do v8, ao disparar na
+   escola (pico), fazia varredura/churn → travava o device.
+
+### Config final do Mali-450/Utgard (validada por ouvido: "audio ok + jimmy ok")
+O launcher detecta o Utgard e liga 3 coisas que, juntas, deixam o áudio LIMPO e
+CONSISTENTE em movimento + a escola entrando + a roupa do Jimmy firme:
+1. **Despejo OFF** (`BULLY_TEX_BUDGET_MB=0`/`BULLY_LOWMEM_MB=0`) — a escola cabe via
+   TEX_LIGHT/HALF (= v4); o despejo só travava.
+2. **glFinish OFF** (`BULLY_RTT_FINISH_MINDRAWS=999999` → glFlush sempre) — o glFinish
+   por render-to-texture travava a GPU Utgard a cada composição → estouro ao mover.
+   Com glFlush: áudio limpo E a roupa do Jimmy continua firme (glFinish não era
+   essencial p/ ela neste device).
+3. **Buffer de áudio grande** (`alsoft_pulse.conf`: periods=4 period_size=2048,
+   fix-rate) — absorve a variação de CPU residual do streaming → áudio CONSISTENTE
+   (sem isso variava run-a-run). Custo ~100KB RAM + ~150ms latência (imperceptível).
+- Launcher reescrito no **padrão PortMaster** (base reVC/gtavc): header if/elif,
+  `CUR_TTY`, e **NÃO força `SDL_VIDEODRIVER`** (o SDL auto-detecta mali/kmsdrm) nem
+  chama `pm_platform_helper` — o jogo abre via auto-detect (validado).
+- `settings.ini` (Clarity RS_High) agora vem **pronto no zip** (em vez de seed).
+
+### Correções (mecanismo)
+- **Despejo desligado no Mali-450/Utgard** (detecção: `mali-utgard`/`/sys/module/mali`/
+  SoC Amlogic Gx*). A escola cabe via TEX_LIGHT/HALF (= v4). Demais devices de 1GB
+  (R36S Mali-G31 etc.) **mantêm o despejo** (lá previne o OOM de ~30min).
+- **Despejo (nos devices que usam) agora dispara por PRESSÃO REAL de RAM**
+  (`MemAvailable` < piso) em vez de teto fixo de textura → não dispara à toa →
+  áudio limpo + anti-OOM. Env: `BULLY_LOWMEM_MB` (piso), `BULLY_TEX_BUDGET_MB`
+  (fallback em kernel sem MemAvailable; 0 = desliga).
+- **glFinish por render-to-texture** ganhou throttle opcional
+  (`BULLY_RTT_FINISH_MINDRAWS`): glFinish só nos RTT pesados (a roupa do Jimmy,
+  ~289+ draws), glFlush nos leves → menos stall de GPU em movimento. Default 0
+  (= sempre glFinish, comportamento seguro do v8).
+
+### Nota
+- `bully.compat` (glibc 2.17, devices antigos) segue o build do v8.1 nesta release;
+  os fixes acima estão no `./bully` (NextOS/glibc ≥2.38, usado no Amlogic-old). O
+  despejo-off no Utgard vale pros dois (é do launcher).
+
+---
+
 ## v8 — 2026-06-13 — FIX do vazamento de memória (OOM / "trava depois de ~30min")
 
 > Resolve o problema relatado por vários testers de R36S/1GB: o jogo roda mas a
