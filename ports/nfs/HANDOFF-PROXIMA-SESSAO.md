@@ -9,6 +9,79 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
+## 🔊🟡 PARTE 16 (2026-06-15) — ÁUDIO FMOD: System::init = 33 (INVALID_SPEAKER) — NÃO RESOLVIDO, MUITO INVESTIGADO
+
+**Estado:** jogo JOGÁVEL (vídeo+controle) mas SEM SOM. O caminho de som é OPT-IN
+(`NFS_SOUND=1`, nos launchers `gsound.sh`/`gdbgsnd.sh`); o launcher PADRÃO (`grun.sh`/`go.sh`)
+NÃO seta NFS_SOUND → usa o STUB (EventSystem::init finge FMOD_OK, estável, sem áudio).
+**NÃO ligar NFS_SOUND no launcher padrão** até resolver (FMOD falha → spam createSound).
+
+### O que o NFS_SOUND faz hoje (src/imports.c, fmod_es_init_stub):
+Intercepta `EventSystem::init`. Resolve o System real via `EventSystem::getSystemObject`,
+e ANTES do init faz: `setOutput(22=OpenSL)` → `setSpeakerMode` → `getNumDrivers`/`setDriver(0)`
+→ `getDriverCaps` → `setSoftwareFormat(44100,PCM16,2)` → **SWEEP de speaker modes** com
+`System::init`+`System::close` entre tentativas. Também tem `NFS_OUTSWEEP` (varre output types)
+e `NFS_FMODSWEEP` (testa quais setOutput aceita). dlopen de libOpenSLES → shim
+(opensles_shim.c, ponte OpenSL ES → SDL2 audio; SDL escolhe driver sozinho = pulseaudio).
+
+### FATOS ESTABELECIDOS (todos medidos no device .164):
+1. **33 = FMOD_ERR_INVALID_SPEAKER** — CONFIRMADO. As strings de erro FMOD estão no
+   `libapp.so` na ordem padrão do `fmod_errors.h`: índice 25="FMOD was not initialized
+   correctly..." (=INITIALIZATION, é o erro do createSound depois), 33="An invalid speaker
+   was passed to this function based on the current speaker mode." (=INVALID_SPEAKER).
+2. **A config toda é VÁLIDA e aceita, e mesmo assim init=33:**
+   - `setOutput(22)=0`, `getNumDrivers ret=0 n=1`, `setDriver(0)=0`,
+   - `getDriverCaps(0) → caps=0x18 (PCM8|PCM16) ctrlrate=48000 ctrlspeaker=2 (STEREO)`,
+   - `setSoftwareFormat(44100,PCM16,2)=0`,
+   - SWEEP: `setSpeakerMode(2) read=2 init=33`, `setSpeakerMode(1) read=1 init=33`
+     → **setSpeakerMode GRUDA** (getSpeakerMode confirma o valor) e init AINDA dá 33.
+3. **🔑 É UNIVERSAL — todos os output types dão init=33, INCLUSIVE NOSOUND.** O `NFS_OUTSWEEP`
+   testou output 0..24: os aceitos (setOutput=0) foram 0(auto),2(NOSOUND),3,4,5(WAVWRITER*),
+   21(AudioTrack),22(OpenSL); os outros deram setOutput=66 (não suportados neste build).
+   **TODOS, incluindo NOSOUND (output=2), deram init=33.** NOSOUND não usa hardware nem
+   speakers → se ele falha com INVALID_SPEAKER, **o problema NÃO é o output nem o shim OpenSL**,
+   é o **núcleo do System::init** (setup de DSP/channel-group/speaker), independente de tudo.
+4. **NÃO há FindClass("org/fmod/FMOD")** no trace → FMOD aqui NÃO consulta o AudioManager via
+   JNI (hipótese descartada). flags=0 e flags-do-jogo: ambos 33.
+
+### RE feito (libfmodex.so, ARM 32-bit, .text VA=file offset 1:1, segmento LOAD vaddr=0 off=0):
+- `FMOD::System::init` (C++) @ **0x9e650**: valida handle via `0x37fc4`, depois chama o init
+  interno **0x404dc** com (internal_ptr, maxchannels, flags, extradriverdata).
+- `FMOD_System_Init` (C API) @ 0x133f4 (só valida handle em lista, retorna 0x25 se inválido).
+- **init interno @ 0x404dc**: erros propagam via `subs r7,r0,#0; bne #0x4057c` após cada
+  subchamada (r7=resultado; sai em 0x40524 devolvendo r7). Init do OUTPUT é a chamada indireta
+  `ldr pc,[r7,#0x110]` @ 0x406e0 (p/ NOSOUND retorna 0=ok). **O 33 vem DEPOIS do output**, no
+  setup de DSP/channel-group/speaker (região 0x40714–0x40a88). Candidatos (subcalls c/ check
+  `bne 0x4057c`): `0x78494`@0x408d4, **`0x3a540`@0x40954**, **`0x3aa04`@0x409bc**,
+  indireta `[r7+0x24]`@0x40a28, `0x3a9c8`@0x40a48, `0x3a3b8`@0x40a84. NENHUMA tem `mov r0,#0x21`
+  direto → o 33 vem de literal-pool ou de call mais fundo dentro dessas.
+- ferramenta: capstone 5.0.7 (`Cs(CS_ARCH_ARM, CS_MODE_ARM)`), ler libfmodex em ~/nfs-stage.
+
+### PRÓXIMO PASSO (próxima sessão, com orçamento de contexto fresco p/ RE):
+Descobrir QUAL subcall de 0x404dc retorna 33. Opções:
+  (a) Instrumentar em runtime: hookar/patchar as subfunções candidatas (ou inserir trampolins)
+      e logar o retorno de cada uma; a primeira que dá 33 é a culpada.
+  (b) RE estático mais fundo: decompilar 0x3a540 / 0x3aa04 (setup de channel group / DSP head
+      com info de speaker) e achar a checagem de speaker que falha. Provável causa-raiz:
+      uma TABELA GLOBAL de layout de speakers não inicializada (init_array incompleto?) ou
+      falta de FMOD_Memory_Initialize/registro de plugins built-in que o so-loader não rodou.
+  (c) Testar se o SoundManager do jogo tem um System PRÓPRIO (não o do EventSystem): os
+      "createSound failure" vêm de `SoundManager::createSound`; se o SoundManager faz seu
+      próprio System_Create+init, hookar EventSystem::init não basta — hookar `System::init`
+      global. Ver no libapp como o SoundManager obtém o System.
+Refs de outros ports com som (o usuário citou): Cuphead (deu trabalho), Sonic, Bully — todos
+conseguiram som; ver receitas deles em ~/.agente (memórias) e ports/*/src.
+
+### Como reproduzir o diagnóstico:
+```
+# no device (.164), nfs MORTO antes:
+cd /storage/roms/nfs
+export LD_LIBRARY_PATH=/usr/lib32:/storage/roms/nfs SDL_VIDEODRIVER=mali NFS_INIT=1 NFS_FORCEINPUT=1 NFS_SOUND=1
+NFS_OUTSWEEP=1 ./nfs 100000 2>&1 | grep -aiE "OUTSWEEP|SWEEP|System::init|getDriverCaps"
+```
+Envs úteis: NFS_SPKMODE=N (força speaker mode), NFS_OUTSWEEP=1 (varre outputs),
+NFS_NOSWEEP=1 (1 tentativa só), NFS_FMODOUT=N (output type), NFS_SWRATE/NFS_SWCH.
+
 ## 🏆🏎️ PARTE 15 (2026-06-15) — GAMEPLAY RENDERIZA! (mundo 3D + carro + pista + HUD)
 **JOGÁVEL no Mali-450!** O launcher PADRÃO (grun.sh) renderiza a corrida: carro (Dodge
 Challenger), pista, ambiente, HUD — ordenação 3D correta. **2 fixes (egl_shim.c, default ON):**

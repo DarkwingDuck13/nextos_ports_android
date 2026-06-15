@@ -315,6 +315,16 @@ static void comb_append(DynLibFunction *tbl, int n) {
   memcpy(g_comb + g_comb_n, tbl, sizeof(DynLibFunction) * n);
   g_comb_n += n;
 }
+/* busca o símbolo do FIM p/ frente (= o REAL do módulo carregado por último, ex.
+ * libfmodevent), pulando um endereço (nosso stub). Usado p/ chamar o
+ * FMOD::EventSystem::init verdadeiro em vez do stub. */
+uintptr_t nfs_comb_lookup_real(const char *name, uintptr_t skip) {
+  for (int i = g_comb_n - 1; i >= 0; i--)
+    if (g_comb[i].func && g_comb[i].func != skip && g_comb[i].symbol &&
+        strcmp(g_comb[i].symbol, name) == 0)
+      return g_comb[i].func;
+  return 0;
+}
 
 /* carrega 1 módulo no seu próprio heap, reloca, resolve contra a tabela
  * combinada (+ fallback dlsym no so_resolve) e, se snapshot!=0, acumula os

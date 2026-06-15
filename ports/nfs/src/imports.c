@@ -320,7 +320,8 @@ extern void *softfp_resolve(const char *);
  * EventSystem::init falha → jogo trava no spam. Roteamos p/ o nosso shim SDL2. */
 extern int slCreateEngine_shim();          /* SLresult slCreateEngine_shim(void**,...) */
 extern const void *sl_IID_ENGINE, *sl_IID_PLAY, *sl_IID_VOLUME, *sl_IID_BUFFERQUEUE,
-                   *sl_IID_EFFECTSEND;
+                   *sl_IID_EFFECTSEND, *sl_IID_ANDROIDCONFIGURATION,
+                   *sl_IID_ENGINECAPABILITIES, *sl_IID_ENVIRONMENTALREVERB;
 #define NFS_OPENSLES_SENTINEL ((void *)0x05105105)
 static void *my_opensles_dlsym(const char *name) {
   if (!name) return NULL;
@@ -330,8 +331,23 @@ static void *my_opensles_dlsym(const char *name) {
   if (strcmp(name, "SL_IID_VOLUME") == 0) return (void *)&sl_IID_VOLUME;
   if (strcmp(name, "SL_IID_ANDROIDSIMPLEBUFFERQUEUE") == 0 || strcmp(name, "SL_IID_BUFFERQUEUE") == 0)
     return (void *)&sl_IID_BUFFERQUEUE;
-  /* ANDROIDCONFIGURATION/RECORD/etc: IID dummy (GetInterface do shim aceita qualquer) */
-  if (strncmp(name, "SL_IID_", 7) == 0) return (void *)&sl_IID_EFFECTSEND;
+  if (strcmp(name, "SL_IID_EFFECTSEND") == 0) return (void *)&sl_IID_EFFECTSEND;
+  if (strcmp(name, "SL_IID_ANDROIDCONFIGURATION") == 0) return (void *)&sl_IID_ANDROIDCONFIGURATION;
+  if (strcmp(name, "SL_IID_ENGINECAPABILITIES") == 0) return (void *)&sl_IID_ENGINECAPABILITIES;
+  if (strcmp(name, "SL_IID_ENVIRONMENTALREVERB") == 0) return (void *)&sl_IID_ENVIRONMENTALREVERB;
+  /* 🔑 (receita Cuphead/s14): o FMOD resolve TODOS os SL_IID_* de antemão e ABORTA
+   * o init se qualquer um vier NULL (RECORD, MIDI...) OU colidir. Damos uma
+   * identidade ÚNICA por NOME (não o EFFECTSEND compartilhado, que quebrava). */
+  if (strncmp(name, "SL_IID_", 7) == 0) {
+    static struct { char name[48]; void *id; } gen[24];
+    static void *slots[24];
+    for (int i = 0; i < 24; i++) {
+      if (gen[i].name[0] && strcmp(gen[i].name, name) == 0) return (void *)&gen[i].id;
+      if (!gen[i].name[0]) { snprintf(gen[i].name, sizeof gen[i].name, "%s", name);
+        gen[i].id = &slots[i]; return (void *)&gen[i].id; }
+    }
+    return (void *)&sl_IID_EFFECTSEND; /* tabela cheia: fallback */
+  }
   return NULL;
 }
 static void *(*real_dlsym)(void *, const char *);
@@ -417,7 +433,132 @@ static int my_readdir_r(void *dirp, void *entry, void **result) {
  * no SoundManager → mata o spam "EventSystem is null" + destrava o jogo (sem som). */
 static int fmod_es_init_stub(void *self, int maxchannels, unsigned int flags,
                              void *extradriverdata, unsigned int eventflags) {
-  (void)self; (void)maxchannels; (void)flags; (void)extradriverdata; (void)eventflags;
+  (void)maxchannels; (void)flags; (void)extradriverdata; (void)eventflags;
+  /* 🔊 NFS_SOUND: chama o EventSystem::init REAL do libfmodevent (resolvido no
+   * g_comb, pulando este stub) → inicializa o FMOD de verdade (output via OpenSL
+   * ES shim → SDL2). Se falhar (!=FMOD_OK), finge OK (sem som) p/ não thrashar.
+   * Sem NFS_SOUND: stub como antes. */
+  static int mode = -1; /* -1=indef 0=stub 1=real */
+  static int (*real_init)(void *, int, unsigned int, void *, unsigned int) = NULL;
+  if (mode < 0) {
+    if (getenv("NFS_SOUND")) {
+      extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
+      uintptr_t r = nfs_comb_lookup_real("_ZN4FMOD11EventSystem4initEijPvj",
+                                         (uintptr_t)fmod_es_init_stub);
+      real_init = (int (*)(void *, int, unsigned int, void *, unsigned int))r;
+      mode = real_init ? 1 : 0;
+      fprintf(stderr, "[FMOD] EventSystem::init REAL=%p mode=%d\n", (void *)r, mode);
+    } else mode = 0;
+  }
+  if (mode == 1 && real_init) {
+    /* 🔎 debug do FMOD: loga a razão exata da falha (via __android_log → stderr). */
+    if (getenv("NFS_FMODDBG")) {
+      extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
+      int (*dbg)(unsigned int) = (int (*)(unsigned int))nfs_comb_lookup_real("FMOD_Debug_SetLevel", 0);
+      if (dbg) { int dr = dbg(0xFFFFFFFFu); fprintf(stderr, "[FMOD] Debug_SetLevel -> %d\n", dr); }
+      else fprintf(stderr, "[FMOD] Debug_SetLevel nao resolvido\n");
+    }
+    /* 🔊 força o output OpenSL ES (auto-detect pega AudioTrack/JNI e falha=33).
+     * getSystemObject(self,&sys) → setOutput(sys, NFS_FMODOUT|default 19=OPENSL). */
+    extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
+    int (*getsys)(void *, void **) = (int (*)(void *, void **))nfs_comb_lookup_real("_ZN4FMOD11EventSystem15getSystemObjectEPPNS_6SystemE", 0);
+    int (*setout)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE", 0);
+    if (getsys && setout) { void *sys = NULL; int gr = getsys(self, &sys);
+      if (sys) {
+        if (getenv("NFS_FMODSWEEP")) { /* descobre quais output types o setOutput aceita */
+          for (int ot = 2; ot <= 25; ot++) { int sr = setout(sys, ot);
+            fprintf(stderr, "[FMODSWEEP] setOutput(%d) = %d\n", ot, sr); }
+        }
+        int ot = getenv("NFS_FMODOUT") ? atoi(getenv("NFS_FMODOUT")) : 22; /* 22=OpenSL neste build */
+        int sr = setout(sys, ot);
+        fprintf(stderr, "[FMOD] getSystemObject=%d sys=%p setOutput(%d)=%d\n", gr, sys, ot, sr);
+        /* 🔊 init falhava com 33 = FMOD_ERR_INVALID_SPEAKER (modo de speaker
+         * incompatível). Força STEREO (FMOD_SPEAKERMODE_STEREO=2). NFS_SPKMODE muda. */
+        extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
+        int (*setspk)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE", 0);
+        if (setspk) { int sm = getenv("NFS_SPKMODE") ? atoi(getenv("NFS_SPKMODE")) : 2;
+          if (sm >= 0) { int spr = setspk(sys, sm); fprintf(stderr, "[FMOD] setSpeakerMode(%d)=%d\n", sm, spr); }
+          else fprintf(stderr, "[FMOD] setSpeakerMode SKIP (auto)\n"); }
+        /* 🔊 33=INVALID_SPEAKER vem DEPOIS do output OpenSL inicializar OK → é o
+         * mixer de software da FMOD que não tem driver/format válido. Diagnóstico
+         * + força driver 0 e formato de software explícito (44100/PCM16/stereo). */
+        { int (*gnd)(void *, int *) = (int (*)(void *, int *))nfs_comb_lookup_real("_ZN4FMOD6System13getNumDriversEPi", 0);
+          int nd = -1; if (gnd) { int gr2 = gnd(sys, &nd); fprintf(stderr, "[FMOD] getNumDrivers -> ret=%d n=%d\n", gr2, nd); }
+          int (*sdrv)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System9setDriverEi", 0);
+          if (sdrv && !getenv("NFS_NOSETDRV")) { int dr2 = sdrv(sys, 0); fprintf(stderr, "[FMOD] setDriver(0) -> %d\n", dr2); }
+          /* getDriverCaps: revela o speaker mode que o driver OpenSL reporta (fonte do 33?) */
+          { int (*gdc)(void *, int, unsigned int *, int *, int *) = (int (*)(void *, int, unsigned int *, int *, int *))nfs_comb_lookup_real("_ZN4FMOD6System13getDriverCapsEiPjPiP16FMOD_SPEAKERMODE", 0);
+            if (gdc) { unsigned int caps=0; int rate=0, spk=-99; int gc=gdc(sys,0,&caps,&rate,&spk);
+              fprintf(stderr, "[FMOD] getDriverCaps(0) -> ret=%d caps=0x%x ctrlrate=%d ctrlspeaker=%d\n", gc, caps, rate, spk); } }
+          int (*ssf)(void *, int, int, int, int, int) = (int (*)(void *, int, int, int, int, int))nfs_comb_lookup_real("_ZN4FMOD6System17setSoftwareFormatEi17FMOD_SOUND_FORMATii18FMOD_DSP_RESAMPLER", 0);
+          if (ssf && !getenv("NFS_NOSWFMT")) {
+            int rate = getenv("NFS_SWRATE") ? atoi(getenv("NFS_SWRATE")) : 44100;
+            int ch = getenv("NFS_SWCH") ? atoi(getenv("NFS_SWCH")) : 2;
+            int fr2 = ssf(sys, rate, 2 /*PCM16*/, ch, ch, 1 /*LINEAR*/);
+            fprintf(stderr, "[FMOD] setSoftwareFormat(%d,PCM16,%d) -> %d\n", rate, ch, fr2);
+          } else if (!ssf) fprintf(stderr, "[FMOD] setSoftwareFormat nao resolvido\n");
+        } }
+      else fprintf(stderr, "[FMOD] getSystemObject=%d sys=NULL\n", gr);
+    } else fprintf(stderr, "[FMOD] getsys=%p setout=%p (nao resolvido)\n", (void*)getsys, (void*)setout);
+    /* 🔊 System::init PRIMEIRO (System limpo) — o SoundManager usa
+     * System::createSound, que só precisa do System inicializado. Se funcionar,
+     * pula o EventSystem::init. */
+    int sysok = 0;
+    if (getsys) {
+      void *sys2 = NULL; getsys(self, &sys2);
+      if (sys2) {
+        int (*sysinit)(void *, int, unsigned int, void *) =
+          (int (*)(void *, int, unsigned int, void *))nfs_comb_lookup_real("_ZN4FMOD6System4initEijPv", 0);
+        /* diag: speaker mode EFETIVO imediatamente antes do init (setDriver/SoftwareFormat
+         * podem ter resetado). Se != 2(STEREO) aqui, é a causa do 33. */
+        { int (*gsm)(void *, int *) = (int (*)(void *, int *))nfs_comb_lookup_real("_ZN4FMOD6System14getSpeakerModeEP16FMOD_SPEAKERMODE", 0);
+          if (gsm) { int sm2=-99; int gr3=gsm(sys2,&sm2); fprintf(stderr, "[FMOD] getSpeakerMode (pre-init) -> ret=%d mode=%d\n", gr3, sm2);
+            /* re-força STEREO logo antes do init caso tenha sido resetado */
+            if (!getenv("NFS_NOSPKRE")) { int (*ssp)(void *, int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
+              if (ssp){ int r=ssp(sys2, getenv("NFS_SPKMODE")?atoi(getenv("NFS_SPKMODE")):2); fprintf(stderr,"[FMOD] re-setSpeakerMode pre-init -> %d\n", r);} } } }
+        /* 🔊 OUTSWEEP: tenta CADA output type com init+close p/ achar qual inicializa.
+         * NOSOUND deve dar 0 (prova que o problema é o output OpenSL, não o System). */
+        if (getenv("NFS_OUTSWEEP") && sysinit) {
+          int (*so)(void*,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE",0);
+          int (*ssp0)(void*,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
+          int (*scl0)(void*)=(int(*)(void*))nfs_comb_lookup_real("_ZN4FMOD6System5closeEv",0);
+          for (int ot=0; ot<=24; ot++) {
+            int sor = so?so(sys2,ot):-1;
+            if (ssp0) ssp0(sys2,2);
+            int si0 = sysinit(sys2, 32, 0, NULL);
+            fprintf(stderr, "[OUTSWEEP] output=%d setOutput=%d init=%d\n", ot, sor, si0);
+            if (si0==0 && scl0) scl0(sys2);
+          }
+        }
+        if (sysinit) {
+          unsigned int sflags = getenv("NFS_FMODFLAGS") ? (unsigned)strtoul(getenv("NFS_FMODFLAGS"),0,0) : 0; /* FMOD_INIT_NORMAL */
+          int (*ssp)(void *,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
+          int (*gsm2)(void *,int*)=(int(*)(void*,int*))nfs_comb_lookup_real("_ZN4FMOD6System14getSpeakerModeEP16FMOD_SPEAKERMODE",0);
+          int (*sclose)(void *)=(int(*)(void*))nfs_comb_lookup_real("_ZN4FMOD6System5closeEv",0);
+          int si = 33;
+          /* 🔊 SWEEP: 33=INVALID_SPEAKER pq speaker mode efetivo=RAW(0). Varre modos,
+           * verifica se setSpeakerMode GRUDA (read), tenta init, close entre tentativas. */
+          int modes[] = {2,1,3,4,5,6,7,8,0}; /* STEREO,MONO,QUAD,SURROUND,5.1,7.1,SRS,DOLBY,RAW */
+          if (getenv("NFS_SPKMODE")) { modes[0]=atoi(getenv("NFS_SPKMODE")); }
+          for (int mi=0; mi<9; mi++) {
+            int m = modes[mi];
+            int spr = ssp ? ssp(sys2, m) : -1;
+            int rd = -99; if (gsm2) gsm2(sys2, &rd);
+            si = sysinit(sys2, maxchannels > 0 && maxchannels <= 4093 ? maxchannels : 32, sflags, NULL);
+            fprintf(stderr, "[SWEEP] setSpeakerMode(%d)=%d read=%d init=%d\n", m, spr, rd, si);
+            if (si == 0) { sysok = 1; break; }
+            if (sclose) sclose(sys2); /* reseta p/ próxima tentativa */
+            if (getenv("NFS_NOSWEEP")) break;
+          }
+          fprintf(stderr, "[FMOD] System::init FINAL -> %d\n", si);
+          if (si == 0) sysok = 1; }
+      }
+    }
+    if (sysok) return 0; /* System ok → createSound funciona; pula EventSystem */
+    int rc = real_init(self, maxchannels, flags, extradriverdata, eventflags);
+    fprintf(stderr, "[FMOD] EventSystem::init REAL -> %d\n", rc);
+    return 0; /* finge OK p/ o EventSystem não thrashar */
+  }
   static int once = 0;
   if (!once) { fprintf(stderr, "[FMOD] EventSystem::init STUBADO -> FMOD_OK (sem som)\n"); once = 1; }
   return 0; /* FMOD_OK */
@@ -431,7 +572,7 @@ static void *my_dlopen(const char *path, int flag) {
    * (FMOD usava a sentinela e crashava ANTES da janela). NFS_OPENSLES=1 reativa
    * p/ experimentar; default = deixa falhar (FMOD trata e segue, render OK). */
   if (path && strstr(path, "libOpenSLES")) {
-    static int en = -1; if (en < 0) en = getenv("NFS_OPENSLES") ? 1 : 0;
+    static int en = -1; if (en < 0) en = (getenv("NFS_OPENSLES") || getenv("NFS_SOUND")) ? 1 : 0;
     if (en) { fprintf(stderr, "[dlopen] '%s' -> OpenSLES SHIM sentinel\n", path);
       return NFS_OPENSLES_SENTINEL; }
   }

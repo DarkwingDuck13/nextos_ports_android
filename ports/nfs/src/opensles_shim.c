@@ -29,6 +29,7 @@ static const int id_bufferqueue_tag = 4;
 static const int id_effectsend_tag = 5;
 static const int id_enginecap_tag = 6;
 static const int id_envreverb_tag = 7;
+static const int id_androidcfg_tag = 8;
 
 const SLInterfaceID sl_IID_ENGINE = &id_engine_tag;
 const SLInterfaceID sl_IID_PLAY = &id_play_tag;
@@ -37,6 +38,8 @@ const SLInterfaceID sl_IID_BUFFERQUEUE = &id_bufferqueue_tag;
 const SLInterfaceID sl_IID_EFFECTSEND = &id_effectsend_tag;
 const SLInterfaceID sl_IID_ENGINECAPABILITIES = &id_enginecap_tag;
 const SLInterfaceID sl_IID_ENVIRONMENTALREVERB = &id_envreverb_tag;
+/* FMOD exige SL_IID_ANDROIDCONFIGURATION no init com identidade própria. */
+const SLInterfaceID sl_IID_ANDROIDCONFIGURATION = &id_androidcfg_tag;
 
 /* OpenSL ES data structures */
 typedef struct {
@@ -152,7 +155,10 @@ static void queue_push(AudioPlayer *p, uint32_t size) {
   p->queued_count++;
 }
 
-static void queue_consume(AudioPlayer *p, uint32_t bytes) {
+/* retorna quantos buffers foram TOTALMENTE consumidos (p/ disparar o callback do
+ * buffer-queue 1x por buffer — o FMOD enfileira o próximo nesse callback). */
+static int queue_consume(AudioPlayer *p, uint32_t bytes) {
+  int completed = 0;
   while (bytes > 0 && p->queued_count > 0) {
     uint32_t head = p->queued_head_index %
                     (sizeof(p->queued_sizes) / sizeof(p->queued_sizes[0]));
@@ -161,7 +167,7 @@ static void queue_consume(AudioPlayer *p, uint32_t bytes) {
 
     if (bytes < remaining) {
       p->queued_front_offset += bytes;
-      return;
+      return completed;
     }
 
     bytes -= remaining;
@@ -169,7 +175,9 @@ static void queue_consume(AudioPlayer *p, uint32_t bytes) {
     p->queued_head_index++;
     p->queued_count--;
     p->queued_front_offset = 0;
+    completed++;
   }
+  return completed;
 }
 
 /* Ring buffer helpers */
@@ -286,7 +294,13 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     got = (got / frame_size) * frame_size;
     uint32_t src_frames_got = got / frame_size;
     if (src_frames_got == 0) continue;
-    queue_consume(p, got);
+    int bufs_done = queue_consume(p, got);
+    /* 🔑 dispara o callback do buffer-queue 1x por buffer consumido — o FMOD
+     * (e jogos OpenSL) enfileiram o próximo buffer DENTRO desse callback. Sem
+     * isto o FMOD trava (output não progride → erro 33, sem som). bq_Enqueue
+     * não faz lock → seguro chamar daqui (thread de áudio). */
+    if (p->callback) for (int c = 0; c < bufs_done; c++)
+      p->callback((void *)&p->bq_ptr, p->callback_context);
     p->played_bytes += got;
 
     /* Detect underrun: got less than requested = fade out last frames to avoid click */
@@ -446,6 +460,15 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 static void ensure_audio_initialized(void) {
   if (g_audio_initialized) return;
 
+  /* 🔊 o egl_shim só inicia SDL_VIDEO; o subsistema de ÁUDIO precisa ser inicializado
+   * antes de SDL_OpenAudioDevice (senão "Audio subsystem is not initialized"). */
+  if (!SDL_WasInit(SDL_INIT_AUDIO)) {
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+      debugPrintf("opensles_shim: SDL_InitSubSystem(AUDIO) falhou: %s\n", SDL_GetError());
+    else
+      debugPrintf("opensles_shim: SDL_INIT_AUDIO ok (driver=%s)\n", SDL_GetCurrentAudioDriver());
+  }
+
   SDL_AudioSpec want, have;
   memset(&want, 0, sizeof(want));
   want.freq = 44100;
@@ -600,6 +623,7 @@ static SLresult play_GetPosition(void *self, SLmillisecond *pMsec) {
 
 static SLresult play_SetPlayState(void *self, SLuint32 state) {
   void **itf_ptr = (void **)self;
+  if (getenv("NFS_SLLOG")) debugPrintf("[SL] SetPlayState(%u)\n", state);
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
@@ -620,6 +644,13 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
       }
       p->play_state = state;
       if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      /* 🔑 kickstart: ao iniciar o PLAYING, dispara o callback do buffer-queue
+       * algumas vezes — o init do FMOD espera o callback p/ confirmar que o
+       * output consome buffers; sem isso o init falha (33). bq_Enqueue não trava
+       * (sem lock). NFS_NOKICK desliga. */
+      if (state == SL_PLAYSTATE_PLAYING && p->callback && !getenv("NFS_NOKICK")) {
+        for (int c = 0; c < 8; c++) p->callback((void *)&p->bq_ptr, p->callback_context);
+      }
       return SL_RESULT_SUCCESS;
     }
   }
@@ -711,6 +742,7 @@ static SLresult volume_GetMaxVolumeLevel(void *self, SLmillibel *pMaxLevel) {
 /* SLBufferQueueItf methods */
 static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
   void **itf_ptr = (void **)self;
+  if (getenv("NFS_SLLOG")) { static int n=0; if(n<6){ debugPrintf("[SL] bq_Enqueue size=%u\n", size); n++; } }
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
@@ -824,6 +856,8 @@ static SLresult player_Realize(void *self, SLBoolean async) {
 
 static SLresult player_GetInterface(void *self, SLInterfaceID iid, void **pInterface) {
   void **obj_ptr = (void **)self;
+  if (getenv("NFS_SLLOG")) debugPrintf("[SL] player_GetInterface iid=%p (PLAY=%p VOL=%p BQ=%p EFX=%p)\n",
+      (void*)iid,(void*)sl_IID_PLAY,(void*)sl_IID_VOLUME,(void*)sl_IID_BUFFERQUEUE,(void*)sl_IID_EFFECTSEND);
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].obj_ptr == obj_ptr) {
       AudioPlayer *p = &g_players[i];
@@ -863,10 +897,21 @@ static void player_Destroy(void *self) {
   }
 }
 
+/* 🔊 SLObjectItf::GetState (vtable idx 2): o FMOD checa se o objeto está
+ * REALIZED; o stub_success não preenchia *pState (lixo) → FMOD podia falhar
+ * (erro 33). Devolve SL_OBJECT_STATE_REALIZED (2). */
+#ifndef SL_OBJECT_STATE_REALIZED
+#define SL_OBJECT_STATE_REALIZED 2
+#endif
+static SLresult obj_GetState(void *self, SLuint32 *pState) {
+  (void)self; if (pState) *pState = SL_OBJECT_STATE_REALIZED; return SL_RESULT_SUCCESS;
+}
+
 /* Setup player vtables */
 static void setup_player_vtables(AudioPlayer *p) {
   for (int i = 0; i < 8; i++) p->obj_vtable[i] = (void *)stub_success;
   p->obj_vtable[0] = (void *)player_Realize;
+  p->obj_vtable[2] = (void *)obj_GetState;
   p->obj_vtable[3] = (void *)player_GetInterface;
   p->obj_vtable[6] = (void *)player_Destroy;
   p->obj_ptr = p->obj_vtable;
@@ -925,6 +970,7 @@ static void init_outmix(void) {
   inited = 1;
   for (int i = 0; i < 8; i++) g_outmix_vtable[i] = (void *)stub_success;
   g_outmix_vtable[0] = (void *)outmix_Realize;
+  g_outmix_vtable[2] = (void *)obj_GetState;
   g_outmix_vtable[3] = (void *)outmix_GetInterface;
   g_outmix_vtable[6] = (void *)outmix_Destroy;
   g_outmix_ptr = g_outmix_vtable;
@@ -950,7 +996,7 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
   (void)self; (void)pAudioSnk; (void)numInterfaces;
   (void)pInterfaceIds; (void)pInterfaceRequired;
 
-  /* debugPrintf("opensles_shim: CreateAudioPlayer\n"); */
+  if (getenv("NFS_SLLOG")) debugPrintf("[SL] CreateAudioPlayer nIfaces=%u\n", numInterfaces);
   ensure_audio_initialized();
 
   AudioPlayer *p = alloc_player();
@@ -1033,6 +1079,7 @@ static void init_engine(void) {
 
   for (int i = 0; i < 8; i++) g_engine_obj_vtable[i] = (void *)stub_success;
   g_engine_obj_vtable[0] = (void *)engine_obj_Realize;
+  g_engine_obj_vtable[2] = (void *)obj_GetState;
   g_engine_obj_vtable[3] = (void *)engine_obj_GetInterface;
   g_engine_obj_vtable[6] = (void *)engine_obj_Destroy;
   g_engine_obj_ptr = g_engine_obj_vtable;
