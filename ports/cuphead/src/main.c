@@ -531,8 +531,10 @@ static int my_alog_vprint(int prio, const char *tag, const char *fmt, va_list ap
    Unity cria a window surface direto no fb0 (sem shim). CUP_SHIMEGL=1 volta pro fake int. */
 static struct { unsigned short w, h; } g_fbdev_win = {1280, 720};
 static int g_anw = 0xA11;
+static int cup_use_kmsdrm(void);  /* fwd: decide fbdev vs kmsdrm (def. abaixo) */
 static void *my_aw_fromSurface(void *e, void *s) { (void)e; (void)s;
-  return getenv("CUP_SHIMEGL") ? (void *)&g_anw : (void *)&g_fbdev_win; }
+  /* kmsdrm: ANativeWindow fake (egl_shim ignora a window). fbdev: struct {w,h} real. */
+  return cup_use_kmsdrm() ? (void *)&g_anw : (void *)&g_fbdev_win; }
 static int my_aw_setgeom(void *w, int a, int b, int c) { (void)w; (void)a; (void)b; (void)c; return 0; }
 static int my_aw_getWidth(void *w) { (void)w; return 1280; }
 static int my_aw_getHeight(void *w) { (void)w; return 720; }
@@ -581,6 +583,47 @@ static void *egl_route(const char *nm) {
   };
   for (int i = 0; m[i].n; i++) if (!strcmp(m[i].n, nm)) return m[i].f;
   return NULL;
+}
+
+/* ---------- device-aware video backend (fbdev vs kmsdrm) ----------
+ * Amlogic-old (Mali-450 Utgard): EGL REAL do Mali via fbdev (/dev/fb0) — a Unity
+ *   cria contexto/surface direto no fb0 (g_fbdev_win). Caminho PROVADO/default.
+ * X5M (Amlogic-no, Mali-G310 Valhall): NAO tem EGL fbdev — so KMSDRM. Roteamos o
+ *   EGL da Unity pelo egl_shim (SDL2-compat -> SDL3 stock kmsdrm/gbm/Valhall).
+ * Decisao (uma vez):
+ *   CUP_VIDEO=kmsdrm | fbdev  -> forca.
+ *   CUP_SHIMEGL=1 (legado)    -> kmsdrm.
+ *   auto: existe /dev/dri/card0 -> kmsdrm; senao fbdev. */
+static int cup_use_kmsdrm(void) {
+  static int dec = -1;
+  if (dec >= 0) return dec;
+  const char *v = getenv("CUP_VIDEO");
+  if (v && !strcmp(v, "kmsdrm")) { dec = 1; return dec; }
+  if (v && !strcmp(v, "fbdev"))  { dec = 0; return dec; }
+  if (getenv("CUP_SHIMEGL"))     { dec = 1; return dec; }
+  dec = (access("/dev/dri/card0", F_OK) == 0) ? 1 : 0;
+  return dec;
+}
+
+/* Re-roteia os egl* da libunity (hoje bindados no libEGL REAL pelo so_resolve)
+ * para o egl_shim. ELO QUE FALTAVA do caminho kmsdrm: sem isto a janela SDL e'
+ * criada mas a Unity continua chamando o libEGL real (sem fbdev no Valhall -> nao
+ * renderiza). Chamar com o contexto do libunity ativo (so_use(g_m_unity)). */
+static int egl_patch_unity_got(void) {
+  static const char *names[] = {
+    "eglGetDisplay", "eglInitialize", "eglTerminate", "eglChooseConfig",
+    "eglCreateWindowSurface", "eglCreatePbufferSurface", "eglCreateContext",
+    "eglMakeCurrent", "eglSwapBuffers", "eglDestroySurface", "eglDestroyContext",
+    "eglQuerySurface", "eglGetConfigAttrib", "eglGetError", "eglGetProcAddress",
+    "eglBindAPI", "eglQueryString", "eglSwapInterval", "eglGetCurrentContext",
+    "eglGetCurrentSurface", "eglGetCurrentDisplay", "eglSurfaceAttrib", NULL };
+  int total = 0;
+  for (int i = 0; names[i]; i++) {
+    void *f = (!strcmp(names[i], "eglGetCurrentDisplay")) ? (void *)egl_shim_GetDisplay
+                                                          : egl_route(names[i]);
+    if (f) total += so_patch_got(names[i], (uintptr_t)f);
+  }
+  return total;
 }
 
 /* glGetString wrapper (proven re4): o preprocessador de shader do Unity chama
@@ -2301,6 +2344,27 @@ static long fmod_alloc_hook(long a, long b, long c, long d, long e, long f, long
   }
   return fmod_alloc_orig(a, b, c, d, e, f, g, h);
 }
+/* SIGUSR1: dump leve do backtrace da thread que recebe (acha endereços libunity/
+ * il2cpp na pilha) e RETORNA (não mata). Diagnóstico de hang: manda SIGUSR1 e vê a
+ * call chain do wait. Gateado por nada — só dispara quando o sinal chega. */
+static void diag_handler(int sig, siginfo_t *si, void *uc_) {
+  (void)sig; (void)si;
+  ucontext_t *uc = (ucontext_t *)uc_;
+  uintptr_t pc = uc->uc_mcontext.pc, lr = uc->uc_mcontext.regs[30], sp = uc->uc_mcontext.sp;
+  uintptr_t ub = g_unity_base, ib = g_il2cpp_base;
+  fprintf(stderr, "[DIAG] tid=%d pc=0x%lx lr=0x%lx", (int)syscall(SYS_gettid),
+          (unsigned long)pc, (unsigned long)lr);
+  if (ub && lr >= ub && lr < ub + text_size) fprintf(stderr, " lr=libunity+0x%lx", lr - ub);
+  fprintf(stderr, "\n");
+  int hits = 0;
+  for (uintptr_t a = sp; a + 8 <= sp + 16384UL * 8 && hits < 60; a += 8) {
+    if (!addr_readable(a)) break;
+    uintptr_t v = *(uintptr_t *)a;
+    if (ub && v >= ub && v < ub + text_size) { fprintf(stderr, "[DIAG]  libunity+0x%lx\n", v - ub); hits++; }
+    else if (ib && v >= ib && v < ib + 0x3000000) { fprintf(stderr, "[DIAG]  libil2cpp+0x%lx\n", v - ib); hits++; }
+  }
+  fprintf(stderr, "[DIAG] --- fim (%d hits) ---\n", hits); fsync(2);
+}
 static long (*fmod_alloc2_orig)(long, long, long, long, long, long, long, long);
 static long fmod_alloc2_hook(long a, long b, long c, long d, long e, long f, long g, long h) {
   if ((unsigned long)b > FMOD_ALLOC_SANE) {
@@ -2393,6 +2457,8 @@ int main(int argc, char **argv) {
   sigaction(SIGSEGV, &sa, 0); sigaction(SIGBUS, &sa, 0); sigaction(SIGABRT, &sa, 0);
   sigaction(SIGILL, &sa, 0); sigaction(SIGFPE, &sa, 0);
   sigaction(SIGTRAP, &sa, 0); sigaction(SIGSYS, &sa, 0);  /* BRK/seccomp matam calado */
+  { struct sigaction sd; memset(&sd, 0, sizeof sd); sd.sa_sigaction = diag_handler;
+    sd.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART; sigaction(SIGUSR1, &sd, 0); }
 
   fprintf(stderr, "=== Cuphead Unity 2017.4 IL2CPP (arm64 GLES2) so-loader ===\n");
 
@@ -2843,14 +2909,23 @@ int main(int argc, char **argv) {
   jni_dump_natives();
 
   /* ---- F2: janela GLES2 + lifecycle Unity ----
-     Default = EGL REAL do Mali (Unity cria contexto/surface no fb0 via fbdev_window);
-     CUP_SHIMEGL=1 = caminho antigo SDL2/egl_shim (não usado pelo Unity: egl* é PLT). */
-  if (getenv("CUP_SHIMEGL")) {
+     fbdev (Amlogic-old): EGL REAL do Mali (Unity cria contexto/surface no fb0).
+     kmsdrm (X5M/Valhall): janela SDL3-kmsdrm + re-rota os egl* da Unity p/ egl_shim. */
+  if (cup_use_kmsdrm()) {
     extern int egl_shim_ensure_current(void);
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) fprintf(stderr, "[F2] SDL_Init: %s\n", SDL_GetError());
+    /* SDL3 stock do X5M tem driver kmsdrm (+wayland). Default kmsdrm; o launcher
+       pode sobrescrever via SDL_VIDEODRIVER (ex "wayland" sob sway, ou lista). */
+    if (!getenv("SDL_VIDEODRIVER")) setenv("SDL_VIDEODRIVER", "kmsdrm", 1);
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) fprintf(stderr, "[F2] SDL_Init(VIDEO|AUDIO): %s\n", SDL_GetError());
+    fprintf(stderr, "[F2] kmsdrm: SDL video driver = %s\n",
+            SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(null)");
     egl_shim_create_window();
+    /* ELO: re-rota os egl* da libunity (so_resolve bindou no libEGL real) -> egl_shim.
+       Contexto libunity ja' ativo aqui (so_use(g_m_unity) acima). */
+    int np = egl_patch_unity_got();
+    fprintf(stderr, "[F2] kmsdrm: %d slots egl* da libunity -> egl_shim\n", np);
     egl_shim_ensure_current();   /* deixa o contexto GL current na thread do jogo */
-    fprintf(stderr, "[F2] janela GLES2 criada (egl_shim/SDL2)\n");
+    fprintf(stderr, "[F2] janela GLES2 criada (egl_shim/SDL3 kmsdrm)\n");
   } else {
     /* áudio (opensles_shim usa SDL_OpenAudioDevice) */
     if (SDL_Init(SDL_INIT_AUDIO) != 0) fprintf(stderr, "[F2] SDL_Init(AUDIO): %s\n", SDL_GetError());

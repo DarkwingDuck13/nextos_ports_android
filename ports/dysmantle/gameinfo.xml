@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<gameList>
+  <game>
+    <path>./DYSMANTLE.sh</path>
+    <name>DYSMANTLE</name>
+    <desc>Apos o apocalipse, voce acorda sozinho numa ilha tomada por mortos. DYSMANTLE e um RPG de acao top-down de sobrevivencia e crafting: destrua TUDO (literalmente qualquer objeto) pra coletar recursos, fabrique armas e ferramentas, suba de nivel e explore um mundo aberto cheio de masmorras, chefes e segredos. Esta e a versao mobile (10tons NX, v1.4.1.12) rodando em aarch64/Linux via so-loader do APK Android -- BYO-data (sua copia legal do APK DYSMANTLE 1.4.1.12).</desc>
+    <image>./dysmantle/cover.png</image>
+    <releasedate>20211103T000000</releasedate>
+    <developer>10tons</developer>
+    <publisher>10tons</publisher>
+    <genre>Action-Adventure / Survival</genre>
+  </game>
+</gameList>

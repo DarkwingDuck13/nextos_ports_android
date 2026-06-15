@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<gameList>
+  <game>
+    <path>./Bully.sh</path>
+    <name>Bully: Anniversary Edition</name>
+    <desc>Jimmy Hopkins acaba de ser matriculado na Academia Bullworth, o internato mais caotico do pais. Entre aulas, brigas, valentoes e travessuras, ele precisa subir na hierarquia social e sobreviver ao ano letivo. Mundo aberto em 3a pessoa com escola, cidade, missoes, minigames e materias. Esta e a Anniversary Edition (mobile) rodando em aarch64/Linux via so-loader do APK Android -- BYO-data (sua copia legal do APK Bully 1.4.311).</desc>
+    <image>./bully/cover.png</image>
+    <releasedate>20161208T000000</releasedate>
+    <developer>Rockstar New England / Mad Doc Software</developer>
+    <publisher>Rockstar Games</publisher>
+    <genre>Action-Adventure</genre>
+  </game>
+</gameList>

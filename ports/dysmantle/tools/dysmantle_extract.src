@@ -1,0 +1,98 @@
+#!/bin/bash
+# DYSMANTLE BYO-DATA -- script de extracao mostrado na JANELA do 'progressor'
+# (mesmo metodo do Bully/TMNT). Os echos aparecem na tela com PORCENTAGEM + barra.
+# Extrai do APK: libNativeGame.so + a pasta assets/ (os .pak) e RODA o fixpak
+# (conserto de texturas ETC2 -> JPEG/PNG) na mesma janela. msgbox em caso de erro.
+# libc++_shared.so JA VEM no pacote (versao validada) -> nao depende do APK.
+SCRIPT="${BASH_SOURCE:-$0}"
+SCRIPT_PATH="$(cd "$(dirname "${SCRIPT}")" && pwd)"
+source "${SCRIPT_PATH}/common.src"
+
+GAMEDIR="$(cd "${SCRIPT_PATH}/.." && pwd)"
+cd "$GAMEDIR"
+APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK "$GAMEDIR"/*.xapk 2>/dev/null | head -1)
+
+# barra de progresso textual: pbar <0-100>
+pbar() {
+  local p=$1 i n=$(( $1 / 5 )) bar=""
+  for ((i=0;i<20;i++)); do [ "$i" -lt "$n" ] && bar="${bar}#" || bar="${bar}."; done
+  echo "    [${bar}] ${p}%"
+}
+
+if [ -z "$APK" ]; then
+  msgbox "DYSMANTLE" $'Nenhum APK do DYSMANTLE 1.4.1.12 encontrado.\nCopie seu APK para ports/dysmantle/ e abra de novo.'
+  exit 1
+fi
+
+echo "Primeira execucao -- extraindo os dados do seu APK (~800 MB)."
+echo "Leva alguns minutos. Nao desligue o aparelho."
+echo ""
+
+echo ">> Biblioteca do jogo (libNativeGame.so)..."
+pbar 2
+if ! unzip -o -j "$APK" "lib/arm64-v8a/libNativeGame.so" -d "$GAMEDIR"; then
+  msgbox "DYSMANTLE" "Falha ao extrair libNativeGame.so do APK."
+  exit 1
+fi
+
+mkdir -p "$GAMEDIR/assets"
+# os .pak grandes, um por vez (% proporcional ao tamanho: data.pak e o maior)
+echo ">> Dados de idiomas (data-localizations.pak)..."
+pbar 5
+unzip -o -j "$APK" "assets/data-localizations.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1
+echo ">> Texturas extras (data-gfx1200.pak)..."
+pbar 14
+unzip -o -j "$APK" "assets/data-gfx1200.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1
+echo ">> Dados principais (data.pak ~570 MB, demora mais)..."
+pbar 32
+if ! unzip -o -j "$APK" "assets/data.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1; then
+  msgbox "DYSMANTLE" "Falha ao extrair data.pak. APK incompleto ou sem espaco?"
+  exit 1
+fi
+
+echo ">> Manifestos e arquivos restantes..."
+pbar 72
+# o resto do assets/ (manifest-*.xml, prog.xml, AVConfig.json, hashes, etc).
+# -o sobrescreve; -j achata o caminho assets/ para a pasta assets/.
+unzip -o -j "$APK" "assets/*" -d "$GAMEDIR/assets" >/dev/null 2>&1
+sync
+
+echo ">> Conferindo a extracao..."
+pbar 78
+ok=1
+[ -f "$GAMEDIR/libNativeGame.so" ] || ok=0
+[ -f "$GAMEDIR/assets/data.pak" ] || ok=0
+if [ "$ok" != 1 ]; then
+  msgbox "DYSMANTLE" $'Extracao incompleta.\nO APK pode estar corrompido ou faltou espaco.'
+  exit 1
+fi
+
+# ---------- conserto de texturas (o passo decisivo p/ NAO ficar branco/lavado) ----------
+# Muitos APKs deixam os JPEG/PNG VAZIOS dentro do .pak (so o irmao .ktx ETC2 tem
+# dados) -> personagens/chao/itens BRANCOS. O fixpak decodifica o ETC2 no device e
+# preenche TODOS os slots (data.pak + data-gfx1200.pak). Roda 1x; ~1-2 min.
+echo ""
+echo ">> Consertando texturas (ETC2 -> JPEG/PNG). Pode levar 1-2 min, nao desligue..."
+pbar 82
+if [ -x "$GAMEDIR/fixpak" ]; then
+  LD_LIBRARY_PATH="/usr/lib:/lib:$GAMEDIR" "$GAMEDIR/fixpak" "$GAMEDIR/assets/data.pak" "$GAMEDIR/assets/data-gfx1200.pak"
+  rc=$?
+  pbar 96
+  if [ "$rc" != 0 ]; then
+    msgbox "DYSMANTLE" $'O conserto de texturas falhou.\nO jogo pode abrir com texturas brancas/lavadas.\nVeja o tools/extract.log.'
+  else
+    touch "$GAMEDIR/.textures_fixed"
+  fi
+else
+  msgbox "DYSMANTLE" "fixpak nao encontrado -- texturas podem ficar brancas."
+fi
+sync
+
+echo ">> Liberando espaco (apagando o APK)..."
+rm -f "$APK"
+sync
+pbar 100
+echo ""
+echo "Pronto! Dados extraidos e texturas consertadas. O jogo vai iniciar."
+sleep 3
+exit 0

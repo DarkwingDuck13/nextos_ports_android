@@ -589,17 +589,20 @@ static char *nv_gets(char *b, int m, void *h) { return h ? asset_gets(b, m, h) :
  * (no PC o pbuffer nao pode ser destruido/recriado como window surface -> abortava) */
 static void and_create_egl(void) { bully_make_current(); }
 static void and_destroy_egl(void) { /* no-op */ }
+/* rate-limit: este par dispara MILHARES de vezes no gameplay (streaming de
+ * textura) e afogava o log -> o fim (freeze) nunca aparecia. Loga só as 1as 30. */
+static int g_mc_log = 0;
 static void os_thread_makecurrent(void) {
   int ok = bully_make_current();
-  fprintf(stderr, "[gl] OS_ThreadMakeCurrent tid=%lu -> eglMakeCurrent ok=%d\n",
-          (unsigned long)pthread_self(), ok);
+  if (g_mc_log < 30) { fprintf(stderr, "[gl] OS_ThreadMakeCurrent tid=%lu -> eglMakeCurrent ok=%d\n",
+          (unsigned long)pthread_self(), ok); g_mc_log++; }
 }
 /* SOLTA o NOSSO contexto na thread chamadora — pareia com makecurrent. Sem isso
  * o GameMain segura o ctx (EGL é single-thread) e a render thread falha (ok=0). */
 static void os_thread_unmakecurrent(void) {
   bully_release_current();
-  fprintf(stderr, "[gl] OS_ThreadUnmakeCurrent tid=%lu -> released\n",
-          (unsigned long)pthread_self());
+  if (g_mc_log < 30) { fprintf(stderr, "[gl] OS_ThreadUnmakeCurrent tid=%lu -> released\n",
+          (unsigned long)pthread_self()); g_mc_log++; }
 }
 
 static void hook_egl(void) {

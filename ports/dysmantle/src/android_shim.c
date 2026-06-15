@@ -343,10 +343,36 @@ static int gptk_on(void) {
   return g;
 }
 
+/* Hotkey universal de SAIR (SELECT+START) — igual ao Bully, NO BINARIO. Garantia
+ * independente do gptokeyb: o launcher faz `gptokeyb "dysmantle"` mas o processo
+ * tem comm="Main" (a engine renomeia a thread), entao o gptokeyb NAO acha o
+ * processo p/ matar -> o .sh sozinho nao fecha. Aqui lemos o pad direto (SDL ve
+ * o pad mesmo com gptokeyb, que nao faz grab exclusivo) e `_exit` na hora
+ * (evita deadlock do blob Mali ao liberar o contexto GL no teardown). */
+/* estado SELECT(esc)+START(enter) vindos do gptokeyb -- rastreado SEMPRE (mesmo
+ * sem gptk_on), igual o g_kb[] do Bully, p/ a saida funcionar em qualquer device */
+static int g_kb_esc = 0, g_kb_ent = 0;
+static void check_exit_hotkey(void) {
+  /* DOIS caminhos checados TODO FRAME (igual Bully): pad nativo (SDL ve o pad)
+   * E teclado do gptokeyb (esc+enter). Qualquer um que chegue fecha o jogo.
+   * _exit imediato evita o deadlock do blob Mali ao liberar o contexto GL. */
+  int pad_combo = 0;
+  if (g_gamecontroller) {
+    SDL_GameControllerUpdate();
+    pad_combo = SDL_GameControllerGetButton(g_gamecontroller, SDL_CONTROLLER_BUTTON_BACK) &&
+                SDL_GameControllerGetButton(g_gamecontroller, SDL_CONTROLLER_BUTTON_START);
+  }
+  if (pad_combo || (g_kb_esc && g_kb_ent)) {
+    debugPrintf("android_shim: SELECT+START -> saindo do jogo\n");
+    _exit(0);
+  }
+}
+
 static void process_sdl_events(void) {
   // Try to open a gamepad if we don't have one yet
   init_gamecontroller();
   pb_try_connect();
+  check_exit_hotkey();  /* SELECT+START -> sai (garantia, qualquer device) */
 
   /* diag: loga status Paddleboat do pad 0 periodicamente */
   if (g_pb_connected) {
@@ -418,6 +444,11 @@ static void process_sdl_events(void) {
      * Sair: SELECT+START (esc+enter). */
     case SDL_KEYDOWN:
     case SDL_KEYUP: {
+      /* GARANTIA DE SAIDA: rastreia SELECT(esc)+START(enter) SEMPRE, mesmo sem
+       * gptk_on/repeat -> check_exit_hotkey (todo frame) fecha o jogo. */
+      if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) g_kb_esc = (e.type == SDL_KEYDOWN);
+      if (e.key.keysym.scancode == SDL_SCANCODE_RETURN) g_kb_ent = (e.type == SDL_KEYDOWN);
+      if (g_kb_esc && g_kb_ent) { debugPrintf("android_shim: SELECT+START (kbd) -> saindo\n"); _exit(0); }
       if (!gptk_on() || e.key.repeat) break;
       int dn = (e.type == SDL_KEYDOWN);
       int act = dn ? AKEY_EVENT_ACTION_DOWN : AKEY_EVENT_ACTION_UP;

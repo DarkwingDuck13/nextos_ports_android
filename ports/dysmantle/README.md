@@ -1,66 +1,82 @@
-# DYSMANTLE → Linux aarch64 (NextOS / PortMaster)
+# 🎮 DYSMANTLE → Mali-450 / aarch64 Linux (NextOS / PortMaster)
 
-Port via **so-loader**: o `libNativeGame.so` (Android arm64, engine 10tons NX) carregado
-dentro de um ELF Linux glibc, com shims de JNI/EGL/OpenSLES/GameActivity. Roda do
-**Mali-450 (GLES2/fbdev)** até devices novos (**GLES3/KMSDRM**) — a resolução segue o
-framebuffer do device automaticamente.
+Port do **DYSMANTLE** (10tons NX, Android **v1.4.1.12**) rodando em **aarch64 / Linux /
+PortMaster** via **so-loader** do `libNativeGame.so`. Mundo aberto de
+sobrevivência/crafting, **OpenGL ES 2.0/3.0**, áudio **Oboe** e controle **Paddleboat**
+nativos. Roda do **Mali-450 MP (Utgard) + fbdev** até **Mali novo + KMSDRM**.
 
-- **Jogo:** DYSMANTLE **v1.4.1.12** (Android). Mundo aberto, crafting, "destrua tudo".
-- **Áudio:** Oboe real → OpenSLES shim → SDL2 (pump thread dedicada, sem engasgo).
-- **Controle:** Paddleboat nativo. Com PortMaster, o **gptokeyb** mapeia o pad do seu
-  CFW (layout em `dysmantle.gptk`); sticks/gatilhos continuam **analógicos**.
-- **Sair do jogo:** **SELECT+START**.
+---
 
-## BYO-data (dados NÃO inclusos) — tudo automático
+## 🎮 Como instalar e jogar (BYO-DATA)
 
-Este zip tem só o port (sem os dados do jogo). Você precisa da **sua cópia legal**
-do **APK do DYSMANTLE Android 1.4.1.12**. O processo é automático:
+Este pacote **não contém os dados do jogo** — você fornece o seu APK legal.
 
-1. Copie o seu `.apk` para a pasta do port:
-   ```
-   ports/dysmantle/SEU_DYSMANTLE.apk
-   ```
-2. Abra **DYSMANTLE** na lista de ports. Na **1ª vez** o launcher faz tudo sozinho:
-   - **extrai** do APK o `libNativeGame.so`, o `libc++_shared.so` e os `assets/` (~700MB);
-   - **conserta as texturas** com o `fixpak` (veja abaixo) — leva ~1-2 min, só uma vez;
-   - abre o jogo.
-3. Pode demorar alguns minutos na 1ª abertura (extração + conserto). As próximas são
-   instantâneas (um marcador `.textures_fixed` evita repetir).
+1. Instale o port (PortMaster / copie a pasta pra `ports/`).
+2. Coloque o seu **APK do DYSMANTLE v1.4.1.12** (que tem
+   `lib/arm64-v8a/libNativeGame.so` + a pasta `assets/` com os `data*.pak`) dentro de
+   **`ports/dysmantle/`**.
+3. Abra **DYSMANTLE** na lista de Ports. Na **1ª vez** abre uma **janela de extração**
+   com **barra de %**: extrai os dados (~800 MB) e **conserta as texturas**
+   (ETC2→JPEG/PNG, ~1–2 min). Ao terminar, o APK é liberado e o **jogo inicia sozinho**.
+4. Da 2ª vez em diante abre direto no jogo.
 
-> 🧊 **Por que o conserto?** Vários APKs vêm com as texturas JPEG/PNG **vazias** dentro
-> do pak (só a versão `.ktx` ETC2 tem dados) → personagem/itens/chão sairiam **brancos**.
-> O `fixpak` (incluído) decodifica o ETC2 **no próprio device** e regrava as texturas
-> em JPEG/PNG, usando a libturbojpeg/libz do seu CFW. **Não precisa de PC nem Python.**
-> (O `tools/fix_empty_textures.py` é só a versão de PC, opcional, p/ quem preferir.)
+- **Dois binários** no pacote: `dysmantle` (glibc ≥ 2.38: NextOS/muOS/ROCKNIX/JELOS/
+  X5M) e `dysmantle.compat` (GLIBC_2.27: **ArkOS/dArkOS/R36S**). O launcher escolhe
+  sozinho pela glibc do device.
+- **Texturas:** o conserto (`fixpak`) roda na 1ª vez **e** tem rede de segurança no
+  launcher → **nunca** abre branco/lavado. Marcador: `.textures_fixed`.
+- **Controles:** gptokeyb (`dysmantle.gptk`); sticks/gatilhos analógicos direto do pad;
+  D-pad = quick slots. **Sair: SELECT+START**.
+- **Vídeo/áudio:** auto-detectados (KMSDRM / mali-fbdev; ALSA/Oboe).
+- **Performance:** `DYSMANTLE_TEXSCALE` (default 1.3) no topo do `DYSMANTLE.sh` reduz as
+  texturas por um fator = mais FPS / menos memória (1.0 = qualidade total).
 
-## Opções (edite no topo do `DYSMANTLE.sh`)
+---
 
-| Variável | Default | Efeito |
-|---|---|---|
-| `DYSMANTLE_TEXSCALE` | `1.3` | Reduz texturas por este fator (FPS/memória). `1.2`/`1.1` = mais leve; comente p/ qualidade total |
-| `DYSMANTLE_SWAPINT` | `0` | vsync off (o pacing fica com a engine; evita trava em 30fps) |
-| `DYSMANTLE_GLVER` | `2.0` | caminho de shaders ES2 (funciona também em GPU ES3) |
+## 1. O que é
 
-## Controles (gptokeyb, `dysmantle.gptk`)
+Port via **so-loader**: carregar o `libNativeGame.so` (Android arm64, **GameActivity /
+AGDK**) dentro de um ELF Linux glibc, emular o ambiente Android (JNI, GameActivity,
+AAsset, Paddleboat, Oboe) e dirigir o loop do jogo com SDL2/EGL/GLESv2 do device.
 
-| Pad | Jogo |
-|---|---|
-| Stick esquerdo | Mover (analógico) |
-| Stick direito | Câmera (analógico, direto do pad) |
-| A / B / X / Y | Ações (confirmar/cancelar/usar) |
-| D-pad | Quick slots de item (4 direções) |
-| L1 / R1, L2 / R2 | Mira/ataque/ciclar (gatilhos analógicos) |
-| L3 / R3 | Funções de stick |
-| START / SELECT | Pause / Mapa |
-| **SELECT+START** | **Sair do port** |
+- **Jogo:** DYSMANTLE **v1.4.1.12** (10tons NX, "API 16.26.06"). Entry `android_main`
+  (GameActivity). APK certo: tem `lib/arm64-v8a/libNativeGame.so` (~15 MB) + `assets/`
+  com `data.pak` (~570 MB) + `data-gfx1200.pak` + `data-localizations.pak`.
+- **Este repo guarda só o CÓDIGO** (`ports/dysmantle/src/*`). Os dados/libs do jogo não
+  entram no git (são do APK; BYO-data estilo PortMaster).
 
-## Requisitos
+## 2. Os fixes críticos (com o PORQUÊ)
 
-- aarch64, GLES2+, glibc ≥ 2.38 (CFWs recentes: NextOS, ROCKNIX, muOS, Knulli...).
-- ~1GB RAM livre. PortMaster instalado (gptokeyb).
+- 🔑 **Canary bionic (TLS):** a engine lê o stack-guard de `tpidr_el0+0x28`; sob glibc o
+  slot caía em TLS de outra lib e mudava no meio → `__stack_chk_fail`. **Fix:** pad TLS
+  `_Thread_local` de 256 B no exe (1º bloco após o TCB) → slot estável. Vale p/ QUALQUER
+  so-loader bionic→glibc.
+- 🏆 **MUNDO BRANCO:** os XMLs `*Shadows` (feature_level=2) eram pulados no target GL
+  tier-1 → `nx_shader+44` (vertex format) = 0 → geometria criada com `alloc(0)` →
+  chão/pedras/árvores invisíveis. **Fix:** `hook_getshader` degrada o nome até a variante
+  que carrega (`Shadows/Reflections/…/Fur→Diffuse/Lit`).
+- 🎨 **Texturas brancas/lavadas:** APKs modados deixam JPEG/PNG vazios no `.pak` (só o
+  `.ktx` ETC2 tem dados). **Fix:** `fixpak` (decoder ETC2 puro em C) decodifica no device
+  e reencoda JPEG/PNG dentro do `.pak`. Roda na janela de extração + rede de segurança no
+  launcher.
+- 🔊 **Áudio (Oboe real):** shim `OpenSLES→SDL2` com pump thread de 4ms; PCM float32→S16;
+  `__system_property_get("ro.build.version.sdk")="25"`.
+- 🎮 **Controle (Paddleboat nativo):** alimentado direto do C (deviceInfo + eventos
+  GameActivity key/motion); sticks/gatilhos analógicos.
+- ⚠️ **Dynamic Shadows = OFF** (crash no load em Utgard; sem efeito após o fallback).
 
-## Créditos
+## 3. Build
 
-- Port/engenharia reversa: **felc18-blip** (NextOS Elite).
-- Jogo: © 10tons Ltd — compre o jogo! (Android/Steam/consoles)
-- Base so-loader: padrão dos ports Android do NextOS (syberia/lswtcs de mtojek, Apache-2.0).
+- **Nativo:** `ports/dysmantle/build.sh` (toolchain Amlogic-old
+  `aarch64-libreelec-linux-gnu-gcc`; linka `-lSDL2 -lEGL -lGLESv2 -ldl -lm -lpthread`).
+  Saída: `dysmantle`.
+- **Compat (GLIBC_2.27):** `build_compat_gcc.sh` dentro de `debian:bullseye` (gcc-10):
+  `docker run --rm -v "$PWD":/repo -v "$SYSROOT":/sysroot:ro debian:bullseye bash
+  /repo/build_compat_gcc.sh` → `dysmantle.compat.gcc`.
+- **fixpak:** `gcc -O2 -o fixpak src/fixpak.c src/etc2_decode.c src/jpeg_enc.c -ldl`.
+
+## 4. Estado
+
+✅ **Jogável** com mundo + efeitos + som + controle, do **Mali-450 (fbdev/Utgard)** ao
+**KMSDRM**. Pacote BYO-DATA no padrão **Bully v9** (janela de extração + 2 binários).
+Limitações: dynamic shadows OFF; device de 1 GB engasga em cenas densas (sem crash).

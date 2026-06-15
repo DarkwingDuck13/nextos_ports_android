@@ -1,0 +1,66 @@
+#!/bin/bash
+# Bully BYO-DATA -- script de extracao mostrado na JANELA do 'progressor'
+# (metodo TMNT). Os echos abaixo aparecem na tela com PORCENTAGEM + barra durante
+# a extracao. Extrai a DATA INTEIRA do APK (libGame + libc++ + os 5 data_*.zip +
+# .idx, todos JUNTOS) e libera o APK no fim. msgbox em caso de erro.
+SCRIPT="${BASH_SOURCE:-$0}"
+SCRIPT_PATH="$(cd "$(dirname "${SCRIPT}")" && pwd)"
+source "${SCRIPT_PATH}/common.src"
+
+GAMEDIR="$(cd "${SCRIPT_PATH}/.." && pwd)"
+APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null | head -1)
+
+# barra de progresso textual: pbar <0-100>
+pbar() {
+  local p=$1 i n=$(( $1 / 5 )) bar=""
+  for ((i=0;i<20;i++)); do [ "$i" -lt "$n" ] && bar="${bar}#" || bar="${bar}."; done
+  echo "    [${bar}] ${p}%"
+}
+
+if [ -z "$APK" ]; then
+  msgbox "Bully" $'Nenhum APK do Bully 1.4.311 encontrado.\nCopie seu APK para ports/bully/ e abra de novo.'
+  exit 1
+fi
+
+echo "Primeira execucao -- extraindo os dados do seu APK (~3 GB)."
+echo "Leva alguns minutos. Nao desligue o aparelho."
+echo ""
+
+echo ">> Bibliotecas do jogo (libGame + libc++)..."
+pbar 0
+if ! unzip -o -j "$APK" "lib/arm64-v8a/libGame.so" "lib/arm64-v8a/libc++_shared.so" -d "$GAMEDIR"; then
+  msgbox "Bully" "Falha ao extrair as bibliotecas do APK."
+  exit 1
+fi
+
+# % no inicio de cada data, proporcional ao tamanho (data_1/4 sao os maiores)
+PCTS=(1 7 36 55 73)
+mkdir -p "$GAMEDIR/assets"
+for i in 0 1 2 3 4; do
+  echo ">> Dados $((i+1))/5 (data_${i}.zip)..."
+  pbar "${PCTS[$i]}"
+  if ! unzip -o -j "$APK" "assets/data_${i}.zip" "assets/data_${i}.zip.idx" -d "$GAMEDIR/assets"; then
+    msgbox "Bully" "Falha ao extrair data_${i}. APK incompleto ou sem espaco?"
+    exit 1
+  fi
+done
+sync
+
+echo ">> Conferindo se a data inteira veio completa..."
+pbar 96
+ok=1
+[ -f "$GAMEDIR/libGame.so" ] || ok=0
+for i in 0 1 2 3 4; do [ -f "$GAMEDIR/assets/data_${i}.zip" ] || ok=0; done
+if [ "$ok" != 1 ]; then
+  msgbox "Bully" $'Extracao incompleta.\nO APK pode estar corrompido ou faltou espaco.'
+  exit 1
+fi
+
+echo ">> Liberando espaco (apagando o APK, ~3 GB)..."
+rm -f "$APK"
+sync
+pbar 100
+echo ""
+echo "Pronto! Todos os dados extraidos. O jogo vai iniciar."
+sleep 3
+exit 0

@@ -1,0 +1,40 @@
+#!/bin/bash
+# Bully -- patchscript (BYO-DATA): extrai os dados do APK legal do usuario.
+# Chamado pelo Bully.sh na 1a execucao (com o splash na tela) e tambem compativel
+# com a patcher UI do PortMaster (os echo aparecem na tela). Estilo Sonic/DeadCells.
+GAMEDIR="$(cd "$(dirname "$0")/.." && pwd)"
+# NAO redireciona o stdout: a patcher UI do PortMaster (love2d) LE os echos daqui
+# p/ mostrar o progresso na tela. (No fallback splash, vai pro log.txt do launcher.)
+# Cada echo abaixo aparece como linha de progresso na tela.
+echo "=== Bully: extracao dos dados (BYO-DATA) ==="
+
+APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null | head -1)
+if [ -z "$APK" ]; then
+  echo "ERRO: nenhum APK do Bully 1.4.311 em $GAMEDIR/"
+  exit 1
+fi
+echo "APK: $(basename "$APK")"
+
+echo "[1/3] libGame.so + libc++_shared.so ..."
+unzip -o -j "$APK" "lib/arm64-v8a/libGame.so" "lib/arm64-v8a/libc++_shared.so" -d "$GAMEDIR" || { echo "ERRO ao extrair libs"; exit 1; }
+
+echo "[2/3] dados (data_0-4 + .idx, ~2.9 GB -- pode demorar minutos) ..."
+mkdir -p "$GAMEDIR/assets"
+for i in 0 1 2 3 4; do
+  echo "    extraindo data_${i}.zip ..."
+  unzip -o -j "$APK" "assets/data_${i}.zip" "assets/data_${i}.zip.idx" -d "$GAMEDIR/assets" || { echo "ERRO ao extrair data_${i}"; exit 1; }
+done
+sync
+
+echo "[3/3] validando ..."
+ok=1
+[ -f "$GAMEDIR/libGame.so" ] || { ok=0; echo "  faltou libGame.so"; }
+for i in 0 1 2 3 4; do [ -f "$GAMEDIR/assets/data_${i}.zip" ] || { ok=0; echo "  faltou data_${i}.zip"; }; done
+if [ "$ok" = "1" ]; then
+  echo "OK! Extracao completa. Liberando o APK (~3 GB de disco)..."
+  rm -f "$APK"
+  echo "Pronto -- o jogo vai iniciar."
+  exit 0
+fi
+echo "ERRO: extracao incompleta (APK corrompido ou incompleto?)."
+exit 1

@@ -242,6 +242,7 @@ static void patch_func_ret1(const char *sym) {
   uint32_t w[] = {0x52800020, 0xd65f03c0}; /* mov w0,#1 ; ret */
   patch_words(sym, w, 2);
 }
+
 /* patch num vaddr arbitrário (load_base derivado de android_main vaddr 0x4651a4) */
 static void patch_vaddr(uintptr_t vaddr, uint32_t word) {
   uintptr_t lb = so_find_addr("android_main") - 0x4651a4;
@@ -723,6 +724,127 @@ static void hook_inittrans(void) {
   *p = (uintptr_t)my_inittrans;
   fprintf(stderr, "hook: InitializeTranslator GOT %p\n", (void *)slot);
 }
+/* ---- DLC: aplica os entitlements (DLC1/2/3) assim que o IAP inicializa ----
+ * O billing Java (stub no nosso port) nunca chama OnQueryPurchasesCompleted, entao
+ * o jogo nunca aplica os entitlements. Aqui hookamos PostInitialize (captura o
+ * handle) e chamamos OnQueryPurchasesFailedInternal(handle) = lock +
+ * ApplyCachedEntitlements + unlock -> le cache://_in-app-item-entitlements.xml
+ * (servido em memoria pelo my_fopen, concedendo DLC1/2/3) -> itens viram owned +
+ * conteudo (que JA esta no data.pak). DYSMANTLE_NO_DLC=1 desliga. */
+static void (*real_iap_postinit)(void *) = NULL;
+static void (*iap_set_cached)(void *, const char *, unsigned long, int) = NULL; /* SetCachedEntitlement(this, sv{data,len}, bool) */
+static void (*iap_apply_cached)(void *) = NULL;                                 /* ApplyCachedEntitlements(this) */
+
+/* 🔑 ANTI-PIRATARIA: o DLC SO destrava se o SAVE do jogador (importado da copia
+ * legal Android dele) tiver a marca daquele DLC. Save = 10tc + usize(u32) +
+ * csize(u32) + zlib; descomprimimos (libz) e procuramos a marca de cada DLC.
+ * Quem nao tem o DLC (save base) nao destrava nada. DYSMANTLE_DLC_FORCE=1 ignora
+ * a checagem (libera os 3, p/ teste). Marcas ajustaveis por env. */
+static int (*z_uncompress)(unsigned char *, unsigned long *, const unsigned char *, unsigned long) = NULL;
+/* busca binary-safe (o save descomprimido tem NULs do container 10TONS antes do
+ * XML -> strstr pararia no 1o \0). Procura needle nos `n` bytes de `h`. */
+static int buf_has(const unsigned char *h, unsigned long n, const char *needle) {
+  unsigned long m = strlen(needle);
+  if (m == 0 || n < m) return 0;
+  for (unsigned long i = 0; i + m <= n; i++)
+    if (h[i] == (unsigned char)needle[0] && memcmp(h + i, needle, m) == 0) return 1;
+  return 0;
+}
+static int dlc_owned_mask_from_saves(void) {
+  if (getenv("DYSMANTLE_DLC_FORCE")) { fprintf(stderr, "[dlc] DLC_FORCE -> libera DLC1/2/3 (ignora save)\n"); return 7; }
+  if (!z_uncompress) {
+    void *z = dlopen("libz.so", RTLD_NOW); if (!z) z = dlopen("libz.so.1", RTLD_NOW);
+    if (z) z_uncompress = (int (*)(unsigned char *, unsigned long *, const unsigned char *, unsigned long))dlsym(z, "uncompress");
+  }
+  if (!z_uncompress) { fprintf(stderr, "[dlc] libz indisponivel -> nao da p/ checar o save (DLC OFF)\n"); return 0; }
+  /* marcas REAIS (do data.pak): cada DLC tem seus estagios em stages/dlcN/ -> um
+   * save que ENTROU/jogou o DLC referencia esse caminho (active_stage/visitados).
+   * Save base nunca contem "stages/dlcN". Ajustaveis por env. */
+  const char *m1 = getenv("DYSMANTLE_DLC1_MARK"); if (!m1) m1 = "stages/dlc1";
+  const char *m2 = getenv("DYSMANTLE_DLC2_MARK"); if (!m2) m2 = "stages/dlc2";
+  const char *m3 = getenv("DYSMANTLE_DLC3_MARK"); if (!m3) m3 = "stages/dlc3";
+  int mask = 0;
+  for (int slot = 0; slot < 10; slot++) {
+    char path[256];
+    snprintf(path, sizeof(path), "gamedata/10tons/DYSMANTLE/save/%d/profile.save", slot);
+    FILE *f = fopen(path, "rb"); if (!f) continue;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz < 16 || sz > 64 * 1024 * 1024) { fclose(f); continue; }
+    unsigned char *in = malloc(sz); if (!in) { fclose(f); continue; }
+    long rd = fread(in, 1, sz, f); fclose(f);
+    if (rd != sz || memcmp(in, "10tc", 4) != 0) { fprintf(stderr, "[dlc] slot %d: sz=%ld magic=%.4s (pulado)\n", slot, sz, in); free(in); continue; }
+    unsigned long usize = *(unsigned int *)(in + 4);
+    if (usize == 0 || usize > 64 * 1024 * 1024) { free(in); continue; }
+    unsigned char *out = malloc(usize + 1); if (!out) { free(in); continue; }
+    unsigned long ol = usize;
+    int zr = z_uncompress(out, &ol, in + 12, (unsigned long)(sz - 12));
+    fprintf(stderr, "[dlc] slot %d: sz=%ld usize=%lu inflate_ret=%d ol=%lu\n", slot, sz, usize, zr, ol);
+    if (zr == 0) {
+      if (buf_has(out, ol, m1)) { mask |= 1; fprintf(stderr, "[dlc] slot %d: achou '%s' -> DLC1\n", slot, m1); }
+      if (buf_has(out, ol, m2)) { mask |= 2; fprintf(stderr, "[dlc] slot %d: achou '%s' -> DLC2\n", slot, m2); }
+      if (buf_has(out, ol, m3)) { mask |= 4; fprintf(stderr, "[dlc] slot %d: achou '%s' -> DLC3\n", slot, m3); }
+    }
+    free(in); free(out);
+  }
+  /* SOURCE B: arquivo de entitlement do Android (cobre quem COMPROU mas nao
+   * jogou -> save sem progresso). A pessoa copia o entitlement da copia legal
+   * dela pra pasta; lemos os ids do array ENTITLEMENTS (DLC1/2/3). */
+  const char *entp[] = {
+    "gamedata/_in-app-item-entitlements.xml",
+    "gamedata/cache/_in-app-item-entitlements.xml",
+    "_in-app-item-entitlements.xml",
+    "gamedata/dlc-entitlements.xml",
+  };
+  for (unsigned e = 0; e < sizeof(entp) / sizeof(entp[0]); e++) {
+    FILE *f = fopen(entp[e], "rb"); if (!f) continue;
+    char buf[8192]; long n = fread(buf, 1, sizeof(buf) - 1, f); fclose(f);
+    if (n <= 0) continue; buf[n] = 0;
+    fprintf(stderr, "[dlc] entitlement file '%s' encontrado\n", entp[e]);
+    if (strstr(buf, "DLC1") || strstr(buf, "dlc1")) mask |= 1;
+    if (strstr(buf, "DLC2") || strstr(buf, "dlc2")) mask |= 2;
+    if (strstr(buf, "DLC3") || strstr(buf, "dlc3")) mask |= 4;
+  }
+  return mask;
+}
+static void my_iap_postinit(void *self) {
+  real_iap_postinit(self);
+  if (self && iap_set_cached && iap_apply_cached) {
+    static const char *ids[] = {"DLC1", "DLC2", "DLC3"};
+    int mask = dlc_owned_mask_from_saves();
+    int any = 0;
+    fprintf(stderr, "[dlc] PostInitialize self=%p mask=0x%x (1=DLC1 2=DLC2 4=DLC3)\n", self, mask);
+    for (int i = 0; i < 3; i++)
+      if (mask & (1 << i)) { iap_set_cached(self, ids[i], 4, 1); any = 1; fprintf(stderr, "[dlc] %s no save -> destravado\n", ids[i]); }
+    if (any) { iap_apply_cached(self); fprintf(stderr, "[dlc] entitlements aplicados\n"); }
+    else fprintf(stderr, "[dlc] nenhum DLC no save do jogador -> nada destravado (use DYSMANTLE_DLC_FORCE=1 p/ testar)\n");
+  }
+}
+static void hook_iap_dlc(void) {
+  /* DLC OFF por PADRAO: a feature so liga com DYSMANTLE_DLC setado (o launcher
+   * PRIVADO faz isso com DLC=ON). Sem isso, o hook nem instala -> nada de DLC
+   * (o pacote dos testers nao tem o DLC=ON, entao roda so o jogo base). */
+  if (!getenv("DYSMANTLE_DLC")) return;
+  uintptr_t addr = so_find_addr("_ZN34AndroidInAppPurchaseImplementation14PostInitializeEv");
+  iap_set_cached = (void (*)(void *, const char *, unsigned long, int))so_find_addr(
+      "_ZN33CachedInAppPurchaseImplementation20SetCachedEntitlementENSt6__ndk117basic_string_viewIcNS0_11char_traitsIcEEEEb");
+  iap_apply_cached = (void (*)(void *))so_find_addr(
+      "_ZN33CachedInAppPurchaseImplementation23ApplyCachedEntitlementsEv");
+  if (!addr || !iap_set_cached || !iap_apply_cached) {
+    fprintf(stderr, "[dlc] simbolos IAP nao achados (post=%p set=%p apply=%p)\n",
+            (void *)addr, (void *)iap_set_cached, (void *)iap_apply_cached);
+    return;
+  }
+  uint32_t *tr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  tr[0] = *(uint32_t *)addr; tr[1] = 0x58000051u; tr[2] = 0xd61f0220u;
+  *(uint64_t *)&tr[3] = addr + 4;
+  __builtin___clear_cache((char *)tr, (char *)tr + 32);
+  real_iap_postinit = (void (*)(void *))tr;
+  so_make_text_writable(); hook_arm64(addr, (uintptr_t)my_iap_postinit);
+  so_make_text_executable(); so_flush_caches();
+  fprintf(stderr, "[dlc] hook PostInitialize @ %p (set=%p apply=%p)\n", (void *)addr,
+          (void *)iap_set_cached, (void *)iap_apply_cached);
+}
 static void hook_getshader(void) {
   uintptr_t lb = so_find_addr("android_main") - 0x4651a4;
   uintptr_t addr = lb + 0x4846b0;
@@ -1115,6 +1237,15 @@ int main(int argc, char *argv[]) {
   patch_func_ret1("SwappyGL_init");
   patch_func_ret0("SwappyGL_isEnabled");
 
+  /* DLCs (Underworld / Doomsday / Pets): a engine so carrega o conteudo do DLC
+   * se IsEntitledToItem(item)=true; senao mostra o "Upsell"/"Missing DLC". O
+   * APK unlocked (APK_Award) traz o conteudo dos DLC dentro do data.pak, entao
+   * basta forcar entitled=true p/ destravar. DYSMANTLE_NO_DLC=1 desliga. */
+  /* DLCs: o destrave de verdade e via o arquivo de entitlement
+   * (cache://_in-app-item-entitlements.xml), servido pelo my_fopen (imports.c).
+   * O proprio jogo aplica os entitlements -> owned + conteudo. Nada de patch/hook
+   * aqui (a UI le o KV store, nao essas funcoes; e hook em func pequena crasha). */
+
   /* SoundImpOboe::Initialize(float): crashava ANTES do fix do canary TLS (o
    * "crash STL/JNI" era provavelmente o mesmo falso-positivo). Tentando rodar
    * o Oboe de verdade agora; fallback p/ patch ret0 se voltar a crashar.
@@ -1170,6 +1301,7 @@ int main(int argc, char *argv[]) {
   hook_shaderload(); /* 🌍 fix mundo branco: shader fmt 0 -> 0x7f (causa-raiz) */
   hook_getshader();  /* 🌍 diag + FIX B: alias *Shadows.xml -> variante s/ sombra */
   hook_inittrans();  /* 🌍 diag + FIX A: log/override do ShaderTarget */
+  hook_iap_dlc();    /* 🔓 DLC: aplica entitlements (DLC1/2/3) na init do IAP */
   start_perfcpu();   /* [PERFCPU] sampler de CPU por thread (diag lag) */
   /* ⚠️ hook_kvfloat() REMOVIDO: o RENDERSCALE era zoom de câmera (abandonado) e
    * o hook interferia no parser de config (strcmp render_scale) → crash em

@@ -89,6 +89,17 @@ int bully_init_gl(void) {
   fprintf(stderr, "[gl] SDL2 GLES2 %dx%d | EGL dpy=%p surf=%p ctx=%p | %s / %s\n",
           g_w, g_h, (void*)eglGetCurrentDisplay(), (void*)eglGetCurrentSurface(EGL_DRAW),
           (void*)eglGetCurrentContext(), r ? (const char*)r : "?", v ? (const char*)v : "?");
+  /* caps p/ decidir melhorias de qualidade (aniso, tamanho max de textura) */
+  { const GLubyte *ext = glGetString(GL_EXTENSIONS);
+    GLint maxtex = 0, maxaniso_i = 0; float maxaniso = 0;
+    glGetIntegerv(0x0D33, &maxtex);                 /* GL_MAX_TEXTURE_SIZE */
+    int has_aniso = ext && strstr((const char*)ext, "texture_filter_anisotropic") != NULL;
+    if (has_aniso) { glGetIntegerv(0x84FF, &maxaniso_i);  /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */
+      glGetFloatv(0x84FF, &maxaniso); }
+    fprintf(stderr, "[glcaps] MAX_TEXTURE_SIZE=%d aniso=%s(max=%g/%d)\n",
+            maxtex, has_aniso ? "SIM" : "nao", maxaniso, maxaniso_i);
+    fprintf(stderr, "[glext] %s\n", ext ? (const char*)ext : "?");
+  }
   return 1;
 }
 

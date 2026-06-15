@@ -1,6 +1,6 @@
 {
-    "version": 3,
-    "name": "dysmantle",
+    "version": 2,
+    "name": "dysmantle.zip",
     "items": [
         "DYSMANTLE.sh",
         "dysmantle"
@@ -11,18 +11,18 @@
         "porter": [
             "felc18-blip"
         ],
-        "desc": "DYSMANTLE (10tons, v1.4.1.12 Android) via so-loader do libNativeGame.so. Mundo aberto de sobrevivencia/crafting, GLES2/GLES3, audio Oboe e controle nativos. BYO-data: requer sua copia legal do DYSMANTLE Android (veja README.md).",
-        "inst": "Copie libNativeGame.so + libc++_shared.so + a pasta assets/ do seu DYSMANTLE 1.4.1.12 (copia legal) para a pasta 'dysmantle/' e abra o jogo.",
+        "desc": "DYSMANTLE (10tons, v1.4.1.12 Android) via so-loader do libNativeGame.so. Mundo aberto de sobrevivencia/crafting, GLES2/GLES3, audio Oboe e controle nativos. Dois binarios (glibc novo + GLIBC_2.27 p/ ArkOS/R36S). BYO-data: requer sua copia legal do APK DYSMANTLE 1.4.1.12 (veja README.md).",
+        "inst": "Copie seu APK do DYSMANTLE 1.4.1.12 para a pasta 'dysmantle/' e abra o jogo -- uma janela extrai os dados e conserta as texturas sozinha na 1a vez.",
         "genres": [
             "action",
             "adventure"
         ],
         "image": {},
         "rtr": false,
-        "runtime": "",
-        "reqs": [
-            "aarch64",
-            "gles2"
+        "runtime": [],
+        "reqs": [],
+        "arch": [
+            "aarch64"
         ]
     }
 }

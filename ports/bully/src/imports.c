@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "so_util.h"
 #include "jni_shim.h"
@@ -113,6 +116,37 @@ static FILE *w_fopen(const char *path, const char *mode) {
   if (path && (strstr(path, "settings.ini") || strstr(path, "storage.ini")))
     fprintf(stderr, "[cfg] fopen(\"%s\",\"%s\") -> %s\n", path, mode ? mode : "?", f ? "OK" : "FALHOU");
   return f;
+}
+
+/* ---- stat/lstat/fstat/fstatat (CAUSA do texto invisivel em glibc velha) ----
+ * Em glibc < 2.33 os NOMES "stat"/"lstat"/"fstat" NAO sao simbolos exportados
+ * (sao macros/wrappers inline -> __xstat(_STAT_VER,...)). O so_resolve resolve
+ * imports por dlsym(NOME), entao nos devices de glibc antiga -- justamente os que
+ * caem no bully.compat -- esses imports do libGame/libc++ ficam UNRESOLVED. O
+ * jogo entao nao consegue stat() dos arquivos (ex.: as fontes) e o texto some,
+ * mesmo com o resto renderizando. Resolvemos via SYSCALL crua: o kernel preenche
+ * a `struct stat` no layout arm64 == layout do bionic (libGame), sem conversao.
+ * Replica o fallback "assets/" do w_fopen (dados em vfat sem symlink). */
+static int g_stat_log = 0;
+static int stat_at(const char *path, void *buf, int flag) {
+  int r = syscall(SYS_newfstatat, AT_FDCWD, path, buf, flag);
+  if (r != 0 && path && strncmp(path, "assets/", 7) != 0) {
+    char alt[1024]; snprintf(alt, sizeof(alt), "assets/%s", path);
+    r = syscall(SYS_newfstatat, AT_FDCWD, alt, buf, flag);
+  }
+  if (g_stat_log < 24) { fprintf(stderr, "[stat] \"%s\" flag=%d -> %d\n", path ? path : "(null)", flag, r); g_stat_log++; }
+  return r;
+}
+static int my_stat(const char *path, void *buf)  { return stat_at(path, buf, 0); }
+static int my_lstat(const char *path, void *buf) { return stat_at(path, buf, AT_SYMLINK_NOFOLLOW); }
+static int my_fstatat(int dfd, const char *path, void *buf, int flag) {
+  if (dfd == AT_FDCWD) return stat_at(path, buf, flag);
+  return syscall(SYS_newfstatat, dfd, path, buf, flag);
+}
+static int my_fstat(int fd, void *buf) {
+  int r = syscall(SYS_fstat, fd, buf);
+  if (g_stat_log < 24) { fprintf(stderr, "[stat] fstat(fd=%d) -> %d\n", fd, r); g_stat_log++; }
+  return r;
 }
 
 /* ---- glGetString nunca-NULL ---- */
@@ -251,9 +285,13 @@ static void my_glClear(unsigned mask) {
  * cada 120 frames via bully_resource_report(). So medicao; nao altera render. */
 long g_tex_live = 0, g_fb_live = 0, g_rb_live = 0, g_tex_gen = 0, g_tex_del = 0;
 long long g_texbytes_live = 0;
+/* medicao p/ decidir halving SELETIVO: full-bytes (em res cheia) das texturas que
+ * o TEX_HALF reduz, separadas por classe. delta de manter 512 cheias = 3/4 do full. */
+long long g_half512_full = 0, g_half1024_full = 0; long g_half512_cnt = 0, g_half1024_cnt = 0;
 #define RESMAP 262144
 static unsigned g_texbytes[RESMAP];   /* bytes correntes por id de textura */
 static unsigned g_rbbytes[RESMAP];    /* idem renderbuffer */
+static unsigned char g_half_seen[RESMAP]; /* medicao: id ja contado no tally do halving */
 static unsigned g_cur_tex2d = 0, g_cur_rb = 0;
 static int bpp_internal(unsigned ifmt) {
   switch (ifmt) {
@@ -334,6 +372,11 @@ static void my_glRenderbufferStorage(unsigned target, unsigned ifmt, int w, int 
 void bully_resource_report(void) {
   fprintf(stderr, "[leak] tex_live=%ld (gen=%ld del=%ld) fbo_live=%ld rb_live=%ld | ~%lld MB em texturas/RB vivos\n",
           g_tex_live, g_tex_gen, g_tex_del, g_fb_live, g_rb_live, g_texbytes_live / (1024*1024));
+  /* medicao halving seletivo: full = bytes em res CHEIA das texturas reduzidas.
+   * Hoje (todas reduzidas) usam full/4. Manter 512 cheias custaria +3/4 do full-512. */
+  fprintf(stderr, "[texmem] 512-range: %ld tex full=%lld MB (manter-cheias custa +%lld MB) | 1024+: %ld tex full=%lld MB (reduzidas ja economizam %lld MB)\n",
+          g_half512_cnt, g_half512_full/(1024*1024), (g_half512_full*3/4)/(1024*1024),
+          g_half1024_cnt, g_half1024_full/(1024*1024), (g_half1024_full*3/4)/(1024*1024));
 }
 
 /* glTexStorage2D (GLES3) — a camisa do Jimmy pode vir por aqui (não pelo
@@ -380,9 +423,24 @@ static void my_glBindFramebuffer(unsigned t, unsigned fb) {
       if (tn < 400) { fprintf(stderr, "[rtt] composite tex=%u draws=%d clears=%d (frame %lu)\n", g_rtt_tex, g_rtt_draws, g_rtt_clears, g_frame_no); tn++; }
     }
     if (g_frame_no > 300) {
-      static void (*fin)(void) = NULL;
-      if (!fin) fin = dlsym(RTLD_DEFAULT, "glFinish");
-      if (fin) fin();
+      /* glFinish trava a GPU Utgard ate gravar -> necessario p/ a ROUPA do Jimmy
+       * (RTT pesado, ~163 draws) ser amostrada certa. MAS em CADA RTT (a cena
+       * recompoe a cada movimento) satura o A53 e ESTOURA o audio (causa-raiz do
+       * estouro em movimento; loading e limpo pq nao tem RTT). HEURISTICA: glFinish
+       * so nos RTT PESADOS (>= MINDRAWS draws = a roupa); glFlush (nao-bloqueante)
+       * nos leves (shadow/post) -> libera CPU p/ a mixagem -> audio limpo ao mover,
+       * roupa preservada. BULLY_RTT_FINISH_MINDRAWS (default 0 = sempre glFinish). */
+      static int mind = -1;
+      if (mind < 0) { const char *e = getenv("BULLY_RTT_FINISH_MINDRAWS"); mind = e ? atoi(e) : 0; }
+      if (g_rtt_draws >= mind) {
+        static void (*fin)(void) = NULL;
+        if (!fin) fin = dlsym(RTLD_DEFAULT, "glFinish");
+        if (fin) fin();
+      } else {
+        static void (*fl)(void) = NULL;
+        if (!fl) fl = dlsym(RTLD_DEFAULT, "glFlush");
+        if (fl) fl();
+      }
     } else {
       static void (*fl)(void) = NULL;
       if (!fl) fl = dlsym(RTLD_DEFAULT, "glFlush");
@@ -473,13 +531,28 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
       data = conv; ufmt = 0x1908; utype = 0x1401; ifmt = 0x1908;
     }
   }
-  /* reduz pela metade as texturas grandes (>=512): 512->256 = 1/4 da memória.
-   * UV é normalizado (0..1) -> reduzir não quebra coordenadas. */
+  /* HALVING SELETIVO (v8.3 qualidade): reduz pela metade so as texturas >=1024
+   * (as MAIORES, grosso da memoria). As 512-range ficam em RES CHEIA (nitidas) ->
+   * mundo mais nitido. Custo ~+42MB (cabe na folga; despejo segura excursoes).
+   * Antes era >=512 (tudo reduzido). UV normalizado -> reduzir nao quebra coords.
+   * Override: BULLY_TEX_HALF_MIN (default 1024; 512 = comportamento antigo). */
   int bpp = bpp_of(ufmt, utype);
-  if (g_tex_half && data && bpp > 0 && (w >= 512 || h >= 512)) {
+  static int half_min = -1;
+  if (half_min < 0) { const char *e = getenv("BULLY_TEX_HALF_MIN"); half_min = e ? atoi(e) : 1024; if (half_min < 256) half_min = 256; }
+  if (g_tex_half && data && bpp > 0 && (w >= half_min || h >= half_min)) {
+    /* tally p/ decidir halving seletivo (1x por id) */
+    if (g_cur_tex2d < RESMAP && !g_half_seen[g_cur_tex2d]) {
+      g_half_seen[g_cur_tex2d] = 1;
+      long full = (long)w * h * bpp; int dim = (w > h) ? w : h;
+      if (dim < 1024) { g_half512_cnt++; g_half512_full += full; }
+      else { g_half1024_cnt++; g_half1024_full += full; }
+    }
     int nw = w / 2, nh = h / 2;
     unsigned char *sm = (nw > 0 && nh > 0) ? malloc((size_t)nw * nh * bpp) : NULL;
     if (sm) {
+      /* nearest (1 pixel a cada 2). NOTA: box-filter 2x2 foi testado e BUGOU a tela
+       * (amacia o alpha das texturas de recorte/mascara -> bordas erradas). Mantido
+       * nearest, que preserva valores exatos (alpha-test/cutout intactos). */
       for (int y = 0; y < nh; y++)
         for (int x = 0; x < nw; x++)
           memcpy(sm + ((size_t)y * nw + x) * bpp, data + ((size_t)(y*2) * w + x*2) * bpp, bpp);
@@ -527,6 +600,42 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   if (bully_is_kmsdrm()) { bully_swap_buffers(); return 1; }
   if (!real_eglSwapBuffers) real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
+}
+
+/* VAO / MRT: o libGame importa as versoes CORE (glGenVertexArrays etc + glDrawBuffers)
+ * que existem no Mali-G31 (GLES3.2) mas NAO como simbolo no Mali-450 Utgard (GLES2)
+ * -> ficavam *** UNRESOLVED ***. Resolvemos via eglGetProcAddress tentando o CORE e
+ * depois a EXTENSAO (OES p/ VAO, EXT p/ draw_buffers); no-op seguro se o device nao
+ * tiver nenhuma (hoje o jogo nao chama esse caminho no GLES2 -> nunca executa, mas o
+ * no-op evita slot invalido caso chame). No X5M/GLES3 pega a core real (VAO de verdade). */
+static void *gl_proc2(const char *core, const char *ext) {
+  void *(*gpa)(const char *) = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+  void *p = gpa ? gpa(core) : NULL;
+  if (!p && gpa && ext) p = gpa(ext);
+  if (!p) p = dlsym(RTLD_DEFAULT, core);
+  if (!p && ext) p = dlsym(RTLD_DEFAULT, ext);
+  return p;
+}
+static void (*r_glGenVAO)(int, unsigned *) = NULL;
+static void my_glGenVertexArrays(int n, unsigned *a) {
+  if (!r_glGenVAO) r_glGenVAO = gl_proc2("glGenVertexArrays", "glGenVertexArraysOES");
+  if (r_glGenVAO) r_glGenVAO(n, a);
+  else if (a) for (int i = 0; i < n; i++) a[i] = 0;
+}
+static void (*r_glBindVAO)(unsigned) = NULL;
+static void my_glBindVertexArray(unsigned a) {
+  if (!r_glBindVAO) r_glBindVAO = gl_proc2("glBindVertexArray", "glBindVertexArrayOES");
+  if (r_glBindVAO) r_glBindVAO(a);
+}
+static void (*r_glDelVAO)(int, const unsigned *) = NULL;
+static void my_glDeleteVertexArrays(int n, const unsigned *a) {
+  if (!r_glDelVAO) r_glDelVAO = gl_proc2("glDeleteVertexArrays", "glDeleteVertexArraysOES");
+  if (r_glDelVAO) r_glDelVAO(n, a);
+}
+static void (*r_glDrawBuffers)(int, const unsigned *) = NULL;
+static void my_glDrawBuffers(int n, const unsigned *b) {
+  if (!r_glDrawBuffers) r_glDrawBuffers = gl_proc2("glDrawBuffers", "glDrawBuffersEXT");
+  if (r_glDrawBuffers) r_glDrawBuffers(n, b);
 }
 
 /* __stack_chk_fail neutralizado (insurance): com o TLS pad do main.c a canary
@@ -586,7 +695,17 @@ DynLibFunction bully_stub_table[] = {
   {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
   {"glDrawElements", (uintptr_t)my_glDrawElements},
   {"glDrawArrays", (uintptr_t)my_glDrawArrays},
+  /* VAO/MRT: core no Mali-G31(GLES3), via OES/EXT no Utgard, no-op se nao tiver */
+  {"glGenVertexArrays", (uintptr_t)my_glGenVertexArrays},
+  {"glBindVertexArray", (uintptr_t)my_glBindVertexArray},
+  {"glDeleteVertexArrays", (uintptr_t)my_glDeleteVertexArrays},
+  {"glDrawBuffers", (uintptr_t)my_glDrawBuffers},
   {"fopen", (uintptr_t)w_fopen},
+  /* stat: ausentes como simbolo em glibc<2.33 -> via syscall (texto/fontes) */
+  {"stat", (uintptr_t)my_stat}, {"lstat", (uintptr_t)my_lstat},
+  {"fstat", (uintptr_t)my_fstat}, {"fstatat", (uintptr_t)my_fstatat},
+  {"stat64", (uintptr_t)my_stat}, {"lstat64", (uintptr_t)my_lstat},
+  {"fstat64", (uintptr_t)my_fstat}, {"fstatat64", (uintptr_t)my_fstatat},
   {"_ZTH7gString", (uintptr_t)tl_noop}, {"_ZTH8gString2", (uintptr_t)tl_noop},
   {"_ZTHN10ALCcontext13sLocalContextE", (uintptr_t)tl_noop},
   {"_Z24NVThreadGetCurrentJNIEnvv", (uintptr_t)NVThreadGetCurrentJNIEnv},

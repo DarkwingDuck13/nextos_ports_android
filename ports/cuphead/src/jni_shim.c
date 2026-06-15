@@ -73,6 +73,18 @@ static void *make_jstring(const char *value) {
 static const char *resolve_jstring(void *jstr) {
   return jstr ? (const char *)jstr : "";
 }
+/* jnibridge proxy: dados no topo (usados cedo), funções definidas abaixo (precisam
+   de jni_find_native). Ver bloco "EXECUTA Runnables postados". */
+static struct { void *obj; long handle; } g_proxies[512];
+static int g_proxy_n;
+static int g_run_method_sentinel;   /* Method fake p/ Runnable.run() */
+static int g_empty_args_sentinel;   /* Object[] vazio */
+static int g_runnable_class_sentinel;
+static void proxy_register(void *obj, long h);
+static long proxy_handle(void *obj);
+static void run_runnable(void *env, void *runnable);
+int jni_is_run_method(void *o);
+int jni_is_empty_args(void *o);
 
 /* ---- SharedPreferences em memória (key->value) ----
  * O Cuphead salva cuphead_settings_data_v1 via putString e LÊ de volta via
@@ -315,6 +327,21 @@ static jint jni_GetIntField(void *env, void *obj, void *fieldID) {
   return 0;
 }
 
+/* GetFloatField (idx 102): DisplayMetrics density/xdpi/ydpi/scaledDensity.
+   density/xdpi=0.0 -> divisão por zero / DPI inválido no engine -> loop de getMetrics. */
+static float jni_GetFloatField(void *env, void *obj, void *fieldID) {
+  (void)env; (void)obj;
+  const char *nm = mid_name(fieldID);
+  if (nm) {
+    if (strcmp(nm, "density") == 0) return 1.0f;
+    if (strcmp(nm, "scaledDensity") == 0) return 1.0f;
+    if (strcmp(nm, "xdpi") == 0) return 160.0f;
+    if (strcmp(nm, "ydpi") == 0) return 160.0f;
+    if (strcmp(nm, "refreshRate") == 0) return 60.0f;
+  }
+  return 0.0f;
+}
+
 /* CallFloatMethodV (idx 56): Display.getRefreshRate() -> 60Hz (0 quebra o engine) */
 static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list ap) {
   (void)env; (void)obj; (void)ap;
@@ -351,6 +378,14 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   if (nm) {
     if (strcmp(nm, "getPackageName") == 0)
       return make_jstring("com.teamcherry.hollowknight");
+    /* anti-pirataria: jogo checa se foi instalado da Play Store. "" trava/loopa. */
+    if (strcmp(nm, "getInstallerPackageName") == 0)
+      return make_jstring("com.android.vending");
+    /* Method fake do Runnable (jnibridge invoke): getName()->"run" p/ o C# despachar. */
+    if (jni_is_run_method(obj)) {
+      if (strcmp(nm, "getName") == 0) return make_jstring("run");
+      return &g_run_method_sentinel; /* getReturnType/getParameterTypes/... -> não-nulo */
+    }
     /* ClassLoader.findLibrary("il2cpp") -> path real do .so (ja' carregamos no F1,
        mas o UnityPlayer valida via findLibrary+System.load senao "Failed to load Il2CPP") */
     if (strcmp(nm, "findLibrary") == 0) {
@@ -459,33 +494,54 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   return r;
 }
 
-/* CallBooleanMethod (index 49) */
-static unsigned char jni_CallBooleanMethod(void *env, void *obj,
-                                           void *methodID, ...) {
-  (void)env;
+/* Setado por NewStringUTF("gles-api-check") (logo antes do getBoolean da pref);
+ * consumido pelo próximo getBoolean -> retorna true ("aviso já dispensado") e o
+ * jogo PULA o AlertDialog "hardware requirements" (que travava o boot, stub JNI).
+ * Robusto contra o bug do CallBooleanMethodV (args via va_list, não parseáveis aqui). */
+static volatile int g_gles_warn_skip;
+static volatile int g_internet_deny_arm;  /* ver NewStringUTF/CallIntMethod (INTERNET denied) */
+
+/* CallBooleanMethod V (index 38) — lê args via va_list (variante que il2cpp usa) */
+static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
+                                            void *methodID, va_list ap) {
   (void)obj;
   const char *nm = mid_name(methodID);
   if (nm) {
     if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
     if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
-    /* SharedPreferences.contains(key) -> 1 se ARMAZENADO (round-trip do save).
-       CUP_NOCONTAINS=1: força false (jogo usa defaults em código, NÃO chama
-       JsonUtility.FromJson<T> do valor salvo — teste se o crash é o genérico FromJson). */
+    /* Handler.post/postDelayed(Runnable[,delay]) -> RODA o Runnable, retorna true.
+       (init deferida do Unity usa Handler.post; sem rodar, o boot trava no poll.) */
+    if (strcmp(nm, "post") == 0 || strcmp(nm, "postDelayed") == 0 ||
+        strcmp(nm, "postAtTime") == 0 || strcmp(nm, "postAtFrontOfQueue") == 0) {
+      void *r = va_arg(ap, void *);
+      if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
+      return 1;
+    }
+    /* SharedPreferences.contains(key) -> 1 se ARMAZENADO (round-trip do save). */
     if (strcmp(nm, "contains") == 0) {
-      va_list ap; va_start(ap, methodID);
-      void *keyo = va_arg(ap, void *); va_end(ap);
+      void *keyo = va_arg(ap, void *);
       const char *key = resolve_jstring(keyo);
-      /* CUP_NOFX: força contains=true p/ as settings → o jogo CARREGA (getString) em
-         vez de criar defaults (com efeitos ON). */
       if (getenv("CUP_NOFX") && key && strstr(key, "settings_data")) return 1;
       int has = getenv("CUP_NOCONTAINS") ? 0 : prefs_contains(key);
       debugPrintf("[PREFS] contains key='%s' -> %d\n", key, has);
       return (unsigned char)has;
     }
-    /* Editor.commit() -> true (sucesso) */
-    if (strcmp(nm, "commit") == 0) return 1;
+    if (strcmp(nm, "commit") == 0) return 1;  /* Editor.commit() -> true */
+    /* getBoolean: flag do NewStringUTF("gles-api-check") pula o AlertDialog GLES. */
+    if (strcmp(nm, "getBoolean") == 0) {
+      int v = 0;
+      if (g_gles_warn_skip && !getenv("CUP_SHOWGLESWARN")) { v = 1; g_gles_warn_skip = 0; }
+      debugPrintf("[PREFS] getBoolean -> %d (gles_skip flag)\n", v);
+      return (unsigned char)v;
+    }
   }
   return 0;
+}
+static unsigned char jni_CallBooleanMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  unsigned char r = jni_CallBooleanMethodV(env, obj, methodID, ap);
+  va_end(ap);
+  return r;
 }
 
 /* CallIntMethod — variante V */
@@ -494,6 +550,16 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
   (void)env;
   const char *nm = mid_name(methodID);
   if (nm) {
+    /* checkPermission(INTERNET): armado pelo NewStringUTF → DENIED(-1) p/ desligar a
+       Unity Analytics (pula advertising-id/session-start que travava o boot). */
+    if (g_internet_deny_arm &&
+        (strcmp(nm, "checkCallingOrSelfPermission") == 0 ||
+         strcmp(nm, "checkSelfPermission") == 0 ||
+         strcmp(nm, "checkPermission") == 0)) {
+      g_internet_deny_arm = 0;
+      debugPrintf("jni_shim: %s(INTERNET) -> -1 (DENIED, analytics off)\n", nm);
+      return -1;
+    }
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     if (strcmp(nm, "getAction") == 0) { debugPrintf("[KEYEV] getAction->%d\n", g_hk_inject.action); return g_hk_inject.action; }
     if (strcmp(nm, "getKeyCode") == 0) { debugPrintf("[KEYEV] getKeyCode->%d\n", g_hk_inject.keycode); return g_hk_inject.keycode; }
@@ -545,25 +611,36 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 }
 
 /* CallVoidMethod (index 94) */
-static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
-  (void)env;
+static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
+  debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  /* runOnUiThread/post(Runnable): EXECUTA o Runnable (senão Unity Analytics/init trava). */
+  if (nm && (strcmp(nm, "runOnUiThread") == 0 || strcmp(nm, "post") == 0 ||
+             strcmp(nm, "postAtFrontOfQueue") == 0)) {
+    void *r = va_arg(ap, void *);
+    /* roda o Runnable via invoke do jnibridge (handle lido pela variante V correta).
+       CUP_NORUNUI desliga. */
+    if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
+    return;
+  }
   struct astream *s = astream_find(obj);
   if (s && nm && strcmp(nm, "close") == 0) {
     if (s->fp) { fclose(s->fp); s->fp = NULL; }
   }
 }
+static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  jni_CallVoidMethodV(env, obj, methodID, ap);
+  va_end(ap);
+}
 
 /* CallStaticObjectMethod (index 113) */
-static void *jni_CallStaticObjectMethod(void *env, void *clazz,
-                                        void *methodID, ...) {
+static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
+                                         void *methodID, va_list ap) {
   (void)env;
   (void)clazz;
-
   const char *nm = mid_name(methodID);
-  /* InputDevice.getDeviceIds() -> int[] REAL. Retornar fake quebrava o input
-     system do Cuphead (GetIntArrayElements no fake -> lixo -> spin infinito no
-     boot). CUP_NDEV=N controla quantos devices (default 0 = só touch). */
+  /* InputDevice.getDeviceIds() -> int[] REAL (sem args). */
   if (nm && !strcmp(nm, "getDeviceIds")) {
     int ndev = getenv("CUP_NDEV") ? atoi(getenv("CUP_NDEV")) : 0;
     int ids[8]; for (int i = 0; i < ndev && i < 8; i++) ids[i] = 100 + i;
@@ -571,19 +648,29 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz,
       debugPrintf("jni_shim: getDeviceIds() -> int[%d]\n", ndev); }
     return iarr_new(ids, ndev);
   }
-  /* encode/decode (obfuscação do SaveManager do Cuphead): IDENTIDADE — devolve a
-     própria string de entrada. Assim putString(encode(K),encode(V)) guarda K/V
-     reais e getString(encode(K))→decode dá V de volta (round-trip consistente).
-     Antes retornava &fake_result (lixo) → chave/valor viravam vazio → save não
-     persistia → SaveManager re-tentava/crashava. */
+  /* encode/decode (SaveManager): IDENTIDADE — devolve a própria string de entrada. */
   if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
-    va_list ap; va_start(ap, methodID);
-    void *arg0 = va_arg(ap, void *); va_end(ap);
-    return arg0;  /* jstring de entrada (ponteiro strdup) */
+    void *arg0 = va_arg(ap, void *);
+    return arg0;
+  }
+  /* jnibridge: newInterfaceProxy(long handle, Class[] ifaces) -> proxy. Guarda o
+     handle p/ rodar o Runnable depois (runOnUiThread). */
+  if (nm && !strcmp(nm, "newInterfaceProxy")) {
+    long h = va_arg(ap, long);
+    void *proxy = malloc(16);
+    proxy_register(proxy, h);
+    debugPrintf("jni_shim: newInterfaceProxy(handle=%ld) -> %p\n", h, proxy);
+    return proxy;
   }
   debugPrintf("jni_shim: CallStaticObjectMethod(%s)\n", nm ? nm : "?");
   static int fake_result;
   return &fake_result;  /* fake Class/objeto nao-nulo (forName etc.) */
+}
+static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  void *r = jni_CallStaticObjectMethodV(env, clazz, methodID, ap);
+  va_end(ap);
+  return r;
 }
 
 /* CallStaticBooleanMethod (index 124) */
@@ -653,7 +740,30 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
     debugPrintf("jni_shim: GetStaticObjectField(%s) -> chave\n", nm);
     return make_jstring(nm);
   }
-  debugPrintf("jni_shim: GetStaticObjectField -> NULL\n");
+  /* android.os.Build.* — o crash-reporter/analytics coleta esses; devolver "" (nosso
+     &fake antigo dava GetStringUTFChars=="") pode travar a init. Valores plausíveis. */
+  if (nm) {
+    if (!strcmp(nm, "MODEL")) return make_jstring("NextOS");
+    if (!strcmp(nm, "DEVICE")) return make_jstring("Amlogic-no");
+    if (!strcmp(nm, "MANUFACTURER")) return make_jstring("Amlogic");
+    if (!strcmp(nm, "BRAND")) return make_jstring("NextOS");
+    if (!strcmp(nm, "PRODUCT")) return make_jstring("X5M");
+    if (!strcmp(nm, "HARDWARE")) return make_jstring("amlogic");
+    if (!strcmp(nm, "BOARD")) return make_jstring("amlogic");
+    if (!strcmp(nm, "FINGERPRINT")) return make_jstring("NextOS/X5M/Amlogic-no:9/PQ/1:user/release-keys");
+    if (!strcmp(nm, "RELEASE")) return make_jstring("9");
+    if (!strcmp(nm, "ID")) return make_jstring("PQ3A.190801.002");
+    if (!strcmp(nm, "INCREMENTAL")) return make_jstring("1");
+    if (!strcmp(nm, "TAGS")) return make_jstring("release-keys");
+    if (!strcmp(nm, "TYPE")) return make_jstring("user");
+    if (!strcmp(nm, "HOST")) return make_jstring("nextos");
+    if (!strcmp(nm, "USER")) return make_jstring("nextos");
+    if (!strcmp(nm, "SERIAL")) return make_jstring("unknown");
+    if (!strcmp(nm, "DISPLAY")) return make_jstring("PQ");
+    if (!strcmp(nm, "BOOTLOADER")) return make_jstring("unknown");
+    if (!strcmp(nm, "CODENAME")) return make_jstring("REL");
+  }
+  debugPrintf("jni_shim: GetStaticObjectField(%s) -> fake\n", nm ? nm : "?");
   static int fake;
   return &fake;
 }
@@ -662,6 +772,13 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
 static void *jni_NewStringUTF(void *env, const char *str) {
   (void)env;
   debugPrintf("jni_shim: NewStringUTF(%s)\n", str ? str : "(null)");
+  /* arma o skip do aviso GLES p/ o próximo getBoolean (ver g_gles_warn_skip) */
+  if (str && strstr(str, "gles-api-check")) g_gles_warn_skip = 1;
+  /* arma INTERNET=DENIED p/ o próximo checkPermission → Unity Analytics pula o fluxo
+     de rede/advertising-id (que postava um runOnUiThread Runnable e travava o boot).
+     CUP_INETOK reabilita (= granted). */
+  if (str && strstr(str, "permission.INTERNET") && !getenv("CUP_INETOK"))
+    g_internet_deny_arm = 1;
   return make_jstring(str ? str : "");
 }
 
@@ -829,13 +946,44 @@ static int jni_RegisterNatives(void *env, void *clazz, const void *methods, int 
     void *fn = (void *)m[i * 3 + 2];
     debugPrintf("     [%d] %s %s  -> %p\n", i, nm ? nm : "?", sg ? sg : "?", fn);
     if (nm && g_natives_count < 512) {
-      g_natives[g_natives_count].name = nm;
+      g_natives[g_natives_count].name = strdup(nm);  /* COPIA: nomes do jnibridge
+        (invoke/delete) são transientes → ponteiro dangle → jni_find_native falhava */
       g_natives[g_natives_count].sig = sg;
       g_natives[g_natives_count].fn = fn;
       g_natives_count++;
     }
   }
   return 0;
+}
+
+/* ---- jnibridge proxy: EXECUTA Runnables postados (runOnUiThread/post) ----
+ * O Cuphead (Unity Analytics/init) cria um Runnable via newInterfaceProxy(handle,...) e
+ * faz runOnUiThread(runnable), depois faz poll esperando ele rodar. Sem looper o shim
+ * era no-op → o Runnable nunca rodava → boot travava. Aqui guardamos proxy→handle e, no
+ * runOnUiThread, chamamos o native "invoke" do jnibridge SÍNCRONO (roda o delegate C#). */
+static void proxy_register(void *obj, long h) {
+  if (g_proxy_n < 512) { g_proxies[g_proxy_n].obj = obj; g_proxies[g_proxy_n].handle = h; g_proxy_n++; }
+}
+static long proxy_handle(void *obj) {
+  for (int i = g_proxy_n - 1; i >= 0; i--) if (g_proxies[i].obj == obj) return g_proxies[i].handle;
+  return 0;
+}
+static _Thread_local int g_in_run;
+int jni_is_run_method(void *o) { return o == (void *)&g_run_method_sentinel; }
+int jni_is_empty_args(void *o) { return o == (void *)&g_empty_args_sentinel; }
+static void run_runnable(void *env, void *runnable) {
+  if (!runnable) return;
+  if (g_in_run >= 6) { debugPrintf("jni_shim: runOnUiThread anti-recursao\n"); return; }
+  long h = proxy_handle(runnable);
+  void *invoke = jni_find_native("invoke");
+  if (!h || !invoke) { debugPrintf("jni_shim: runOnUiThread sem handle/invoke (r=%p h=%ld invoke=%p natives=%d)\n", runnable, h, invoke, g_natives_count); return; }
+  g_in_run++;
+  debugPrintf("jni_shim: >> RODANDO Runnable (handle=%ld) ...\n", h);
+  ((void *(*)(void *, void *, long, void *, void *, void *))invoke)(
+      env, &g_runnable_class_sentinel, h, &g_runnable_class_sentinel,
+      &g_run_method_sentinel, &g_empty_args_sentinel);
+  debugPrintf("jni_shim: << Runnable terminou (handle=%ld)\n", h);
+  g_in_run--;
 }
 
 /* ---- DirectByteBuffer p/ a thread de áudio do FMOD (AudioTrack Java) ----
@@ -934,18 +1082,19 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[34] = (uintptr_t)jni_CallObjectMethod;
   jni_env_vtable[35] = (uintptr_t)jni_CallObjectMethodV;   /* V variant (va_list) */
   jni_env_vtable[37] = (uintptr_t)jni_CallBooleanMethod;
-  jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethod;   /* V */
+  jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethodV;  /* V (va_list) */
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
   jni_env_vtable[50] = (uintptr_t)jni_CallIntMethodV;      /* V (va_list) */
   jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;     /* getRefreshRate */
   jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethodV;    /* V */
-  jni_env_vtable[100] = (uintptr_t)jni_GetIntField;        /* DisplayMetrics fields */
+  jni_env_vtable[100] = (uintptr_t)jni_GetIntField;        /* DisplayMetrics int fields */
+  jni_env_vtable[102] = (uintptr_t)jni_GetFloatField;      /* DisplayMetrics float fields */
   jni_env_vtable[61] = (uintptr_t)jni_CallVoidMethod;
-  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethod;      /* V */
+  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethodV;     /* V (va_list) */
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;
   jni_env_vtable[113] = (uintptr_t)jni_GetStaticMethodID;
   jni_env_vtable[114] = (uintptr_t)jni_CallStaticObjectMethod;
-  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethod; /* V */
+  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethodV; /* V (va_list) */
   jni_env_vtable[117] = (uintptr_t)jni_CallStaticBooleanMethod;
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethod; /* V */
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;

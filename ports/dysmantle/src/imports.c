@@ -29,13 +29,24 @@
 #include "android_shim.h"
 
 /* ---------------- liblog ---------------- */
+/* O Oboe (OpenSLES) spamma "fireDataCallback() called with data callback
+ * disabled!" milhares de vezes (5 streams ativos); cada linha vira fwrite no
+ * stderr->tee->log.txt = storm de I/O no SD -> choppy/slideshow. Suprime essa
+ * mensagem repetida (loga as 5 primeiras, depois corta). O áudio em si funciona
+ * (ring alimentado, underruns=0) — isto só tira o ruído de log. */
+static int log_is_spam(const char *s) {
+  return s && (strstr(s, "data callback disabled") || strstr(s, "fireDataCallback"));
+}
 static int b_log_print(int prio, const char *tag, const char *fmt, ...) {
+  if (log_is_spam(fmt)) { static int n = 0; if (++n > 5) return 0;
+    fprintf(stderr, "[ALOG:%d %s] (spam Oboe suprimido após 5x) ", prio, tag?tag:"?"); }
+  else fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
   va_list ap; va_start(ap, fmt);
-  fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
   vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap);
   return 0;
 }
 static int b_log_write(int prio, const char *tag, const char *text) {
+  if (log_is_spam(text)) { static int n = 0; if (++n > 5) return 0; }
   fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", text ? text : "");
   return 0;
 }
