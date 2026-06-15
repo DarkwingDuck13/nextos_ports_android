@@ -6,6 +6,7 @@
  * libNimble + FMOD). F0: carrega libapp, resolve imports (tabela + fallback
  * dlsym), acha JNI_OnLoad. F1+: multi-módulo + boot JNI/GameActivity.
  */
+#include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
@@ -14,6 +15,8 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
+
+#include <SDL2/SDL.h>
 
 #include "android_shim.h"
 #include "error.h"
@@ -745,6 +748,52 @@ int main(int argc, char *argv[]) {
             g_motion_active=1; motion(env, fake_this, fake_motionevent); g_motion_active=0;
             spend=1; }
           fclose(sf); remove("/storage/roms/nfs/stick.txt"); }
+      }
+      /* 🎮🎮 PONTE DO CONTROLE FÍSICO → MogaController (via /dev/input/js0 CRU). O
+       * SDL_GameController não atualiza o estado deste adaptador PS2-USB, então
+       * lemos o joystick legado js0 direto. Botões → nativeOnKeyEvent; eixos →
+       * nativeOnMotionEvent. NFS_PADCAL=1 loga índices crus (calibração). NFS_NOPAD desliga. */
+      if (!getenv("NFS_NOPAD")) {
+        typedef void (*mfn_t)(void*,void*,void*);
+        static mfn_t pk=NULL, pm=NULL; static int pinit=0, jsfd=-2;
+        static char pkev[16], pmev[16];
+        static float axval[16]={0};  /* eixos js correntes (-1..1) */
+        static int padcal=-1;
+        extern int g_moga_active, g_moga_keycode, g_moga_action, g_moga_calln;
+        extern int g_motion_active; extern float g_axis[32];
+        if(!pinit){ pinit=1; padcal=getenv("NFS_PADCAL")?1:0;
+          pk=(mfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnKeyEvent");
+          pm=(mfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnMotionEvent"); }
+        if(jsfd==-2){ jsfd=open("/dev/input/js0", O_RDONLY|O_NONBLOCK);
+          FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a"); if(lg){ fprintf(lg,"js0 fd=%d\n",jsfd); fclose(lg);} }
+        /* mapa BOTÃO js -> Android keycode (ajustável p/ o adaptador; default chute
+         * PS2-USB). 96=A/confirm 97=B/back 99=X 100=Y 19/20/21/22=DPAD 108=START. */
+        static const int BTNMAP[16]={
+          /*0*/100,/*1*/96,/*2*/97,/*3*/99,/*4*/102,/*5*/103,/*6*/104,/*7*/105,
+          /*8*/109,/*9*/108,/*10*/0,/*11*/0,/*12*/19,/*13*/20,/*14*/21,/*15*/22 };
+        if(jsfd>=0 && pk){
+          unsigned char buf[8]; int rd;
+          while((rd=read(jsfd, buf, 8))==8){
+            short val=(short)(buf[4]|(buf[5]<<8));
+            unsigned char type=buf[6]&0x7f, num=buf[7];
+            int init=buf[6]&0x80;
+            if(padcal && !init){ FILE *lg=fopen("/storage/roms/nfs/padlog.txt","a");
+              if(lg){ fprintf(lg,"JS %s num=%d val=%d\n", type==1?"BTN":"AXIS", num, val); fclose(lg);} }
+            if(init) continue;
+            if(type==1 && num<16){ int kc=BTNMAP[num]; if(kc){
+                g_moga_active=1; g_moga_keycode=kc; g_moga_action=val?0:1; g_moga_calln=0;
+                pk(env, fake_this, pkev); g_moga_active=0; } }
+            else if(type==2 && num<16){ axval[num]=val/32767.0f; }
+          }
+          /* eixos → nativeOnMotionEvent (contínuo p/ direção/acel). js axis 0=LX 1=LY. */
+          if(pm){
+            float lx=axval[0], ly=axval[1];
+            if(lx<0.18f&&lx>-0.18f) lx=0; if(ly<0.18f&&ly>-0.18f) ly=0;
+            for(int i=0;i<32;i++) g_axis[i]=0.0f;
+            g_axis[0]=lx; g_axis[1]=ly;
+            g_motion_active=1; pm(env, fake_this, pmev); g_motion_active=0;
+          }
+        }
       }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
