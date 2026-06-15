@@ -52,6 +52,8 @@ enum {
   MID_GET_BITMAP,
   MID_GET_WIDTH,
   MID_GET_HEIGHT,
+  MID_GET_TOTAL_MEMORY,
+  MID_GET_PERF_SCORE,
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -150,6 +152,11 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "getBitmap") == 0) return &g_method_tags[MID_GET_BITMAP];
   if (strcmp(name, "getWidth") == 0) return &g_method_tags[MID_GET_WIDTH];
   if (strcmp(name, "getHeight") == 0) return &g_method_tags[MID_GET_HEIGHT];
+  /* 🔑 getTotalMemory()I=0 → orçamento de cache de textura=0 → engine despeja
+   * TODO atlas logo após carregar (Add→Remove) → sprites "not found" → zero draws.
+   * Reportar memória real (MB) mantém os texturepacks residentes. */
+  if (strcmp(name, "getTotalMemory") == 0) return &g_method_tags[MID_GET_TOTAL_MEMORY];
+  if (strcmp(name, "getPerformanceScore") == 0) return &g_method_tags[MID_GET_PERF_SCORE];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -203,6 +210,11 @@ static jint jni_GetIntField(void *env, void *obj, void *fid) {
   if (fid == &g_method_tags[FID_DENSITY_DPI]) return 320;
   return 0;
 }
+/* 🔑 A engine é SOFTFP (float de retorno em r0); nosso loader é HARDFP (float em
+ * s0/VFP). Sem pcs("aapcs"), a engine lia o float de r0 = LIXO (ScreenDensity =
+ * 2.73315e-40) → layout/view scaling quebrado → "Primary view size: 0 0" →
+ * TUDO culled → zero draws. pcs("aapcs") faz retornar o float em r0 (softfp). */
+__attribute__((pcs("aapcs")))
 static float jni_GetFloatField(void *env, void *obj, void *fid) {
   (void)env; (void)obj;
   if (fid == &g_method_tags[FID_DENSITY]) return 2.0f;
@@ -284,8 +296,13 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   (void)env;
   (void)obj;
   if (methodID == &g_method_tags[MID_IS_OBB]) {
-    debugPrintf("jni_shim: isObbAssets -> 1\n");
-    return 1; /* assets estão no OBB */
+    /* PADRÃO=0 (disco): a engine abre o OBB como ZIP via "stream" e FALHA
+     * ("Error opening ZIP stream", AssetsFileSystem com métodos não implementados);
+     * lendo do disco (published/+published.1x/ extraídos) os texturepacks .sba
+     * carregam. NFS_USEOBB=1 reativa o caminho do OBB (debug). */
+    int v = getenv("NFS_USEOBB") ? 1 : 0;
+    debugPrintf("jni_shim: isObbAssets -> %d\n", v);
+    return v; /* assets no OBB (1) ou no disco (0) */
   }
   if (methodID == &g_method_tags[MID_USE_ASSETS_FS]) {
     int v = getenv("NFS_USEASSETSFS") ? 1 : 0;  /* experimento: montar base published/ */
@@ -300,8 +317,33 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
 static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
-  (void)methodID;
+  if (methodID == &g_method_tags[MID_GET_TOTAL_MEMORY]) {
+    int mb = getenv("NFS_MEMMB") ? atoi(getenv("NFS_MEMMB")) : 2048;
+    debugPrintf("jni_shim: getTotalMemory -> %d MB\n", mb);
+    return mb;
+  }
+  /* getWidth/getHeight do GameGLSurfaceView: o renderer tira o tamanho da view
+   * daqui. 0 → "Primary view size: 0 0" → glViewport 0x0 → tudo culled → zero
+   * draws. NFS_WH=1 força 1280/720. (O caminho do Bitmap usa AndroidBitmap_getInfo,
+   * não getWidth/getHeight JNI, então não deve colidir.) */
+  if (!getenv("NFS_NOWH")) {
+    if (methodID == &g_method_tags[MID_GET_WIDTH]) return 1280;
+    if (methodID == &g_method_tags[MID_GET_HEIGHT]) return 720;
+  }
   return 0;
+}
+
+/* CallFloatMethod (index 55) — getPerformanceScore()F. 0 força Tier=Low (ok p/
+ * Mali-450). Mantém 0 por padrão; NFS_PERF=N permite forçar score maior. */
+__attribute__((pcs("aapcs")))
+static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
+  (void)env; (void)obj;
+  if (methodID == &g_method_tags[MID_GET_PERF_SCORE]) {
+    float s = getenv("NFS_PERF") ? (float)atof(getenv("NFS_PERF")) : 0.0f;
+    debugPrintf("jni_shim: getPerformanceScore -> %f\n", s);
+    return s;
+  }
+  return 0.0f;
 }
 
 /* CallVoidMethod (index 94) */
@@ -562,6 +604,8 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethod;   /* V */
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
   jni_env_vtable[50] = (uintptr_t)jni_CallIntMethod;       /* V */
+  jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;
+  jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethod;     /* V */
   jni_env_vtable[61] = (uintptr_t)jni_CallVoidMethod;
   jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethod;      /* V */
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;

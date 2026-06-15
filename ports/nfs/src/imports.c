@@ -208,7 +208,9 @@ static void *my_fopen(const char *path, const char *mode) {
   if (path && strstr(path, ".obb")) g_obb_fp = fp;
   if (getenv("NFS_FOPENLOG")) {
     static int n = 0;
-    if (n < 60) { fprintf(stderr, "[fopen] '%s' (%s) -> %s\n", path ? path : "?", mode ? mode : "?", fp ? "OK" : "MISS"); n++; }
+    int tex = path && (strstr(path, "texturepack") || strstr(path, ".sba") || strstr(path, ".tif") || strstr(path, "splash"));
+    if (tex || !fp || n < 60) {
+      fprintf(stderr, "[fopen] '%s' (%s) -> %s\n", path ? path : "?", mode ? mode : "?", fp ? "OK" : "MISS"); n++; }
   }
   return fp;
 }
@@ -1053,7 +1055,24 @@ static int abm_lock(void *env, void *bmp, void **pix) {
 }
 static int abm_unlock(void *env, void *bmp) { (void)env; (void)bmp; return 0; }
 
+/* GL trace wrappers (egl_shim.c): contam draws/binds/clears por frame p/ achar
+ * EM QUAL FBO a engine desenha. Resolvidos pela TABELA (vencem o dlsym). */
+extern void my_glBindFramebuffer(unsigned, unsigned);
+extern void my_glDrawArrays(unsigned, int, int);
+extern void my_glDrawElements(unsigned, int, unsigned, const void *);
+extern void my_glClear(unsigned);
+extern void my_glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+extern void my_glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
+extern void my_glViewport(int,int,int,int);
+
 DynLibFunction nfs_shims[] = {
+    {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
+    {"glDrawArrays", (uintptr_t)my_glDrawArrays},
+    {"glDrawElements", (uintptr_t)my_glDrawElements},
+    {"glClear", (uintptr_t)my_glClear},
+    {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+    {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},
+    {"glViewport", (uintptr_t)my_glViewport},
     /* EGL → SDL2 (Mali fbdev): a engine cria contexto/surface via egl_shim */
     {"eglGetDisplay", (uintptr_t)egl_shim_GetDisplay},
     {"eglInitialize", (uintptr_t)egl_shim_Initialize},

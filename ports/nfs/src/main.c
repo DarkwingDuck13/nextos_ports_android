@@ -485,6 +485,19 @@ int main(int argc, char *argv[]) {
         ((void(*)(void*,void*,int,int,int))a)(env, fake_this, 1, 1280, 720); } }
     NCALL0("Java_com_ea_ironmonkey_GameActivityMain_nativeOnResume");
 
+    /* 🔑 nativeRestoreContext: no Android, quando o contexto GL do GLSurfaceView
+     * fica pronto (onSurfaceCreated da render thread), o framework chama isto p/
+     * a engine RECRIAR os recursos GL (shaders/texturas/FBOs). O log mostra
+     * "[ResourceManager] ContextLost()" após o surfaceChanged → o renderer fica
+     * em estado "contexto perdido" e PULA todos os draws até o restore. Sem essa
+     * chamada: texturas carregam mas a engine nunca desenha (clears sem draws). */
+    if (!getenv("NFS_NORESTORE")) {
+      uintptr_t a = so_find_addr_safe("Java_com_ea_ironmonkey_GameActivityMain_nativeRestoreContext");
+      if (a) { debugPrintf(">> nativeRestoreContext\n");
+        ((void(*)(void*,void*))a)(env, fake_this); }
+      else debugPrintf(">> nativeRestoreContext NAO ACHADO\n");
+    }
+
     /* loop de render: RunLoop_nativeOnRunLoopTick a cada frame (a engine faz
      * eglSwapBuffers -> egl_shim -> SDL_GL_SwapWindow) */
     uintptr_t tick = so_find_addr_safe("Java_com_ea_ironmonkey_RunLoop_nativeOnRunLoopTick");
@@ -511,6 +524,15 @@ int main(int argc, char *argv[]) {
         }
       } else {
         ((void(*)(void*,void*))tick)(env, fake_this);
+      }
+      /* 🔑 RE-EMITE nativeSurfaceChanged nos primeiros frames: a fn começa com
+       * `if (graphics_singleton()==0) return;` — quando a chamamos logo após
+       * nativeOnCreate o singleton de gráficos ainda não existe (criado no 1º
+       * tick), então o tamanho da view fica 0x0 (glViewport 0,0,0,0 → tudo
+       * culled → zero draws). Re-emitir após o tick processa o resize de fato. */
+      if (!getenv("NFS_NORESURF") && (f == 0 || f == 1 || f == 2 || f == 5 || f == 15 || f == 40)) {
+        uintptr_t sc = so_find_addr_safe("Java_com_ea_ironmonkey_GameActivityMain_nativeSurfaceChanged");
+        if (sc) ((void(*)(void*,void*,int,int,int))sc)(env, fake_this, 1, 1280, 720);
       }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */

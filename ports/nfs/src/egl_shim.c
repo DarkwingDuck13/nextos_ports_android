@@ -277,13 +277,19 @@ void egl_shim_force_present(void) {
       if (h) { fprintf(h, "present_calls=%d window=%p\n", hb, (void *)egl_window); fclose(h); } } }
   if (!egl_window) { static int w=0; if(!w){w=1;fprintf(stderr,"[present] egl_window NULL!\n");} return; }
   static int fc = 0; fc++;
-  if (fc <= 3) {
+  /* 🔑 GARANTE contexto current TODO frame antes de ler/apresentar. A engine assume
+   * o modelo GLSurfaceView: ela desenha mas NÃO mantém o contexto current na nossa
+   * thread entre ticks (eglMakeCurrent(NULL) no fim do tick e/ou um worker rouba o
+   * current — contexto SDL/GL só pode estar current em 1 thread). Sem re-bind aqui,
+   * o glReadPixels e o SDL_GL_SwapWindow operam SEM contexto → backbuffer/tela PRETOS.
+   * (Diagnóstico: NFS_TESTRED, que já fazia esse re-bind, mostrava conteúdo real;
+   * o caminho normal, que só rebindava nos 3 primeiros frames, dava preto.) */
+  {
     void *cur = SDL_GL_GetCurrentContext();
-    fprintf(stderr, "[present] #%d window=%p curctx=%p tid=%lx\n", fc, (void*)egl_window, cur,
-            (unsigned long)pthread_self());
-    if (!cur) { /* sem contexto current na nossa thread → torna o share-root current p/ apresentar */
+    if (cur != egl_share_root) {
       SDL_GL_MakeCurrent(egl_window, egl_share_root);
-      fprintf(stderr, "[present] make share-root current: err=%s\n", SDL_GetError());
+      if (fc <= 3) fprintf(stderr, "[present] #%d rebind share-root (was curctx=%p) err=%s tid=%lx\n",
+                           fc, cur, SDL_GetError(), (unsigned long)pthread_self());
     }
   }
   /* TESTE do pipe de present: NFS_TESTRED=1 limpa VERMELHO antes do swap.
@@ -302,9 +308,11 @@ void egl_shim_force_present(void) {
    * a cada 100 frames (overwrite) → o último frame antes do crash fica capturado.
    * Bully usa o mesmo método. NFS_NOAUTOSHOT=1 desliga. */
   {
-    static int sc = 0, off = -1;
+    static int sc = 0, off = -1, seq = -1;
     if (off < 0) off = getenv("NFS_NOAUTOSHOT") ? 1 : 0;
-    if (!off && (++sc % 50 == 0 || sc == 5)) {
+    if (seq < 0) seq = getenv("NFS_SEQSHOT") ? 1 : 0;
+    ++sc;
+    if (!off && (sc % 30 == 0 || sc == 5)) {
       static unsigned char *shot;
       int W = SCREEN_WIDTH, H = SCREEN_HEIGHT;
       if (!shot) shot = malloc(W * H * 4);
@@ -312,11 +320,17 @@ void egl_shim_force_present(void) {
       extern void glGetIntegerv(unsigned, int *);
       int fbo = -1; glGetIntegerv(0x8CA6 /*GL_FRAMEBUFFER_BINDING*/, &fbo);
       glReadPixels(0, 0, W, H, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, shot);
-      FILE *sf = fopen("auto.raw", "wb"); if (sf) { fwrite(shot, 1, W * H * 4, sf); fclose(sf); }
-      FILE *st = fopen("shotstats.txt", "w");
-      if (st) { fprintf(st, "frame=%d fbo_bound=%d\n", sc, fbo); fclose(st); }
+      /* conta pixels não-pretos p/ saber rápido se TEVE imagem (sem puxar o .raw) */
+      long nb = 0; for (long p = 0; p < (long)W*H; p++)
+        if (shot[p*4] | shot[p*4+1] | shot[p*4+2]) nb++;
+      char nm[64];
+      if (seq) snprintf(nm, sizeof nm, "seq_%04d.raw", sc); else snprintf(nm, sizeof nm, "auto.raw");
+      FILE *sf = fopen(nm, "wb"); if (sf) { fwrite(shot, 1, (long)W * H * 4, sf); fclose(sf); }
+      FILE *st = fopen("shotstats.txt", seq ? "a" : "w");
+      if (st) { fprintf(st, "frame=%d fbo_bound=%d nonblack=%ld\n", sc, fbo, nb); fclose(st); }
     }
   }
+  { extern void egl_shim_gltrace_dump(int); static int gf=0; if(++gf%30==0) egl_shim_gltrace_dump(gf); }
   SDL_GL_SwapWindow(egl_window);
 }
 
@@ -385,7 +399,96 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 
 EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
 
+/* === GL TRACE (NFS_GLTRACE=1): descobre EM QUAL FBO a engine desenha por frame === */
+static int g_gltrace = -1;
+static unsigned g_cur_fbo = 0;
+static unsigned g_bind0 = 0, g_bindN = 0, g_draw_fbo0 = 0, g_draw_fboN = 0, g_clears = 0;
+static unsigned g_last_clear_mask = 0;
+typedef void (*pfn_glBindFramebuffer)(unsigned, unsigned);
+typedef void (*pfn_glDrawArrays)(unsigned, int, int);
+typedef void (*pfn_glDrawElements)(unsigned, int, unsigned, const void *);
+typedef void (*pfn_glClear)(unsigned);
+static pfn_glBindFramebuffer real_glBindFramebuffer;
+static pfn_glDrawArrays real_glDrawArrays;
+static pfn_glDrawElements real_glDrawElements;
+static pfn_glClear real_glClear;
+void my_glBindFramebuffer(unsigned target, unsigned fb) {
+  if (!real_glBindFramebuffer) real_glBindFramebuffer = (pfn_glBindFramebuffer)SDL_GL_GetProcAddress("glBindFramebuffer");
+  g_cur_fbo = fb;
+  if (fb == 0) g_bind0++; else g_bindN++;
+  real_glBindFramebuffer(target, fb);
+}
+void my_glDrawArrays(unsigned m, int f, int c) {
+  if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
+  if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
+  real_glDrawArrays(m, f, c);
+}
+void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
+  if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
+  if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
+  real_glDrawElements(m, c, t, i);
+}
+void my_glClear(unsigned mask) {
+  if (!real_glClear) real_glClear = (pfn_glClear)SDL_GL_GetProcAddress("glClear");
+  g_clears++; g_last_clear_mask = mask;
+  real_glClear(mask);
+}
+typedef void (*pfn_glTexImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+typedef void (*pfn_glCompressedTexImage2D)(unsigned,int,unsigned,int,int,int,int,const void*);
+static pfn_glTexImage2D real_glTexImage2D;
+static pfn_glCompressedTexImage2D real_glCompressedTexImage2D;
+static int g_teximg_log = -1, g_teximg_n = 0;
+void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,unsigned ty,const void*px){
+  if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
+  if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
+  if (g_teximg_log&&l==0&&g_teximg_n<40){ fprintf(stderr,"[texImage2D] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",w,h,ifmt,fmt,ty,px); g_teximg_n++; }
+  real_glTexImage2D(t,l,ifmt,w,h,b,fmt,ty,px);
+}
+typedef void (*pfn_glViewport)(int,int,int,int);
+typedef unsigned (*pfn_glCreateProgram)(void);
+static pfn_glViewport real_glViewport;
+static int g_vp_log=-1, g_vp_n=0;
+void my_glViewport(int x,int y,int w,int h){
+  if(!real_glViewport) real_glViewport=(pfn_glViewport)SDL_GL_GetProcAddress("glViewport");
+  if(g_vp_log<0) g_vp_log=getenv("NFS_VPLOG")?1:0;
+  if(g_vp_log&&g_vp_n<40){ fprintf(stderr,"[viewport] %d,%d %dx%d\n",x,y,w,h); g_vp_n++; }
+  real_glViewport(x,y,w,h);
+}
+void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,int b,int sz,const void*px){
+  if (!real_glCompressedTexImage2D) real_glCompressedTexImage2D=(pfn_glCompressedTexImage2D)SDL_GL_GetProcAddress("glCompressedTexImage2D");
+  if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
+  if (g_teximg_log&&l==0&&g_teximg_n<40){ fprintf(stderr,"[compTexImage2D] %dx%d ifmt=0x%x size=%d px=%p\n",w,h,ifmt,sz,px); g_teximg_n++; }
+  real_glCompressedTexImage2D(t,l,ifmt,w,h,b,sz,px);
+}
+void egl_shim_gltrace_dump(int frame) {
+  if (g_gltrace < 0) g_gltrace = getenv("NFS_GLTRACE") ? 1 : 0;
+  if (g_gltrace != 1) return;
+  FILE *f = fopen("gltrace.txt", "w");
+  if (f) {
+    fprintf(f, "frame=%d cur_fbo=%u bind0=%u bindN=%u draw_fbo0=%u draw_fboN=%u clears=%u last_clear_mask=0x%x\n",
+            frame, g_cur_fbo, g_bind0, g_bindN, g_draw_fbo0, g_draw_fboN, g_clears, g_last_clear_mask);
+    fclose(f);
+  }
+  g_bind0 = g_bindN = g_draw_fbo0 = g_draw_fboN = g_clears = 0;
+}
+
 void *egl_shim_GetProcAddress(const char *procname) {
+  if (g_gltrace < 0) g_gltrace = getenv("NFS_GLTRACE") ? 1 : 0;
+  if (g_gltrace == 1) {
+    if (!strcmp(procname, "glBindFramebuffer")) {
+      if (!real_glBindFramebuffer) real_glBindFramebuffer = (pfn_glBindFramebuffer)SDL_GL_GetProcAddress("glBindFramebuffer");
+      if (real_glBindFramebuffer) return (void *)my_glBindFramebuffer;
+    } else if (!strcmp(procname, "glDrawArrays")) {
+      if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
+      if (real_glDrawArrays) return (void *)my_glDrawArrays;
+    } else if (!strcmp(procname, "glDrawElements")) {
+      if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
+      if (real_glDrawElements) return (void *)my_glDrawElements;
+    } else if (!strcmp(procname, "glClear")) {
+      if (!real_glClear) real_glClear = (pfn_glClear)SDL_GL_GetProcAddress("glClear");
+      if (real_glClear) return (void *)my_glClear;
+    }
+  }
   /* 🔑 EGL via eglGetProcAddress: a engine importa SÓ eglGetProcAddress e pega
    * eglCreateContext/eglMakeCurrent/eglSwapBuffers/... por aqui. DEVE retornar
    * NOSSOS shims (SDL2-backed/Mali fbdev) — SDL_GL_GetProcAddress devolveria o
