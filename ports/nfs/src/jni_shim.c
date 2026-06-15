@@ -80,6 +80,8 @@ enum {
   MID_GET_STATUS,    /* INetwork.getStatus() -> Network$Status (conectividade) */
   MID_ORDINAL,       /* Enum.ordinal() — usado p/ Network$Status */
   MID_GET_AXIS,      /* MotionEvent.getAxisValue(int) — analog stick (Moga) */
+  MID_GET_ACCEL,     /* getAccelerometer() — sentinel nivelado */
+  MID_ACC_X, MID_ACC_Y, MID_ACC_Z,  /* Accelerometer.getX/Y/Z() — nível */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -215,6 +217,10 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "getStatus") == 0) return &g_method_tags[MID_GET_STATUS];
   if (strcmp(name, "ordinal") == 0) return &g_method_tags[MID_ORDINAL];
   if (strcmp(name, "getAxisValue") == 0) return &g_method_tags[MID_GET_AXIS];
+  if (strcmp(name, "getAccelerometer") == 0) return &g_method_tags[MID_GET_ACCEL];
+  if (strcmp(name, "getX") == 0) return &g_method_tags[MID_ACC_X];
+  if (strcmp(name, "getY") == 0) return &g_method_tags[MID_ACC_Y];
+  if (strcmp(name, "getZ") == 0) return &g_method_tags[MID_ACC_Z];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -337,6 +343,7 @@ static void *jni_config_jstr(void *methodID) {
 /* sentinel devolvido por INetwork.getStatus(); ordinal() o reconhece p/ devolver
  * o status de rede "conectado" (sem afetar ordinal() de outros enums). */
 static int g_net_status_sentinel;
+static int g_accel_sentinel;  /* objeto Accelerometer fake; getX/Y/Z nele = nível */
 static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
@@ -345,6 +352,10 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
    * cujo ordinal() = status conectado → o flow do EULA não roteia p/
    * NO_CONNECTION_PROMPT (beco sem saída offline) e prossegue. */
   if (methodID == &g_method_tags[MID_GET_STATUS]) return &g_net_status_sentinel;
+  /* 🚗 getAccelerometer() -> sentinel; getX/getY/getZ nele devolvem uma leitura
+   * NIVELADA e VÁLIDA (gravidade num eixo, roll=0). accel (0,0,0) = vetor nulo →
+   * orientação NaN → carro gira sozinho. NFS_ACCNULL faz retornar NULL. */
+  if (methodID == &g_method_tags[MID_GET_ACCEL]) return getenv("NFS_ACCNULL") ? NULL : &g_accel_sentinel;
   if (methodID == &g_method_tags[MID_GET_STORAGE_DIR]) {
     debugPrintf("jni_shim: CallObjectMethod -> storageDir = %s\n", nfs_data_dir());
     return make_jstring(nfs_data_dir());
@@ -483,6 +494,19 @@ static float jni_CallFloatMethod_v(void *env, void *obj, void *methodID, va_list
     int axis = va_arg(ap, int);
     if (axis >= 0 && axis < 32) return g_axis[axis];
     return 0.0f;
+  }
+  /* 🚗 Accelerometer.getX/Y/Z() no nosso sentinel = nível VÁLIDO (gravidade num
+   * eixo, roll=0). Configurável por env p/ calibrar qual eixo zera o giro. */
+  if (methodID == &g_method_tags[MID_ACC_X] || methodID == &g_method_tags[MID_ACC_Y] || methodID == &g_method_tags[MID_ACC_Z]) {
+    if (obj == &g_accel_sentinel) {
+      const char *ex=getenv("NFS_ACCX"), *ey=getenv("NFS_ACCY"), *ez=getenv("NFS_ACCZ");
+      float v = (methodID==&g_method_tags[MID_ACC_X]) ? (ex?(float)atof(ex):0.0f)
+              : (methodID==&g_method_tags[MID_ACC_Y]) ? (ey?(float)atof(ey):0.0f)
+              :                                          (ez?(float)atof(ez):9.81f);
+      if (getenv("NFS_ACCLOG")) { static int n=0; if(n<40){ fprintf(stderr,"[ACC] get%c -> %.2f\n", methodID==&g_method_tags[MID_ACC_X]?'X':methodID==&g_method_tags[MID_ACC_Y]?'Y':'Z', v); n++; } }
+      return v;
+    }
+    return 0.0f; /* getX/getY de outros objetos (ex: MotionEvent) */
   }
   if (methodID == &g_method_tags[MID_GET_PERF_SCORE]) {
     float s = getenv("NFS_PERF") ? (float)atof(getenv("NFS_PERF")) : 0.0f;

@@ -795,6 +795,16 @@ int main(int argc, char *argv[]) {
           }
         }
       }
+      /* 🎮 MOGA CONECTADO: seta os flags [ctx+0x135]=suporte e [ctx+0x133]=conectado
+       * (vistos em 0x7913c, o setter chamado por nativeOnStateEvent) → o jogo acha
+       * que há um gamepad Moga → troca do esquema ACELERÔMETRO (que gira o carro)
+       * p/ o esquema GAMEPAD. NFS_NOMOGACONN desliga. */
+      if(!getenv("NFS_NOMOGACONN")){
+        extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
+        static void*(*getctx)(void)=NULL; if(!getctx) getctx=(void*(*)(void))(tb+0x3f7c88);
+        void *ctx=getctx();
+        if(ctx&&(uintptr_t)ctx>0x10000){ *((unsigned char*)ctx+0x135)=1; *((unsigned char*)ctx+0x133)=1; }
+      }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
        * (no Android isso é do GLSurfaceView). NÓS apresentamos pro fb0/Mali. */
       { extern void egl_shim_force_present(void); egl_shim_force_present(); }
