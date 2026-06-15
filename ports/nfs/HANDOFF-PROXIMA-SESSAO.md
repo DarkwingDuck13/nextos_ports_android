@@ -9,7 +9,25 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
-## 🏁🏁 PARTE 14 (2026-06-15) — EULA BYPASSED → DENTRO DA CORRIDA (HUD ok, mundo 3D PRETO)
+## 🏆🏎️ PARTE 15 (2026-06-15) — GAMEPLAY RENDERIZA! (mundo 3D + carro + pista + HUD)
+**JOGÁVEL no Mali-450!** O launcher PADRÃO (grun.sh) renderiza a corrida: carro (Dodge
+Challenger), pista, ambiente, HUD — ordenação 3D correta. **2 fixes (egl_shim.c, default ON):**
+1. **DEPTH-CLEAR (mundo 3D preto):** o depth-test rejeitava TODA geometria 3D (só HUD, que
+   desenha sem depth, aparecia). DEPTH=24 existe mas o clear no Mali-450 deixava o buffer ~0
+   (≠1.0=far) → fragmentos z>buffer falham GL_LESS → preto. FIX my_glClear: força
+   `glClearDepthf(1.0)+glDepthMask(1)` antes de cada clear com GL_DEPTH_BUFFER_BIT (0x100).
+   PRESERVA ordenação (≠ NFS_NODEPTH que só desabilita). NFS_NODEPTHFIX desliga.
+2. **ATLAS-HACK no 3D (prédios VERDES):** o atlas_rebind (fix de UI 2D: liga o último atlas
+   em draws com tex=0) estragava a geometria 3D sem textura → verde saturado. FIX: atlas_rebind
+   só em draws PEQUENOS (c<64 = UI); pulado nos grandes (3D).
+**RESTA (polish):** (a) fundo/céu MAGENTA (skybox/tonemap/formato de textura? — só o distante;
+carro+pista corretos); (b) ÁUDIO (FMOD "not initialized correctly"; createSound falha — ver
+opensles_shim/FMOD init); (c) confirmar JOGABILIDADE real (carro responde a input de
+direção/acelerador? in-game pode usar touch via tap-detector OU gamepad nativeOnMotionEvent/
+nativeOnKeyEvent; a corrida roda c/ timer mas pode ser auto-drive do tutorial). Diag:
+NFS_NODEPTH/NOCULL (draws grandes), NFS_NODEPTHFIX, NFS_NOATLASHACK, EGLCFG log.
+
+## PARTE 14 (2026-06-15) — EULA BYPASSED → DENTRO DA CORRIDA (HUD ok, mundo 3D PRETO)
 **🎉 CHEGAMOS AO GAMEPLAY!** Bypass do EULA = criar o arquivo de aceite `/active_accepted`
 no disco → o flow PULA a tela active_accept (inacessível: checkbox touch-only + navegação de
 foco NÃO funciona p/ NENHUM input — touch/DPAD/stick, só A=confirm como evento). O check do
