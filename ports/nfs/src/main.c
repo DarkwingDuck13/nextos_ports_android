@@ -768,9 +768,11 @@ int main(int argc, char *argv[]) {
           FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a"); if(lg){ fprintf(lg,"js0 fd=%d\n",jsfd); fclose(lg);} }
         /* mapa BOTÃO js -> Android keycode (ajustável p/ o adaptador; default chute
          * PS2-USB). 96=A/confirm 97=B/back 99=X 100=Y 19/20/21/22=DPAD 108=START. */
+        /* mapa CALIBRADO p/ o adaptador PS2-USB do usuario: js5=cross=CONFIRM(A),
+         * js2=circle=BACK(B), js9=START. DPAD vem como HAT (eixos 4/5). */
         static const int BTNMAP[16]={
-          /*0*/100,/*1*/96,/*2*/97,/*3*/99,/*4*/102,/*5*/103,/*6*/104,/*7*/105,
-          /*8*/109,/*9*/108,/*10*/0,/*11*/0,/*12*/19,/*13*/20,/*14*/21,/*15*/22 };
+          /*0*/100,/*1*/99,/*2*/97,/*3*/100,/*4*/102,/*5*/96,/*6*/104,/*7*/105,
+          /*8*/109,/*9*/108,/*10*/103,/*11*/0,/*12*/19,/*13*/20,/*14*/21,/*15*/22 };
         if(jsfd>=0 && pk){
           unsigned char buf[8]; int rd;
           while((rd=read(jsfd, buf, 8))==8){
@@ -783,7 +785,24 @@ int main(int argc, char *argv[]) {
             if(type==1 && num<16){ int kc=BTNMAP[num]; if(kc){
                 g_moga_active=1; g_moga_keycode=kc; g_moga_action=val?0:1; g_moga_calln=0;
                 pk(env, fake_this, pkev); g_moga_active=0; } }
-            else if(type==2 && num<16){ axval[num]=val/32767.0f; }
+            else if(type==2 && num<16){ axval[num]=val/32767.0f;
+              /* 🔼 DPAD = HAT nos eixos 4(X)/5(Y) neste adaptador → converte em
+               * teclas DPAD (19/20/21/22) por BORDA p/ NAVEGAR o MENU. */
+              if(num==4||num==5){
+                static int hatx_prev=0, haty_prev=0;
+                int dir = (val<-16000)?-1 : (val>16000)?1 : 0;
+                int *prev = (num==4)?&hatx_prev:&haty_prev;
+                if(dir!=*prev){
+                  /* solta a direção anterior */
+                  if(*prev!=0){ int kc=(num==4)?(*prev<0?21:22):(*prev<0?19:20);
+                    g_moga_active=1; g_moga_keycode=kc; g_moga_action=1; g_moga_calln=0; pk(env,fake_this,pkev); g_moga_active=0; }
+                  /* pressiona a nova */
+                  if(dir!=0){ int kc=(num==4)?(dir<0?21:22):(dir<0?19:20);
+                    g_moga_active=1; g_moga_keycode=kc; g_moga_action=0; g_moga_calln=0; pk(env,fake_this,pkev); g_moga_active=0; }
+                  *prev=dir;
+                }
+              }
+            }
           }
           /* eixos → nativeOnMotionEvent (contínuo p/ direção/acel). js axis 0=LX 1=LY. */
           if(pm){
