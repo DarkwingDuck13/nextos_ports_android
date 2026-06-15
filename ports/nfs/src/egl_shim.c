@@ -595,7 +595,7 @@ void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("arr",c);
-  atlas_rebind();
+  if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   real_glDrawArrays(m, f, c);
 }
 /* ATLASHACK: religa o atlas quando um draw texturizado tem tex=0 (link sprite->
@@ -632,7 +632,7 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("elt",c);
-  atlas_rebind();
+  if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   big3d_state(c);
   real_glDrawElements(m, c, t, i);
 }
