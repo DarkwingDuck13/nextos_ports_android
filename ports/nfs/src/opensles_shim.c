@@ -19,7 +19,9 @@
 #define MAX_PLAYERS 16
 #define RING_BUFFER_SIZE (4 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-#define SDL_AUDIO_SAMPLES 4096
+/* 🔊 latência: 4096 samples @44100Hz = ~93ms de buffer (som atrasado em relação ao
+ * jogo). 1024 = ~23ms. NFS_SDLSAMPLES sobrescreve em runtime. */
+#define SDL_AUDIO_SAMPLES 1024
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -227,6 +229,21 @@ static uint32_t ring_read(AudioPlayer *p, void *data, uint32_t len) {
 #define SDL_OUTPUT_RATE 44100
 #define TMP_BUF_SAMPLES (SDL_AUDIO_SAMPLES * 2)
 
+/* 🔊 latência: profundidade-alvo do ring por player (bytes). Acima dela, drenamos
+ * (disparamos menos callbacks ao FMOD) → teto de latência + sem deriva. ~60ms
+ * default; NFS_RINGMS ajusta (10..500ms). 176400 = 44100Hz * 2ch * 2 bytes. */
+static uint32_t target_ring_bytes(void) {
+  static uint32_t v = 0;
+  if (v == 0) {
+    const char *e = getenv("NFS_RINGMS");
+    int ms = e ? atoi(e) : 60;
+    if (ms < 10) ms = 10;
+    if (ms > 500) ms = 500;
+    v = (uint32_t)((uint64_t)ms * 176400 / 1000);
+  }
+  return v;
+}
+
 static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   (void)userdata;
   memset(stream, 0, len);
@@ -239,6 +256,21 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   memset(mix_buf, 0, out_samples * sizeof(float));
 
   uint32_t out_frames = out_samples / 2;
+
+  /* 🔊 NFS_RINGDBG: mede a latência real = profundidade do ring por player ativo
+   * (bytes / 176400 = segundos). Loga a cada ~200 callbacks (~5s). */
+  if (getenv("NFS_RINGDBG")) {
+    static int dbgcnt = 0;
+    if ((dbgcnt++ % 200) == 0) {
+      for (int i = 0; i < MAX_PLAYERS; i++) {
+        AudioPlayer *p = &g_players[i];
+        if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
+        uint32_t rb = ring_readable(p);
+        debugPrintf("[RINGDBG] player %d depth=%u bytes (~%dms) last_enq=%u\n",
+                    i, rb, (int)((uint64_t)rb * 1000 / (44100 * 4)), p->last_enqueue_size);
+      }
+    }
+  }
 
   /* Per-player temp buffer on stack */
   int16_t tmp[TMP_BUF_SAMPLES];
@@ -295,12 +327,23 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     uint32_t src_frames_got = got / frame_size;
     if (src_frames_got == 0) continue;
     int bufs_done = queue_consume(p, got);
-    /* 🔑 dispara o callback do buffer-queue 1x por buffer consumido — o FMOD
-     * (e jogos OpenSL) enfileiram o próximo buffer DENTRO desse callback. Sem
-     * isto o FMOD trava (output não progride → erro 33, sem som). bq_Enqueue
-     * não faz lock → seguro chamar daqui (thread de áudio). */
-    if (p->callback) for (int c = 0; c < bufs_done; c++)
-      p->callback((void *)&p->bq_ptr, p->callback_context);
+    /* 🔑 dispara o callback do buffer-queue p/ o FMOD enfileirar o próximo buffer.
+     * 🔊 latência: normalmente 1:1 por buffer consumido (mantém o ritmo). MAS se o
+     * ring está acima do alvo, disparamos MENOS (drena o excesso) → backpressure
+     * que limita a latência e mata a deriva (~280ms→alvo). Robusto p/ callback
+     * sync OU async (é baseado em taxa, não em checar profundidade pós-callback). */
+    if (p->callback && bufs_done > 0) {
+      int to_fire = bufs_done;
+      uint32_t depth = ring_readable(p);
+      uint32_t target = target_ring_bytes();
+      if (depth > target) {
+        uint32_t blk = p->last_enqueue_size ? p->last_enqueue_size : 4096;
+        uint32_t excess = (depth - target) / blk; /* buffers a drenar */
+        to_fire = (excess >= (uint32_t)to_fire) ? 0 : (to_fire - (int)excess);
+      }
+      for (int c = 0; c < to_fire; c++)
+        p->callback((void *)&p->bq_ptr, p->callback_context);
+    }
     p->played_bytes += got;
 
     /* Detect underrun: got less than requested = fade out last frames to avoid click */
@@ -475,6 +518,7 @@ static void ensure_audio_initialized(void) {
   want.format = AUDIO_S16SYS;
   want.channels = 2;
   want.samples = SDL_AUDIO_SAMPLES;
+  { const char *e = getenv("NFS_SDLSAMPLES"); if (e) { int s = atoi(e); if (s >= 128 && s <= 8192) want.samples = s; } }
   want.callback = sdl_audio_callback;
   want.userdata = NULL;
 
@@ -1104,6 +1148,9 @@ void opensles_shim_pump_callbacks(void) {
     /* Request data earlier: use 2x threshold to keep buffer fuller */
     uint32_t refill_threshold = callback_threshold * 2;
     if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
+    /* 🔊 latência: nunca encher além do alvo (senão o pump reconstrói o buffer
+     * profundo que a drenagem do callback do SDL tenta limitar). */
+    if (refill_threshold > target_ring_bytes()) refill_threshold = target_ring_bytes();
 
     /* Call callback multiple times to fill buffer ahead */
     int max_calls = 4;

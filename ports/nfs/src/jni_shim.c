@@ -82,6 +82,7 @@ enum {
   MID_GET_AXIS,      /* MotionEvent.getAxisValue(int) — analog stick (Moga) */
   MID_GET_ACCEL,     /* getAccelerometer() — sentinel nivelado */
   MID_ACC_X, MID_ACC_Y, MID_ACC_Z,  /* Accelerometer.getX/Y/Z() — nível */
+  MID_IS_MUSIC_PLAYING, /* isAnyMusicPlaying/isMusicActive → 0 (senão jogo suprime trilha) */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -221,6 +222,8 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "getX") == 0) return &g_method_tags[MID_ACC_X];
   if (strcmp(name, "getY") == 0) return &g_method_tags[MID_ACC_Y];
   if (strcmp(name, "getZ") == 0) return &g_method_tags[MID_ACC_Z];
+  if (strstr(name, "isAnyMusicPlaying") || strstr(name, "isMusicActive"))
+    return &g_method_tags[MID_IS_MUSIC_PLAYING];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -253,6 +256,8 @@ static void *jni_GetStaticMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_SET_ACTIVITY];
   if (strcmp(name, "errorDialog") == 0)
     return &g_method_tags[MID_ERROR_DIALOG];
+  if (strstr(name, "isAnyMusicPlaying") || strstr(name, "isMusicActive"))
+    return &g_method_tags[MID_IS_MUSIC_PLAYING];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -400,6 +405,11 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
                                            void *methodID, ...) {
   (void)env;
   (void)obj;
+  if (methodID == &g_method_tags[MID_IS_MUSIC_PLAYING]) {
+    /* 🔊 0 = nenhuma música do usuário tocando → o jogo NÃO suprime a própria
+     * trilha (senão MusicManager::PlayNextTrack faz break, sem música de fundo). */
+    return 0;
+  }
   if (methodID == &g_method_tags[MID_IS_OBB]) {
     /* PADRÃO=0 (disco): a engine abre o OBB como ZIP via "stream" e FALHA
      * ("Error opening ZIP stream", AssetsFileSystem com métodos não implementados);
@@ -631,6 +641,10 @@ static unsigned char jni_CallStaticBooleanMethod(void *env, void *clazz,
                                                  void *methodID, ...) {
   (void)env;
   (void)clazz;
+  if (methodID == &g_method_tags[MID_IS_MUSIC_PLAYING]) {
+    /* 🔊 isAnyMusicPlaying = 0 → jogo toca a própria trilha (não a suprime). */
+    return 0;
+  }
   debugPrintf("jni_shim: CallStaticBooleanMethod(mid=%p) -> 1\n", methodID);
   // Return true for hasTouchScreen — prevents game from managing
   // Shield gamepad button layouts that don't exist in the OBB.

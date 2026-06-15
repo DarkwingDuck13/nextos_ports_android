@@ -19,6 +19,8 @@
 #include <malloc.h>
 #include <dlfcn.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include "so_util.h"
 #include "egl_shim.h"
@@ -429,6 +431,248 @@ static int my_readdir_r(void *dirp, void *entry, void **result) {
   return real_readdir64_r(dirp, entry, result);
 }
 
+/* ---- inline hook p/ diagnosticar qual subfunção do System::init (FUN_504dc)
+ * retorna 33 (INVALID_SPEAKER). Hookamos as subchamadas candidatas (em ordem de
+ * execução no init): 0x3e198, 0x3bd88 (pré-output) e 0x3a540, 0x3aa04 (setup de
+ * DSP/speaker pós-output). Cada hook loga o retorno SEM alterar o fluxo (trampolim
+ * rouba 2 instruções → salta p/ target+8). base = runtime(System::init) - 0x9e650.
+ * Gated por NFS_FMODHOOK. */
+typedef int (*fmod_fn4)(int, int, int, int);
+static struct { uintptr_t target; const char *name; fmod_fn4 tramp; } g_fmh[8];
+static int g_fmh_n = 0;
+/* loga só retornos != 0 (o 33 = INVALID_SPEAKER é o que procuramos; os leaves
+ * são chamados milhares de vezes retornando 0 → evita encher o tmpfs). */
+#define DEF_FMH(IDX)                                                          \
+  static int fmh_h##IDX(int a, int b, int c, int d) {                        \
+    int r = g_fmh[IDX].tramp(a, b, c, d);                                    \
+    if (r != 0)                                                              \
+      fprintf(stderr, "[FMODHOOK] %s(self=0x%x) -> %d\n", g_fmh[IDX].name, a, r); \
+    return r;                                                                 \
+  }
+DEF_FMH(0) DEF_FMH(1) DEF_FMH(2) DEF_FMH(3)
+DEF_FMH(4) DEF_FMH(5) DEF_FMH(6) DEF_FMH(7)
+static void *g_fmh_handlers[8] = {(void *)fmh_h0, (void *)fmh_h1,
+                                  (void *)fmh_h2, (void *)fmh_h3,
+                                  (void *)fmh_h4, (void *)fmh_h5,
+                                  (void *)fmh_h6, (void *)fmh_h7};
+static uint8_t *g_fmh_tpool = NULL;
+static void fmod_install_hook(uintptr_t base, uintptr_t off, const char *name) {
+  if (g_fmh_n >= 8) return;
+  int idx = g_fmh_n;
+  uintptr_t target = base + off;
+  if (!g_fmh_tpool) {
+    g_fmh_tpool = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (g_fmh_tpool == MAP_FAILED) {
+      fprintf(stderr, "[FMODHOOK] mmap tramp falhou\n");
+      g_fmh_tpool = NULL;
+      return;
+    }
+  }
+  uint8_t *tr = g_fmh_tpool + idx * 32;
+  memcpy(tr, (void *)target, 8); /* 2 instruções roubadas (push + reg-op, sem PC-rel) */
+  uint32_t ldrpc = 0xe51ff004;   /* ldr pc, [pc, #-4] */
+  memcpy(tr + 8, &ldrpc, 4);
+  uint32_t cont = (uint32_t)(target + 8);
+  memcpy(tr + 12, &cont, 4);
+  __builtin___clear_cache((char *)tr, (char *)tr + 16);
+  uintptr_t page = target & ~0xFFFUL;
+  if (mprotect((void *)page, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    fprintf(stderr, "[FMODHOOK] mprotect falhou p/ %s (%s)\n", name, strerror(errno));
+    return;
+  }
+  uint8_t patch[8];
+  memcpy(patch, &ldrpc, 4);
+  uint32_t h = (uint32_t)(uintptr_t)g_fmh_handlers[idx];
+  memcpy(patch + 4, &h, 4);
+  memcpy((void *)target, patch, 8);
+  __builtin___clear_cache((char *)target, (char *)target + 8);
+  g_fmh[idx].target = target;
+  g_fmh[idx].name = name;
+  g_fmh[idx].tramp = (fmod_fn4)tr;
+  g_fmh_n++;
+  fprintf(stderr, "[FMODHOOK] hook %s @0x%lx tramp=%p handler=%p\n", name,
+          (unsigned long)target, (void *)tr, g_fmh_handlers[idx]);
+}
+
+/* 🔊🔑 FIX do áudio: a sub-função interna do System::init em 0xa9120 cria a thread
+ * do mixer do FMOD com política SCHED_FIFO de tempo-real (prio 90-99). No ambiente
+ * so-loader (binário bionic sobre glibc) a config de scheduling falha → a função
+ * retorna 0x21 (33) → init=33. (O "33" NÃO é INVALID_SPEAKER; é falha de thread.)
+ * Substituímos a função inteira por uma criação de thread glibc LIMPA, sem RT:
+ *   FUN_000a9120(name, start_routine, arg, sched_sel, p5, stacksize, &out_handle)
+ * cria a thread em prioridade normal (áudio funciona; só sem RT scheduling). */
+static int my_fmod_create_thread(void *name, void *(*start)(void *), void *arg,
+                                 int sched_sel, int p5, size_t stacksize,
+                                 void **out) {
+  (void)name; (void)sched_sel; (void)p5;
+  if (!out) return 0x25;
+  pthread_attr_t a;
+  if (pthread_attr_init(&a) != 0) return 0x21;
+  pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+  if (stacksize) {
+    if ((long)stacksize < 0x4000) stacksize = 0x4000; /* glibc PTHREAD_STACK_MIN */
+    pthread_attr_setstacksize(&a, stacksize);
+  }
+  pthread_t t;
+  int r = pthread_create(&t, &a, start, arg);
+  pthread_attr_destroy(&a);
+  if (r != 0) {
+    fprintf(stderr, "[FMODTHREAD] pthread_create FALHOU: %s\n", strerror(r));
+    return 0x21;
+  }
+  /* 🔊 prioridade RT da thread do mixer: DEFAULT-OFF. A prio FIFO 90-99 do FMOD
+   * original STARVA a thread de loading no so-loader → eventos "não encontrados"
+   * (race, erro 89) e falhas. A latência já é resolvida pelo backpressure do ring
+   * (opensles_shim), então RT não é necessário. NFS_RT=1 reativa (prio moderada);
+   * NFS_FMODRTPRIO ajusta a prioridade (default baixa = 5, não starva o loader). */
+  if (getenv("NFS_RT") && sched_sel >= 1 && sched_sel <= 3) {
+    struct sched_param sp;
+    int prio = 5;
+    if (getenv("NFS_FMODRTPRIO")) prio = atoi(getenv("NFS_FMODRTPRIO"));
+    int maxp = sched_get_priority_max(SCHED_FIFO);
+    if (maxp > 0 && prio > maxp) prio = maxp;
+    sp.sched_priority = prio;
+    int sr = pthread_setschedparam(t, SCHED_FIFO, &sp);
+    if (getenv("NFS_FMODTHREADDBG"))
+      fprintf(stderr, "[FMODTHREAD] setschedparam FIFO prio %d -> %s\n", prio,
+              sr == 0 ? "OK (RT)" : strerror(sr));
+  }
+  *out = (void *)t;
+  if (getenv("NFS_FMODTHREADDBG"))
+    fprintf(stderr, "[FMODTHREAD] thread mixer criada ok tid=%p sel=%d ss=%zu\n",
+            (void *)t, sched_sel, stacksize);
+  return 0;
+}
+
+/* detour COMPLETO: redireciona target -> fn (mesma convenção de chamada; sem
+ * trampolim, fn não chama o original). 8 bytes: ldr pc,[pc,#-4]; .word fn. */
+static int fmod_install_replace(uintptr_t base, uintptr_t off, void *fn,
+                                const char *name) {
+  uintptr_t target = base + off;
+  uintptr_t page = target & ~0xFFFUL;
+  if (mprotect((void *)page, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    fprintf(stderr, "[FMODFIX] mprotect falhou p/ %s (%s)\n", name, strerror(errno));
+    return -1;
+  }
+  uint8_t patch[8];
+  uint32_t ldrpc = 0xe51ff004; /* ldr pc, [pc, #-4] */
+  uint32_t f = (uint32_t)(uintptr_t)fn;
+  memcpy(patch, &ldrpc, 4);
+  memcpy(patch + 4, &f, 4);
+  memcpy((void *)target, patch, 8);
+  __builtin___clear_cache((char *)target, (char *)target + 8);
+  fprintf(stderr, "[FMODFIX] replace %s @0x%lx -> %p\n", name,
+          (unsigned long)target, fn);
+  return 0;
+}
+
+extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
+
+/* 🔊 diag (NFS_SNDLOG): rastreia EventSystem::load / setMediaPath / createSound p/
+ * achar por que SFX/eventos falham ("Error loading file" / "Event not found").
+ * Wrappers registrados em nfs_shims[]; chamam o real via g_comb (skip=si próprio). */
+static int (*real_es_load)(void *, const char *, void *, void **);
+static int my_es_load(void *self, const char *fn, void *li, void **proj) {
+  if (!real_es_load) real_es_load = (int (*)(void *, const char *, void *, void **))
+      nfs_comb_lookup_real("_ZN4FMOD11EventSystem4loadEPKcP19FMOD_EVENT_LOADINFOPPNS_12EventProjectE", (uintptr_t)my_es_load);
+  int r = real_es_load ? real_es_load(self, fn, li, proj) : -1;
+  if (getenv("NFS_SNDLOG")) fprintf(stderr, "[ESLOAD] load('%s') -> %d\n", fn ? fn : "(null)", r);
+  return r;
+}
+static int (*real_set_mediapath)(void *, const char *);
+static int my_set_mediapath(void *self, const char *p) {
+  if (!real_set_mediapath) real_set_mediapath = (int (*)(void *, const char *))
+      nfs_comb_lookup_real("_ZN4FMOD11EventSystem12setMediaPathEPKc", (uintptr_t)my_set_mediapath);
+  int r = real_set_mediapath ? real_set_mediapath(self, p) : -1;
+  if (getenv("NFS_SNDLOG")) fprintf(stderr, "[MEDIAPATH] setMediaPath('%s') -> %d\n", p ? p : "(null)", r);
+  return r;
+}
+/* 🔊 força decode por SOFTWARE: o jogo pede FMOD_HARDWARE (0x20) p/ MP3 (decode
+ * por hardware do Android, que não temos no so-loader) → createSound falha com
+ * FORMAT (19) → música/splash/efeitos com áudio MP3 não tocam. Trocamos HARDWARE
+ * (0x20) por SOFTWARE (0x40) → mixer de software do FMOD decodifica. NFS_NOFMODSW desliga. */
+static unsigned int fmod_force_sw(unsigned int mode) {
+  if (getenv("NFS_NOFMODSW")) return mode;
+  mode &= ~0x20u; /* limpa FMOD_HARDWARE */
+  mode |= 0x40u;  /* seta FMOD_SOFTWARE */
+  return mode;
+}
+static int (*real_create_sound)(void *, const char *, unsigned int, void *, void **);
+static int my_create_sound(void *self, const char *name, unsigned int mode, void *exinfo, void **snd) {
+  if (!real_create_sound) real_create_sound = (int (*)(void *, const char *, unsigned int, void *, void **))
+      nfs_comb_lookup_real("_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_sound);
+  mode = fmod_force_sw(mode);
+  int r = real_create_sound ? real_create_sound(self, name, mode, exinfo, snd) : -1;
+  if (getenv("NFS_SNDLOG") && r != 0) {
+    const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
+    fprintf(stderr, "[CREATESOUND] '%s' mode=0x%x -> %d\n", nm, mode, r);
+  }
+  return r;
+}
+
+static int (*real_create_stream)(void *, const char *, unsigned int, void *, void **);
+static int my_create_stream(void *self, const char *name, unsigned int mode, void *exinfo, void **snd) {
+  if (!real_create_stream) real_create_stream = (int (*)(void *, const char *, unsigned int, void *, void **))
+      nfs_comb_lookup_real("_ZN4FMOD6System12createStreamEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_stream);
+  mode = fmod_force_sw(mode);
+  int r = real_create_stream ? real_create_stream(self, name, mode, exinfo, snd) : -1;
+  if (getenv("NFS_SNDLOG") && r != 0) {
+    const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
+    fprintf(stderr, "[CREATESTREAM] '%s' mode=0x%x -> %d\n", nm, mode, r);
+  }
+  return r;
+}
+
+/* C-API: FMOD_System_CreateSound(system, name_or_data, mode, exinfo, &sound).
+ * O EventSystem carrega os .fsb via C-API → o wrapper C++ não pega; este sim. */
+static int (*real_c_createsound)(void *, const char *, unsigned int, void *, void **);
+static int my_c_createsound(void *sys, const char *name, unsigned int mode, void *ex, void **snd) {
+  if (!real_c_createsound) real_c_createsound = (int (*)(void *, const char *, unsigned int, void *, void **))
+      nfs_comb_lookup_real("FMOD_System_CreateSound", (uintptr_t)my_c_createsound);
+  mode = fmod_force_sw(mode);
+  int r = real_c_createsound ? real_c_createsound(sys, name, mode, ex, snd) : -1;
+  if (getenv("NFS_SNDLOG") && r != 0) {
+    const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
+    fprintf(stderr, "[C_CREATESOUND] '%s' mode=0x%x -> %d\n", nm, mode, r);
+  }
+  return r;
+}
+
+/* getEvent: o SoundManager instancia eventos (motor/nitro/splash) por aqui; se a
+ * wave do evento falha ao carregar → FILE_BAD. Loga nome+modo+resultado. */
+static int (*real_get_event)(void *, const char *, unsigned int, void **);
+static int my_get_event(void *self, const char *name, unsigned int mode, void **ev) {
+  if (!real_get_event) real_get_event = (int (*)(void *, const char *, unsigned int, void **))
+      nfs_comb_lookup_real("_ZN4FMOD11EventSystem8getEventEPKcjPPNS_5EventE", (uintptr_t)my_get_event);
+  int r = real_get_event ? real_get_event(self, name, mode, ev) : -1;
+  if (getenv("NFS_SNDLOG") && r != 0)
+    fprintf(stderr, "[GETEVENT] '%s' mode=0x%x -> %d\n", name ? name : "(null)", mode, r);
+  return r;
+}
+/* setMediaPath C-API: o event system acha os .fsb relativos a este path. Loga-o. */
+static int (*real_c_setmedia)(void *, const char *);
+static int my_c_setmedia(void *self, const char *p) {
+  if (!real_c_setmedia) real_c_setmedia = (int (*)(void *, const char *))
+      nfs_comb_lookup_real("FMOD_EventSystem_SetMediaPath", (uintptr_t)my_c_setmedia);
+  int r = real_c_setmedia ? real_c_setmedia(self, p) : -1;
+  if (getenv("NFS_SNDLOG")) fprintf(stderr, "[C_MEDIAPATH] '%s' -> %d\n", p ? p : "(null)", r);
+  return r;
+}
+/* createStream C-API + force software */
+static int (*real_c_createstream)(void *, const char *, unsigned int, void *, void **);
+static int my_c_createstream(void *sys, const char *name, unsigned int mode, void *ex, void **snd) {
+  if (!real_c_createstream) real_c_createstream = (int (*)(void *, const char *, unsigned int, void *, void **))
+      nfs_comb_lookup_real("FMOD_System_CreateStream", (uintptr_t)my_c_createstream);
+  mode = fmod_force_sw(mode);
+  int r = real_c_createstream ? real_c_createstream(sys, name, mode, ex, snd) : -1;
+  if (getenv("NFS_SNDLOG") && r != 0) {
+    const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
+    fprintf(stderr, "[C_CREATESTREAM] '%s' mode=0x%x -> %d\n", nm, mode, r);
+  }
+  return r;
+}
+
 /* stub do FMOD EventSystem::init → FMOD_OK (0). Faz o EventSystem ficar não-nulo
  * no SoundManager → mata o spam "EventSystem is null" + destrava o jogo (sem som). */
 static int fmod_es_init_stub(void *self, int maxchannels, unsigned int flags,
@@ -451,113 +695,40 @@ static int fmod_es_init_stub(void *self, int maxchannels, unsigned int flags,
     } else mode = 0;
   }
   if (mode == 1 && real_init) {
-    /* 🔎 debug do FMOD: loga a razão exata da falha (via __android_log → stderr). */
-    if (getenv("NFS_FMODDBG")) {
-      extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
-      int (*dbg)(unsigned int) = (int (*)(unsigned int))nfs_comb_lookup_real("FMOD_Debug_SetLevel", 0);
-      if (dbg) { int dr = dbg(0xFFFFFFFFu); fprintf(stderr, "[FMOD] Debug_SetLevel -> %d\n", dr); }
-      else fprintf(stderr, "[FMOD] Debug_SetLevel nao resolvido\n");
-    }
-    /* 🔊 força o output OpenSL ES (auto-detect pega AudioTrack/JNI e falha=33).
-     * getSystemObject(self,&sys) → setOutput(sys, NFS_FMODOUT|default 19=OPENSL). */
     extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
-    int (*getsys)(void *, void **) = (int (*)(void *, void **))nfs_comb_lookup_real("_ZN4FMOD11EventSystem15getSystemObjectEPPNS_6SystemE", 0);
-    int (*setout)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE", 0);
-    if (getsys && setout) { void *sys = NULL; int gr = getsys(self, &sys);
-      if (sys) {
-        if (getenv("NFS_FMODSWEEP")) { /* descobre quais output types o setOutput aceita */
-          for (int ot = 2; ot <= 25; ot++) { int sr = setout(sys, ot);
-            fprintf(stderr, "[FMODSWEEP] setOutput(%d) = %d\n", ot, sr); }
-        }
-        int ot = getenv("NFS_FMODOUT") ? atoi(getenv("NFS_FMODOUT")) : 22; /* 22=OpenSL neste build */
-        int sr = setout(sys, ot);
-        fprintf(stderr, "[FMOD] getSystemObject=%d sys=%p setOutput(%d)=%d\n", gr, sys, ot, sr);
-        /* 🔊 init falhava com 33 = FMOD_ERR_INVALID_SPEAKER (modo de speaker
-         * incompatível). Força STEREO (FMOD_SPEAKERMODE_STEREO=2). NFS_SPKMODE muda. */
-        extern uintptr_t nfs_comb_lookup_real(const char *, uintptr_t);
-        int (*setspk)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE", 0);
-        if (setspk) { int sm = getenv("NFS_SPKMODE") ? atoi(getenv("NFS_SPKMODE")) : 2;
-          if (sm >= 0) { int spr = setspk(sys, sm); fprintf(stderr, "[FMOD] setSpeakerMode(%d)=%d\n", sm, spr); }
-          else fprintf(stderr, "[FMOD] setSpeakerMode SKIP (auto)\n"); }
-        /* 🔊 33=INVALID_SPEAKER vem DEPOIS do output OpenSL inicializar OK → é o
-         * mixer de software da FMOD que não tem driver/format válido. Diagnóstico
-         * + força driver 0 e formato de software explícito (44100/PCM16/stereo). */
-        { int (*gnd)(void *, int *) = (int (*)(void *, int *))nfs_comb_lookup_real("_ZN4FMOD6System13getNumDriversEPi", 0);
-          int nd = -1; if (gnd) { int gr2 = gnd(sys, &nd); fprintf(stderr, "[FMOD] getNumDrivers -> ret=%d n=%d\n", gr2, nd); }
-          int (*sdrv)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System9setDriverEi", 0);
-          if (sdrv && !getenv("NFS_NOSETDRV")) { int dr2 = sdrv(sys, 0); fprintf(stderr, "[FMOD] setDriver(0) -> %d\n", dr2); }
-          /* getDriverCaps: revela o speaker mode que o driver OpenSL reporta (fonte do 33?) */
-          { int (*gdc)(void *, int, unsigned int *, int *, int *) = (int (*)(void *, int, unsigned int *, int *, int *))nfs_comb_lookup_real("_ZN4FMOD6System13getDriverCapsEiPjPiP16FMOD_SPEAKERMODE", 0);
-            if (gdc) { unsigned int caps=0; int rate=0, spk=-99; int gc=gdc(sys,0,&caps,&rate,&spk);
-              fprintf(stderr, "[FMOD] getDriverCaps(0) -> ret=%d caps=0x%x ctrlrate=%d ctrlspeaker=%d\n", gc, caps, rate, spk); } }
-          int (*ssf)(void *, int, int, int, int, int) = (int (*)(void *, int, int, int, int, int))nfs_comb_lookup_real("_ZN4FMOD6System17setSoftwareFormatEi17FMOD_SOUND_FORMATii18FMOD_DSP_RESAMPLER", 0);
-          if (ssf && !getenv("NFS_NOSWFMT")) {
-            int rate = getenv("NFS_SWRATE") ? atoi(getenv("NFS_SWRATE")) : 44100;
-            int ch = getenv("NFS_SWCH") ? atoi(getenv("NFS_SWCH")) : 2;
-            int fr2 = ssf(sys, rate, 2 /*PCM16*/, ch, ch, 1 /*LINEAR*/);
-            fprintf(stderr, "[FMOD] setSoftwareFormat(%d,PCM16,%d) -> %d\n", rate, ch, fr2);
-          } else if (!ssf) fprintf(stderr, "[FMOD] setSoftwareFormat nao resolvido\n");
-        } }
-      else fprintf(stderr, "[FMOD] getSystemObject=%d sys=NULL\n", gr);
-    } else fprintf(stderr, "[FMOD] getsys=%p setout=%p (nao resolvido)\n", (void*)getsys, (void*)setout);
-    /* 🔊 System::init PRIMEIRO (System limpo) — o SoundManager usa
-     * System::createSound, que só precisa do System inicializado. Se funcionar,
-     * pula o EventSystem::init. */
-    int sysok = 0;
-    if (getsys) {
-      void *sys2 = NULL; getsys(self, &sys2);
-      if (sys2) {
-        int (*sysinit)(void *, int, unsigned int, void *) =
-          (int (*)(void *, int, unsigned int, void *))nfs_comb_lookup_real("_ZN4FMOD6System4initEijPv", 0);
-        /* diag: speaker mode EFETIVO imediatamente antes do init (setDriver/SoftwareFormat
-         * podem ter resetado). Se != 2(STEREO) aqui, é a causa do 33. */
-        { int (*gsm)(void *, int *) = (int (*)(void *, int *))nfs_comb_lookup_real("_ZN4FMOD6System14getSpeakerModeEP16FMOD_SPEAKERMODE", 0);
-          if (gsm) { int sm2=-99; int gr3=gsm(sys2,&sm2); fprintf(stderr, "[FMOD] getSpeakerMode (pre-init) -> ret=%d mode=%d\n", gr3, sm2);
-            /* re-força STEREO logo antes do init caso tenha sido resetado */
-            if (!getenv("NFS_NOSPKRE")) { int (*ssp)(void *, int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
-              if (ssp){ int r=ssp(sys2, getenv("NFS_SPKMODE")?atoi(getenv("NFS_SPKMODE")):2); fprintf(stderr,"[FMOD] re-setSpeakerMode pre-init -> %d\n", r);} } } }
-        /* 🔊 OUTSWEEP: tenta CADA output type com init+close p/ achar qual inicializa.
-         * NOSOUND deve dar 0 (prova que o problema é o output OpenSL, não o System). */
-        if (getenv("NFS_OUTSWEEP") && sysinit) {
-          int (*so)(void*,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE",0);
-          int (*ssp0)(void*,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
-          int (*scl0)(void*)=(int(*)(void*))nfs_comb_lookup_real("_ZN4FMOD6System5closeEv",0);
-          for (int ot=0; ot<=24; ot++) {
-            int sor = so?so(sys2,ot):-1;
-            if (ssp0) ssp0(sys2,2);
-            int si0 = sysinit(sys2, 32, 0, NULL);
-            fprintf(stderr, "[OUTSWEEP] output=%d setOutput=%d init=%d\n", ot, sor, si0);
-            if (si0==0 && scl0) scl0(sys2);
-          }
-        }
-        if (sysinit) {
-          unsigned int sflags = getenv("NFS_FMODFLAGS") ? (unsigned)strtoul(getenv("NFS_FMODFLAGS"),0,0) : 0; /* FMOD_INIT_NORMAL */
-          int (*ssp)(void *,int)=(int(*)(void*,int))nfs_comb_lookup_real("_ZN4FMOD6System14setSpeakerModeE16FMOD_SPEAKERMODE",0);
-          int (*gsm2)(void *,int*)=(int(*)(void*,int*))nfs_comb_lookup_real("_ZN4FMOD6System14getSpeakerModeEP16FMOD_SPEAKERMODE",0);
-          int (*sclose)(void *)=(int(*)(void*))nfs_comb_lookup_real("_ZN4FMOD6System5closeEv",0);
-          int si = 33;
-          /* 🔊 SWEEP: 33=INVALID_SPEAKER pq speaker mode efetivo=RAW(0). Varre modos,
-           * verifica se setSpeakerMode GRUDA (read), tenta init, close entre tentativas. */
-          int modes[] = {2,1,3,4,5,6,7,8,0}; /* STEREO,MONO,QUAD,SURROUND,5.1,7.1,SRS,DOLBY,RAW */
-          if (getenv("NFS_SPKMODE")) { modes[0]=atoi(getenv("NFS_SPKMODE")); }
-          for (int mi=0; mi<9; mi++) {
-            int m = modes[mi];
-            int spr = ssp ? ssp(sys2, m) : -1;
-            int rd = -99; if (gsm2) gsm2(sys2, &rd);
-            si = sysinit(sys2, maxchannels > 0 && maxchannels <= 4093 ? maxchannels : 32, sflags, NULL);
-            fprintf(stderr, "[SWEEP] setSpeakerMode(%d)=%d read=%d init=%d\n", m, spr, rd, si);
-            if (si == 0) { sysok = 1; break; }
-            if (sclose) sclose(sys2); /* reseta p/ próxima tentativa */
-            if (getenv("NFS_NOSWEEP")) break;
-          }
-          fprintf(stderr, "[FMOD] System::init FINAL -> %d\n", si);
-          if (si == 0) sysok = 1; }
+    /* 🔊🔑 FIX da thread do mixer (uma vez, ANTES de qualquer init): a sub-função
+     * interna do System::init em 0xa9120 cria a thread do mixer FMOD com SCHED_FIFO
+     * de tempo-real → falha no so-loader → init=33 (era falso "INVALID_SPEAKER";
+     * na verdade é falha de pthread). Substituímos por thread normal. */
+    static int s_fmodfix_done = 0;
+    if (!s_fmodfix_done) {
+      s_fmodfix_done = 1;
+      uintptr_t sinit = nfs_comb_lookup_real("_ZN4FMOD6System4initEijPv", 0);
+      if (sinit) {
+        uintptr_t base = sinit - 0x9e650;
+        if (!getenv("NFS_NOTHREADFIX"))
+          fmod_install_replace(base, 0xa9120, (void *)my_fmod_create_thread,
+                               "FUN_a9120(mixer-thread)");
       }
     }
-    if (sysok) return 0; /* System ok → createSound funciona; pula EventSystem */
+    /* 🔊 força o output OpenSL ES no System do EventSystem ANTES do init (auto-detect
+     * pega AudioTrack/JNI e falha). getSystemObject(self,&sys) → setOutput(OpenSL). */
+    int (*getsys)(void *, void **) = (int (*)(void *, void **))nfs_comb_lookup_real("_ZN4FMOD11EventSystem15getSystemObjectEPPNS_6SystemE", 0);
+    int (*setout)(void *, int) = (int (*)(void *, int))nfs_comb_lookup_real("_ZN4FMOD6System9setOutputE15FMOD_OUTPUTTYPE", 0);
+    if (getsys && setout) {
+      void *sys = NULL; int gr = getsys(self, &sys);
+      if (sys) {
+        int ot = getenv("NFS_FMODOUT") ? atoi(getenv("NFS_FMODOUT")) : 22; /* 22=OpenSL */
+        int sr = setout(sys, ot);
+        fprintf(stderr, "[FMOD] getSystemObject=%d sys=%p setOutput(%d)=%d\n", gr, sys, ot, sr);
+      } else fprintf(stderr, "[FMOD] getSystemObject=%d sys=NULL\n", gr);
+    }
+    /* 🔊 EventSystem::init REAL: agora que o thread-fix faz o System::init interno
+     * passar, deixamos o EventSystem inicializar de verdade (o SoundManager usa o
+     * EventSystem p/ createSound — System::init manual não basta). */
     int rc = real_init(self, maxchannels, flags, extradriverdata, eventflags);
     fprintf(stderr, "[FMOD] EventSystem::init REAL -> %d\n", rc);
-    return 0; /* finge OK p/ o EventSystem não thrashar */
+    return 0; /* finge OK p/ o EventSystem não thrashar mesmo se falhar */
   }
   static int once = 0;
   if (!once) { fprintf(stderr, "[FMOD] EventSystem::init STUBADO -> FMOD_OK (sem som)\n"); once = 1; }
@@ -1280,6 +1451,15 @@ DynLibFunction nfs_shims[] = {
      * thrasha o device. NFS_FMODSTUB=1 força init=FMOD_OK p/ o EventSystem ficar
      * não-nulo (sem som, mas para o spam e destrava o jogo). */
     {"_ZN4FMOD11EventSystem4initEijPvj", (uintptr_t)fmod_es_init_stub},
+    /* 🔊 wrappers de diagnóstico de som (logam sob NFS_SNDLOG; sempre chamam o real) */
+    {"_ZN4FMOD11EventSystem4loadEPKcP19FMOD_EVENT_LOADINFOPPNS_12EventProjectE", (uintptr_t)my_es_load},
+    {"_ZN4FMOD11EventSystem12setMediaPathEPKc", (uintptr_t)my_set_mediapath},
+    {"_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_sound},
+    {"_ZN4FMOD6System12createStreamEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_stream},
+    {"FMOD_System_CreateSound", (uintptr_t)my_c_createsound},
+    {"FMOD_System_CreateStream", (uintptr_t)my_c_createstream},
+    {"_ZN4FMOD11EventSystem8getEventEPKcjPPNS_5EventE", (uintptr_t)my_get_event},
+    {"FMOD_EventSystem_SetMediaPath", (uintptr_t)my_c_setmedia},
     {"opendir", (uintptr_t)my_opendir},
     {"closedir", (uintptr_t)my_closedir},
     {"readdir", (uintptr_t)my_readdir},

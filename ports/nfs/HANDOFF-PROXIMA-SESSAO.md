@@ -9,6 +9,53 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
+## 🔊🟢🏆 PARTE 17 (2026-06-15) — ÁUDIO FUNCIONANDO! init + latência + música + SFX
+
+**O "33" do init NÃO era INVALID_SPEAKER — era falha de criação de thread.** Via Ghidra
+(libfmodex), a cadeia `System::init(0x404dc) → FUN_a50ec → FUN_a9120` mostrou que `FUN_a9120`
+é um helper de **criação de thread** que retorna `0x21`(=33) em falha de pthread. Ele cria a
+thread do mixer com **SCHED_FIFO de tempo-real (prio 90-99)**, que falha no so-loader
+(bionic→glibc; o sched_param fica aliasado dentro do attr glibc de layout diferente).
+Confirmado por inline-hook (`NFS_FMODHOOK`): das candidatas, só `FUN_a9120` retornava 33.
+
+### Fixes aplicados (todos em src/, default-ON; gameplay= grun.sh c/ NFS_SOUND):
+1. **Thread do mixer (imports.c `my_fmod_create_thread` + `fmod_install_replace`):** detour de
+   8 bytes substitui `FUN_a9120` por criação de thread **glibc limpa, normal (sem RT)**.
+   → `System::init -> 0`, `EventSystem::init REAL -> 0`, OpenSL→SDL abre (44100/2ch).
+2. **Stub EventSystem::init reescrito (imports.c):** instala o thread-fix, faz `setOutput(22=
+   OpenSL)`, e chama o **EventSystem::init REAL** (antes pulava→SoundManager sem EventSystem).
+3. **Latência — backpressure no ring (opensles_shim.c):** o shim aceitava enqueues ilimitados
+   → ring crescia de ~280ms a ~1s (a "batida atrasada 1s"). Agora a drenagem do callback do
+   SDL dispara MENOS callbacks ao FMOD quando o ring passa do alvo (`target_ring_bytes`,
+   NFS_RINGMS=60ms) → **ring estável ~80ms, sem deriva**. SDL buffer 4096→1024 (~93ms→23ms).
+4. **Música (jni_shim.c):** `isAnyMusicPlaying`/`isMusicActive` (CallStaticBooleanMethod
+   retornava 1) → o jogo achava que havia música do usuário e **suprimia a própria trilha**
+   (MusicManager::PlayNextTrack break). Agora MID_IS_MUSIC_PLAYING → 0. **Música toca.**
+5. **🔑 SFX/eventos (imports.c): prioridade RT das threads do mixer = DEFAULT-OFF.** Com RT
+   FIFO 99, as threads de áudio **starvavam o loader** → `getEvent` dava 89(EVENT_NOTFOUND)
+   p/ motor/transmissão e 19 p/ nitro/pneus/sirene (RACY). Com RT-off, o loader respira →
+   **motor, nitro, pneus, sirene da polícia CARREGAM** (só `transmission/sports` resta=19).
+   NFS_RT=1 reativa RT moderado (prio 5) se houver chiado/underrun.
+
+### Wrappers FMOD de diagnóstico (em nfs_shims[], gated NFS_SNDLOG; sempre chamam o real):
+`EventSystem::load`, `setMediaPath`(C++/C), `System::createSound/createStream`(C++/C),
+`EventSystem::getEvent`. Logam só falhas (ret!=0). `fmod_force_sw()` limpa FMOD_HARDWARE(0x20)
+→ SOFTWARE(0x40) (o jogo pede HW decode de MP3 que não temos). Envs: NFS_SNDLOG, NFS_RINGDBG
+(profundidade do ring), NFS_RINGMS, NFS_RT, NFS_FMODRTPRIO, NFS_NOTHREADFIX, NFS_NOFMODSW.
+
+### RESTA (polimento, todos minoritários):
+- `transmission/transmission/sports` → 19 (1 evento de troca de marcha).
+- `loading_01.mp3` (música da tela de loading) → 19: MP3 com tag ID3; codec MPEG existe no
+  libfmodex mas a detecção/stream falha (a música da PLAYLIST in-game toca — é outro caminho).
+- Jingle do splash EA/Firemonkeys: race (o som é pedido antes do ui.fev terminar de carregar;
+  "só na 1ª vez"). Ordering do jogo, difícil sem mudar timing.
+- Investigar: por que streamed waves dão FORMAT(19) (VFS ok/thread-safe; ver se o event system
+  pede HW decode internamente — getEvent não passa pelos meus wrappers de mode).
+
+## 🔊🔴 PARTE 16 (2026-06-15) — [SUPERADA pela PARTE 17] hipótese INVALID_SPEAKER (era falsa)
+> NOTA: a teoria de speaker-mode abaixo foi REFUTADA na PARTE 17 — o 33 é falha de thread, não
+> de speaker. Mantido por histórico do RE feito.
+
 ## 🔊🟡 PARTE 16 (2026-06-15) — ÁUDIO FMOD: System::init = 33 (INVALID_SPEAKER) — NÃO RESOLVIDO, MUITO INVESTIGADO
 
 **Estado:** jogo JOGÁVEL (vídeo+controle) mas SEM SOM. O caminho de som é OPT-IN
