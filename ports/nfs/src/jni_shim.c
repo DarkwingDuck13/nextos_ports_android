@@ -429,6 +429,14 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
     if (obj == &g_net_status_sentinel) {
       /* Nimble Network.Status: ordinal 3 = conectado p/ este build (validado:
        * 3 não dispara NO_CONNECTION_PROMPT). NFS_NETSTATUS sobrescreve. */
+      if (getenv("NFS_STACKSCAN")) {
+        extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
+        uintptr_t *sp; __asm__("mov %0, sp":"=r"(sp));
+        int n=0; fprintf(stderr, "[STACK] ordinal callers:");
+        for (int i=0;i<256 && n<10;i++){ uintptr_t v=sp[i];
+          if (v>tb && v<tb+0xa00000){ fprintf(stderr," +0x%lx",(unsigned long)(v-tb)); n++; } }
+        fprintf(stderr,"\n");
+      }
       const char *e = getenv("NFS_NETSTATUS");
       return e ? atoi(e) : 3;
     }

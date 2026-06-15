@@ -9,7 +9,47 @@ RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
 Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
-## 🆕 PARTE 12 (2026-06-15) — CONTROLES: toque DESPACHA mas menu não consome; tecla CHEGA na engine
+## 🆕🆕 PARTE 13 (2026-06-15) — GAMEPAD FUNCIONA + CONECTIVIDADE; muro = checkbox do EULA
+**INPUT DO MENU = GAMEPAD (MogaController), não toque nem physicalKey.** O log da engine
+mostra `ShowMogaHighlight` no EULA. Caminho: `Java_..._MogaController_nativeOnKeyEvent`
+(0x265ea0) recebe (env, thiz, **KeyEvent**) e lê `KeyEvent.getKeyCode()` + `getAction()`
+via **CallIntMethodV** (slot 50). Switch em (keycode-0x13); handled: 19-22=DPAD, 96=A
+(confirm), 97=B, 99/100=X/Y, 102-105=L1/R1/L2/R2, 108=START, 109=SELECT. getAction DEVE
+ser 0(DOWN)/1(UP) senão a engine BAILA.
+- **jni_shim.c:** getKeyCode/getAction methodIDs NÃO cacheados (sem Java MogaController) →
+  durante a injeção usamos CONTADOR (g_moga_calln): 1ª/2ª chamada CallInt=keycode, 3ª=action.
+- **main.c:** injetor `moga.txt` (keycode Android) chama nativeOnKeyEvent c/ KeyEvent fake +
+  DOWN/UP. VERIFICADO end-to-end: log "Inside nativeOnKeyEvent 20 → Key Event Key Down →
+  Listener Key Press → MogaKeyCode Key Press Dpad Down". A=CONFIRM toca `btn_generic_accept`.
+**🌐 CONECTIVIDADE (causa do EULA travado):** pressionar A ATIVA o accept, mas o flow roteava
+p/ `NO_CONNECTION_PROMPT` (saída sem ligação no flow = beco) porque o jogo se via OFFLINE.
+Cadeia JNI: `Nimble.getComponent()→INetwork`, `INetwork.getStatus()→Network$Status`,
+`Status.ordinal()→int`. Stub dava 0 = sem conexão. **FIX (jni_shim.c):** getStatus()→sentinel;
+ordinal(sentinel)= **3** (validado por sweep: 0/1/2/4/5 disparam NO_CONNECTION, **só 3 não**).
+NFS_NETSTATUS sobrescreve. Com netstatus=3: SEM NO_CONNECTION ✅.
+**❌ MURO ATUAL = CHECKBOX "I have read and accept" (texto VERMELHO no topo).** Com netstatus=3,
+A (CONFIRM) → fade/transição → **RECARREGA active_accept** (volta ao EULA) porque o checkbox
+de aceite NÃO está marcado (accept rejeitado ANTES de escrever /active_accepted — sem erro de
+write). O checkbox é **touch-only e inacessível**: (a) toque (nativeTouchScreenEvent) NÃO é
+consumido pelo menu (testado, 0 efeito); (b) DPAD não move o foco (foco preso no CONFIRM; A
+sempre toca btn_generic_accept; nenhum botão 19-109 marca o checkbox — todos revertem ao EULA);
+(c) a navegação/foco do menu parece usar input POLLED, não eventos (igual ao toque). Layout do
+EULA: active_accept/aas_inner/frame/**btn_options_small2** (provável CHECKBOX)/btn_options_large_active
+(=CONFIRM focado)/btn_options_large_idle. Após aceite o flow vai p/ tutorial_check → carrega
+garage.m3g (cena 3D). 3 telas: active_accept{,_eula,_privacy}.sb.
+**PRÓXIMO (forçar o aceite — em ordem de promessa):**
+  1. **Forçar o flag do checkbox.** O accept handler checa um byte da tela (candidato:
+     screen[0x4c], visto em f_388428 mas decompile não-confiável). Achar o objeto da tela
+     active_accept (via observer KEYOBS=obs) e setar o flag, OU hookar o accept handler.
+     Accept handler está na cadeia do getStatus() — stack scan (NFS_STACKSCAN=1) deu
+     +0x388438/+0x4dae84/+0x4d09c8 (app-level; 0x96xxxx/0x7bxxxx=wrappers Nimble).
+  2. **Fix navegação POLLED:** achar onde o menu LÊ o estado do DPAD/foco por frame (não
+     via evento) e injetar lá — destrava navegar até btn_options_small2 e marcá-lo.
+  3. Bypass do flow: forçar avanço de active_accept p/ o próximo node.
+Diag: NFS_NETSTATUS, NFS_STACKSCAN; net.txt (ordinal runtime); moga.txt; gnet.sh `<n>`
+(launcher c/ NFS_NETSTATUS); mseq.sh `<delay> <kc...>` (sequência de gamepad).
+
+## PARTE 12 (2026-06-15) — CONTROLES: toque DESPACHA mas menu não consome; tecla CHEGA na engine
 **FIX REAL aplicado (jni_shim.c): `IsSameObject` (JNIEnv slot 24) estava NO `jni_stub`→retornava 0.**
 O dispatch de toque (`nativeTouchScreenEvent` 0x54d764 → getter `0x54a244` itera lista
 intrusiva de handlers @VA 0xadfd24 → `IsSameObject(env, handler->view, thiz)`) SEMPRE
