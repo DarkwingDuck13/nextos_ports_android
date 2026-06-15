@@ -204,10 +204,29 @@ static int my_pthread_create(void *th, const void *attr, void *(*fn)(void *), vo
 /* ---- fopen/open hook: loga acessos a arquivo (ver se a engine abre o OBB) ---- */
 static void *(*real_fopen)(const char *, const char *);
 void *g_obb_fp;  /* fp do OBB, p/ diagnóstico de leitura do índice ZIP */
+/* 🎵 strip do tag ID3v2 de .mp3: o codec MPEG do FMOD falha (FORMAT 19) se o stream
+ * não começa no sync MPEG (o tag ID3 fica antes). Apresentamos o arquivo como se o
+ * tag não existisse (offset em todas as leituras/seeks) → MP3 decodifica → música
+ * toca E o load da corrida não trava esperando a música. NFS_NOID3 desliga. */
+static struct { void *fp; long off; } g_id3[8];
+static long id3_off(void *fp){ for(int i=0;i<8;i++) if(g_id3[i].fp==fp) return g_id3[i].off; return 0; }
+static void id3_clear(void *fp){ for(int i=0;i<8;i++) if(g_id3[i].fp==fp){ g_id3[i].fp=0; g_id3[i].off=0; } }
+static void id3_set(void *fp, long off){ id3_clear(fp); for(int i=0;i<8;i++) if(!g_id3[i].fp){ g_id3[i].fp=fp; g_id3[i].off=off; return; } g_id3[0].fp=fp; g_id3[0].off=off; }
 static void *my_fopen(const char *path, const char *mode) {
   if (!real_fopen) real_fopen = (void *(*)(const char *, const char *))dlsym(RTLD_DEFAULT, "fopen");
   void *fp = real_fopen(path, mode);
   if (path && strstr(path, ".obb")) g_obb_fp = fp;
+  if (fp) id3_clear(fp); /* limpa entrada stale (fp reusado) */
+  if (fp && path && (strstr(path,".mp3")||strstr(path,".MP3")) && !getenv("NFS_NOID3")) {
+    size_t (*frd)(void*,size_t,size_t,void*) = (size_t(*)(void*,size_t,size_t,void*))dlsym(RTLD_DEFAULT,"fread");
+    unsigned char h[10];
+    if (frd && frd(h,1,10,fp)==10 && h[0]=='I'&&h[1]=='D'&&h[2]=='3' && h[6]<0x80&&h[7]<0x80&&h[8]<0x80&&h[9]<0x80) {
+      long sz=((long)h[6]<<21)|((long)h[7]<<14)|((long)h[8]<<7)|(long)h[9];
+      long total=10+sz+((h[5]&0x10)?10:0);
+      id3_set(fp,total); fseek((FILE*)fp,total,0);
+      if(getenv("NFS_SNDLOG")) fprintf(stderr,"[ID3] '%s' tag=%ld pulado\n", path, total);
+    } else fseek((FILE*)fp,0,0);
+  }
   if (getenv("NFS_FOPENLOG")) {
     static int n = 0;
     int tex = path && (strstr(path, "texturepack") || strstr(path, ".sba") || strstr(path, ".tif") || strstr(path, "splash"));
@@ -269,6 +288,8 @@ long nfs_io_last_seek = -1;
 long nfs_io_seeks = 0;
 long nfs_io_read_bytes = 0;
 static int my_fseek(void *fp, long off, int wh) {
+  long io = id3_off(fp);
+  if (io && wh == 0 /*SEEK_SET*/) off += io; /* desloca p/ depois do tag ID3 */
   int rc = fseek((FILE *)fp, off, wh);
   nfs_io_last_seek = off; nfs_io_seeks++;
   if (getenv("NFS_SEEKLOG")) {
@@ -279,6 +300,8 @@ static int my_fseek(void *fp, long off, int wh) {
 }
 static long my_ftell(void *fp) {
   long r = ftell((FILE *)fp);
+  long io = id3_off(fp);
+  if (io && r >= io) r -= io; /* posição lógica (sem o tag ID3) */
   if (getenv("NFS_SEEKLOG")) {
     static int n = 0;
     if (n < 60) { fprintf(stderr, "[ftell] fp=%p -> %ld\n", fp, r); n++; }
@@ -592,17 +615,23 @@ static int my_set_mediapath(void *self, const char *p) {
  * por hardware do Android, que não temos no so-loader) → createSound falha com
  * FORMAT (19) → música/splash/efeitos com áudio MP3 não tocam. Trocamos HARDWARE
  * (0x20) por SOFTWARE (0x40) → mixer de software do FMOD decodifica. NFS_NOFMODSW desliga. */
-static unsigned int fmod_force_sw(unsigned int mode) {
-  if (getenv("NFS_NOFMODSW")) return mode;
-  mode &= ~0x20u; /* limpa FMOD_HARDWARE */
-  mode |= 0x40u;  /* seta FMOD_SOFTWARE */
+static unsigned int fmod_fix_mode(const char *name, unsigned int mode) {
+  if (!getenv("NFS_NOFMODSW")) { mode &= ~0x20u; mode |= 0x40u; } /* HARDWARE→SOFTWARE */
+  /* 🎵🔑 MP3 = NONBLOCKING (0x10000): o decode do MP3 roda em thread de stream do
+   * FMOD; se o createStream BLOQUEIA esperando a stream ficar pronta, a thread
+   * principal trava (busy-loop) e o load da CORRIDA nunca termina → tela branca,
+   * sem carro. NONBLOCKING faz o createStream retornar na hora (decode em bg) →
+   * a thread principal segue → corrida carrega. NFS_NOMP3NB desliga. */
+  if (name && !(mode & 0x800u) && (strstr(name, ".mp3") || strstr(name, ".MP3")) &&
+      !getenv("NFS_NOMP3NB"))
+    mode |= 0x10000u;
   return mode;
 }
 static int (*real_create_sound)(void *, const char *, unsigned int, void *, void **);
 static int my_create_sound(void *self, const char *name, unsigned int mode, void *exinfo, void **snd) {
   if (!real_create_sound) real_create_sound = (int (*)(void *, const char *, unsigned int, void *, void **))
       nfs_comb_lookup_real("_ZN4FMOD6System11createSoundEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_sound);
-  mode = fmod_force_sw(mode);
+  mode = fmod_fix_mode(name, mode);
   int r = real_create_sound ? real_create_sound(self, name, mode, exinfo, snd) : -1;
   if (getenv("NFS_SNDLOG") && r != 0) {
     const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
@@ -615,7 +644,7 @@ static int (*real_create_stream)(void *, const char *, unsigned int, void *, voi
 static int my_create_stream(void *self, const char *name, unsigned int mode, void *exinfo, void **snd) {
   if (!real_create_stream) real_create_stream = (int (*)(void *, const char *, unsigned int, void *, void **))
       nfs_comb_lookup_real("_ZN4FMOD6System12createStreamEPKcjP22FMOD_CREATESOUNDEXINFOPPNS_5SoundE", (uintptr_t)my_create_stream);
-  mode = fmod_force_sw(mode);
+  mode = fmod_fix_mode(name, mode);
   int r = real_create_stream ? real_create_stream(self, name, mode, exinfo, snd) : -1;
   if (getenv("NFS_SNDLOG") && r != 0) {
     const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
@@ -630,7 +659,7 @@ static int (*real_c_createsound)(void *, const char *, unsigned int, void *, voi
 static int my_c_createsound(void *sys, const char *name, unsigned int mode, void *ex, void **snd) {
   if (!real_c_createsound) real_c_createsound = (int (*)(void *, const char *, unsigned int, void *, void **))
       nfs_comb_lookup_real("FMOD_System_CreateSound", (uintptr_t)my_c_createsound);
-  mode = fmod_force_sw(mode);
+  mode = fmod_fix_mode(name, mode);
   int r = real_c_createsound ? real_c_createsound(sys, name, mode, ex, snd) : -1;
   if (getenv("NFS_SNDLOG") && r != 0) {
     const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
@@ -664,7 +693,7 @@ static int (*real_c_createstream)(void *, const char *, unsigned int, void *, vo
 static int my_c_createstream(void *sys, const char *name, unsigned int mode, void *ex, void **snd) {
   if (!real_c_createstream) real_c_createstream = (int (*)(void *, const char *, unsigned int, void *, void **))
       nfs_comb_lookup_real("FMOD_System_CreateStream", (uintptr_t)my_c_createstream);
-  mode = fmod_force_sw(mode);
+  mode = fmod_fix_mode(name, mode);
   int r = real_c_createstream ? real_c_createstream(sys, name, mode, ex, snd) : -1;
   if (getenv("NFS_SNDLOG") && r != 0) {
     const char *nm = (mode & 0x800u) ? "(memory)" : (name ? name : "(null)");
