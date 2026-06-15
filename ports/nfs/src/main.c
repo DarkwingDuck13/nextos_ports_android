@@ -538,19 +538,25 @@ int main(int argc, char *argv[]) {
        * injeta DOWN(este frame)+UP(próximo) em nativeTouchScreenEvent. A engine é
        * SOFTFP → pcs("aapcs") passa os floats x,y no ABI dela. */
       {
-        typedef void (*touchfn_t)(void*,void*,int,int,float,float) __attribute__((pcs("aapcs")));
+        /* x,y são FLOAT. A engine é SOFTFP → recebe os floats como BITS em
+         * registradores/stack core (iguais a int). Passamos os bits como int
+         * (nossa chamada hardfp põe ints no mesmo lugar que softfp põe os floats).
+         * À prova de falha (independe do atributo pcs). */
+        typedef void (*touchfn_t)(void*,void*,int,int,int,int);
         static touchfn_t touch = NULL; static int tinit = 0;
         if (!tinit) { tinit = 1;
           touch = (touchfn_t)so_find_addr_safe("Java_com_ea_ironmonkey_GameGLSurfaceView_nativeTouchScreenEvent"); }
-        static float pend_x, pend_y; static int pend_up = 0;
-        if (pend_up) { pend_up = 0; if (touch) touch(env, fake_this, 1/*UP*/, 0, pend_x, pend_y); }
+        union { float f; int i; } ux, uy;
+        static int pend_xi, pend_yi, pend_up = 0;
+        if (pend_up) { pend_up = 0; if (touch) touch(env, fake_this, 1/*UP*/, 0, pend_xi, pend_yi); }
         FILE *tf = fopen("/storage/roms/nfs/tap.txt", "r");
         if (tf) { float x, y; int ok = fscanf(tf, "%f %f", &x, &y);
-          FILE *lg = fopen("/storage/roms/nfs/taplog.txt", "a");
-          if (lg) { fprintf(lg, "tap read ok=%d x=%g y=%g touch=%p\n", ok, x, y, (void*)touch); fclose(lg); }
           if (ok == 2 && touch) {
-            touch(env, fake_this, 0/*DOWN*/, 0, x, y);
-            pend_x = x; pend_y = y; pend_up = 1; }
+            ux.f = x; uy.f = y;
+            FILE *lg = fopen("/storage/roms/nfs/taplog.txt", "a");
+            if (lg) { fprintf(lg, "TAP x=%g y=%g (down)\n", x, y); fclose(lg); }
+            touch(env, fake_this, 0/*DOWN*/, 0, ux.i, uy.i);
+            pend_xi = ux.i; pend_yi = uy.i; pend_up = 1; }
           fclose(tf); remove("/storage/roms/nfs/tap.txt"); }
       }
       /* APRESENTA o frame: a engine renderiza no backbuffer mas não chama swap
