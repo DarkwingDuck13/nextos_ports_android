@@ -72,6 +72,11 @@ void egl_shim_create_window(void) {
     return;
   }
   debugPrintf("egl_shim: GL share-root context created\n");
+  { int rd=0,gd=0,bd=0,ad=0,dd=0,sd=0;
+    SDL_GL_GetAttribute(SDL_GL_RED_SIZE,&rd); SDL_GL_GetAttribute(SDL_GL_GREEN_SIZE,&gd);
+    SDL_GL_GetAttribute(SDL_GL_BLUE_SIZE,&bd); SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE,&ad);
+    SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE,&dd); SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE,&sd);
+    fprintf(stderr,"[EGLCFG] R%d G%d B%d A%d DEPTH=%d STENCIL=%d\n",rd,gd,bd,ad,dd,sd); }
 
   /* MANTÉM o share_root current desde já (a engine NÃO cria contexto próprio nem
    * faz MakeCurrent — assume o GLSurfaceView; sem isso glGetString=NULL no init do
@@ -611,15 +616,44 @@ static void atlas_rebind(void){
     real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,g_nfs_atlas_tex);
   }
 }
+/* 🔬 TESTE 3D-preto: desabilita depth/cull nos draws GRANDES (geometria 3D) p/
+ * ver se a geometria aparece (depth buffer ausente/quebrado no Mali-450 rejeita
+ * tudo; HUD desenha sem depth). NFS_NODEPTH/NFS_NOCULL. */
+static void big3d_state(int n){
+  static int nd=-1,nc=-1;
+  if(nd<0){ nd=getenv("NFS_NODEPTH")?1:0; nc=getenv("NFS_NOCULL")?1:0; }
+  if(n<64) return;
+  if(nd){ if(!real_glDisable) real_glDisable=(pfn_glEnable)SDL_GL_GetProcAddress("glDisable");
+    if(real_glDisable) real_glDisable(0x0B71/*GL_DEPTH_TEST*/); }
+  if(nc){ if(!real_glDisable) real_glDisable=(pfn_glEnable)SDL_GL_GetProcAddress("glDisable");
+    if(real_glDisable) real_glDisable(0x0B44/*GL_CULL_FACE*/); }
+}
 void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("elt",c);
   atlas_rebind();
+  big3d_state(c);
   real_glDrawElements(m, c, t, i);
 }
+/* 🔑 FIX 3D-preto: o depth-test rejeitava TODA a geometria 3D (mundo preto, só
+ * HUD que desenha sem depth). Causa: o clear de depth no Mali-450 fica errado
+ * (buffer ~0 em vez de 1.0=far) → fragmentos (z>buffer) falham GL_LESS. Forçamos
+ * glClearDepthf(1.0)+glDepthMask(1) ANTES de cada clear de depth → buffer=far →
+ * geometria passa. Preserva a ordenação (≠ desabilitar depth). NFS_NODEPTHFIX desliga. */
+typedef void (*pfn_glClearDepthf)(float);
+typedef void (*pfn_glDepthMask)(unsigned char);
+static pfn_glClearDepthf real_glClearDepthf;
+static pfn_glDepthMask real_glDepthMask;
 void my_glClear(unsigned mask) {
   if (!real_glClear) real_glClear = (pfn_glClear)SDL_GL_GetProcAddress("glClear");
+  static int fix=-1; if(fix<0) fix=getenv("NFS_NODEPTHFIX")?0:1;
+  if(fix && (mask & 0x100)){ /* GL_DEPTH_BUFFER_BIT */
+    if(!real_glClearDepthf) real_glClearDepthf=(pfn_glClearDepthf)SDL_GL_GetProcAddress("glClearDepthf");
+    if(!real_glDepthMask) real_glDepthMask=(pfn_glDepthMask)SDL_GL_GetProcAddress("glDepthMask");
+    if(real_glDepthMask) real_glDepthMask(1);
+    if(real_glClearDepthf) real_glClearDepthf(1.0f);
+  }
   g_clears++; g_last_clear_mask = mask;
   real_glClear(mask);
 }
