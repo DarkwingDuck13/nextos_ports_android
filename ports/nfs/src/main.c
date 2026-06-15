@@ -684,17 +684,39 @@ int main(int argc, char *argv[]) {
         typedef void (*mogafn_t)(void*,void*,void*);
         static mogafn_t moga=NULL; static int minit=0;
         static char fake_keyevent[16];
-        extern int g_moga_active, g_moga_keycode, g_moga_action;
+        extern int g_moga_active, g_moga_keycode, g_moga_action, g_moga_calln;
         if(!minit){ minit=1;
           moga=(mogafn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnKeyEvent"); }
         static int mpend=0, mkc=0;
-        if(mpend){ mpend=0; if(moga){ g_moga_active=1; g_moga_keycode=mkc; g_moga_action=1/*UP*/;
+        if(mpend){ mpend=0; if(moga){ g_moga_active=1; g_moga_keycode=mkc; g_moga_action=1/*UP*/; g_moga_calln=0;
             moga(env, fake_this, fake_keyevent); g_moga_active=0; } }
         FILE *mf = fopen("/storage/roms/nfs/moga.txt","r");
         if(mf){ int kc; if(fscanf(mf,"%d",&kc)==1 && moga){
             FILE *lg=fopen("/storage/roms/nfs/taplog.txt","a");
-            if(lg){ fprintf(lg,"MOGA %d moga=%p\n",kc,(void*)moga); fclose(lg); }
-            g_moga_active=1; g_moga_keycode=kc; g_moga_action=0/*DOWN*/;
+            if(lg){ fprintf(lg,"MOGA %d moga=%p\n",kc,(void*)moga);
+              /* 🔎 PROBE do observer de KEY (topo da pilha): replica
+               * ctx=0x3f7c88(); 0x3f80f4(&out, ctx, 0) → out[0]=observer da
+               * tela. Loga o offset de observer->vtable[2] p/ decompilar. */
+              extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
+              void*(*getctx)(void)=(void*(*)(void))(tb+0x3f7c88);
+              void(*lookup)(void*,void*,int)=(void(*)(void*,void*,int))(tb+0x3f80f4);
+              void *ctx=getctx(); void *out[2]={0,0};
+              lookup(out, ctx, 0);
+              void *obs=out[0];
+              if(obs && (uintptr_t)obs>0x10000){ uintptr_t ovt=*(uintptr_t*)obs;
+                /* r4 = obs->vtable[9](); handler real = r4->vtable[2] */
+                void*(*v9)(void*)=(void*(*)(void*))(*(uintptr_t*)(ovt+0x24));
+                void *r4=v9(obs);
+                uintptr_t h2=0,d2=0; void *deleg=NULL;
+                if(r4&&(uintptr_t)r4>0x10000){ uintptr_t r4vt=*(uintptr_t*)r4; h2=*(uintptr_t*)(r4vt+8)-tb;
+                  /* key branch forwarda p/ delegate=[r4+0x40]->vtable[2] */
+                  deleg=*(void**)((char*)r4+0x40);
+                  if(deleg&&(uintptr_t)deleg>0x10000){ uintptr_t dvt=*(uintptr_t*)deleg; d2=*(uintptr_t*)(dvt+8)-tb; }
+                }
+                fprintf(lg,"  KEYOBS obs=%p r4=%p handler=libapp+0x%lx deleg=%p deleg2=libapp+0x%lx\n",obs,r4,(unsigned long)h2,deleg,(unsigned long)d2);
+              } else fprintf(lg,"  KEYOBS null (ctx=%p)\n",ctx);
+              fclose(lg); }
+            g_moga_active=1; g_moga_keycode=kc; g_moga_action=0/*DOWN*/; g_moga_calln=0;
             moga(env, fake_this, fake_keyevent); g_moga_active=0;
             mkc=kc; mpend=1; }
           fclose(mf); remove("/storage/roms/nfs/moga.txt"); }

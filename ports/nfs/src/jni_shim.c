@@ -77,6 +77,8 @@ enum {
   MID_BMG_CLEAR,
   MID_GET_KEYCODE,   /* KeyEvent.getKeyCode() — gamepad/Moga */
   MID_GET_ACTION,    /* KeyEvent.getAction() */
+  MID_GET_STATUS,    /* INetwork.getStatus() -> Network$Status (conectividade) */
+  MID_ORDINAL,       /* Enum.ordinal() — usado p/ Network$Status */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_WIDTH,
@@ -99,6 +101,7 @@ static int g_method_tags[64]; /* unique addresses used as method IDs */
 int g_moga_active = 0;
 int g_moga_keycode = 0;
 int g_moga_action = 0;
+int g_moga_calln = 0;  /* main.c zera antes de cada nativeOnKeyEvent */
 
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
@@ -204,6 +207,8 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
   if (strcmp(name, "clear") == 0) return &g_method_tags[MID_BMG_CLEAR];
   if (strcmp(name, "getKeyCode") == 0) return &g_method_tags[MID_GET_KEYCODE];
   if (strcmp(name, "getAction") == 0) return &g_method_tags[MID_GET_ACTION];
+  if (strcmp(name, "getStatus") == 0) return &g_method_tags[MID_GET_STATUS];
+  if (strcmp(name, "ordinal") == 0) return &g_method_tags[MID_ORDINAL];
   if (strcmp(name, "isObbAssets") == 0) return &g_method_tags[MID_IS_OBB];
   if (strcmp(name, "useAssetsFileSystem") == 0) return &g_method_tags[MID_USE_ASSETS_FS];
   if (strcmp(name, "isFullApkAssets") == 0) return &g_method_tags[MID_IS_FULL_APK];
@@ -323,10 +328,17 @@ static void *jni_config_jstr(void *methodID) {
 }
 
 /* CallObjectMethod (index 36) - variadic */
+/* sentinel devolvido por INetwork.getStatus(); ordinal() o reconhece p/ devolver
+ * o status de rede "conectado" (sem afetar ordinal() de outros enums). */
+static int g_net_status_sentinel;
 static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
   { void *cv = jni_config_jstr(methodID); if (cv) return cv; }
+  /* 🌐 INetwork.getStatus() → Network$Status. Devolvemos um sentinel não-null
+   * cujo ordinal() = status conectado → o flow do EULA não roteia p/
+   * NO_CONNECTION_PROMPT (beco sem saída offline) e prossegue. */
+  if (methodID == &g_method_tags[MID_GET_STATUS]) return &g_net_status_sentinel;
   if (methodID == &g_method_tags[MID_GET_STORAGE_DIR]) {
     debugPrintf("jni_shim: CallObjectMethod -> storageDir = %s\n", nfs_data_dir());
     return make_jstring(nfs_data_dir());
@@ -398,11 +410,30 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
    * keycode/ação injetados. Cobrimos tanto o methodID cacheado via nosso
    * GetMethodID quanto o caso de methodID não-resolvido (g_moga_active). */
   if (g_moga_active) {
+    /* nativeOnKeyEvent lê, NESTA ordem: getKeyCode (log), getKeyCode (switch),
+     * getAction (down/up). Os methodIDs do KeyEvent NÃO são cacheados via nosso
+     * GetMethodID (não há Java MogaController) → não dá p/ distinguir por
+     * methodID. Usamos o contador: 1ª/2ª chamada=keycode, 3ª+=action. action
+     * DEVE ser 0(DOWN)/1(UP) senão a engine bail. */
     if (methodID == &g_method_tags[MID_GET_ACTION]) return g_moga_action;
-    return g_moga_keycode; /* getKeyCode (ou qualquer int call na janela) */
+    if (methodID == &g_method_tags[MID_GET_KEYCODE]) return g_moga_keycode;
+    int n = g_moga_calln++;
+    return (n < 2) ? g_moga_keycode : g_moga_action;
   }
   if (methodID == &g_method_tags[MID_GET_KEYCODE]) return g_moga_keycode;
   if (methodID == &g_method_tags[MID_GET_ACTION]) return g_moga_action;
+  /* 🌐 Network$Status.ordinal(): só p/ o nosso sentinel (não mexe noutros enums).
+   * Nimble Network.Status: 0=UNKNOWN/sem-conexão. NFS_NETSTATUS (default 1=NORMAL)
+   * = conectado → EULA prossegue. */
+  if (methodID == &g_method_tags[MID_ORDINAL]) {
+    if (obj == &g_net_status_sentinel) {
+      /* Nimble Network.Status: ordinal 3 = conectado p/ este build (validado:
+       * 3 não dispara NO_CONNECTION_PROMPT). NFS_NETSTATUS sobrescreve. */
+      const char *e = getenv("NFS_NETSTATUS");
+      return e ? atoi(e) : 3;
+    }
+    return 0;  /* ordinal() de outros enums: comportamento default inalterado */
+  }
   if (methodID == &g_method_tags[MID_GET_TOTAL_MEMORY]) {
     int mb = getenv("NFS_MEMMB") ? atoi(getenv("NFS_MEMMB")) : 2048;
     debugPrintf("jni_shim: getTotalMemory -> %d MB\n", mb);
