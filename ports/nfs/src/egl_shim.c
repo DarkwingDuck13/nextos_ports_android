@@ -276,7 +276,9 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
  * faz eglSwapBuffers é o GLSurfaceView (framework Java) — a engine nativa NÃO
  * chama swap. Sem framework, NÓS apresentamos. Não gateia em has_real_gl
  * (thread-local; o tick roda na nossa thread c/ o contexto da engine current). */
+int g_disc_frame = 0; /* 🔬 contador de frames apresentados (p/ gatear logs no disclaimer) */
 void egl_shim_force_present(void) {
+  g_disc_frame++;
   { static int hb = 0; hb++;
     if (hb == 1 || hb % 30 == 0) { FILE *h = fopen("/tmp/present.txt", "w");
       if (h) { fprintf(h, "present_calls=%d window=%p\n", hb, (void *)egl_window); fclose(h); } } }
@@ -618,6 +620,13 @@ void my_glActiveTexture(unsigned u){
 void my_glBindTexture(unsigned tgt, unsigned tex){
   if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
   if(tgt==0x0DE1 && g_active_unit>=0 && g_active_unit<8) g_unit_tex[g_active_unit]=tex;
+  /* 🔬 NFS_BINDLOG: no disclaimer (frames ~285-375), loga cada bind a unit 0 com o
+   * return-address (achar a fn da engine que liga 0/a textura do sprite). */
+  static int bindlog=-1; if(bindlog<0) bindlog=getenv("NFS_BINDLOG")?1:0;
+  if(bindlog){ extern int g_disc_frame;
+    if(g_disc_frame>=285 && g_disc_frame<=375 && tgt==0x0DE1 && g_active_unit==0){
+      static int bn=0; if(bn<400){ fprintf(stderr,"[bind] f=%d unit0 tex=%u ra=%p\n",
+        g_disc_frame,tex,__builtin_return_address(0)); bn++; } } }
   real_glBindTexture(tgt,tex);
 }
 #define g_cur_tex g_unit_tex[0]
@@ -683,10 +692,41 @@ static int g_progatlas = -1;
  * (link sprite->atlas null no .sba) → religamos a textura DAQUELE shader. Tela-
  * agnóstico: corrige logos após MOST WANTED, spinner de loading, etc. (o "último
  * atlas global" errava quando novos packs carregavam). */
+/* 🔬 textura 1x1 BRANCA: fallback p/ draws tex=0 (objeto de textura do sprite é
+ * null → engine liga 0). Branco = quad mostra a COR DE VÉRTICE (fundo branco do
+ * disclaimer fica branco; sprites sem textura viram cor sólida em vez de lixo de
+ * atlas). NFS_WHITEHACK liga este modo em vez do atlas-rebind. */
+static unsigned g_white_tex = 0;
+static unsigned white_tex(void){
+  if(g_white_tex) return g_white_tex;
+  extern void glGenTextures(int,unsigned*); extern void glTexParameteri(unsigned,unsigned,int);
+  extern void glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+  if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
+  if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
+  unsigned id=0; glGenTextures(1,&id); if(!id) return 0;
+  unsigned char px[4]={255,255,255,255};
+  real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,id);
+  glTexImage2D(0x0DE1,0,0x1908,1,1,0,0x1908,0x1401,px);
+  glTexParameteri(0x0DE1,0x2801,0x2601/*MIN_FILTER LINEAR*/);
+  glTexParameteri(0x0DE1,0x2800,0x2601/*MAG_FILTER LINEAR*/);
+  g_white_tex=id; return id;
+}
 static void atlas_rebind(void){
   if(g_atlashack<0) g_atlashack=getenv("NFS_NOATLASHACK")?0:1; /* PADRÃO ligado */
   if(g_progatlas<0) g_progatlas=getenv("NFS_NOPROGATLAS")?0:1; /* per-prog PADRÃO ligado */
   if(!g_atlashack || g_unit_tex[0]!=0) return;
+  /* 🔑 FALLBACK PADRÃO = textura 1x1 BRANCA p/ draws tex=0 (objeto de textura do
+   * sprite é null → engine liga 0). O quad passa a mostrar a COR DE VÉRTICE:
+   *  - fundo do disclaimer (cor branca) → BRANCO (era preto sem hack / atlas-lixo);
+   *  - sprites/decorações sem textura → cor sólida limpa (em vez do lixo de atlas
+   *    que dava caixa-preta + formas-fantasma "fora de ordem").
+   * Seguro game-wide: conteúdo COM textura (tex!=0, ex. logos/menu) não passa aqui.
+   * NFS_ATLASHACK=1 restaura o modo atlas-rebind antigo (diagnóstico). */
+  static int atlasmode=-1; if(atlasmode<0) atlasmode=getenv("NFS_ATLASHACK")?1:0;
+  if(!atlasmode){ unsigned w=white_tex(); if(w){
+    if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
+    if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
+    real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,w); } return; }
   /* atlas deste shader (per-programa, atlas-only) → fallback p/ o global */
   unsigned pa = (g_cur_prog<ATLAS_MAP_SZ) ? g_prog_atlas[g_cur_prog] : 0;
   unsigned a = (g_progatlas && pa) ? pa : g_nfs_atlas_tex;
@@ -731,6 +771,11 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("elt",c);
+  static int draw0log=-1; if(draw0log<0) draw0log=getenv("NFS_BINDLOG")?1:0;
+  if(draw0log){ extern int g_disc_frame;
+    if(g_disc_frame>=285 && g_disc_frame<=375 && g_unit_tex[0]==0 && c<64){
+      static int dn=0; if(dn<400){ fprintf(stderr,"[draw0] f=%d prog=%u c=%d ra=%p\n",
+        g_disc_frame,g_cur_prog,c,__builtin_return_address(0)); dn++; } } }
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   big3d_state(c);

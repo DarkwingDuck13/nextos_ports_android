@@ -1,91 +1,56 @@
-# PLANO — ÚLTIMO BUG do NFS MW: sprites/glyphs com tex=0 (spinner + fontes quebrando)
+# NFS MW — TELA do LOGO/DISCLAIMER: RESOLVIDA 2026-06-15 (white-default)
 
 Device **192.168.31.164** (subnet .31, senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
-Build `./build.sh`. Tudo funciona (áudio, gameplay, cores, latência) MENOS este bug de render.
+Build `./build.sh`. Deploy `scp nfs root@192.168.31.164:/storage/roms/nfs/nfs` (matar nfs antes).
 
-## 🎯 FOCO DEFINIDO PELO NEXTOS (próxima sessão): a TELA BRANCA do LOGO/DISCLAIMER
-A tela do disclaimer (logo após EA → Firemonkeys → carro → NEED FOR SPEED MOST WANTED, que
-renderizam OK) fica **BRANCA com tudo FORA DE ORDEM**: o **spinner de loading** (que deveria ser
-uma bolinha "O") aparece como um **pauzinho "I"**, as decorações (formas/triângulos no canto sup.
-direito) ficam **fantasma/embaralhadas**, e o texto "All experiences portrayed..." fica fraco.
-Atacar ESTA tela primeiro: é específica, reproduzível no boot (sem navegar), e provavelmente
-MESMA RAIZ das fontes que quebram no menu (sprite/glyph bindando atlas errado). Resolvê-la =
-destravar a raiz geral. Frames do disclaimer no boot ≈ 240-450 (após os logos).
+## ✅ RESULTADO (commit desta sessão)
+O disclaimer ("All experiences portrayed in this game are for entertainment purposes only.
+© 2018 Electronic Arts Inc.") agora renderiza **LIMPO**: fundo BRANCO + texto cinza legível.
+Sumiram a **caixa preta** à esquerda, as **formas-fantasma** nos cantos e os **smears** cinza
+("tudo fora de ordem"). Validado por screenshot (glReadPixels→PIL). O **menu/mapa** (Easydrive/
+Downtown) também renderiza ótimo e legível — **sem regressão**. Resta só um **quadradinho escuro**
+no canto inf. direito = o spinner de loading REAL (textura indisponível, ver abaixo) — cosmético.
 
-## INSTRUMENTAÇÃO JÁ PRONTA (commitada, gated por env, default-OFF)
-- **`NFS_REBINDLOG=1`** (egl_shim.c, atlas_rebind): loga CADA draw tex=0 que religamos →
-  `[rebind] prog=P bind=A progatlas=PA global=G`. Mostra QUAL atlas o spinner/decoração binda.
-- `NFS_TEXLOG=1`: `[ATLAS candidate tex=N WxH]` (uploads de atlas grande) + `[texImage2D ...]`.
-- `NFS_TEXDUMP=1`: salva as 1as 8 texturas RGBA grandes (`tex_N_WxH.raw`) p/ ver QUAL tem o
-  spinner/decorações (decodificar: PIL `frombytes RGBA WxH`).
-- `NFS_AUTOSHOT=1 NFS_SEQSHOT=1`: salva `seq_NNNN.raw` por frame (correlacionar com o disclaimer).
-- `NFS_NOATLASHACK=1` (desliga o rebind — teste: o spinner fica PRETO em vez de pauzinho? confirma
-  que é o rebind bindando atlas errado).
+## 🔬 CAUSA-RAIZ (achada por RE, não chute)
+Instrumentei `my_glBindTexture`/`my_glDrawElements` com return-address (NFS_BINDLOG) no disclaimer
+(frames ~285-375). Dados:
+- 3 draws tex=0 por frame: `prog=53 c=6`, `prog=53 c=12`, `prog=50 c=6`, todos do MESMO draw-site
+  da engine (libapp.so off **0x569db8**, base 0xefd00000).
+- A fn de bind da engine (off **0x56960c**) faz: `r5=*r5` (objeto de textura do sprite); se
+  `r5==0` → `glBindTexture(target, 0)`; senão → `glBindTexture(target, r5[56])` (id real).
+  → **2 dos 3 sprites têm objeto de textura NULL → engine liga textura 0** (o link sprite→atlas
+  do .sba resolve null no port; PARTE 11). É a MESMA raiz do texto que quebra no menu.
+- O texto do disclaimer NÃO depende disso: renderiza via font_shim (textura própria, tex≠0). Com
+  o hack OFF o disclaimer fica PRETO menos o texto → confirma que fundo/spinner/decorações são
+  TODOS draws tex=0.
 
-## O SINTOMA (2 faces do mesmo bug, segundo o NextOS)
-1. **Spinner do disclaimer**: a bolinha de loading (O) aparece como **pauzinho (I)** + decorações
-   fantasma. Tela de logo/disclaimer logo após EA/Firemonkeys/MOST WANTED (que renderizam OK).
-2. **Fontes do menu**: funcionam nas primeiras seções, mas **após ~4-5 seções de menu ficam "feias"**
-   (garbled) e quebram TODAS dali em diante.
-NextOS suspeita (e os dados batem) que é a MESMA raiz: "não é a fonte, é algo que faz a fonte ficar
-assim".
+## 🔑 O FIX (egl_shim.c, atlas_rebind)
+Para draws texturizados com **tex=0** (UI, c<64), o fallback PADRÃO passou a ser uma **textura 1×1
+BRANCA** (em vez do antigo "atlas-rebind" que ligava o ÚLTIMO atlas grande → lixo). Branco faz o
+quad mostrar a **cor de vértice**:
+- fundo do disclaimer (vértice branco) → BRANCO ✓
+- sprites/decorações sem textura → cor sólida limpa (em vez de regiões aleatórias de atlas = lixo) ✓
+- **seguro game-wide**: conteúdo COM textura (logos/menu, tex≠0) NÃO passa por aqui.
+Envs: `NFS_ATLASHACK=1` restaura o modo atlas antigo; `NFS_NOATLASHACK=1` desliga tudo (deixa tex=0
+→ preto). `NFS_BINDLOG=1` loga bind/draw tex=0 no disclaimer (diagnóstico de fontes p/ depois).
 
-## JÁ DESCARTADO (debugado, não chutado — não repetir)
-- ❌ Pool de Paint exaurindo: **resolvido** com cache por (path,size) — só ~48 paints únicos (de 256).
-- ❌ Fonte falhando ao abrir: **resolvido** com redirect `data/files/`→`data/Android/data/.../files/`
-  (read_file + my_fopen). `NFS_FONTLOG`: **0 FALHOU, 0 InitFont falhou** agora.
-- ❌ Ciclo de vida de textura por delete: o DELLOG mostrou **0 glDeleteTextures** no momento do bug.
-- ❌ ABI softfp/hardfp: já corrigido (cores OK).
-Ou seja: a fonte **CARREGA 100%** (paint válido, ttf lido). O bug é no **RENDER do glyph/sprite**.
+## ⏳ O quadradinho do spinner (cosmético, NÃO é tex=0)
+O spinner é um draw com **textura REAL tex=7** = uma **página dinâmica 512×512** (texs 2-8
+compartilham o buffer-staging vazio 0xebde2008, preenchidas via glTexSubImage2D). A região do
+spinner em tex=7 nunca é preenchida no port → amostra preto → quadrado escuro. Não dá p/ esconder
+SÓ ele sem arriscar as fontes (mesmas páginas dinâmicas). O "O" que aparecia antes era coincidência
+do atlas-hack (uma decoração caía num anel do atlas). Deixado como está (loading ~2s).
 
-## HIPÓTESE CENTRAL (a investigar)
-Os sprites `.sba` (ícones, spinner, decorações) E os glyphs de fonte às vezes desenham com
-**tex=0** (link sprite→textura resolve NULL na engine — PARTE 11). O `atlas_rebind` (egl_shim.c) é
-um PALIATIVO que binda "o último atlas grande" (ou per-programa) nesses draws → quando binda o atlas
-ERRADO, o sprite/glyph fica garbled. Após algumas seções, o estado do atlas muda e o glyph de fonte
-pega o atlas errado → "fica feia". O spinner é o mesmo: binda atlas errado → pauzinho em vez de O.
-**A fonte carrega, mas o DRAW dela vira tex=0 e o atlas-rebind estraga.**
+## ➡️ PRÓXIMO: fontes do menu que quebram após ~4-5 seções (MESMA raiz)
+Hipótese: ao evicção/Remove texture, o objeto de textura do glyph vira null (r5==0) → o draw do
+glyph vira tex=0 → com white-default vira BLOCO BRANCO (antes: lixo de atlas). Investigar com
+NFS_BINDLOG já no menu (gatear por frame mais alto) p/ ver se o glyph quebrado é r5==0 e POR QUE
+(eviction? re-upload da página?). O fix real é manter/re-bindar a textura do glyph daquele draw.
 
-## PLANO DE ATAQUE (próxima sessão, contexto fresco)
-### Fase 1 — CONFIRMAR a hipótese (instrumentar o draw da fonte/spinner)
-1. Rodar com `NFS_AUTOSHOT=1 NFS_DRAWLOG=1 NFS_TEXLOG=1`, navegar até o bug (4-5 seções) e capturar
-   o frame quebrado (`auto.raw` → PIL). NextOS reproduz e avisa "bugou"; capturar na hora.
-2. **Logar, NO MOMENTO DO BUG, o que os draws de glyph/sprite bindam**: `g_unit_tex[0]` (0 ou id?),
-   `g_cur_prog`, e o que o `atlas_rebind` binda. O DRAWLOG atual capa em `g_drawn<90` (só os 1ºs
-   draws) → **AUMENTAR/RESETAR o cap** ou logar contínuo num ring p/ pegar os draws do bug, não os
-   do boot.
-3. Confirmar: o glyph de fonte que quebrou está com tex=0? Se SIM → é o link sprite→textura +
-   atlas-rebind. Se tem textura válida mas garbled → é a rasterização (font_shim) ou o upload.
-
-### Fase 2 — ATACAR A RAIZ (link sprite→textura)
-O fix REAL (não o paliativo atlas_rebind): achar POR QUE o sprite/glyph binda tex=0.
-- A engine sobe o atlas como GL tex N (glGenTextures→glBindTexture(N)→glTexImage2D), mas o objeto
-  Texture do .sba tem glid=0 (ou o sprite referencia outro objeto). RE: quem chama glGenTextures
-  (thunk @0xb26534) e ONDE guarda o id; quem chama glBindTexture (@0xb2647c) e qual id usa.
-  Os XREFs são PIC não-resolvidos pelo Ghidra → usar scanner movw/movt próprio OU auto-analysis.
-- **Runtime mais tratável**: hookar `glBindTexture` (já é my_glBindTexture em egl_shim) e logar o
-  `__builtin_return_address(0)` quando binda 0 vs N, p/ achar a função da engine que faz o bind do
-  sprite. Depois RE essa função (com `~/re-tools` pyghidra; libapp em /tmp).
-- Alternativa pragmática se a RE travar: melhorar o atlas-rebind p/ correlacionar o glyph de FONTE
-  ao seu atlas de glyph (rastrear o ÚLTIMO atlas pequeno/quadrado por programa? distinguir glyph-
-  atlas de UI-atlas) — mas isso é mais paliativo.
-
-### Fase 3 — VALIDAR
-Navegar 10+ seções de menu + abrir loja/sair/perfil sem quebrar fontes; spinner do disclaimer vira
-uma rodinha (O). NextOS valida visualmente.
-
-## FERRAMENTAS / ENVS
-- `NFS_AUTOSHOT=1` (screenshot auto.raw — DEFAULT-OFF p/ não martelar o vfat; ligar só p/ debug).
-- `NFS_FONTLOG` (criação/redirect de paint), `NFS_DELLOG` (deletes), `NFS_TEXLOG` (uploads/atlas
-  candidate), `NFS_DRAWLOG` (draws: fbo/u0/prog/blend — AUMENTAR o cap g_drawn<90).
-- `NFS_NOATLASHACK` (desliga o atlas-rebind — testar se as fontes ficam BLACK em vez de garbled =
-  confirma que é o atlas-rebind estragando), `NFS_NOPROGATLAS` (desliga o per-programa).
-- Captura: `cp auto.raw snap.raw` no device + scp + PIL `frombytes RGBA 1280x720 + FLIP_TOP_BOTTOM`.
-- RE: `~/re-tools` (pyghidra; `export GHIDRA_INSTALL_DIR=~/re-tools/ghidra_12.1.2_PUBLIC
-  JAVA_HOME=~/re-tools/jdk-21.0.11+10`), libfmod já em ~/nfs-stage; copiar libapp p/ /tmp.
-- ⚠️ MASCARAR emustation (`systemctl mask emustation`) p/ não interferir; vfat fica read-only se
-  martelado (auto-screenshot) → `mount -o remount,rw /storage/roms`.
-
-## ESTADO ATUAL (commit 88ff04a)
-Fontes CARREGAM 100% (cache + redirect). Falta o RENDER (glyph/sprite tex=0 → atlas errado).
-Ver memória PARTE 11/19/20 e HANDOFF-PROXIMA-SESSAO.md.
+## FERRAMENTAS
+- Screenshot: `NFS_AUTOSHOT=1 NFS_SEQSHOT=1` → `seq_NNNN.raw` (a cada 30 frames) em /storage/roms/nfs.
+  Decodificar local: `~/nfs-diag/decode.py seq_*.raw` (RGBA 1280x720 + flip). Disclaimer ≈ frame 360.
+- RE: objdump ARM `~/NextOS-Elite-Edition/build*Amlogic-old*/toolchain/bin/armv8a-emuelec-linux-gnueabihf-objdump`
+  (libapp.so é ARM, NÃO Thumb). libapp base no log = `so_load: load base` (a do range que contém o ra).
+- ⚠️ MASCARAR emustation; vfat /storage/roms vira RO se martelado → `mount -o remount,rw /storage/roms`.
+  /tmp é tmpfs 416MB — NÃO acumular .raw lá (puxar de /storage/roms/nfs direto).
