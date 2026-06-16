@@ -62,6 +62,33 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## 🏆🏆 IMAGENS REAIS + jogo boota completo (2026-06-16 cont.4)
+**NextOS confirmou: LOGO do SoR4 com TEXTURA REAL na tela** (ASTC decodificado). Estado:
+- Boot 100%: render + assets + OnDeviceCreated + 1ºDraw + shaders + AfterFirstDraw + **bigfile
+  protobuf desserializa** + program.initialize + carrega assets de gameplay (background thread).
+- **ASTC real**: `libsor4astc.so` (astcenc 5.0.0 decompressor NEON arm64, sem LTO) + Texture2DReader
+  decode (detecta bloco pelos dados). Imagens reais no Mali-450 (que não tem ASTC nativo!).
+
+**Fixes-chave desta rodada** (host replica o que MainActivity.OnCreate fazia, que eu bypasso):
+- `program.static_init()` (cria typeModel/StandaloneTypeModel protobuf).
+- `reflection.delegate_serialize/deserialize/deep_clone` wired (engine de serialização protobuf).
+- `AndroidServices.*` (38 métodos) NO-OP (Google Play/cloud/sign-in - crashavam em stubs null).
+- `platform.save_save_game` + `save_config` NO-OP (escrita inicial de save/config; data_folder="").
+- Ferramentas Cecil: `noopm` (no-op métodos/classe), `addfwd` (forward de tipo), `injlog` (log de
+  entrada/arg). `patchgam` (get_AssetManager→bridge).
+
+**Assets**: 25.292 arquivos (.xnb/png/fonts, sem .wem) em `/storage/roms/sor4-test/gameassets`
+(SOR4_ASSETS aponta lá). .wem (áudio) vão por Wwise (stub) — não precisam em disco.
+
+**Pendências conhecidas** (polish, não-bloqueantes):
+- **Texto preto**: Effect custom `shader/text.xnb` (GLSL ES, 2 samplers `ps_s0/ps_s1` estilo
+  MojoShader) — binding de sampler/uniform do Effect custom no meu MonoGame. Logo usa SpriteEffect
+  padrão (OK). Investigar EffectReader/ConstantBuffer mapping.
+- Áudio (Wwise stub - silêncio), input (gptokeyb), perf, empacotar.
+
+**Pipeline de patch do SOR4.dll** (ordem): patchgam (get_AssetManager) → noopm (AndroidServices.* +
+platform.save_save_game + save_config). Host: static_init + 3 delegates + set_as_main_thread.
+
 ## 🏆 GATE D ALCANÇADO: PRIMEIRA IMAGEM NA TELA + jogo inicializa fundo (2026-06-16 cont.3)
 **NEXTOS CONFIRMOU imagens na TV.** O jogo agora roda MUITO fundo na inicialização. Cadeia que
 JÁ FUNCIONA (boot → render → init):
