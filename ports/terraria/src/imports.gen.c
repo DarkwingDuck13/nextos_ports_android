@@ -126,7 +126,6 @@ long stub_sincosf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sincos
 long stub_socket(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] socket\\n"); return 0; }
 long stub_srand48(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] srand48\\n"); return 0; }
 long stub___stack_chk_fail(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __stack_chk_fail\\n"); return 0; }
-long stub_statfs64(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] statfs64\\n"); return 0; }
 long stub_strcasestr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strcasestr\\n"); return 0; }
 long stub_strerror_r(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strerror_r\\n"); return 0; }
 long stub_strlcpy(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strlcpy\\n"); return 0; }
@@ -373,6 +372,7 @@ static const char *passthrough_names[] = {
   "sqrtf",
   "sscanf",
   "stat64",
+  "statfs64",
   "strcasecmp",
   "strcat",
   "strchr",
@@ -742,7 +742,7 @@ DynLibFunction dynlib_functions[] = {
   {"sscanf", 0},
   {"__stack_chk_fail", (uintptr_t)&stub___stack_chk_fail},
   {"stat64", 0},
-  {"statfs64", (uintptr_t)&stub_statfs64},
+  {"statfs64", 0},
   {"strcasecmp", 0},
   {"strcasestr", (uintptr_t)&stub_strcasestr},
   {"strcat", 0},

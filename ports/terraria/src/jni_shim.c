@@ -377,7 +377,12 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   static int fake_obj;
   if (nm) {
     if (strcmp(nm, "getPackageName") == 0)
-      return make_jstring("com.teamcherry.hollowknight");
+      return make_jstring(g_package_name);
+    /* Play Asset Delivery: getAssetPackPath(name) -> dir REAL onde estão os arquivos
+       do pack. Nossos dados estão em ASSET_BASE/bin/Data; Unity lê <path>/bin/Data/...
+       então o path do pack é o ASSET_BASE (sem barra final). */
+    if (strcmp(nm, "getAssetPackPath") == 0)
+      return make_jstring("/storage/roms/terraria");
     /* anti-pirataria: jogo checa se foi instalado da Play Store. "" trava/loopa. */
     if (strcmp(nm, "getInstallerPackageName") == 0)
       return make_jstring("com.android.vending");
@@ -621,6 +626,22 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap
     /* roda o Runnable via invoke do jnibridge (handle lido pela variante V correta).
        CUP_NORUNUI desliga. */
     if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
+    return;
+  }
+  /* Play Asset Delivery: getAssetPackState(name, cb) — Unity espera o callback nativo
+     nativeStatusQueryResult(name, status, errorCode). Respondemos COMPLETED(4) na hora:
+     os packs (UnityDataAssetPack/StreamingAssets) já estão "instalados" em bin/Data. */
+  if (nm && strcmp(nm, "getAssetPackState") == 0) {
+    void *name_j = va_arg(ap, void *);
+    const char *pn = resolve_jstring(name_j);
+    void *fn = jni_find_native("nativeStatusQueryResult");
+    debugPrintf("jni_shim: getAssetPackState(%s) -> COMPLETED via nativeStatusQueryResult=%p\n",
+                pn ? pn : "?", fn);
+    if (fn) {
+      static int fake_clazz;
+      /* (JNIEnv*, jclass, jstring name, jint status=4 COMPLETED, jint errorCode=0) */
+      ((void (*)(void *, void *, void *, int, int))fn)(env, &fake_clazz, name_j, 4, 0);
+    }
     return;
   }
   struct astream *s = astream_find(obj);

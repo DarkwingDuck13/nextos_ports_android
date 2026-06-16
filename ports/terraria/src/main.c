@@ -495,6 +495,18 @@ static int my_access(const char *p, int m) {
   if (r && g_dllog) fprintf(stderr, "[access-redir] %s -> %s\n", p, r);
   return access(r ? r : p, m);
 }
+/* statfs64: Unity checa espaço livre via statfs64(path) p/ "instalar resources".
+   O path que ele passa pode ser Android (/data/...) inexistente -> erro -> 0 livre ->
+   "Not enough storage space". Ignoramos o path e medimos o NOSSO GAMEDIR real (93GB).
+   glibc preenche o buffer no layout do kernel statfs64 = o que o bionic espera. */
+static int my_statfs64(const char *p, void *buf) {
+  static int (*real)(const char *, void *);
+  if (!real) { real = (void *)dlsym(RTLD_DEFAULT, "statfs64");
+               if (!real) real = (void *)dlsym(RTLD_DEFAULT, "statfs"); }
+  int rc = real ? real("/storage/roms/terraria", buf) : -1;
+  if (g_dllog) fprintf(stderr, "[statfs64] path=%s -> GAMEDIR rc=%d\n", p ? p : "?", rc);
+  return rc;
+}
 /* exit() do jogo: loga QUEM chamou (lr) + stack antes de morrer — a morte
    silenciosa pos-FMOD não deixava rastro. */
 static void my_exit(int code) {
@@ -2522,6 +2534,8 @@ int main(int argc, char **argv) {
   set_import("stat", (void *)my_stat);
   set_import("lstat", (void *)my_lstat);
   set_import("access", (void *)my_access);
+  set_import("statfs64", (void *)my_statfs64);
+  set_import("statfs", (void *)my_statfs64);
   set_import("__system_property_get", (void *)my_sysprop);
   set_import("__android_log_print", (void *)my_alog_print);
   set_import("__android_log_write", (void *)my_alog_write);
@@ -2584,6 +2598,8 @@ int main(int argc, char **argv) {
   patch_got("stat", (void *)my_stat);
   patch_got("lstat", (void *)my_lstat);
   patch_got("access", (void *)my_access);
+  patch_got("statfs64", (void *)my_statfs64);
+  patch_got("statfs", (void *)my_statfs64);
   patch_got("exit", (void *)my_exit);
   patch_got("_exit", (void *)my_exit);
   patch_sem_shim();  /* sem_* nos slots GOT do libunity */
@@ -2599,6 +2615,19 @@ int main(int argc, char **argv) {
     "__google_potentially_blocking_region_begin",
     "__google_potentially_blocking_region_end", NULL };
   for (int i = 0; ndk_noop[i]; i++) patch_got(ndk_noop[i], (void *)ndk_stub0);
+
+  /* TER: bypass do "Not enough storage space to install required resources".
+   * RE (libunity): em 0x2d8fac `tbz w0,#0, 0x2d9068` — se a checagem de espaço/resources
+   * (0x22b7e0) retorna falso, pula pro bloco que monta o AlertDialog (string 0x9288ef).
+   * Esse bloco SÓ é alcançável por esse branch. NOP -> sempre segue o caminho de sucesso
+   * (dados já estão em bin/Data, lidos via AssetManager). */
+  if (!getenv("TER_NOSTORAGEPATCH")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x2d8fac) = 0xd503201fu; /* NOP */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[TER] storage-check 0x2d8fac (tbz->dialog) NOPado\n");
+  }
 
   /* CUP_FORCEIL2: o helper "load library by name" do Unity (0x357938) faz o
      System.load do il2cpp via JNI -> falha no nosso ambiente ("Failed to load
@@ -2857,6 +2886,8 @@ int main(int argc, char **argv) {
     patch_got("stat", (void *)my_stat);
     patch_got("lstat", (void *)my_lstat);
     patch_got("access", (void *)my_access);
+  patch_got("statfs64", (void *)my_statfs64);
+  patch_got("statfs", (void *)my_statfs64);
     patch_got("dlopen", (void *)my_dlopen);
     patch_got("dlsym", (void *)my_dlsym);
     patch_got("exit", (void *)my_exit);
