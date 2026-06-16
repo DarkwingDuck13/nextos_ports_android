@@ -107,6 +107,38 @@ static void patch_sem_shim(void) {
   patch_got("sem_destroy", (void *)sh_sem_destroy);
 }
 
+/* pthread mutex/cond/rwlock/attr (bionic) -> objetos glibc reais via ponteiro no slot
+   (pthread_fake.c). Em arm64 o struct bionic é >=40B (cabe o ponteiro). SEM isso,
+   passthrough -> bionic struct + glibc cond_wait = SIGBUS (ponteiro lixo). Wira o
+   conjunto COMPLETO (init/destroy/lock/.../wait) p/ o slot SEMPRE guardar nosso ponteiro. */
+#define PT_LIST(X) \
+  X("pthread_mutex_init", pthread_mutex_init_fake) X("pthread_mutex_destroy", pthread_mutex_destroy_fake) \
+  X("pthread_mutex_lock", pthread_mutex_lock_fake) X("pthread_mutex_unlock", pthread_mutex_unlock_fake) \
+  X("pthread_mutex_trylock", pthread_mutex_trylock_fake) \
+  X("pthread_cond_init", pthread_cond_init_fake) X("pthread_cond_destroy", pthread_cond_destroy_fake) \
+  X("pthread_cond_wait", pthread_cond_wait_fake) X("pthread_cond_timedwait", pthread_cond_timedwait_fake) \
+  X("pthread_cond_signal", pthread_cond_signal_fake) X("pthread_cond_broadcast", pthread_cond_broadcast_fake) \
+  X("pthread_condattr_init", pthread_condattr_init_fake) X("pthread_condattr_destroy", pthread_condattr_destroy_fake) \
+  X("pthread_condattr_setclock", pthread_condattr_setclock_fake) \
+  X("pthread_mutexattr_init", pthread_mutexattr_init_fake) X("pthread_mutexattr_destroy", pthread_mutexattr_destroy_fake) \
+  X("pthread_mutexattr_settype", pthread_mutexattr_settype_fake) \
+  X("pthread_rwlock_init", pthread_rwlock_init_fake) X("pthread_rwlock_destroy", pthread_rwlock_destroy_fake) \
+  X("pthread_rwlock_rdlock", pthread_rwlock_rdlock_fake) X("pthread_rwlock_wrlock", pthread_rwlock_wrlock_fake) \
+  X("pthread_rwlock_tryrdlock", pthread_rwlock_tryrdlock_fake) X("pthread_rwlock_trywrlock", pthread_rwlock_trywrlock_fake) \
+  X("pthread_rwlock_unlock", pthread_rwlock_unlock_fake)
+#define PT_DECL(n, f) extern int f();
+PT_LIST(PT_DECL)
+static void install_pthread_shim(void) {
+  if (getenv("TER_NOPTSHIM")) return;
+#define PT_SET(n, f) set_import(n, (void *)f);
+  PT_LIST(PT_SET)
+}
+static void patch_pthread_shim(void) {
+  if (getenv("TER_NOPTSHIM")) return;
+#define PT_PATCH(n, f) patch_got(n, (void *)f);
+  PT_LIST(PT_PATCH)
+}
+
 /* ---------- crash handler (arm64) ---------- */
 static uintptr_t g_unity_base, g_il2cpp_base, g_unity_data;
 static uintptr_t g_i2heap_base, g_i2heap_size;
@@ -499,6 +531,33 @@ static int my_access(const char *p, int m) {
    O path que ele passa pode ser Android (/data/...) inexistente -> erro -> 0 livre ->
    "Not enough storage space". Ignoramos o path e medimos o NOSSO GAMEDIR real (93GB).
    glibc preenche o buffer no layout do kernel statfs64 = o que o bionic espera. */
+/* FORTIFY do bionic (__*_chk): glibc não tem esses símbolos -> viram stub (NÃO copiam)
+   -> corrupção de heap. Implementações reais (ignoram o arg de bounds-check). */
+static void *my_memmove_chk(void *d, const void *s, size_t n, size_t dn) { (void)dn; return memmove(d, s, n); }
+static void *my_memcpy_chk(void *d, const void *s, size_t n, size_t dn) { (void)dn; return memcpy(d, s, n); }
+static void *my_memset_chk(void *d, int c, size_t n, size_t dn) { (void)dn; return memset(d, c, n); }
+static size_t my_strlen_chk(const char *s, size_t mn) { (void)mn; return strlen(s); }
+static char *my_strcpy_chk(char *d, const char *s, size_t dn) { (void)dn; return strcpy(d, s); }
+static char *my_strcat_chk(char *d, const char *s, size_t dn) { (void)dn; return strcat(d, s); }
+static int my_vsnprintf_chk(char *str, size_t sz, int flag, size_t slen, const char *fmt, va_list ap) {
+  (void)flag; (void)slen; return vsnprintf(str, sz, fmt, ap); }
+static int my_snprintf_chk(char *str, size_t sz, int flag, size_t slen, const char *fmt, ...) {
+  (void)flag; (void)slen; va_list ap; va_start(ap, fmt); int r = vsnprintf(str, sz, fmt, ap); va_end(ap); return r; }
+static void my_FD_SET_chk(int fd, fd_set *s, size_t n) { (void)n; if (fd >= 0) FD_SET(fd, s); }
+/* strlcpy/strlcat (bionic) — o regex de passthrough não cobre (vira stub que NÃO copia
+   -> buffer com lixo -> heap corruption "free(): invalid size"). Implementação real. */
+static unsigned long my_strlcpy(char *dst, const char *src, unsigned long sz) {
+  unsigned long n = strlen(src);
+  if (sz) { unsigned long c = n < sz - 1 ? n : sz - 1; memcpy(dst, src, c); dst[c] = 0; }
+  return n;
+}
+static unsigned long my_strlcat(char *dst, const char *src, unsigned long sz) {
+  unsigned long dl = strnlen(dst, sz), sl = strlen(src);
+  if (dl == sz) return sz + sl;
+  unsigned long c = (sl < sz - dl - 1) ? sl : sz - dl - 1;
+  memcpy(dst + dl, src, c); dst[dl + c] = 0;
+  return dl + sl;
+}
 static int my_statfs64(const char *p, void *buf) {
   static int (*real)(const char *, void *);
   if (!real) { real = (void *)dlsym(RTLD_DEFAULT, "statfs64");
@@ -2536,6 +2595,17 @@ int main(int argc, char **argv) {
   set_import("access", (void *)my_access);
   set_import("statfs64", (void *)my_statfs64);
   set_import("statfs", (void *)my_statfs64);
+  set_import("strlcpy", (void *)my_strlcpy);
+  set_import("strlcat", (void *)my_strlcat);
+  set_import("__memmove_chk", (void *)my_memmove_chk);
+  set_import("__memcpy_chk", (void *)my_memcpy_chk);
+  set_import("__memset_chk", (void *)my_memset_chk);
+  set_import("__strlen_chk", (void *)my_strlen_chk);
+  set_import("__strcpy_chk", (void *)my_strcpy_chk);
+  set_import("__strcat_chk", (void *)my_strcat_chk);
+  set_import("__vsnprintf_chk", (void *)my_vsnprintf_chk);
+  set_import("__snprintf_chk", (void *)my_snprintf_chk);
+  set_import("__FD_SET_chk", (void *)my_FD_SET_chk);
   set_import("__system_property_get", (void *)my_sysprop);
   set_import("__android_log_print", (void *)my_alog_print);
   set_import("__android_log_write", (void *)my_alog_write);
@@ -2562,6 +2632,7 @@ int main(int argc, char **argv) {
     if (el) set_import("__errno", el); }
 
   install_sem_shim();  /* semáforos próprios bionic→glibc (fix deadlock boot) */
+  install_pthread_shim();  /* mutex/cond/rwlock bionic->glibc (fix SIGBUS cond_wait) */
 
   fprintf(stderr, "[F0] resolvendo %zu imports...\n", dynlib_numfunctions);
   { extern void recon_fill_passthrough(void); recon_fill_passthrough(); }  /* preenche passthrough via dlsym (tabela gerada) */
@@ -2600,9 +2671,21 @@ int main(int argc, char **argv) {
   patch_got("access", (void *)my_access);
   patch_got("statfs64", (void *)my_statfs64);
   patch_got("statfs", (void *)my_statfs64);
+  patch_got("strlcpy", (void *)my_strlcpy);
+  patch_got("strlcat", (void *)my_strlcat);
+  patch_got("__memmove_chk", (void *)my_memmove_chk);
+  patch_got("__memcpy_chk", (void *)my_memcpy_chk);
+  patch_got("__memset_chk", (void *)my_memset_chk);
+  patch_got("__strlen_chk", (void *)my_strlen_chk);
+  patch_got("__strcpy_chk", (void *)my_strcpy_chk);
+  patch_got("__strcat_chk", (void *)my_strcat_chk);
+  patch_got("__vsnprintf_chk", (void *)my_vsnprintf_chk);
+  patch_got("__snprintf_chk", (void *)my_snprintf_chk);
+  patch_got("__FD_SET_chk", (void *)my_FD_SET_chk);
   patch_got("exit", (void *)my_exit);
   patch_got("_exit", (void *)my_exit);
   patch_sem_shim();  /* sem_* nos slots GOT do libunity */
+  patch_pthread_shim();
   /* sensores/looper/profiler google: stub no-op (nao usados no path do gfx) */
   const char *ndk_noop[] = {
     "ALooper_forThread","ALooper_prepare","ASensorManager_getInstance",
@@ -2888,6 +2971,17 @@ int main(int argc, char **argv) {
     patch_got("access", (void *)my_access);
   patch_got("statfs64", (void *)my_statfs64);
   patch_got("statfs", (void *)my_statfs64);
+  patch_got("strlcpy", (void *)my_strlcpy);
+  patch_got("strlcat", (void *)my_strlcat);
+  patch_got("__memmove_chk", (void *)my_memmove_chk);
+  patch_got("__memcpy_chk", (void *)my_memcpy_chk);
+  patch_got("__memset_chk", (void *)my_memset_chk);
+  patch_got("__strlen_chk", (void *)my_strlen_chk);
+  patch_got("__strcpy_chk", (void *)my_strcpy_chk);
+  patch_got("__strcat_chk", (void *)my_strcat_chk);
+  patch_got("__vsnprintf_chk", (void *)my_vsnprintf_chk);
+  patch_got("__snprintf_chk", (void *)my_snprintf_chk);
+  patch_got("__FD_SET_chk", (void *)my_FD_SET_chk);
     patch_got("dlopen", (void *)my_dlopen);
     patch_got("dlsym", (void *)my_dlsym);
     patch_got("exit", (void *)my_exit);
@@ -2896,6 +2990,7 @@ int main(int argc, char **argv) {
     patch_got("__android_log_write", (void *)my_alog_write);
     patch_got("__android_log_vprint", (void *)my_alog_vprint);
     patch_sem_shim();  /* sem_* nos slots GOT do libil2cpp */
+    patch_pthread_shim();
     /* CUP_CRSPY: hooks nos MoveNext das coroutines de boot (antes do flush de caches) */
     if (getenv("CUP_CRSPY")) {
       g_cr1_cont = g_il2cpp_base + 0x9A58D0 + 16;

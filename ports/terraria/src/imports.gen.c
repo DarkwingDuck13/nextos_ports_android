@@ -39,7 +39,6 @@ long stub_ASensorManager_getInstance(void){ static int n=0; if(n++<2) fprintf(st
 long stub_ASensorManager_getSensorList(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ASensorManager_getSensorList\\n"); return 0; }
 long stub_basename(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] basename\\n"); return 0; }
 long stub_bind(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] bind\\n"); return 0; }
-long stub_btowc(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] btowc\\n"); return 0; }
 long stub_chmod(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] chmod\\n"); return 0; }
 long stub_closelog(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] closelog\\n"); return 0; }
 long stub_connect(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] connect\\n"); return 0; }
@@ -78,24 +77,11 @@ long stub_inflate(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inflat
 long stub_inflateEnd(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inflateEnd\\n"); return 0; }
 long stub_inflateInit2_(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inflateInit2_\\n"); return 0; }
 long stub_isatty(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] isatty\\n"); return 0; }
-long stub_iswalpha(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswalpha\\n"); return 0; }
-long stub_iswblank(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswblank\\n"); return 0; }
-long stub_iswcntrl(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswcntrl\\n"); return 0; }
-long stub_iswdigit(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswdigit\\n"); return 0; }
-long stub_iswlower(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswlower\\n"); return 0; }
-long stub_iswprint(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswprint\\n"); return 0; }
-long stub_iswpunct(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswpunct\\n"); return 0; }
-long stub_iswspace(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswspace\\n"); return 0; }
-long stub_iswupper(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswupper\\n"); return 0; }
-long stub_iswxdigit(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] iswxdigit\\n"); return 0; }
 long stub_ldexpf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ldexpf\\n"); return 0; }
-long stub_link(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] link\\n"); return 0; }
 long stub_listen(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] listen\\n"); return 0; }
 long stub_lldiv(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] lldiv\\n"); return 0; }
 long stub_logb(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] logb\\n"); return 0; }
 long stub_lrand48(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] lrand48\\n"); return 0; }
-long stub_mbrlen(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbrlen\\n"); return 0; }
-long stub_mbsnrtowcs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbsnrtowcs\\n"); return 0; }
 long stub_mbsrtowcs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbsrtowcs\\n"); return 0; }
 long stub_mbtowc(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbtowc\\n"); return 0; }
 long stub_memalign(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] memalign\\n"); return 0; }
@@ -103,7 +89,6 @@ long stub___memmove_chk(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] 
 long stub_modff(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] modff\\n"); return 0; }
 long stub_openlog(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] openlog\\n"); return 0; }
 long stub_raise(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] raise\\n"); return 0; }
-long stub_readlink(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] readlink\\n"); return 0; }
 long stub_recv(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] recv\\n"); return 0; }
 long stub_recvfrom(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] recvfrom\\n"); return 0; }
 long stub_recvmsg(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] recvmsg\\n"); return 0; }
@@ -137,8 +122,6 @@ long stub_strtold_l(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strt
 long stub_strtoll_l(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strtoll_l\\n"); return 0; }
 long stub_strtoull_l(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strtoull_l\\n"); return 0; }
 long stub_strxfrm(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] strxfrm\\n"); return 0; }
-long stub_swprintf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] swprintf\\n"); return 0; }
-long stub_symlink(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] symlink\\n"); return 0; }
 long stub_syscall(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] syscall\\n"); return 0; }
 long stub_syslog(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] syslog\\n"); return 0; }
 long stub___system_property_find(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __system_property_find\\n"); return 0; }
@@ -147,26 +130,13 @@ long stub___system_property_read(void){ static int n=0; if(n++<2) fprintf(stderr
 long stub_tcflush(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] tcflush\\n"); return 0; }
 long stub_tcgetattr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] tcgetattr\\n"); return 0; }
 long stub_tcsetattr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] tcsetattr\\n"); return 0; }
-long stub_towlower(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] towlower\\n"); return 0; }
-long stub_towupper(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] towupper\\n"); return 0; }
 long stub_uname(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] uname\\n"); return 0; }
 long stub_utime(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] utime\\n"); return 0; }
 long stub_utimes(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] utimes\\n"); return 0; }
 long stub_vasprintf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] vasprintf\\n"); return 0; }
 long stub___vsnprintf_chk(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __vsnprintf_chk\\n"); return 0; }
 long stub_vsscanf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] vsscanf\\n"); return 0; }
-long stub_wcscoll(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcscoll\\n"); return 0; }
-long stub_wcsnrtombs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcsnrtombs\\n"); return 0; }
-long stub_wcstod(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstod\\n"); return 0; }
-long stub_wcstof(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstof\\n"); return 0; }
-long stub_wcstol(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstol\\n"); return 0; }
 long stub_wcstold(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstold\\n"); return 0; }
-long stub_wcstoll(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstoll\\n"); return 0; }
-long stub_wcstoul(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstoul\\n"); return 0; }
-long stub_wcstoull(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstoull\\n"); return 0; }
-long stub_wcsxfrm(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcsxfrm\\n"); return 0; }
-long stub_wctob(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wctob\\n"); return 0; }
-long stub_wmemchr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemchr\\n"); return 0; }
 
 // flag: 1 = passthrough (resolver via dlsym), 0 = stub ja setado
 static const char *passthrough_names[] = {
@@ -182,6 +152,7 @@ static const char *passthrough_names[] = {
   "atoi",
   "atol",
   "bsearch",
+  "btowc",
   "calloc",
   "clearerr",
   "clock",
@@ -262,8 +233,19 @@ static const char *passthrough_names[] = {
   "islower",
   "isspace",
   "isupper",
+  "iswalpha",
+  "iswblank",
+  "iswcntrl",
+  "iswdigit",
+  "iswlower",
+  "iswprint",
+  "iswpunct",
+  "iswspace",
+  "iswupper",
+  "iswxdigit",
   "isxdigit",
   "ldexp",
+  "link",
   "localeconv",
   "localtime",
   "localtime_r",
@@ -276,7 +258,9 @@ static const char *passthrough_names[] = {
   "lstat",
   "madvise",
   "malloc",
+  "mbrlen",
   "mbrtowc",
+  "mbsnrtowcs",
   "memchr",
   "memcmp",
   "memcpy",
@@ -342,6 +326,7 @@ static const char *passthrough_names[] = {
   "qsort",
   "read",
   "readdir",
+  "readlink",
   "realloc",
   "realpath",
   "remove",
@@ -395,12 +380,16 @@ static const char *passthrough_names[] = {
   "strtoll",
   "strtoul",
   "strtoull",
+  "swprintf",
+  "symlink",
   "sysconf",
   "tan",
   "tanf",
   "time",
   "tolower",
   "toupper",
+  "towlower",
+  "towupper",
   "truncate",
   "unlink",
   "unsetenv",
@@ -410,7 +399,18 @@ static const char *passthrough_names[] = {
   "vprintf",
   "vsnprintf",
   "wcrtomb",
+  "wcscoll",
   "wcslen",
+  "wcsnrtombs",
+  "wcstod",
+  "wcstof",
+  "wcstol",
+  "wcstoll",
+  "wcstoul",
+  "wcstoull",
+  "wcsxfrm",
+  "wctob",
+  "wmemchr",
   "wmemcmp",
   "wmemcpy",
   "wmemmove",
@@ -465,7 +465,7 @@ DynLibFunction dynlib_functions[] = {
   {"basename", (uintptr_t)&stub_basename},
   {"bind", (uintptr_t)&stub_bind},
   {"bsearch", 0},
-  {"btowc", (uintptr_t)&stub_btowc},
+  {"btowc", 0},
   {"calloc", 0},
   {"chmod", (uintptr_t)&stub_chmod},
   {"clearerr", 0},
@@ -584,20 +584,20 @@ DynLibFunction dynlib_functions[] = {
   {"islower", 0},
   {"isspace", 0},
   {"isupper", 0},
-  {"iswalpha", (uintptr_t)&stub_iswalpha},
-  {"iswblank", (uintptr_t)&stub_iswblank},
-  {"iswcntrl", (uintptr_t)&stub_iswcntrl},
-  {"iswdigit", (uintptr_t)&stub_iswdigit},
-  {"iswlower", (uintptr_t)&stub_iswlower},
-  {"iswprint", (uintptr_t)&stub_iswprint},
-  {"iswpunct", (uintptr_t)&stub_iswpunct},
-  {"iswspace", (uintptr_t)&stub_iswspace},
-  {"iswupper", (uintptr_t)&stub_iswupper},
-  {"iswxdigit", (uintptr_t)&stub_iswxdigit},
+  {"iswalpha", 0},
+  {"iswblank", 0},
+  {"iswcntrl", 0},
+  {"iswdigit", 0},
+  {"iswlower", 0},
+  {"iswprint", 0},
+  {"iswpunct", 0},
+  {"iswspace", 0},
+  {"iswupper", 0},
+  {"iswxdigit", 0},
   {"isxdigit", 0},
   {"ldexp", 0},
   {"ldexpf", (uintptr_t)&stub_ldexpf},
-  {"link", (uintptr_t)&stub_link},
+  {"link", 0},
   {"listen", (uintptr_t)&stub_listen},
   {"lldiv", (uintptr_t)&stub_lldiv},
   {"localeconv", 0},
@@ -614,9 +614,9 @@ DynLibFunction dynlib_functions[] = {
   {"lstat", 0},
   {"madvise", 0},
   {"malloc", 0},
-  {"mbrlen", (uintptr_t)&stub_mbrlen},
+  {"mbrlen", 0},
   {"mbrtowc", 0},
-  {"mbsnrtowcs", (uintptr_t)&stub_mbsnrtowcs},
+  {"mbsnrtowcs", 0},
   {"mbsrtowcs", (uintptr_t)&stub_mbsrtowcs},
   {"mbtowc", (uintptr_t)&stub_mbtowc},
   {"memalign", (uintptr_t)&stub_memalign},
@@ -689,7 +689,7 @@ DynLibFunction dynlib_functions[] = {
   {"raise", (uintptr_t)&stub_raise},
   {"read", 0},
   {"readdir", 0},
-  {"readlink", (uintptr_t)&stub_readlink},
+  {"readlink", 0},
   {"realloc", 0},
   {"realpath", 0},
   {"recv", (uintptr_t)&stub_recv},
@@ -776,8 +776,8 @@ DynLibFunction dynlib_functions[] = {
   {"strtoull", 0},
   {"strtoull_l", (uintptr_t)&stub_strtoull_l},
   {"strxfrm", (uintptr_t)&stub_strxfrm},
-  {"swprintf", (uintptr_t)&stub_swprintf},
-  {"symlink", (uintptr_t)&stub_symlink},
+  {"swprintf", 0},
+  {"symlink", 0},
   {"syscall", (uintptr_t)&stub_syscall},
   {"sysconf", 0},
   {"syslog", (uintptr_t)&stub_syslog},
@@ -792,8 +792,8 @@ DynLibFunction dynlib_functions[] = {
   {"time", 0},
   {"tolower", 0},
   {"toupper", 0},
-  {"towlower", (uintptr_t)&stub_towlower},
-  {"towupper", (uintptr_t)&stub_towupper},
+  {"towlower", 0},
+  {"towupper", 0},
   {"truncate", 0},
   {"uname", (uintptr_t)&stub_uname},
   {"unlink", 0},
@@ -809,19 +809,19 @@ DynLibFunction dynlib_functions[] = {
   {"__vsnprintf_chk", (uintptr_t)&stub___vsnprintf_chk},
   {"vsscanf", (uintptr_t)&stub_vsscanf},
   {"wcrtomb", 0},
-  {"wcscoll", (uintptr_t)&stub_wcscoll},
+  {"wcscoll", 0},
   {"wcslen", 0},
-  {"wcsnrtombs", (uintptr_t)&stub_wcsnrtombs},
-  {"wcstod", (uintptr_t)&stub_wcstod},
-  {"wcstof", (uintptr_t)&stub_wcstof},
-  {"wcstol", (uintptr_t)&stub_wcstol},
+  {"wcsnrtombs", 0},
+  {"wcstod", 0},
+  {"wcstof", 0},
+  {"wcstol", 0},
   {"wcstold", (uintptr_t)&stub_wcstold},
-  {"wcstoll", (uintptr_t)&stub_wcstoll},
-  {"wcstoul", (uintptr_t)&stub_wcstoul},
-  {"wcstoull", (uintptr_t)&stub_wcstoull},
-  {"wcsxfrm", (uintptr_t)&stub_wcsxfrm},
-  {"wctob", (uintptr_t)&stub_wctob},
-  {"wmemchr", (uintptr_t)&stub_wmemchr},
+  {"wcstoll", 0},
+  {"wcstoul", 0},
+  {"wcstoull", 0},
+  {"wcsxfrm", 0},
+  {"wctob", 0},
+  {"wmemchr", 0},
   {"wmemcmp", 0},
   {"wmemcpy", 0},
   {"wmemmove", 0},
