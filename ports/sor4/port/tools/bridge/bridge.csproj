@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net9.0</TargetFramework><Nullable>disable</Nullable>
+    <AssemblyName>SOR4Bridge</AssemblyName></PropertyGroup>
+  <ItemGroup><Reference Include="Mono.Android"><HintPath>../stubs/Mono.Android.dll</HintPath></Reference></ItemGroup>
+</Project>
