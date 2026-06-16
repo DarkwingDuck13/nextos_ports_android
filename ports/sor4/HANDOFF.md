@@ -62,6 +62,47 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE C — boot: crash isolado no LOADER (reflection) — 4 fixes aplicados (2026-06-16 cont.)
+**Fixes novos aplicados (todos necessários, em port/)**:
+1. **`utils.set_as_main_thread()`** chamado pelo host no boot (senão `is_main_thread()`=false →
+   asset loader vai pro caminho de background thread). Host: `port/host/Program.cs`.
+2. **Stub `libWwise.so`** (aarch64, 23 símbolos `native_wwise_*` no-op) — `port/tools/wwise_stub.c`.
+   Vai em `libs/`. (P/Invokes "Wwise" do jogo resolvem; áudio real é FASE 5.)
+3. **`AssetManager.List` bridgeado** (Exists do jogo usa List(dir)) + **`get_Assets` override** no
+   `AndroidGameActivity` + Activity via `GetUninitializedObject` (ctors stub são no-op inválidos).
+4. **GL no-op fallback**: `OpenGL.SDL.cs.LoadFunction` retorna `sor4_gl_noop` (em libWwise) p/
+   funções GL ausentes no Mali GLES2 (loga `[GLMISS]`), em vez de null→`blr null`. 
+   GLMISS no startup: glMakeCurrent, glClearDepth, glDepthRange, glPolygonMode, glDrawBuffers,
+   glReadBuffer, glDrawBuffer, glBlitFramebuffer, glGen/Begin/EndQuery, glBlend*Separatei,
+   glGetTexImage, glTexImage3D, glMapBuffer/Unmap, glDrawElementsInstanced, glVertexAttribDivisor.
+
+**PONTE DE ASSETS 100% PROVADA**: teste isolado abre `gui/mobile/left_filler` (.xnb, len=181939)
+e `title_screen` (len=803079) via Context slot. set_as_main_thread OK (thread "main").
+
+**Crash que resta** (após TODOS os fixes): ainda segfault nativo (139) logo após `SB ctor COMPLETO`,
+dentro do `OnDeviceCreated`→`PreloadingScreen.Initialize`→`asset_cache.get<TextureProxy>` →
+`load_asset`→`xna_load_asset`. 
+- gdb: `movk x2,#0x7f,lsl#32 ; ldr x2,[x2] ; blr x2` → **chamada via ponteiro de função carregado
+  de um slot, que é lixo** (NÃO null→seria NRE). Stack corrompida (não unwind).
+- NÃO é: GL ausente (no-op'd, nenhum GLMISS durante o load), Wwise (stub, e texture não chama),
+  asset/Open (bridge provado), codegen (TieredComp/R2R/QuickJit=0 não mudam), exceção gerenciada
+  (try/catch em OnDeviceCreated NÃO pega → puro nativo).
+- `xna_load_asset` usa **reflection**: `genericGetMethodInfo.MakeGenericMethod(type).Invoke(...)`
+  (`MethodBase.Invoke` no .NET 9 usa InvokeStub emit-based). Forte suspeita: a invoke-stub ou um
+  `delegate*`/function-pointer no path de loading aponta p/ lixo neste runtime.
+- Teste host de `asset_cache.get<TextureProxy>` SEM device → **NullReferenceException** gerenciada
+  (provável Device null). Com device (no jogo) vai além → crash nativo. Falta testar COM device.
+
+**PRÓXIMO PASSO**: 
+- Reproduzir `asset_cache.get<TextureProxy>` COM GraphicsDevice presente (criar device no host ou
+  hookar no 1º Update do MonoGame) p/ pegar o ponto exato.
+- Investigar a reflection `MethodBase.Invoke`/`MakeGenericMethod` no .NET 9 self-contained arm64:
+  testar programa mínimo de invoke genérico no device; tentar feature-switch p/ desabilitar
+  emit-invoke (`System.Reflection` config) se for bug do InvokeStub.
+- Verificar `asset_cache.genericGetMethodInfo` = `GetMethod("get")` — se "get" é ambíguo (vários
+  overloads) retorna null/ambíguo → cadeia quebra. Conferir e, se preciso, patchar o jogo (Cecil).
+- Device-side: instalar SOS no gdb do device (DAC em libmscordaccore.so no pacote) p/ clrstack.
+
 ## GATE C — boot: crash isolado no LOADER MULTI-THREAD do jogo (2026-06-16 madrugada)
 **PONTE DE ASSETS PROVADA FUNCIONANDO** ✅: teste isolado no host —
 `Game.Activity.Assets.Open("gui/mobile/title_screen")` abre o .xnb (**len=803079**), tanto via
