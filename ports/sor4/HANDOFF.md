@@ -62,6 +62,26 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE B = PASS COMPLETO ✅✅ (2026-06-16) — MonoGame GLES RENDERIZA no Mali-450
+**Buildei MonoGame.Framework GLES próprio** (híbrido SDL+GLES, net9, v3.8.3.1) do source 3.8.4
+e ele **renderiza 20 frames (Clear cornflower) no Mali-450 MP, EXIT=0**. Pipeline completo OK:
+.NET 9 + MonoGame GLES + sdl2-compat → SDL3-mali → Mali GLES2.
+
+Patches (reproduzíveis em `port/monogame-gles-patches/`: apply.py + csproj + README):
+1. `GraphicsDeviceManager.SDL.cs`: pede contexto SDL **ES profile 2.0** sob `#if GLES`.
+2. `OpenGL.SDL.cs`: `BoundApi=ES` sob GLES.
+3. `RasterizerState.OpenGL.cs`: `PolygonMode` (desktop-only, nil no GLES) gateado `&& !GLES`.
+4. csproj `MonoGame.Framework.SOR4GLES.csproj`: defines `OPENGL;GLES;...;DESKTOPGL`, StbImage via
+   NuGet, AssemblyVersion 3.8.3.1, net9, exclui Sensors.
+GL cru do device (sonda): Mali-450 MP, OpenGL ES 2.0, GLSL ES 1.00, VAO via OES, FBO core.
+Build do MonoGame: `~/.dotnet` SDK 9; saída `/tmp/mgout/MonoGame.Framework.dll`.
+Teste: `build/gltest/` (ProjectReference ao csproj GLES). Deploy `/storage/roms/sor4-test`.
+⚠️ Há logs de debug `[MG]` temporários em GraphicsContext.SDL.cs e GraphicsDevice.OpenGL.cs (gatear/remover depois).
+Restam desktop-only não-tratados (MapBuffer/UnmapBuffer em GetData, DrawBuffer em RenderTarget) —
+só crasham se usados; tratar sob demanda.
+
+Próximo: FASE 3 (GATE C) — bootar SOR4.dll com stubs (Mono.Android/EOS/etc) no host GLES.
+
 ## GATE B (parte 2) — windowing/GL: PROGRESSO + DECISÃO (2026-06-16)
 **Conquistado**:
 - Cross-compilei **sdl2-compat** p/ aarch64 (`build/sdl2-compat/build-arm64/libSDL2-2.0.so.0.3200.71`,
