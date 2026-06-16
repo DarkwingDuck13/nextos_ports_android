@@ -536,6 +536,16 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     }
     if (strcmp(nm, "toString") == 0)
       return make_jstring("");
+    /* 🔑 TER_KBFIX: Class.getName()/getCanonicalName() na reflection de campos (Unity
+       _AndroidJNIHelper.GetFieldID c/ sig vazio reflete field.getType().getName() p/ montar
+       a assinatura). Sem isso o getName devolvia &fake_obj (não-string) → GetStringUTFChars=""
+       → sig vazio → "Field X or type signature not found" → exceção em KeyboardInput.Update
+       ABORTA o ExecuteFrame ANTES do Draw → tela preta. Devolver um nome de tipo válido faz a
+       reflection montar uma assinatura e o GetFieldID/leitura seguir (campo lido = fake/0). */
+    if (getenv("TER_KBFIX") &&
+        (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
+         strcmp(nm, "getTypeName") == 0))
+      return make_jstring("java.lang.Object");
   }
   return &fake_obj;
 }

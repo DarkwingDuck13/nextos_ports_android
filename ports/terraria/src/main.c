@@ -1527,7 +1527,12 @@ static void ter_screenshot_maybe(void) {
   FILE *f = fopen("/storage/roms/terraria/shot.ppm","wb");
   if (f) { fprintf(f,"P6\n%d %d\n255\n", w, h);
     for (int y=h-1;y>=0;y--) for (int x=0;x<w;x++){ unsigned char*p=buf+((size_t)y*w+x)*4; fwrite(p,1,3,f);}
-    fclose(f); fprintf(stderr,"[SHOT] gravado shot.ppm %dx%d (swap #%ld)\n", w,h,n); }
+    fclose(f);
+    /* conta pixels não-pretos + draws acumulados p/ diagnóstico de tela preta */
+    long nb = 0; for (size_t i = 0; i < (size_t)w*h; i++) if (buf[i*4]+buf[i*4+1]+buf[i*4+2] > 24) nb++;
+    extern volatile unsigned long g_frame_draws, g_frame_verts;
+    fprintf(stderr,"[SHOT] gravado shot.ppm %dx%d (swap #%ld) nao-pretos=%ld/%d draws_acum=%lu verts=%lu\n",
+            w,h,n, nb, w*h, g_frame_draws, g_frame_verts); }
   free(buf);
 }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
