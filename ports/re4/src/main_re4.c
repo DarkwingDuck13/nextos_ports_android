@@ -29,6 +29,7 @@ static int my_lstat64(const char*p,void*b){ return (int)syscall(__NR_lstat64,p,b
 static uintptr_t g_mono_base=0, g_unity_base=0;
 static void getmem_trace(const char*tag);
 static const char *re4_gamedir(void);
+void egl_shim_force_present(const char *reason);
 static long my_read(int fd,void*b,unsigned long n){ long r=read(fd,b,n);
   if(n==32768||n>50000){ static int rn=0; if(rn++<24){ void*ra=__builtin_return_address(0); uintptr_t a=(uintptr_t)ra; const char*m="?"; uintptr_t o=a;
     if(g_mono_base&&a>=g_mono_base&&a<g_mono_base+0x600000){m="libmono";o=a-g_mono_base;} else if(g_unity_base&&a>=g_unity_base&&a<g_unity_base+0x2000000){m="libunity";o=a-g_unity_base;}
@@ -71,6 +72,14 @@ static void (*r_glGetShaderiv)(unsigned,unsigned,int*);
 static void (*r_glGetShaderInfoLog)(unsigned,int,int*,char*);
 static void (*r_glTexImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
 static void (*r_glRenderbufferStorage)(unsigned,unsigned,int,int);
+static void (*r_glBindFramebuffer)(unsigned,unsigned);
+static unsigned (*r_glCheckFramebufferStatus)(unsigned);
+static void (*r_glFramebufferTexture2D)(unsigned,unsigned,unsigned,unsigned,int);
+static void (*r_glFramebufferRenderbuffer)(unsigned,unsigned,unsigned,unsigned);
+static void (*r_glClear)(unsigned);
+static void (*r_glDrawArrays)(unsigned,int,int);
+static void (*r_glDrawElements)(unsigned,int,unsigned,const void*);
+static unsigned g_gl_bound_fbo=0;
 /* CACHE de glGetString: o preprocessador de shader do Unity chama glGetString(RENDERER/EXTENSIONS)
    numa WORKER thread que pode NAO ter contexto GL current -> real retorna NULL -> o parse char-a-char
    de NULL crasha. Cacheamos os valores (de quando havia contexto) e devolvemos no lugar de NULL. */
@@ -119,6 +128,67 @@ static void my_glRenderbufferStorage(unsigned target,unsigned internalformat,int
     r_glRenderbufferStorage(target,internalformat,width,height);
   }
 }
+static void my_glBindFramebuffer(unsigned target,unsigned framebuffer){
+  if(!r_glBindFramebuffer) r_glBindFramebuffer=dlsym(RTLD_DEFAULT,"glBindFramebuffer");
+  g_gl_bound_fbo=framebuffer;
+  if(r_glBindFramebuffer){
+    static int lg=0;
+    if(lg++<32) fprintf(stderr,"[GLFB] bind target=0x%x fbo=%u\n",target,framebuffer);
+    r_glBindFramebuffer(target,framebuffer);
+  }
+}
+static unsigned my_glCheckFramebufferStatus(unsigned target){
+  if(!r_glCheckFramebufferStatus) r_glCheckFramebufferStatus=dlsym(RTLD_DEFAULT,"glCheckFramebufferStatus");
+  if(r_glCheckFramebufferStatus){
+    unsigned status=r_glCheckFramebufferStatus(target);
+    static int lg=0;
+    if(lg++<32) fprintf(stderr,"[GLFB] status target=0x%x fbo=%u -> 0x%x\n",target,g_gl_bound_fbo,status);
+    return status;
+  }
+  return 0;
+}
+static void my_glFramebufferTexture2D(unsigned target,unsigned attachment,unsigned textarget,unsigned texture,int level){
+  if(!r_glFramebufferTexture2D) r_glFramebufferTexture2D=dlsym(RTLD_DEFAULT,"glFramebufferTexture2D");
+  if(r_glFramebufferTexture2D){
+    static int lg=0;
+    if(lg++<32) fprintf(stderr,"[GLFB] tex2d fbo=%u att=0x%x tex=%u tgt=0x%x level=%d\n",g_gl_bound_fbo,attachment,texture,textarget,level);
+    r_glFramebufferTexture2D(target,attachment,textarget,texture,level);
+  }
+}
+static void my_glFramebufferRenderbuffer(unsigned target,unsigned attachment,unsigned renderbuffertarget,unsigned renderbuffer){
+  if(!r_glFramebufferRenderbuffer) r_glFramebufferRenderbuffer=dlsym(RTLD_DEFAULT,"glFramebufferRenderbuffer");
+  if(r_glFramebufferRenderbuffer){
+    static int lg=0;
+    if(lg++<32) fprintf(stderr,"[GLFB] rb fbo=%u att=0x%x rb=%u rbtarget=0x%x\n",g_gl_bound_fbo,attachment,renderbuffer,renderbuffertarget);
+    r_glFramebufferRenderbuffer(target,attachment,renderbuffertarget,renderbuffer);
+  }
+}
+static void my_glClear(unsigned mask){
+  if(!r_glClear) r_glClear=dlsym(RTLD_DEFAULT,"glClear");
+  if(r_glClear){
+    static int lg=0;
+    if(lg++<48) fprintf(stderr,"[GLDRAW] clear fbo=%u mask=0x%x\n",g_gl_bound_fbo,mask);
+    r_glClear(mask);
+  }
+}
+static void my_glDrawArrays(unsigned mode,int first,int count){
+  if(!r_glDrawArrays) r_glDrawArrays=dlsym(RTLD_DEFAULT,"glDrawArrays");
+  if(r_glDrawArrays){
+    static int lg=0;
+    if(lg++<64) fprintf(stderr,"[GLDRAW] arrays fbo=%u mode=0x%x first=%d count=%d\n",g_gl_bound_fbo,mode,first,count);
+    r_glDrawArrays(mode,first,count);
+    if(!g_gl_bound_fbo) egl_shim_force_present("glDrawArrays");
+  }
+}
+static void my_glDrawElements(unsigned mode,int count,unsigned type,const void *indices){
+  if(!r_glDrawElements) r_glDrawElements=dlsym(RTLD_DEFAULT,"glDrawElements");
+  if(r_glDrawElements){
+    static int lg=0;
+    if(lg++<64) fprintf(stderr,"[GLDRAW] elems fbo=%u mode=0x%x count=%d type=0x%x idx=%p\n",g_gl_bound_fbo,mode,count,type,indices);
+    r_glDrawElements(mode,count,type,indices);
+    if(!g_gl_bound_fbo) egl_shim_force_present("glDrawElements");
+  }
+}
 static void my_glShaderSource(unsigned sh,int c,const char*const*str,const int*len){
   if(!r_glShaderSource) r_glShaderSource=dlsym(RTLD_DEFAULT,"glShaderSource");
   if(str&&c>0&&str[0]){ char b[90]; int k=0; for(;k<89&&str[0][k]&&str[0][k]!='\n';k++)b[k]=str[0][k]; b[k]=0;
@@ -133,6 +203,13 @@ static int my_raise(int sig); static void my_abort(void); static int my_ptkill(u
 void *re4_gl_override(const char *nm){
   if(!nm) return NULL;
   if(!strcmp(nm,"glGetString")) return (void*)my_glGetString;
+  if(!strcmp(nm,"glBindFramebuffer")) return (void*)my_glBindFramebuffer;
+  if(!strcmp(nm,"glCheckFramebufferStatus")) return (void*)my_glCheckFramebufferStatus;
+  if(!strcmp(nm,"glFramebufferTexture2D")) return (void*)my_glFramebufferTexture2D;
+  if(!strcmp(nm,"glFramebufferRenderbuffer")) return (void*)my_glFramebufferRenderbuffer;
+  if(!strcmp(nm,"glClear")) return (void*)my_glClear;
+  if(!strcmp(nm,"glDrawArrays")) return (void*)my_glDrawArrays;
+  if(!strcmp(nm,"glDrawElements")) return (void*)my_glDrawElements;
   if(!strcmp(nm,"glTexImage2D")) return (void*)my_glTexImage2D;
   if(!strcmp(nm,"glRenderbufferStorage")) return (void*)my_glRenderbufferStorage;
   if(getenv("RE4_GLDIAG")){
@@ -245,12 +322,14 @@ static void *my_mono_valloc(void *addr,size_t size,int flags,int type){ (void)ty
 /* getter do jit_tls (libmono+0x1a6a8) asserta se a thread nao foi atachada ao Mono.
    Hook + trampolim: atacha a thread (1x) e roda o getter original. */
 static void* (*g_orig_jitgetter)(void)=0;
-static void* (*g_grd_fn)(void)=0; static void (*g_jatt_fn)(void*)=0;
+static void* (*g_grd_fn)(void)=0; static void* (*g_dget_fn)(void)=0; static void (*g_dset_fn)(void*,int)=0; static void (*g_jatt_fn)(void*)=0;
 static __thread int g_jit_attached=0;
 static void* my_jit_tls_getter(void){
   static int ent=0; if(ent++<6){ fprintf(stderr,"[JITTLS] getter chamado #%d attached=%d tid=%p\n",ent,g_jit_attached,(void*)pthread_self()); fflush(stderr); }
   if(!g_jit_attached){ g_jit_attached=1;
     void* d = g_grd_fn?g_grd_fn():0;
+    if(!d && g_dget_fn) d=g_dget_fn();
+    if(d && g_dset_fn) g_dset_fn(d,0);
     if(d && g_jatt_fn){ g_jatt_fn(d); fprintf(stderr,"[JITTLS] thread atachada d=%p tid=%p\n",d,(void*)pthread_self()); fflush(stderr); }
     else { fprintf(stderr,"[JITTLS] sem attach (d=%p jatt=%p)\n",d,(void*)g_jatt_fn); fflush(stderr); }
   }
@@ -522,7 +601,7 @@ int main(void){
         a=so_find_addr_safe("mono_pagesize"); if(a){hook_arm64(a,(uintptr_t)my_mono_pagesize); fprintf(stderr,"[HOOK] mono_pagesize -> 4096\n");}
         { uintptr_t ps=so_find_addr_safe("mono_pagesize"); uintptr_t base=ps-0x29d7e4; uintptr_t gt=base+0x1a6a8;
           g_mono_base=base;
-          g_grd_fn=(void*)so_find_addr_safe("mono_get_root_domain"); g_jatt_fn=(void*)so_find_addr_safe("mono_jit_thread_attach");
+          g_grd_fn=(void*)so_find_addr_safe("mono_get_root_domain"); g_dget_fn=(void*)so_find_addr_safe("mono_domain_get"); g_dset_fn=(void*)so_find_addr_safe("mono_domain_set"); g_jatt_fn=(void*)so_find_addr_safe("mono_jit_thread_attach");
           unsigned char*tr=(unsigned char*)mmap(0,32,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
           if(tr!=MAP_FAILED){ memcpy(tr,(void*)gt,8); *(uint32_t*)(tr+8)=0xe51ff004u; *(uint32_t*)(tr+12)=(uint32_t)(gt+8);
             __builtin___clear_cache((char*)tr,(char*)tr+16); g_orig_jitgetter=(void*(*)(void))tr;
@@ -566,11 +645,15 @@ int main(void){
   /* ATTACH da thread ao Mono -> seta o jit_tls (senao assert mini.c:2215) */
   { so_module*c=so_save(); so_use(g_m_mono);
     void*(*grd)(void)=(void*)so_find_addr_safe("mono_get_root_domain");
+    void*(*dget)(void)=(void*)so_find_addr_safe("mono_domain_get");
+    void (*dset)(void*,int)=(void*)so_find_addr_safe("mono_domain_set");
     void*(*att)(void*)=(void*)so_find_addr_safe("mono_thread_attach");
     void*(*jatt)(void*)=(void*)so_find_addr_safe("mono_jit_thread_attach");
     so_use(c); free(c);
     void *d = grd?grd():NULL;
-    fprintf(stderr,"[MONO] root_domain=%p att=%p jatt=%p\n",d,(void*)att,(void*)jatt);
+    if(!d && dget) d=dget();
+    if(d && dset) dset(d,0);
+    fprintf(stderr,"[MONO] root_domain=%p att=%p jatt=%p dget=%p dset=%p\n",d,(void*)att,(void*)jatt,(void*)dget,(void*)dset);
     if(d && jatt){ void*th=jatt(d); fprintf(stderr,"[MONO] jit_thread_attach -> %p\n",th); }
     else if(d && att){ void*th=att(d); fprintf(stderr,"[MONO] thread_attach -> %p\n",th); }
   }

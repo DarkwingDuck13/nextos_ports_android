@@ -6,10 +6,38 @@ MEMCAP_MB="${RE4_MEMCAP_MB:-620}"
 LOGFILE="$GAMEDIR/re4.err"
 THREADLOG="$GAMEDIR/re4.threads"
 CGROUP="/sys/fs/cgroup/memory/re4"
+LOGROOT="$GAMEDIR/logs"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+PREVDIR="$LOGROOT/pre-$STAMP"
+RUNLOGDIR="$LOGROOT/$STAMP"
 
 mkdir -p "$GAMEDIR"
+mkdir -p "$LOGROOT" "$RUNLOGDIR"
+
+archive_old() {
+  base="$1"
+  [ -s "$GAMEDIR/$base" ] || return 0
+  mkdir -p "$PREVDIR"
+  mv "$GAMEDIR/$base" "$PREVDIR/$base"
+}
+
+persist_run() {
+  base="$1"
+  [ -e "$GAMEDIR/$base" ] || return 0
+  cp -f "$GAMEDIR/$base" "$RUNLOGDIR/$base"
+}
+
+for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+  archive_old "$base"
+done
+
 : > "$LOGFILE"
 : > "$THREADLOG"
+{
+  echo "stamp=$STAMP"
+  echo "timeout=$TIMEOUT"
+  echo "memcap_mb=$MEMCAP_MB"
+} > "$RUNLOGDIR/meta.txt"
 
 if [ -d /sys/fs/cgroup/memory ]; then
   mkdir -p "$CGROUP" 2>/dev/null
@@ -18,9 +46,27 @@ if [ -d /sys/fs/cgroup/memory ]; then
   echo $$ > "$CGROUP/cgroup.procs" 2>/dev/null
 fi
 
+export RE4_LOGSTAMP="$STAMP"
+export RE4_SKIP_LOG_ROTATE=1
+export RE4_STOP_ES=1
+export RE4_RESTART_ES="${RE4_RESTART_ES:-1}"
+
 sh "$GAMEDIR/RE4.sh" >>"$LOGFILE" 2>&1 &
 SHELLPID=$!
 GAMEPID=$SHELLPID
+
+(
+  while kill -0 "$SHELLPID" 2>/dev/null; do
+    for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+      persist_run "$base"
+    done
+    sleep 5
+  done
+  for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+    persist_run "$base"
+  done
+) &
+SYNCPID=$!
 
 i=0
 while [ "$i" -lt 20 ]; do
@@ -65,6 +111,9 @@ WDPID=$!
 
 wait "$SHELLPID"
 RC=$?
-kill "$MONPID" "$WDPID" 2>/dev/null
+kill "$MONPID" "$WDPID" "$SYNCPID" 2>/dev/null
 echo "[exit] rc=$RC" >> "$LOGFILE"
+for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+  persist_run "$base"
+done
 exit "$RC"

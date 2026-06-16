@@ -45,7 +45,63 @@ noopm(MoreGamesNotificationUpdate) + [--skipvideo: noopm(video_exists)].
 - Screenshot autônomo: launcher faz glReadPixels→/tmp/sor4shot.raw + .dim no DEVICE; /tmp/getshot.sh
   puxa e converte p/ PNG (flip vertical). SOR4_SHOT=N (frame interval).
 
-### MISSÃO ATUAL (NextOS saiu e confiou a mim): VÍDEOS REAIS + SOM REAL + polir load da fase
+### 🎮 MAPEAMENTO DO CONTROLE CORRIGIDO (cont.11) — botões de ataque agora funcionam
+NextOS (gameplay): direcionais perfeitos, MAS X/B/Start agiam como START(pause), só Square atacava.
+CAUSA: SDL usava o mapping BUILT-IN **"Twin USB PS2 Adapter"** (errado p/ esse pad 0810:0001) porque
+o SDL_GAMECONTROLLERCONFIG do launcher usava GUID SEM CRC (`03000000...`) → ignorado. Runtime GUID
+real = `0300605b100800000100000010010000` (CRC 605b, confirmado via /tmp/sdlprobe). FIX: run_diag.sh
+agora seta SDL_GAMECONTROLLERCONFIG com a GUID REAL + mapping explícito
+`a:b2,b:b1,x:b3,y:b0,back:b8,start:b9,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,leftx:a0,lefty:a1,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2`.
+VERIFICADO ativo: sdlprobe gcName mudou de 'Twin USB PS2 Adapter' → 'USB Gamepad'. Agora face btns
+evdev 288/289/290/291 = Y/B/A/X (b0/b1/b2/b3) e START vai p/ botão-base 297(b9). SoR4 default:
+jump=A(290) attack=X(291) special=Y(288) pickup=B(289) backAttack=RT(295) starMove=RB(293). ⏳ NextOS
+confirma no playtest (se layout físico dele divergir, ajustar a string). Determinístico+gcName=forte.
+
+### 🔊 SOM — DECISÃO: NATIVO (Wwise real do APK), NÃO reimplementação custom (NextOS: "faça o nativo")
+DESCOBERTAS desta sessão:
+- wem 0x3040 do SoR4 = **Ogg Opus padrão no chunk "data"** (ffmpeg/libopus tocam direto, SEM vgmstream).
+- Banks v135: Core.bnk(28MB,1743 wem DIDX), Generic.bnk(10MB,516 wem), Init.bnk(185 hirc), Music.bnk=32B
+  (MÚSICA é STREAMED, fora dos banks — provavelmente nos arquivos obfuscados `\x00IAP` do gameassets).
+- Device: PulseAudio rodando, libopenal 1.25.2, libopusfile, ffmpeg/libavcodec.62, SDL2_mixer. ALSA=AML-M8AUDIO.
+
+CAMINHO CUSTOM (FEITO, mas NextOS NÃO quer — fica de fallback/referência):
+- port/tools/wwise_extract.py (parser HIRC+DIDX: event_id FNV-1 -> wem_ids, extrai .opus) +
+  wwise_real.c (libWwise.so glibc: dlopen OpenAL+opusfile, post_event toca o .opus). FUNCIONOU end-to-end:
+  NextOS ouviu o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
+
+CAMINHO NATIVO (O CERTO — EM ANDAMENTO):
+- libWwise.so REAL extraída do APK -> `/tmp/apklib/lib/arm64-v8a/libWwise.so` (2.9MB, exporta os 21
+  native_wwise_*, NEEDED libOpenSLES/libandroid/liblog/libc/libm/libdl bionic, 134 imports UND).
+- Scaffold gerado: `tools/new-port.sh libWwise.so sor4wwise` -> **ports/sor4wwise/** (98/134 auto-resolvidos:
+  48 passthrough libc/libm + 34 pthread_fake + 5 opensles_shim + 8 android_shim + 3 cxx/log; 36 UNKNOWN =
+  quase todos libc/libm padrão (acosf/feof/syscall/vfprintf...) que a glibc TEM via dlsym(RTLD_DEFAULT) +
+  _chk/__system_property_get/android_set_abort_message que bionic_shims.c JÁ cobre + liblog stub + __sF).
+- FALTA p/ o nativo: (1) converter ports/sor4wwise de EXE-loader -> PLUGIN .so (constructor so_load +
+  trampolins native_wwise_* -> so_find_addr); (2) resolver os 36 UNKNOWN (fallback dlsym RTLD_DEFAULT +
+  wire bionic_shims + __sF stride 0x54); (3) AAssetManager_*/AAsset_* (android_shim) LER OS BANKS de
+  gameassets/ (é como a Wwise carrega Init/Core/Generic/Music.bnk); (4) OpenSLES (slCreateEngine_shim +
+  SL_IID_* data) -> opensles_shim -> SDL/PulseAudio; (5) build .so c/ aarch64-linux-gnu-gcc (igual stub);
+  (6) deploy + depurar no device (reloc C++/RTTI/exceptions, TLS/canary bionic, thread de áudio Wwise).
+  Backup do stub: host_pkg/libs/libWwise.so.stub.bak. P/Invoke do jogo = DllImport "Wwise" -> libWwise.so.
+
+### 🎮 CONTROLE — feedback do NextOS APÓS o fix de mapping (AINDA ABERTO)
+- Mapping explícito ATIVO (gcName mudou). MAS: "A e B continuam virando START" + "analógico pra baixo
+  pula 2 casas" (input duplicado). Logo: o assignment `a:b2,b:b1,...,start:b9` NÃO casa o layout FÍSICO
+  do pad do NextOS (unidade não-padrão). NextOS: "se vire com logs/pad virtual, não precisa eu apertar".
+- TEORIA: os botões físicos A/B dele emitem evdev 296/297 (que mapeei p/ back/start b8/b9) -> viram pause.
+  Square(attack=X=b3=291) funciona -> ancora. DUPLO no dpad: mapeei dpad no hat0 + stick a0/a1; o pad dele
+  manda movimento em a0/a1 (analógico) E hat -> 2x. FIX dpad: usar dpad DIGITAL só nos eixos
+  (dpup:-a1,dpdown:+a1,dpleft:-a0,dpright:+a0) SEM leftx/lefty e SEM hat (igual o built-in que era "perfeito").
+- P/ achar o layout SEM o NextOS: pad VIRTUAL vpadd clona evdev exato -> unbind pad real (slot0) -> apertar
+  cada evdev 288-299 + screenshot/efeito no menu (confirma/cancela/move/pausa) -> deduzir evdev->ação.
+  evcap.py (lê /dev/input/event2 cru) capturou VAZIO (NextOS não apertou na janela). Game ACEITA TECLADO tb.
+
+### 🖼️ CERCAS/OBJETOS BRANCOS no gameplay (task #3, ABERTO) — NextOS confirma persiste.
+Provável: textura específica (cerca/chain-link/objetos) com alpha/blend/formato que o Mali renderiza branco
+(alpha-test? PNG transparência decodificada como branco? material aditivo?). Investigar textura/material em
+decors/main_campaign/stage_1. Resto do cenário ~100% correto.
+
+### MISSÃO ATUAL: VÍDEOS REAIS + SOM NATIVO (Wwise real) + mapeamento controle + cercas brancas
 - **SOM**: jogo usa **Wwise** (Init/Core/Generic/Music.bnk em gameassets + .wem). Hoje libWwise=STUB=mudo.
   Meta: áudio REAL. APK tem libWwise.so arm64. Device=PulseAudio (Mali-450). Investigar binding P/Invoke
   do `BeatThemAll.audio` (post_event/set_music_manager_state) → decidir: usar libWwise real (sink?) ou

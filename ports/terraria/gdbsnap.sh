@@ -4,7 +4,7 @@ set -u
 cd /storage/roms/terraria || exit 1
 killall -9 terraria 2>/dev/null; sleep 1
 export SDL_VIDEODRIVER=mali LD_LIBRARY_PATH=/usr/lib:/storage/roms/terraria
-export TER_FAKEACK=1 CUP_GCOFF=1 TER_FORCETHREADED=1 TER_SKIPTASKWAIT=1
+export CUP_GCOFF=1 TER_INLINETASK=1
 export CUP_NOLOGFILE=1 CUP_FRAMES=400
 timeout -s KILL 90 ./terraria > gdb_eng.log 2>&1 &
 sleep 24

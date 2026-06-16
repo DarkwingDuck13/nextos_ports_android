@@ -151,6 +151,27 @@ static uintptr_t g_i2heap_base, g_i2heap_size;
 /* exposto p/ pthread_fake.c (TER_JOBLOG: symbolizar start_routine dos workers) */
 uintptr_t ter_unity_base(void) { return g_unity_base; }
 uintptr_t ter_il2cpp_base(void) { return g_il2cpp_base; }
+
+/* TER_INLINETASK: FINGE a conclusão do per-object future-task NA MAIN. A main constrói o future
+   (0x2f3680), submete o functor a um pool, e espera em 0x2f37a4 que um worker rode o functor e
+   chame a conclusão 0x2f3a98 (que seta o nó obj+88 + incrementa o contador GLOBAL c10360 que o
+   WaitForJobGroup da frame 3 espera). O dispatch p/ os workers está quebrado no so-loader (eles
+   ficam ociosos). Aqui, no topo do loop de espera, a própria main faz o bookkeeping da conclusão:
+   seta node->next!=0 (sai da espera) + incrementa c10360 (destrava a frame 3). O TRABALHO de
+   serialização em si é pulado (já era tolerado como warning "missing script"). Chamado pelo
+   trampolim instalado em TER_INLINETASK. */
+static volatile int g_inlinetask_n = 0;
+void ter_inline_task(void *obj) {
+  if (!obj) return;
+  void *node = *(void **)((char *)obj + 88);    /* obj+0x58 = node */
+  if (node) *(void **)node = (void *)1;          /* node->next = 1 → satisfaz `cbnz` em 0x2f37b0 */
+  if (g_unity_base) {
+    uint32_t *cnt = (uint32_t *)(g_unity_base + 0xc10360);
+    __atomic_add_fetch(cnt, 1, __ATOMIC_SEQ_CST);
+  }
+  int n = __atomic_add_fetch(&g_inlinetask_n, 1, __ATOMIC_RELAXED);
+  if (n <= 5 || (n % 50) == 0) { fprintf(stderr, "[INLINETASK] #%d obj=%p node=%p c10360++\n", n, obj, node); fsync(2); }
+}
 extern size_t text_size;
 /* /proc/self/maps lido UMA vez (sem malloc — open/read/parse manual; fopen não é
  * async-signal-safe e re-faulta no handler). Buffer estático grande o bastante. */
@@ -2889,6 +2910,11 @@ int main(int argc, char **argv) {
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     set_import("eglGetProcAddress", (void *)my_eglGetProcAddress);
   set_import("sysconf", (void *)my_sysconf);
+  /* 🔑 dl_iterate_phdr: libil2cpp importa e o resolvia p/ o STUB (retorna 0) → o unwinder C++ da
+     libgcc não acha o .eh_frame de libunity/libil2cpp → exceção C++ real (ex.: shader/currentActivity)
+     vira `std::terminate`→abort em vez de ser capturada. Wira o REAL (itera g_so_mods). */
+  { extern int dl_iterate_phdr(int (*)(struct dl_phdr_info *, size_t, void *), void *);
+    set_import("dl_iterate_phdr", (void *)dl_iterate_phdr); }
   if (getenv("TER_JOBINLINE")) {
     set_import("sched_getaffinity", (void *)my_sched_getaffinity);
     fprintf(stderr, "[JOBINLINE] sched_getaffinity -> 1 CPU (job system roda inline)\n");
@@ -3591,6 +3617,45 @@ int main(int argc, char **argv) {
     mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
     __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
     fprintf(stderr, "[SKIPTASKWAIT] libunity+0x2f37b0 cbnz->b (pula a wait do job-queue)\n");
+  }
+  /* TER_INLINETASK: instala um trampolim no TOPO do loop de espera do per-object task (0x2f37a4)
+     que chama ter_inline_task(obj) (finge a conclusão: seta o nó + incrementa c10360) e então
+     executa a instrução original + volta. Destrava per-object task (frame 2) E WaitForJobGroup
+     (frame 3) sem depender do dispatch p/ workers. (Substitui o SKIPTASKWAIT — NÃO usar ambos.) */
+  if (getenv("TER_INLINETASK") && g_unity_base) {
+    extern void ter_inline_task(void *);
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t patch = g_unity_base + 0x2f37a4;
+    /* trampolim numa página RWX PERTO da libunity (b tem alcance ±128MB) */
+    uintptr_t hint = (g_unity_base + 0x2000000) & ~((uintptr_t)pgsz - 1);
+    void *tp = mmap((void *)hint, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tp == MAP_FAILED) tp = mmap(NULL, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    long d = (long)((uintptr_t)tp) - (long)patch;
+    if (tp != MAP_FAILED && d > -0x7000000L && d < 0x7000000L) {
+      uint32_t *t = (uint32_t *)tp;
+      t[0] = 0xF81F0FFEu;          /* str x30,[sp,#-16]!  */
+      t[1] = 0xAA1303E0u;          /* mov x0, x19 (obj)   */
+      t[2] = 0x580000D0u;          /* ldr x16,[pc+0x18] -> fn@T+0x20 */
+      t[3] = 0xD63F0200u;          /* blr x16             */
+      t[4] = 0xF84107FEu;          /* ldr x30,[sp],#16    */
+      t[5] = 0xF9402E68u;          /* ldr x8,[x19,#88] (instr original) */
+      t[6] = 0x58000090u;          /* ldr x16,[pc+0x10] -> dst@T+0x28 */
+      t[7] = 0xD61F0200u;          /* br x16              */
+      *(uint64_t *)((char *)tp + 0x20) = (uint64_t)(uintptr_t)ter_inline_task;
+      *(uint64_t *)((char *)tp + 0x28) = (uint64_t)(g_unity_base + 0x2f37a8);
+      __builtin___clear_cache((char *)tp, (char *)tp + pgsz);
+      /* patch 0x2f37a4 -> b trampolim */
+      void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)patch = 0x14000000u | (uint32_t)(((d) >> 2) & 0x03FFFFFF);
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pp, (char *)pp + pgsz * 2);
+      fprintf(stderr, "[INLINETASK] trampolim @%p (d=0x%lx) patch 0x2f37a4->b\n", tp, d);
+    } else {
+      fprintf(stderr, "[INLINETASK] FALHOU mmap/alcance (tp=%p d=0x%lx)\n", tp, d);
+    }
   }
   /* TER_SKIPJOBWAIT: pula TAMBÉM o WaitForJobGroup (0x2f1d1c): `while([0xc10360]<target) cond_wait`.
      ⚠️ causa abort (job results incompletos são necessários) — só p/ diagnóstico. */

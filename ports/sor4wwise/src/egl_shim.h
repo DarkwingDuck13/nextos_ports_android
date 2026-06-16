@@ -67,7 +67,6 @@ struct SDL_Window *egl_shim_get_window(void);
 
 // Pre-create the SDL window+context from main thread
 void egl_shim_create_window(void);
-void egl_shim_force_present(const char *reason);
 
 // Mutex hooks — call from pthread_mutex_lock/unlock wrappers
 // to detect outermost EndCriticalSectionGL and release GL

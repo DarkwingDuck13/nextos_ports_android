@@ -26,11 +26,53 @@ fi
 
 GAMEDIR="${RE4_GAMEDIR:-$ROMSROOT/ports/re4}"
 LOGFILE="$GAMEDIR/log.txt"
+LOGROOT="$GAMEDIR/logs"
+RUNSTAMP="${RE4_LOGSTAMP:-$(date +%Y%m%d-%H%M%S)}"
+ARCHIVEDIR="$LOGROOT/$RUNSTAMP"
+ES_WAS_STOPPED=0
 
 mkdir -p "$GAMEDIR/userdata"
+mkdir -p "$LOGROOT"
 cd "$GAMEDIR" || exit 1
+
+if [ "${RE4_SKIP_LOG_ROTATE:-0}" != "1" ]; then
+  mkdir -p "$ARCHIVEDIR"
+  for f in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+    if [ -s "$GAMEDIR/$f" ]; then
+      mv "$GAMEDIR/$f" "$ARCHIVEDIR/$f"
+    fi
+  done
+fi
+
 : > "$LOGFILE"
 exec >>"$LOGFILE" 2>&1
+
+stop_frontend() {
+  [ "${RE4_STOP_ES:-1}" = "1" ] || return 0
+  echo "[re4] stopping frontend"
+  systemctl stop emustation 2>/dev/null || \
+    systemctl stop emulationstation 2>/dev/null || \
+    killall -9 emulationstation 2>/dev/null || \
+    killall -9 EmulationStation 2>/dev/null || \
+    killall -9 emustation 2>/dev/null || true
+  ES_WAS_STOPPED=1
+  sleep 2
+}
+
+start_frontend() {
+  [ "$ES_WAS_STOPPED" = "1" ] || return 0
+  [ "${RE4_RESTART_ES:-1}" = "1" ] || return 0
+  echo "[re4] restarting frontend"
+  systemctl start emustation 2>/dev/null || \
+    systemctl start emulationstation 2>/dev/null || true
+}
+
+cleanup() {
+  start_frontend
+  command -v pm_finish >/dev/null 2>&1 && pm_finish
+}
+
+trap cleanup EXIT INT TERM
 
 need() {
   [ -e "$1" ] || {
@@ -65,9 +107,10 @@ echo "[re4] gamedir=$GAMEDIR"
 echo "[re4] package=$RE4_PACKAGE_NAME obb=$RE4_OBB_VERSION"
 echo "[re4] gc_init=${GC_INITIAL_HEAP_SIZE} gc_div=${GC_FREE_SPACE_DIVISOR}"
 echo "[re4] size=${RE4_WIDTH}x${RE4_HEIGHT}"
+echo "[re4] runstamp=$RUNSTAMP"
 
+stop_frontend
 ./re4boot
 RC=$?
 
-command -v pm_finish >/dev/null 2>&1 && pm_finish
 exit "$RC"

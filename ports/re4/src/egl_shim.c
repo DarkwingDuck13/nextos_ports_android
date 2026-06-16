@@ -392,6 +392,33 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   return EGL_TRUE;
 }
 
+void egl_shim_force_present(const char *reason) {
+  if (g_use_real_egl) {
+    if (r_swapBuffers && g_real_dpy && g_real_surf) {
+      r_swapBuffers(g_real_dpy, g_real_surf);
+      int fc = ++frame_count;
+      static _Thread_local int sl=0;
+      if (sl < 12) {
+        debugPrintf("egl_shim: FORCE SwapBuffers #%d [tid=%lx] %s\n",
+                    fc, (unsigned long)pthread_self(), reason ? reason : "?");
+        sl++;
+      }
+    }
+    return;
+  }
+
+  if (egl_window && has_real_gl && current_context && !current_context->is_pbuffer) {
+    SDL_GL_SwapWindow(egl_window);
+    int fc = ++frame_count;
+    static _Thread_local int sl=0;
+    if (sl < 12) {
+      debugPrintf("egl_shim: FORCE SDL swap #%d [tid=%lx] %s\n",
+                  fc, (unsigned long)pthread_self(), reason ? reason : "?");
+      sl++;
+    }
+  }
+}
+
 EGLBoolean egl_shim_DestroySurface(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy;
   free(surface);
