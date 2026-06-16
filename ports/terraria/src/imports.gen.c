@@ -56,7 +56,6 @@ long stub___FD_SET_chk(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _
 long stub_flock(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] flock\\n"); return 0; }
 long stub_fnmatch(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] fnmatch\\n"); return 0; }
 long stub_freeaddrinfo(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] freeaddrinfo\\n"); return 0; }
-long stub_freelocale(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] freelocale\\n"); return 0; }
 long stub_fscanf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] fscanf\\n"); return 0; }
 long stub_futimens(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] futimens\\n"); return 0; }
 long stub_getaddrinfo(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getaddrinfo\\n"); return 0; }
@@ -71,7 +70,6 @@ long stub_getpwuid(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getpw
 long stub_getpwuid_r(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getpwuid_r\\n"); return 0; }
 long stub_getsockname(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getsockname\\n"); return 0; }
 long stub_getsockopt(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getsockopt\\n"); return 0; }
-long stub_gettid(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] gettid\\n"); return 0; }
 long stub_if_nametoindex(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] if_nametoindex\\n"); return 0; }
 long stub_inet_addr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inet_addr\\n"); return 0; }
 long stub_inet_ntop(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inet_ntop\\n"); return 0; }
@@ -95,19 +93,15 @@ long stub_link(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] link\\n")
 long stub_listen(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] listen\\n"); return 0; }
 long stub_lldiv(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] lldiv\\n"); return 0; }
 long stub_logb(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] logb\\n"); return 0; }
-long stub_longjmp(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] longjmp\\n"); return 0; }
 long stub_lrand48(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] lrand48\\n"); return 0; }
 long stub_mbrlen(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbrlen\\n"); return 0; }
-long stub_mbrtowc(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbrtowc\\n"); return 0; }
 long stub_mbsnrtowcs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbsnrtowcs\\n"); return 0; }
 long stub_mbsrtowcs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbsrtowcs\\n"); return 0; }
 long stub_mbtowc(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] mbtowc\\n"); return 0; }
 long stub_memalign(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] memalign\\n"); return 0; }
 long stub___memmove_chk(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __memmove_chk\\n"); return 0; }
 long stub_modff(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] modff\\n"); return 0; }
-long stub_newlocale(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] newlocale\\n"); return 0; }
 long stub_openlog(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] openlog\\n"); return 0; }
-long stub_prctl(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] prctl\\n"); return 0; }
 long stub_raise(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] raise\\n"); return 0; }
 long stub_readlink(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] readlink\\n"); return 0; }
 long stub_recv(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] recv\\n"); return 0; }
@@ -120,17 +114,11 @@ long stub_send(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] send\\n")
 long stub_sendfile(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sendfile\\n"); return 0; }
 long stub_sendmsg(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sendmsg\\n"); return 0; }
 long stub_sendto(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sendto\\n"); return 0; }
-long stub_setjmp(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] setjmp\\n"); return 0; }
 long stub_setpriority(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] setpriority\\n"); return 0; }
 long stub_setsockopt(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] setsockopt\\n"); return 0; }
 long stub___sF(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __sF\\n"); return 0; }
 long stub_shutdown(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] shutdown\\n"); return 0; }
 long stub_sigaction(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigaction\\n"); return 0; }
-long stub_sigaddset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigaddset\\n"); return 0; }
-long stub_sigaltstack(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigaltstack\\n"); return 0; }
-long stub_sigdelset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigdelset\\n"); return 0; }
-long stub_sigemptyset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigemptyset\\n"); return 0; }
-long stub_sigfillset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigfillset\\n"); return 0; }
 long stub_signal(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] signal\\n"); return 0; }
 long stub_sigsuspend(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigsuspend\\n"); return 0; }
 long stub_sincos(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sincos\\n"); return 0; }
@@ -163,15 +151,12 @@ long stub_tcsetattr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] tcse
 long stub_towlower(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] towlower\\n"); return 0; }
 long stub_towupper(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] towupper\\n"); return 0; }
 long stub_uname(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] uname\\n"); return 0; }
-long stub_uselocale(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] uselocale\\n"); return 0; }
 long stub_utime(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] utime\\n"); return 0; }
 long stub_utimes(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] utimes\\n"); return 0; }
 long stub_vasprintf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] vasprintf\\n"); return 0; }
 long stub___vsnprintf_chk(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __vsnprintf_chk\\n"); return 0; }
 long stub_vsscanf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] vsscanf\\n"); return 0; }
-long stub_wcrtomb(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcrtomb\\n"); return 0; }
 long stub_wcscoll(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcscoll\\n"); return 0; }
-long stub_wcslen(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcslen\\n"); return 0; }
 long stub_wcsnrtombs(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcsnrtombs\\n"); return 0; }
 long stub_wcstod(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstod\\n"); return 0; }
 long stub_wcstof(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcstof\\n"); return 0; }
@@ -183,10 +168,6 @@ long stub_wcstoull(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcsto
 long stub_wcsxfrm(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wcsxfrm\\n"); return 0; }
 long stub_wctob(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wctob\\n"); return 0; }
 long stub_wmemchr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemchr\\n"); return 0; }
-long stub_wmemcmp(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemcmp\\n"); return 0; }
-long stub_wmemcpy(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemcpy\\n"); return 0; }
-long stub_wmemmove(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemmove\\n"); return 0; }
-long stub_wmemset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] wmemset\\n"); return 0; }
 
 // flag: 1 = passthrough (resolver via dlsym), 0 = stub ja setado
 static const char *passthrough_names[] = {
@@ -258,6 +239,7 @@ static const char *passthrough_names[] = {
   "fputs",
   "fread",
   "free",
+  "freelocale",
   "fseek",
   "fseeko",
   "fstat64",
@@ -269,6 +251,7 @@ static const char *passthrough_names[] = {
   "getenv",
   "getpagesize",
   "getpid",
+  "gettid",
   "gettimeofday",
   "getuid",
   "gmtime",
@@ -289,10 +272,12 @@ static const char *passthrough_names[] = {
   "log10f",
   "log2",
   "logf",
+  "longjmp",
   "lseek64",
   "lstat",
   "madvise",
   "malloc",
+  "mbrtowc",
   "memchr",
   "memcmp",
   "memcpy",
@@ -306,6 +291,7 @@ static const char *passthrough_names[] = {
   "mprotect",
   "munmap",
   "nanosleep",
+  "newlocale",
   "open",
   "opendir",
   "pipe",
@@ -313,6 +299,7 @@ static const char *passthrough_names[] = {
   "posix_memalign",
   "pow",
   "powf",
+  "prctl",
   "printf",
   "pthread_atfork",
   "pthread_attr_destroy",
@@ -371,8 +358,14 @@ static const char *passthrough_names[] = {
   "sem_wait",
   "setbuf",
   "setenv",
+  "setjmp",
   "setlocale",
   "setvbuf",
+  "sigaddset",
+  "sigaltstack",
+  "sigdelset",
+  "sigemptyset",
+  "sigfillset",
   "sin",
   "sinf",
   "snprintf",
@@ -411,10 +404,17 @@ static const char *passthrough_names[] = {
   "truncate",
   "unlink",
   "unsetenv",
+  "uselocale",
   "usleep",
   "vfprintf",
   "vprintf",
   "vsnprintf",
+  "wcrtomb",
+  "wcslen",
+  "wmemcmp",
+  "wmemcpy",
+  "wmemmove",
+  "wmemset",
   "write",
   0 };
 
@@ -538,7 +538,7 @@ DynLibFunction dynlib_functions[] = {
   {"fread", 0},
   {"free", 0},
   {"freeaddrinfo", (uintptr_t)&stub_freeaddrinfo},
-  {"freelocale", (uintptr_t)&stub_freelocale},
+  {"freelocale", 0},
   {"fscanf", (uintptr_t)&stub_fscanf},
   {"fseek", 0},
   {"fseeko", 0},
@@ -564,7 +564,7 @@ DynLibFunction dynlib_functions[] = {
   {"getpwuid_r", (uintptr_t)&stub_getpwuid_r},
   {"getsockname", (uintptr_t)&stub_getsockname},
   {"getsockopt", (uintptr_t)&stub_getsockopt},
-  {"gettid", (uintptr_t)&stub_gettid},
+  {"gettid", 0},
   {"gettimeofday", 0},
   {"getuid", 0},
   {"gmtime", 0},
@@ -608,14 +608,14 @@ DynLibFunction dynlib_functions[] = {
   {"log2", 0},
   {"logb", (uintptr_t)&stub_logb},
   {"logf", 0},
-  {"longjmp", (uintptr_t)&stub_longjmp},
+  {"longjmp", 0},
   {"lrand48", (uintptr_t)&stub_lrand48},
   {"lseek64", 0},
   {"lstat", 0},
   {"madvise", 0},
   {"malloc", 0},
   {"mbrlen", (uintptr_t)&stub_mbrlen},
-  {"mbrtowc", (uintptr_t)&stub_mbrtowc},
+  {"mbrtowc", 0},
   {"mbsnrtowcs", (uintptr_t)&stub_mbsnrtowcs},
   {"mbsrtowcs", (uintptr_t)&stub_mbsrtowcs},
   {"mbtowc", (uintptr_t)&stub_mbtowc},
@@ -635,7 +635,7 @@ DynLibFunction dynlib_functions[] = {
   {"mprotect", 0},
   {"munmap", 0},
   {"nanosleep", 0},
-  {"newlocale", (uintptr_t)&stub_newlocale},
+  {"newlocale", 0},
   {"open", 0},
   {"opendir", 0},
   {"openlog", (uintptr_t)&stub_openlog},
@@ -644,7 +644,7 @@ DynLibFunction dynlib_functions[] = {
   {"posix_memalign", 0},
   {"pow", 0},
   {"powf", 0},
-  {"prctl", (uintptr_t)&stub_prctl},
+  {"prctl", 0},
   {"printf", 0},
   {"pthread_atfork", 0},
   {"pthread_attr_destroy", 0},
@@ -715,7 +715,7 @@ DynLibFunction dynlib_functions[] = {
   {"sendto", (uintptr_t)&stub_sendto},
   {"setbuf", 0},
   {"setenv", 0},
-  {"setjmp", (uintptr_t)&stub_setjmp},
+  {"setjmp", 0},
   {"setlocale", 0},
   {"setpriority", (uintptr_t)&stub_setpriority},
   {"setsockopt", (uintptr_t)&stub_setsockopt},
@@ -723,11 +723,11 @@ DynLibFunction dynlib_functions[] = {
   {"__sF", (uintptr_t)&stub___sF},
   {"shutdown", (uintptr_t)&stub_shutdown},
   {"sigaction", (uintptr_t)&stub_sigaction},
-  {"sigaddset", (uintptr_t)&stub_sigaddset},
-  {"sigaltstack", (uintptr_t)&stub_sigaltstack},
-  {"sigdelset", (uintptr_t)&stub_sigdelset},
-  {"sigemptyset", (uintptr_t)&stub_sigemptyset},
-  {"sigfillset", (uintptr_t)&stub_sigfillset},
+  {"sigaddset", 0},
+  {"sigaltstack", 0},
+  {"sigdelset", 0},
+  {"sigemptyset", 0},
+  {"sigfillset", 0},
   {"signal", (uintptr_t)&stub_signal},
   {"sigsuspend", (uintptr_t)&stub_sigsuspend},
   {"sin", 0},
@@ -798,7 +798,7 @@ DynLibFunction dynlib_functions[] = {
   {"uname", (uintptr_t)&stub_uname},
   {"unlink", 0},
   {"unsetenv", 0},
-  {"uselocale", (uintptr_t)&stub_uselocale},
+  {"uselocale", 0},
   {"usleep", 0},
   {"utime", (uintptr_t)&stub_utime},
   {"utimes", (uintptr_t)&stub_utimes},
@@ -808,9 +808,9 @@ DynLibFunction dynlib_functions[] = {
   {"vsnprintf", 0},
   {"__vsnprintf_chk", (uintptr_t)&stub___vsnprintf_chk},
   {"vsscanf", (uintptr_t)&stub_vsscanf},
-  {"wcrtomb", (uintptr_t)&stub_wcrtomb},
+  {"wcrtomb", 0},
   {"wcscoll", (uintptr_t)&stub_wcscoll},
-  {"wcslen", (uintptr_t)&stub_wcslen},
+  {"wcslen", 0},
   {"wcsnrtombs", (uintptr_t)&stub_wcsnrtombs},
   {"wcstod", (uintptr_t)&stub_wcstod},
   {"wcstof", (uintptr_t)&stub_wcstof},
@@ -822,10 +822,10 @@ DynLibFunction dynlib_functions[] = {
   {"wcsxfrm", (uintptr_t)&stub_wcsxfrm},
   {"wctob", (uintptr_t)&stub_wctob},
   {"wmemchr", (uintptr_t)&stub_wmemchr},
-  {"wmemcmp", (uintptr_t)&stub_wmemcmp},
-  {"wmemcpy", (uintptr_t)&stub_wmemcpy},
-  {"wmemmove", (uintptr_t)&stub_wmemmove},
-  {"wmemset", (uintptr_t)&stub_wmemset},
+  {"wmemcmp", 0},
+  {"wmemcpy", 0},
+  {"wmemmove", 0},
+  {"wmemset", 0},
   {"write", 0},
 };
 size_t dynlib_numfunctions = sizeof(dynlib_functions)/sizeof(dynlib_functions[0]);

@@ -2520,6 +2520,10 @@ int main(int argc, char **argv) {
   set_import("ANativeWindow_acquire", (void *)my_aw_noop);
   set_import("ANativeWindow_release", (void *)my_aw_noop);
 
+  /* alias bionic->glibc: __errno (bionic) = __errno_location (glibc) */
+  { void *el = dlsym(RTLD_DEFAULT, "__errno_location");
+    if (el) set_import("__errno", el); }
+
   install_sem_shim();  /* semáforos próprios bionic→glibc (fix deadlock boot) */
 
   fprintf(stderr, "[F0] resolvendo %zu imports...\n", dynlib_numfunctions);
