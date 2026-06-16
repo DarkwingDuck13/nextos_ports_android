@@ -62,7 +62,37 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE A = PASS ✅ (FASE 1) — inventário
+Assembly store = formato **XABA v2**, 58 assemblies em **LZ4 (`XALZ`)**.
+Extração: parsear header XABA (5×u32) → tabela índice (116×12B) → descritores (stride 28B,
+campos mapping_index/data_offset/data_size) → `lz4.block.decompress` por entry.
+Script de extração reproduzível: ver comando no log; saída em `build/extract/asm/asm_NNN.dll`.
+Inventário completo: `port/ASSEMBLIES.md`. Destaques:
+- **`SOR4.dll` (1.49MB) v1.0.0.0 = código do jogo** (NÃO ofuscado).
+- **`StandaloneTypeModel.Android.Retail.dll` (1.09MB)** = modelo/lógica (limpo: só ref SOR4+System).
+- **`MonoGame.Framework` v3.8.3.1** (Android/GLES build) — versão a casar no swap DesktopGL.
+- **.NET 9** (System.Private.CoreLib 9.0.0.0; todos System.* = 9.0). [corrige estimativa .NET 8]
+- Stubs: Mono.Android, Java.Interop, EOSSDK.Android, HelpshiftSDKx.Android,
+  Xamarin.GooglePlayServices.*, BillingClient, Firebase, PlayCore, SharpFont.Core.
+
+### Acoplamento Android (medido) — `port/ANDROID-SURFACE.md`
+SOR4.dll usa **116 typerefs Android/Java**, mas concentrados:
+- **Funcionais (precisam stub útil)**: `Context`/`Activity`/`Application` (paths),
+  `AssetManager` (carregar .xnb → bridge p/ filesystem), `ISharedPreferences(+Editor)` (settings).
+- **Serviços (stub no-op/offline)**: Google Play Games (achievements/leaderboards/cloud-save),
+  Google Sign-In, Billing/DLC, EOS, Helpshift, Firebase, PlayCore.
+StandaloneTypeModel = sem Android. → acoplamento isolado em 1 arquivo, gerenciável.
+
+## Alvo de runtime (revisado)
+- **.NET 9 linux-arm64** (CoreCLR oficial) — game é net9.0. Mono 6.12 clássico do host NÃO serve.
+- Risco a validar JÁ na FASE 2: CoreCLR .NET 9 roda em **kernel 3.14** (glibc 2.43 ajuda;
+  knobs: `DOTNET_EnableWriteXorExecute=0`, `DOTNET_GCgen0size`, etc.). Fallback: MonoVM .NET 9.
+- MonoGame **DesktopGL 3.8.3.1** (SDL2 + OpenGL) → gl4es p/ GLES2 no Mali-450.
+
 ## Log cronológico
 - **2026-06-16** — FASE 0. Recon device .127 + repo. Confirmado MonoGame/.NET no APK,
   assemblies em claro. Cuphead do repo é il2cpp (não serve de base de runtime). Sem mono no
-  device. Criado scaffold `ports/sor4/`. Próximo: FASE 1 extração do assembly store (GATE A).
+  device. Criado scaffold `ports/sor4/`. Commit `d1b7c9e`.
+- **2026-06-16** — FASE 1 / GATE A PASS. Extraídos 58 assemblies (XABA+LZ4). Achado SOR4.dll
+  (jogo, não-ofuscado) + MonoGame 3.8.3.1 + .NET 9. Mapeado acoplamento Android (116 refs, mas
+  isolado/stubável). Docs `ASSEMBLIES.md`/`ANDROID-SURFACE.md`. Próximo: FASE 2 validar .NET 9 no .127.
