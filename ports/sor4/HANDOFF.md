@@ -62,6 +62,49 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE B (parte 2) — windowing/GL: PROGRESSO + DECISÃO (2026-06-16)
+**Conquistado**:
+- Cross-compilei **sdl2-compat** p/ aarch64 (`build/sdl2-compat/build-arm64/libSDL2-2.0.so.0.3200.71`,
+  só linka libc, dlopen SDL3). MonoGame carrega via ele → SDL3-mali do device.
+- MonoGame DesktopGL **cria janela + contexto GL na tela** (fbdev) via sdl2-compat→SDL3-mali,
+  QUANDO o frontend (ES) não segura o /dev/fb0. → **windowing resolvido**.
+- Único erro restante do DesktopGL: `requires ARB/EXT_framebuffer_object` — o contexto é **GLES2
+  nativo do Mali** (não tem as extensões desktop).
+
+**Aprendizados-chave**:
+- O driver **mali-fbdev do SDL3 exige o EGL real do Mali** p/ criar a window surface; sombrear
+  `libEGL.so.1` com gl4es-EGL QUEBRA a criação da superfície. → não dá p/ enfiar gl4es por aí.
+- **gl4es é BECO SEM SAÍDA para este jogo**: os Effects `.xnb` foram compilados para o **MonoGame
+  GLES (Android)** = GLSL ES. Só carregam num MonoGame GLES; o DesktopGL usa MojoShader/GLSL
+  desktop e não consome esses shaders. Logo, traduzir desktop-GL→GLES (gl4es) não resolve shaders.
+- A ES segura o fb0 → launcher precisa parar o frontend antes (matcher /proc/PID, ver cuphead run.sh).
+- `/storage/roms` é **vfat (sem symlink)** → copiar .so com nome real (não ln -s).
+- net8 vs net9: MonoGame DesktopGL 3.8.4 público é net8; meu app net9 quebra (System.Collections
+  8.0.0.0). Resolvido p/ teste usando net8; no jogo real uso a versão do jogo (net9).
+
+**DECISÃO (caminho do GL)**: **buildar MonoGame 3.8.x do source em modo GLES nativo + net9**
+(mesmo sabor do Android, sem deps Android). Casa com os shaders `.xnb` do jogo e roda direto no
+Mali GLES2. Windowing já funciona (sdl2-compat→SDL3-mali). gl4es descartado.
+Próximo: clonar MonoGame, achar a config GLES (`#if GLES`/OpenGL backend), buildar
+MonoGame.Framework.dll GLES net9 v compatível com 3.8.3.1.
+
+## GATE B (parte 2) — windowing/GL: estratégia (HISTÓRICO)
+**Muro**: device é Mali-450 **fbdev-puro** (sem /dev/dri, sem X, sem wayland compositor).
+- SDL2 do sistema (2.32.69): drivers = x11/kmsdrm/wayland/vivante → **NENHUM serve**.
+- **SDL3 do sistema (3.5.0-HEAD) TEM `mali`+`fbdev`+`offscreen`** → é como o 3SX roda.
+- gl4es completo presente: `/usr/lib/libGL.so(.1)` (desktop GL sobre Mali/EGL) + `libEGL_gl4es.so.1`.
+- MonoGame DesktopGL usa **SDL2** e NÃO traz nativos arm64 (só x64) → preciso prover libSDL2.
+
+**Decisão**: bridge **sdl2-compat** (libSDL2-2.0.so.0 implementada sobre SDL3) → reusa a
+SDL3-mali que já funciona no device. Cross-compilar p/ aarch64 (dlopen SDL3 em runtime).
+Rodar com `SDL_VIDEODRIVER=mali` + `LD_LIBRARY_PATH` incluindo gl4es libGL.
+- Fallback se sdl2-compat falhar (ABI SDL3 preview): SDL2 com driver **offscreen** (EGL Mali) +
+  shim de present `glReadPixels→/dev/fb0` (técnica Shadowflare/NFS).
+
+Ferramentas host OK: `aarch64-linux-gnu-gcc`, clang 22, SDL3 headers (3.4.10), cmake/ninja.
+Nota MonoGame: 3.8.3.1 não está no NuGet → DesktopGL resolve **3.8.4** (validar GL com 3.8.4;
+casar versão exata p/ o swap no jogo fica p/ FASE 3 — possível build do MonoGame do source).
+
 ## GATE B (parte 1) = PASS ✅ — .NET 9 CoreCLR RODA no .127
 Hello-world **self-contained .NET 9 linux-arm64** (CoreCLR) executou no device:
 `.NET 9.0.17 OK on Arm64`, GC + thread + EXIT=0. Kernel Linux 3.14.79 mas userland
