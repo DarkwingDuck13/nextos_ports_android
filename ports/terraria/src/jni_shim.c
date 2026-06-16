@@ -196,7 +196,11 @@ static struct astream g_astreams[MAX_ASTREAMS];
 static int g_astream_n = 0;
 static void *asset_open(const char *path) {
   char full[1200];
-  snprintf(full, sizeof(full), ASSET_BASE "%s", path ? path : "");
+  /* alguns acessos vêm com prefixo "assets/" (ex il2cpp resource check do guid);
+     nossos arquivos estão em ASSET_BASE/bin/Data (sem "assets/"). Tira o prefixo. */
+  const char *p = path ? path : "";
+  if (!strncmp(p, "assets/", 7)) p += 7;
+  snprintf(full, sizeof(full), ASSET_BASE "%s", p);
   FILE *fp = fopen(full, "rb");
   debugPrintf("asset: open(%s) -> %s\n", path ? path : "?",
               fp ? "OK" : "FALHOU (sem arquivo)");
