@@ -62,6 +62,35 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## 🏆 GATE D ALCANÇADO: PRIMEIRA IMAGEM NA TELA + jogo inicializa fundo (2026-06-16 cont.3)
+**NEXTOS CONFIRMOU imagens na TV.** O jogo agora roda MUITO fundo na inicialização. Cadeia que
+JÁ FUNCIONA (boot → render → init):
+- .NET 9 CoreCLR + MonoGame GLES + SDL3-mali → contexto + GraphicsDevice ✅
+- Asset loading via bridge (get_AssetManager patchado p/ AssetBridge.GetAssets) ✅
+- Texturas .xnb carregam (ASTC → placeholder RGBA cinza) ✅
+- OnDeviceCreated + PreloadingScreen.Initialize ✅
+- Game loop RODANDO: Initialize → 1º Draw → shaders SpriteBatch (GLSL ES) compilam+linkam ✅
+- `PreloadingScreen.AfterFirstDraw`: read_bigfile (DeflateStream OK) + program.initialize +
+  audio.initialize + start_background_loading ✅
+- bigfile deserializando (`reflection.bin_deserialize` de `MetaGameConfigData`) — **crash aqui**.
+
+**Fixes desta rodada** (todos em port/):
+- `System.Runtime` forward de `DefaultDllImportSearchPathsAttribute` (`port/tools/addfwd/`).
+- Stubber agora **STRIP** de `DefaultDllImportSearchPaths`/`UnmanagedFunctionPointer` attrs
+  (o retarget corelib→System.Runtime quebrava reflection de atributos no AfterFirstDraw).
+- Texture2DReader: ASTC (fmt>=96) → placeholder RGBA (`port/monogame-gles-patches/Texture2DReader.SOR4.cs`).
+- ALC resolver restrito (System.*/Microsoft.* → runtime).
+- injlog ganhou `@metodo` (loga arg string) + `addfwd` tool.
+
+**MURO ATUAL**: `bin_deserialize(MetaGameConfigData)` → `ldr x0,[x0+8]` com **x0 = ponteiro LIXO**
+(não null — runtime converteria em NRE; é AV de verdade). Deserializador binário do jogo produz
+referência corrompida. 
+**HIPÓTESE PRINCIPAL**: jogo é **MonoVM** (Android, libmonosgen) e rodo em **CoreCLR**. O serializador
+pode depender de comportamento do Mono (layout/ordem de campos/unsafe). → testar **.NET 9 com
+`<UseMonoRuntime>true</UseMonoRuntime>`** (runtime Mono desktop) — pode casar o comportamento.
+Alternativas: debugar o formato do bin_deserialize; ou rodar com DOTNET_gcServer/layout flags.
+**Próximo passo recomendado**: publicar host com UseMonoRuntime e testar se passa a deserialização.
+
 ## GATE C → GATE D: CRASH NATIVO RESOLVIDO! Agora é só formato ASTC (2026-06-16 cont.2)
 **MARCO**: o segfault nativo no asset loader FOI EMBORA. Causa-raiz: `asset_cache.get_AssetManager`
 fazia `new AssetManagerWrapper(Game.Activity.Assets)` e o **`callvirt Context::get_Assets()`** no

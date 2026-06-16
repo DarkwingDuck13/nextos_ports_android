@@ -10,10 +10,16 @@ class InjLog {
     var impLog=asm.MainModule.ImportReference(log);
     int n=0;
     foreach(var t in AllTypes(asm.MainModule)) foreach(var m in t.Methods){
-      if(!m.HasBody || !names.Contains(m.Name)) continue;
+      bool argMode = names.Contains("@"+m.Name);
+      if(!m.HasBody || (!names.Contains(m.Name) && !argMode)) continue;
       var il=m.Body.GetILProcessor(); var first=m.Body.Instructions[0];
-      il.InsertBefore(first, il.Create(OpCodes.Ldstr, t.Name+"."+m.Name+" ENTER"));
-      il.InsertBefore(first, il.Create(OpCodes.Call, impLog));
+      if(argMode && m.Parameters.Count>0 && m.Parameters[0].ParameterType.MetadataType==MetadataType.String){
+        il.InsertBefore(first, il.Create(OpCodes.Ldarg, m.IsStatic?0:1)); // primeiro parametro string
+        il.InsertBefore(first, il.Create(OpCodes.Call, impLog));
+      } else {
+        il.InsertBefore(first, il.Create(OpCodes.Ldstr, t.Name+"."+m.Name+" ENTER"));
+        il.InsertBefore(first, il.Create(OpCodes.Call, impLog));
+      }
       n++;
     }
     asm.Write(); Console.WriteLine("injetado log em "+n+" metodos");
