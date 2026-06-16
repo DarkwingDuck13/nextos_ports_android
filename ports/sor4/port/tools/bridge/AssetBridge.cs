@@ -2,6 +2,7 @@ using System; using System.IO; using System.Runtime.CompilerServices;
 using Android.Content.Res;
 namespace SOR4Bridge {
   public static class AssetBridge {
+    public static void Log(string m){ Console.Error.WriteLine("[GLOG] "+m); Console.Error.Flush(); }
     public static string Root = Environment.GetEnvironmentVariable("SOR4_ASSETS") ?? Path.Combine(AppContext.BaseDirectory,"assets");
     static AssetManager _am;
     public static AssetManager GetAssets() { { if(_am==null){ Console.Error.WriteLine("[asset] GetAssets: criando AssetManager uninitialized"); Console.Error.Flush(); _am=(AssetManager)RuntimeHelpers.GetUninitializedObject(typeof(AssetManager)); Console.Error.WriteLine("[asset] GetAssets ok"); Console.Error.Flush(); } return _am; } }

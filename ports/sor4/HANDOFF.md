@@ -62,6 +62,36 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE C → GATE D: CRASH NATIVO RESOLVIDO! Agora é só formato ASTC (2026-06-16 cont.2)
+**MARCO**: o segfault nativo no asset loader FOI EMBORA. Causa-raiz: `asset_cache.get_AssetManager`
+fazia `new AssetManagerWrapper(Game.Activity.Assets)` e o **`callvirt Context::get_Assets()`** no
+AndroidGameActivity (Mono.Android stub uninitialized) crashava nativo no slot de vtable. 
+**FIX (Cecil)**: `port/tools/patchgam/` reescreve `get_AssetManager` no SOR4.dll: troca
+`Game.Activity.Assets` (call get_Activity + isinst MainActivity + callvirt get_Assets) por
+**`call SOR4Bridge.AssetBridge.GetAssets()`** (nopa os 2 anteriores). Tudo downstream
+(AssetManagerWrapper.Open/List → AssetManager.Open/List já bridgeados no stub) funciona.
+Pinpoint via `port/tools/injlog/` (injeta log de entrada em métodos do jogo) →
+sequência: get→try_get_asset_in_cache→load_asset→xna_load_asset→get_AssetManager→(crash).
+
+**ESTADO ATUAL**: o jogo agora **CARREGA a textura via MonoGame**:
+`[asset] gui/mobile/left_filler.xnb` → `ContentManager.ReadAsset` → `GetContentReaderFromXnb` →
+**`NotSupportedException: SurfaceFormat '98' is not supported`** (gerenciado, capturado).
+Reflection do .NET 9 OK (testado isolado, `build/reftest`). 
+
+**NOVO MURO = ASTC**: formato 98 = família ASTC (enum tem `Astc4X4Rgba=96`; 98 = outra variante,
+provável 6x6/8x8 — fork MonoGame do dev tem mais ASTC). **Mali-450 NÃO suporta ASTC** (extensões só
+`GL_OES_compressed_ETC1_RGB8`, sem ASTC/ETC2/DXT/PVRTC). Mesmo problema do GunGodz.
+**Opções p/ resolver (PRÓXIMO PASSO)**:
+1. **Decode ASTC→RGBA8 em runtime** no MonoGame (Texture2D/GetGLFormat): detectar ASTC → decodificar
+   p/ RGBA8 (Color) → glTexImage2D. Precisa decoder ASTC (C# puro embutido, ou astcenc nativo arm64
+   P/Invoke). Limpo, escala, mas RGBA8 infla memória/VRAM.
+2. **Converter assets offline** ASTC→RGBA8/4444 (receita GunGodz: astcenc-native + reescrever .xnb).
+   Reprocessa 1.9GB, infla muito (RGBA8 ~4-8GB). 
+3. **Placeholder (interim p/ 1ª imagem)**: textura dummy (cor) pro formato ASTC → ver o LAYOUT da
+   tela de preload renderizar (prova pipeline end-to-end), depois implementar decode real.
+Recomendado: (3) p/ a 1ª imagem rápida, depois (1) decode real (RGBA4444 p/ economizar).
+Notar: Mali-450 só comprime ETC1 (RGB, sem alpha) → texturas com alpha = RGBA8/4444 sem compressão.
+
 ## GATE C — boot: crash isolado no LOADER (reflection) — 4 fixes aplicados (2026-06-16 cont.)
 **Fixes novos aplicados (todos necessários, em port/)**:
 1. **`utils.set_as_main_thread()`** chamado pelo host no boot (senão `is_main_thread()`=false →
