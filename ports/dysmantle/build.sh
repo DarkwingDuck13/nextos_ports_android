@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 
 SRCS="src/main.c src/so_util.c src/imports.c src/pthread_bridge.c \
       src/egl_shim.c src/android_shim.c src/opensles_shim.c src/jni_shim.c \
-      src/etc2_decode.c src/util.c src/error.c"
+      src/etc2_decode.c src/etc1_encode.c src/util.c src/error.c"
 
 $CC --sysroot="$SR" -I src -O2 -fPIC \
     -Wno-unused-parameter -Wno-unused-function -Wno-comment \
