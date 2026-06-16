@@ -251,6 +251,13 @@ static void *my_fopen(const char *path, const char *mode) {
   }
   return fp;
 }
+/* DIAG dos POOLS da engine: loga alocações GIGANTES (>=16MB) + return-addr p/
+ * identificar os pools (StageObjectAllocator/btGenericMemoryPool/General Pool) que
+ * dominam a RAM no .127. extern do base da libGame p/ simbolicar o caller. */
+/* (DIAG removido 2026-06-16: hooks malloc/calloc/posix_memalign confirmaram que os
+ * ~344MB NÃO vêm de alocações grandes únicas — é dado vivo de objetos do mundo via
+ * muitas alocações pequenas; nada >=16MB. Não há lever de pool reduzível por shim.) */
+
 /* força stack grande nas threads do jogo: a worker de loading tem cadeia de
  * parsing profunda; a stack pedida (bionic ~1MB) pode estourar sob glibc. */
 static int my_attr_setstacksize(void *attr, size_t sz) {

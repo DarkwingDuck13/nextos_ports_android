@@ -583,6 +583,35 @@ static void hook_ifm(void) {
   so_make_text_executable(); so_flush_caches();
   fprintf(stderr, "hook_ifm: detour AddActorFromNode @ %p\n", (void *)addr);
 }
+
+/* T1-perf (#1 drawcalls): força o PRESET DE DETALHE da engine. A engine tem LOD por
+ * chunk + StaticLODModel (batcha atores) controlado por Shadegrown::SetDetailLevelPreset
+ * (presets "Low"/"Medium"/"High"). Detouramos p/ trocar o preset que o jogo pede pelo
+ * de DYSMANTLE_DETAIL (ex "Low") -> mais LOD/batch = menos drawcalls = +fps (e talvez
+ * menos RAM de objetos). Só hooka se DYSMANTLE_DETAIL setado (default = comportamento normal). */
+static void (*real_setdetail)(void *, const char *);
+static void my_setdetail(void *self, const char *preset) {
+  const char *force = getenv("DYSMANTLE_DETAIL");
+  const char *use = (force && force[0]) ? force : preset;
+  fprintf(stderr, "[DETAIL] SetDetailLevelPreset('%s')%s\n",
+          preset ? preset : "?", (use != preset) ? " -> FORCADO p/ DYSMANTLE_DETAIL" : "");
+  real_setdetail(self, use);
+}
+static void hook_detail(void) {
+  if (!getenv("DYSMANTLE_DETAIL")) return;
+  uintptr_t lb = so_find_addr("android_main") - 0x4651a4;
+  uintptr_t addr = lb + 0xcca150; /* Shadegrown::SetDetailLevelPreset(const char*) */
+  uint32_t *tr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  tr[0] = *(uint32_t *)addr; tr[1] = 0x58000051u; tr[2] = 0xd61f0220u;
+  *(uint64_t *)&tr[3] = addr + 4;
+  __builtin___clear_cache((char *)tr, (char *)tr + 32);
+  real_setdetail = (void (*)(void *, const char *))tr;
+  so_make_text_writable(); hook_arm64(addr, (uintptr_t)my_setdetail);
+  so_make_text_executable(); so_flush_caches();
+  fprintf(stderr, "hook_detail: detour SetDetailLevelPreset @ %p (forca '%s')\n",
+          (void *)addr, getenv("DYSMANTLE_DETAIL"));
+}
 static void hook_genverts(void) {
   uintptr_t lb = so_find_addr("android_main") - 0x4651a4;
   uintptr_t addr = lb + 0xa025b8;
@@ -1304,6 +1333,7 @@ int main(int argc, char *argv[]) {
   hook_getshader();  /* 🌍 diag + FIX B: alias *Shadows.xml -> variante s/ sombra */
   hook_inittrans();  /* 🌍 diag + FIX A: log/override do ShaderTarget */
   hook_iap_dlc();    /* 🔓 DLC: aplica entitlements (DLC1/2/3) na init do IAP */
+  hook_detail();     /* #1 perf: força preset de detalhe (DYSMANTLE_DETAIL=Low) p/ +fps */
   start_perfcpu();   /* [PERFCPU] sampler de CPU por thread (diag lag) */
   /* ⚠️ hook_kvfloat() REMOVIDO: o RENDERSCALE era zoom de câmera (abandonado) e
    * o hook interferia no parser de config (strcmp render_scale) → crash em
