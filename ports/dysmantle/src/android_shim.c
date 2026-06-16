@@ -368,11 +368,42 @@ static void check_exit_hotkey(void) {
   }
 }
 
+/* Injetor de TOQUE por coordenada (debug/automação): `echo "x y" > /dev/shm/dys_tap`
+ * -> toca (down, move, up ~5 frames) na posição ABSOLUTA x,y. A UI do menu é touch,
+ * e o toque é caminho separado do controle 0 -> IMUNE ao attract demo que sobrescreve
+ * o pad (por isso a navegação por botão era não-determinística). Permite entrar no
+ * jogo de forma confiável (tocar no PLAY). Custo zero sem o trigger. */
+void dys_tap_inject(void) {   /* chamado de my_pb_getdata (roda no menu E in-game) */
+  static int chk = 0, hold = 0;
+  static float tx = 0, ty = 0;
+  if (hold > 0) {
+    if (--hold == 0) {
+      push_motion_event(AMOTION_EVENT_ACTION_UP, tx, ty);
+      debugPrintf("[tap] up %.0f,%.0f\n", tx, ty);
+    } else {
+      push_motion_event(AMOTION_EVENT_ACTION_MOVE, tx, ty);
+    }
+    return;
+  }
+  if (++chk % 6) return;
+  FILE *f = fopen("/dev/shm/dys_tap", "r");
+  if (!f) return;
+  float x, y;
+  if (fscanf(f, "%f %f", &x, &y) == 2) {
+    tx = x; ty = y; hold = 5;
+    push_motion_event(AMOTION_EVENT_ACTION_DOWN, x, y);
+    debugPrintf("[tap] down %.0f,%.0f\n", x, y);
+  }
+  fclose(f);
+  unlink("/dev/shm/dys_tap");
+}
+
 static void process_sdl_events(void) {
   // Try to open a gamepad if we don't have one yet
   init_gamecontroller();
   pb_try_connect();
   check_exit_hotkey();  /* SELECT+START -> sai (garantia, qualquer device) */
+  /* dys_tap_inject e' chamado de my_pb_getdata (main.c) -> roda no menu tambem */
 
   /* diag: loga status Paddleboat do pad 0 periodicamente */
   if (g_pb_connected) {

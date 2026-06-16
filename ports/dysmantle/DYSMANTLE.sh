@@ -58,7 +58,14 @@ fi
 GAMEDIR="/$directory/ports/dysmantle"
 cd "$GAMEDIR"
 mkdir -p "$GAMEDIR/gamedata"
-> "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
+# LOG SILENCIOSO por padrao: escrever stdout/stderr no log.txt (via tee) a cada
+# frame martelava o eMMC/SD e travava a thread de audio (SFX somem) + choppy. Sem
+# log persistente em teste normal. So com DYSMANTLE_DEBUG=1 grava o log.txt.
+if [ -n "$DYSMANTLE_DEBUG" ]; then
+  > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
+else
+  exec >/dev/null 2>&1
+fi
 
 # ---------- escolha do binario (DOIS binarios cobrem qualquer device) ----------
 # dysmantle = build NextOS (precisa GLIBC_2.38: NextOS/muOS/Knulli/ROCKNIX/X5M).
@@ -113,12 +120,26 @@ export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
-export SDL_AUDIODRIVER=alsa
+# AUDIO driver: se há PulseAudio rodando (Mali-450/Amlogic NextOS) o ALSA direto
+# rejeita o estéreo do HDMI (AML-M8AUDIO: "Couldn't set audio channels") -> usa pulse.
+# Sem pulseaudio (X5M = PipeWire/alsa direto que já funciona) fica alsa. Overridável.
+if pgrep -x pulseaudio >/dev/null 2>&1; then
+  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
+else
+  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
+fi
 export DYSMANTLE_ASSETS=assets
-# Shader ES2 (vale tb no ES3) + vsync off (limiter da engine cuida do pacing;
-# vsync por cima = double-pacing = trava em 30fps).
+# Shader ES2 (vale tb no ES3).
 export DYSMANTLE_GLVER=2.0
-export DYSMANTLE_SWAPINT=0
+# VSYNC por BACKEND (T1): fbdev (Mali-450/Amlogic, sem /dev/dri) liga vsync=1 ->
+# o present sincroniza com o refresh -> MATA o tearing/flicker. KMSDRM (X5M/R26S)
+# fica 0 (o limiter da engine cuida do pacing; vsync por cima = double-pacing 30fps).
+# Ambos overridaveis por env.
+if [ -e /dev/dri/card0 ]; then
+  export DYSMANTLE_SWAPINT="${DYSMANTLE_SWAPINT:-0}"   # KMSDRM
+else
+  export DYSMANTLE_SWAPINT="${DYSMANTLE_SWAPINT:-1}"   # fbdev -> vsync on
+fi
 
 # NAO setamos SDL_VIDEODRIVER de proposito (padrao PortMaster, igual o Bully): o
 # SDL2 do device AUTO-DETECTA o backend -- mali/fbdev no Amlogic-old (sem /dev/dri)

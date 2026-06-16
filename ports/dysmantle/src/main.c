@@ -988,6 +988,8 @@ static int32_t my_pb_getdata(int32_t idx, void *data) {
             buttons);
   }
   n++;
+  /* toque por coordenada (roda no menu E in-game): clica botoes via /dev/shm/dys_tap */
+  { extern void dys_tap_inject(void); dys_tap_inject(); }
   /* injetor remoto: `echo MASK > /dev/shm/dys_btn` OR-a a mascara Paddleboat
    * nos botoes por ~20 leituras (navegacao de menu via ssh, estilo sonda). */
   if (data) {

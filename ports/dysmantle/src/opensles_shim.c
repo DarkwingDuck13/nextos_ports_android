@@ -20,9 +20,10 @@
 #define MAX_PLAYERS 16
 /* Ring por player. ANTES 4MB (~23s áudio) × 16 = 64MB ESTÁTICOS (BSS) reservados
  * SEMPRE -> peso morto num device de ~833MB. O Oboe enfileira buffers pequenos
- * (~2×1024 frames); 1MB (~6s, cabe os 64 buffers da fila) sobra de folga. Agora
- * 16×1MB = 16MB (economia de 48MB p/ adiar OOM). DEVE ser potência de 2 (& MASK). */
-#define RING_BUFFER_SIZE (1 * 1024 * 1024)
+ * (~2×1024 frames); 512KB (~3s) cabe a fila com folga. 16×512KB = 8MB (T5: corte
+ * geral de 8MB vs 1MB, sem downside se underruns=0). DEVE ser potência de 2 (& MASK).
+ * Validar com [PERFAUD] underruns=0/dead=0. */
+#define RING_BUFFER_SIZE (512 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
 #define SDL_AUDIO_SAMPLES 4096
 
