@@ -484,15 +484,17 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     if (callback_count - last_report_cb >= cbs_5s) {
       last_report_cb = callback_count;
       uint32_t under = 0;
+      int dead = 0;  /* players c/ callback marcado morto = sinal do bug v2/v3 (esperado 0 na v4) */
       char rings[128]; int rp = 0; rings[0] = 0;
       for (int i = 0; i < MAX_PLAYERS; i++) {
         AudioPlayer *p = &g_players[i];
         under += p->underrun_count;
+        if (p->cb_dead) dead++;
         if (p->active && p->play_state == SL_PLAYSTATE_PLAYING && rp < 100)
           rp += snprintf(rings + rp, sizeof(rings) - rp, " p%d=%u", i, ring_readable(p));
       }
-      fprintf(stderr, "[PERFAUD] cb=%u underruns=%u clicks=%u active=%d ring:%s\n",
-              callback_count, under, click_count, num_active, rings);
+      fprintf(stderr, "[PERFAUD] cb=%u underruns=%u clicks=%u active=%d dead=%d ring:%s\n",
+              callback_count, under, click_count, num_active, dead, rings);
     }
   }
 }
@@ -693,8 +695,13 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
       AudioPlayer *p = &g_players[i];
       /* debugPrintf("opensles_shim: player %d SetPlayState(%u -> %u)\n",
                   i, p->play_state, state); */
+      /* DEFAULT OFF (v4, 2026-06-15): fade-out no STOP volta ao corte seco da v1.
+       * O caminho stopping podia ENGASGAR um player em PLAYING p/ sempre se o ring
+       * drenasse p/ um resto < 1 frame (src_frames_got==0 -> 'continue' ANTES do
+       * finalize) -> slot preso, nunca recicla. v1 (corte seco) não tem esse risco.
+       * Opt-in p/ debug do anti-click. */
       static int nofadestop = -1;
-      if (nofadestop < 0) nofadestop = getenv("DYSMANTLE_NO_FADEOUT_STOP") ? 1 : 0;
+      if (nofadestop < 0) nofadestop = getenv("DYSMANTLE_FADEOUT_STOP") ? 0 : 1;
       if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
       if (state == SL_PLAYSTATE_STOPPED && p->play_state == SL_PLAYSTATE_PLAYING
           && !nofadestop && ring_readable(p) > 0) {
@@ -715,6 +722,11 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
           p->underrun_count = 0;
           p->fadeout_count = 0;
           p->stopping = 0;
+          /* reuse do pool: o slot vai tocar um SOM NOVO -> des-envenena o callback
+           * (se DYSMANTLE_AUDIO_CBGUARD estiver ligado, sem isso o slot ficava morto
+           * p/ sempre). Garante que cb_dead nunca persista entre sons no mesmo player. */
+          p->cb_dead = 0;
+          p->cb_noenq = 0;
         }
         p->play_state = state;
       }
@@ -1177,8 +1189,17 @@ static void opensles_pump_locked(void) {
    * "fireDataCallback disabled" -> storm de log/I/O -> choppy. Se o callback
    * de um player não enfileira por N chamadas, marcamos cb_dead e paramos de
    * chamá-lo (os dados continuam vindo pelo Enqueue). Gate p/ debug. */
+  /* DEFAULT OFF (v4, 2026-06-15): o cb_dead matava SFX one-shot game-wide.
+   * Os 16 players OpenSLES são um POOL reusado pela engine (Enqueue+SetPlayState,
+   * nunca Destroy). Os dados de SFX vêm PELO callback (callback->bq_Enqueue). Quando
+   * um one-shot termina, o pump chama o callback 24x sem enfileirar -> cb_dead=1 ->
+   * o callback NUNCA mais é chamado naquele slot. cb_dead só zera em player_reset_meta
+   * (alloc_player, que só roda no startup) -> cada slot do pool fica ENVENENADO após
+   * o 1o som -> em ~2min de combate os 16 morrem -> SFX somem (loops sobrevivem pq o
+   * callback deles sempre tem dado). O storm de log do Oboe já é contido pela supressão
+   * (commit dfef774), então o guard não é mais necessário. Opt-in p/ debug. */
   static int cbguard = -1;
-  if (cbguard < 0) cbguard = getenv("DYSMANTLE_AUDIO_NOCBGUARD") ? 0 : 1;
+  if (cbguard < 0) cbguard = getenv("DYSMANTLE_AUDIO_CBGUARD") ? 1 : 0;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
@@ -1204,8 +1225,10 @@ static void opensles_pump_locked(void) {
       p->callback(&p->bq_ptr, p->callback_context);
 
       /* anti-spam: callback não produziu dado? conta. Muitos seguidos = modo
-       * blocking (dados via Enqueue) -> marca morto e para de chamar. */
-      if (p->enqueue_counter == counter_before) {
+       * blocking (dados via Enqueue) -> marca morto e para de chamar.
+       * SÓ rastreia/marca quando o guard está LIGADO (opt-in), senão cb_dead
+       * fica sempre 0 e o 'dead=N' do [PERFAUD] é sinal limpo de saúde. */
+      if (cbguard && p->enqueue_counter == counter_before) {
         if (++p->cb_noenq >= 24 && !p->cb_dead) {
           p->cb_dead = 1;
           debugPrintf("opensles_shim: player %d callback IMPRODUTIVO (24x sem enqueue) -> cb_dead (modo blocking/Oboe; dados via Enqueue)\n", i);
