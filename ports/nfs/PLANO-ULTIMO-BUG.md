@@ -3,6 +3,25 @@
 Device **192.168.31.164** (subnet .31, senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
 Build `./build.sh`. Tudo funciona (áudio, gameplay, cores, latência) MENOS este bug de render.
 
+## 🎯 FOCO DEFINIDO PELO NEXTOS (próxima sessão): a TELA BRANCA do LOGO/DISCLAIMER
+A tela do disclaimer (logo após EA → Firemonkeys → carro → NEED FOR SPEED MOST WANTED, que
+renderizam OK) fica **BRANCA com tudo FORA DE ORDEM**: o **spinner de loading** (que deveria ser
+uma bolinha "O") aparece como um **pauzinho "I"**, as decorações (formas/triângulos no canto sup.
+direito) ficam **fantasma/embaralhadas**, e o texto "All experiences portrayed..." fica fraco.
+Atacar ESTA tela primeiro: é específica, reproduzível no boot (sem navegar), e provavelmente
+MESMA RAIZ das fontes que quebram no menu (sprite/glyph bindando atlas errado). Resolvê-la =
+destravar a raiz geral. Frames do disclaimer no boot ≈ 240-450 (após os logos).
+
+## INSTRUMENTAÇÃO JÁ PRONTA (commitada, gated por env, default-OFF)
+- **`NFS_REBINDLOG=1`** (egl_shim.c, atlas_rebind): loga CADA draw tex=0 que religamos →
+  `[rebind] prog=P bind=A progatlas=PA global=G`. Mostra QUAL atlas o spinner/decoração binda.
+- `NFS_TEXLOG=1`: `[ATLAS candidate tex=N WxH]` (uploads de atlas grande) + `[texImage2D ...]`.
+- `NFS_TEXDUMP=1`: salva as 1as 8 texturas RGBA grandes (`tex_N_WxH.raw`) p/ ver QUAL tem o
+  spinner/decorações (decodificar: PIL `frombytes RGBA WxH`).
+- `NFS_AUTOSHOT=1 NFS_SEQSHOT=1`: salva `seq_NNNN.raw` por frame (correlacionar com o disclaimer).
+- `NFS_NOATLASHACK=1` (desliga o rebind — teste: o spinner fica PRETO em vez de pauzinho? confirma
+  que é o rebind bindando atlas errado).
+
 ## O SINTOMA (2 faces do mesmo bug, segundo o NextOS)
 1. **Spinner do disclaimer**: a bolinha de loading (O) aparece como **pauzinho (I)** + decorações
    fantasma. Tela de logo/disclaimer logo após EA/Firemonkeys/MOST WANTED (que renderizam OK).

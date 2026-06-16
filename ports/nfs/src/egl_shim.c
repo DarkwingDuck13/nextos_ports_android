@@ -688,8 +688,13 @@ static void atlas_rebind(void){
   if(g_progatlas<0) g_progatlas=getenv("NFS_NOPROGATLAS")?0:1; /* per-prog PADRÃO ligado */
   if(!g_atlashack || g_unit_tex[0]!=0) return;
   /* atlas deste shader (per-programa, atlas-only) → fallback p/ o global */
-  unsigned a = (g_progatlas && g_cur_prog<ATLAS_MAP_SZ && g_prog_atlas[g_cur_prog])
-                 ? g_prog_atlas[g_cur_prog] : g_nfs_atlas_tex;
+  unsigned pa = (g_cur_prog<ATLAS_MAP_SZ) ? g_prog_atlas[g_cur_prog] : 0;
+  unsigned a = (g_progatlas && pa) ? pa : g_nfs_atlas_tex;
+  /* 🔬 NFS_REBINDLOG: loga cada draw tex=0 que religamos — programa, atlas que
+   * bindamos (a), atlas per-prog (pa) e o global. Pra achar o atlas CERTO do
+   * spinner/decorações do disclaimer (que pegam atlas errado = fora de ordem). */
+  if(getenv("NFS_REBINDLOG")){ static int rn=0; if(rn<4000){
+    fprintf(stderr,"[rebind] prog=%u bind=%u progatlas=%u global=%u\n",g_cur_prog,a,pa,g_nfs_atlas_tex); rn++; } }
   if(a){
     if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
     if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
