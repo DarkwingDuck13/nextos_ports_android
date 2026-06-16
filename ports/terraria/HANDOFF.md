@@ -61,6 +61,60 @@ tracear quem chama e p/ qual `x1`(fila) vs a fila que o worker dequeia.
 checks de capability no init — forçá-la não muda o enqueue (handoff já sabia). pthread_create hook não
 muda comportamento (só loga).
 
+## 🔬🔬 SESSÃO 2026-06-16 (madrugada, "dispatch a fundo via gdb") — RAIZ COMPARTILHADA ACHADA
+**Sem vídeo ainda, MAS a raiz dos DOIS muros foi unificada e MUITO estreitada.** gdb está no device
+(`/usr/bin/gdb`, sem python). Snapshots via scripts auto-limpantes em `/storage/roms/terraria/gdb*.sh`.
+
+**🎯 DESCOBERTA-CHAVE (muda a estratégia): os DOIS muros têm a MESMA raiz.**
+- O contador `c10360` que o **WaitForJobGroup** (frame 3, `0x2f1d1c`) espera é incrementado por
+  **`0x2f3a98`** = a **CONCLUSÃO do per-object future-task** (frame 2, `0x2f37c0`). Ou seja: o
+  `TER_SKIPTASKWAIT` (que pula a wait do per-object task) é o que CAUSA o hang da frame 3 — sem o task
+  rodar, o contador nunca sobe → WaitForJobGroup trava. **Sem o skip**: trava no próprio per-object task
+  (frame 2). **Com o skip**: trava no WaitForJobGroup (frame 3). MESMO worker que não roda. 
+- ⚠️ **PARAR de usar SKIPTASKWAIT como solução** — ele mascara o problema. O alvo é fazer o WORKER do
+  per-object task EXECUTAR o functor (que chama `0x2f3a98` → counter++ → destrava ambos).
+
+**📊 ESTADO RUNTIME (gdb, env `CUP_GCOFF=1 TER_SKIPTASKWAIT=1`, frame 3):**
+- `FLAG c0da20 = 1` (forçada) ou `0` (default) → NÃO muda nada. `COUNTER c10360 = 0`. Manager
+  `*(b87000+0xc78)` = válido.
+- **Main** (gdb confirmou, simbolizado): chain = high-level frame-sync `U+0x2d7620` → frame-budget
+  `U+0x2ea804` → `WaitForJobGroup U+0x2f1d58` (`pthread_cond_wait` no cond `c10330`, mutex `c10308`).
+  A própria main roda o predicado `0x2c6754` (retorna false) e aí dorme — ela TENTA ajudar mas não acha job.
+- **TODAS as 19 threads de job** (`Job.Worker 0-2` + `Background Job.` ×16) + Loading.Preload/AsyncRe/
+  BatchDelete estão **SAUDÁVEIS e ociosas** em `futex_wait` (`U+0x6ecd54`), esperando trabalho — NÃO é
+  GC-suspend, NÃO é estado ruim. Só nunca são alimentadas.
+- Worker chain (gdb, stack raw simbolizado): `0x23741c`(entry)→`blr [arg+64]`(run-fn, ret `0x2374f8`)→
+  `0x113a04`→`0x19f654`→`0x1a0414`→`0x1a195c`→sem Acquire (`futex_wait` em `0x1a1958`, sem=x19, count=[x19]).
+  O Release/post do sem (acorda worker) é `0x1a1a54` (`futex_wake 0x6ecd60`). **No run inteiro, NINGUÉM
+  posta o sem dos pools** (FUTEXLOG: 0 WAKE neles). A main só posta UM sem (`…107af0` = 1 thread só, que
+  é um worker `0x23741c` normal numa fila SEPARADA, arena `0x7f50`); os pools (`…105360` 3-workers /
+  `…1c40e0` 16-workers, arena `0x7f40`) nunca recebem post.
+
+**🧠 DIAGNÓSTICO ATUAL (o gap exato): JOB AGENDADO MAS NUNCA ENFILEIRADO.** A main incrementa o ALVO
+(`WaitForJobGroup` espera counter>=target, target = `*(c0d8e0)`+índice = nº agendado), mas:
+- O job NÃO está na fila dos workers (FUTEXPOLL acorda os workers e eles acham fila VAZIA — testado).
+- O work-steal da própria main (`0x2c6754`) não acha job.
+→ Entre "Schedule (target++)" e "enqueue na deque do worker + post sem", **o ENQUEUE/flush falha**.
+Provável: a checagem de "workers ociosos disponíveis" no submit lê 0 (mesmo com workers ociosos) →
+pula o post; OU o worker não registra seu estado "idle" corretamente. O submit do per-object task é
+`0x2f3680`(ctor+submit+wait) → `0x2c59e4`(lock+`0x7a799c`+unlock) → `0x7a799c` (enqueue real, container
+em `0x7axxxx`) — investigar `0x7a799c` e quem deveria postar o sem do pool dedicado.
+
+**✅ Becos FECHADOS com dados (NÃO É):** GC (sem FAKEACK roda igual — o sigmask-fix já suspende as
+threads; FAKEACK é DESNECESSÁRIO agora). Flag threaded `c0da20` (forçar 0/1 não muda). Worker count:
+nem `sysconf` (CUP_1CORE), nem boot.config `job-worker-count=0` reduzem (Unity lê CPU de
+`/sys/devices/system/cpu/{present,possible}` = `0-3`). `TER_1CPU` (novo: redirige esses p/ "0") REDUZIU
+Job.Worker 3→1 mas Unity clampa a min 1 e os 16 Background são fixos → não destrava. FUTEXPOLL
+(force-wake) não destrava (fila vazia). SKIPJOBWAIT (pular WaitForJobGroup) = **ABORT** libil2cpp+0x7b14d0
+(os results dos jobs SÃO necessários). FORCETHREADED não avança além do SKIPTASKWAIT sozinho.
+
+**🔑 PRÓXIMO PASSO (claro):** RE de `0x7a799c` (o enqueue do submit) — achar a checagem que decide
+postar (ou não) o sem do worker, e por que ela vê "0 workers ociosos". OU: implementar execução INLINE
+do functor do per-object task na própria main (functor em `obj[0]`, vtable `b59e48`; rodar antes da wait
+`0x2f37a4` em vez de pular). Comparar o estado "idle-count" do pool entre o submit e o worker (gdb: dump
+do manager `*(b87000+0xc78)` e da estrutura do pool). Device `.89`. Infra nova: `TER_1CPU`,
+`TER_FORCETHREADED`, `TER_JOBLOG` (todas gated, default OFF).
+
 
 ## ⚡⚡ TL;DR REESCRITO (2026-06-16 madrugada++ / sessão "1 erro por vez")
 🟢 **A CONCLUSÃO PESSIMISTA ANTERIOR ESTÁ REFUTADA. O port é viável (como cuphead).**

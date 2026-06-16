@@ -454,6 +454,20 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
     snprintf(buf, bufsz, "/tmp%s", p + 15);
     return buf;
   }
+  /* TER_1CPU: Unity lê /sys/devices/system/cpu/{present,possible,online} p/ contar cores e
+     cria (nº cores - 1) Job.Worker threads. O job-system NÃO despacha trabalho pros workers no
+     nosso so-loader (eles ficam ociosos; main trava em WaitForJobGroup, counter=0). Reportando
+     1 core (string "0"), Unity cria 0 Job.Worker → roda os jobs INLINE na própria thread. */
+  if (getenv("TER_1CPU") && !strncmp(p, "/sys/devices/system/cpu/", 24)) {
+    const char *leaf = p + 24;
+    if (!strcmp(leaf, "present") || !strcmp(leaf, "possible") || !strcmp(leaf, "online")) {
+      static const char *fake = "/tmp/ter_cpu0";
+      int fd = open(fake, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd >= 0) { if (write(fd, "0\n", 2) < 0) {} close(fd); }
+      snprintf(buf, bufsz, "%s", fake);
+      return buf;
+    }
+  }
   /* QUALQUER path .../AssetBundles/<nome> -> /storage/cuphead-sa/AssetBundles/<nome>.
      Resolve o load do DLC (base-path vinha lixo: "Шестигранные врата 1/AssetBundles/..")
      e qualquer base estranha; o path correto redireciona p/ si mesmo (anti-loop). */
