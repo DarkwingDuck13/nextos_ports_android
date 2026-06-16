@@ -159,8 +159,9 @@ Device de prova = **.127** (senha nextos): Mali-450/Utgard, **832MB RAM + 511MB 
 - **T3 (ETC1) NO EXTRATOR/fixpak, não no runtime**: o `fixpak.c` (roda 1x na instalação)
   passa a **transcodar as texturas opacas pra ETC1** e gravar no pak (em vez de decodificar
   ETC2→JPEG/RGBA). Runtime sobe `glCompressedTexImage2D(ETC1)` direto → ~8× menos RAM, zero
-  CPU/frame. **REAPROVEITAR o encoder `bully/src/rg_etc1.cpp`** (já no repo). Texturas com
-  alpha (punchthrough/RGBA8) seguem caminho RGBA. Utgard suporta `GL_OES_compressed_ETC1_RGB8`.
+  CPU/frame. **Encoder ETC1 NOVO E PRÓPRIO** (NÃO usar o do Bully — é bugado; escrever
+  `src/etc1_encode.c` do zero, correto). Texturas com alpha (punchthrough/RGBA8) seguem
+  caminho RGBA. Utgard suporta `GL_OES_compressed_ETC1_RGB8` (0x8D64).
 - **T2 (resolução interna)**: interceptar os attachments do FBO de cena (cor 0x8CE0 + depth
   0x8D00, 89% dos draws) p/ 0.65× + viewport; composite faz upscale. Ganha fps + corta FBO.
 - Validar in-game medindo RSS/swap/fps (entrada: jogador entra; autônoma instável p/ attract).
