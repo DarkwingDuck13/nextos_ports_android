@@ -20,6 +20,19 @@ class Host {
       var sor4 = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(dir,"SOR4.dll"));
       sor4.GetType("CommonLib.utils", true).GetMethod("set_as_main_thread", BindingFlags.Public|BindingFlags.Static).Invoke(null, null);
       L("set_as_main_thread OK");
+      // MainActivity.OnCreate (bypassado) seta a engine de serializacao do jogo -> replicar
+      // MainActivity.OnCreate chama program.static_init() (cria typeModel/globais) - replicar
+      var prog = sor4.GetType("BeatThemAll.MetaGame.program", true);
+      prog.GetMethod("static_init", BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static).Invoke(null, null);
+      L("program.static_init OK");
+      var refl = sor4.GetType("CommonLib.reflection", true);
+      var ma = sor4.GetType("SOR4.Android.MainActivity", true);
+      foreach (var fld in new[]{"delegate_serialize","delegate_deserialize","delegate_deep_clone"}) {
+        var fi = refl.GetField(fld, BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static);
+        var mi = ma.GetMethod(fld, BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static);
+        fi.SetValue(null, Delegate.CreateDelegate(fi.FieldType, mi));
+        L("wired reflection."+fld);
+      }
       var xna = sor4.GetType("CommonLib.xna", true);
       L("CreateGame()...");
       xna.GetMethod("CreateGame", BindingFlags.Public|BindingFlags.Static).Invoke(null, null);
