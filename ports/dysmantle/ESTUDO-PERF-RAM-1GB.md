@@ -165,3 +165,21 @@ Device de prova = **.127** (senha nextos): Mali-450/Utgard, **832MB RAM + 511MB 
 - **T2 (resolução interna)**: interceptar os attachments do FBO de cena (cor 0x8CE0 + depth
   0x8D00, 89% dos draws) p/ 0.65× + viewport; composite faz upscale. Ganha fps + corta FBO.
 - Validar in-game medindo RSS/swap/fps (entrada: jogador entra; autônoma instável p/ attract).
+
+---
+## CONCLUSÃO FINAL (.127, medido 2026-06-16) — os "downscale" NÃO ajudam aqui
+Investigação completa no Mali-450/832MB revelou os DOIS gargalos reais:
+- **fps ~31 = DRAWCALL/CPU-bound, NÃO fill-rate.** A engine JÁ renderiza a cena em
+  **768×432** (~0.6×) e dá upscale. Forçar mais baixo (T2: 538×302) = **mesmo fps**.
+  → resolução interna (T2) e tamanho de textura (TEXSCALE) NÃO mudam fps.
+- **RAM ~471MB = pools da engine** (`General Pool`/`StageObjectAllocatorPage`, ~344MB em
+  regiões anon), NÃO texturas. → ETC1 (T3) e TEXSCALE (T4) NÃO reduzem a RAM. A/B
+  controlado: ETC1 ON≈OFF. Subir TEXSCALE 1.3→2.0 só perde nitidez por ~nada.
+- **Logo: T2/T3/T4 (texturas/resolução) são becos sem saída neste device.** Implementados
+  e CORRETOS (T2 renderiza ok, ETC1 41-44dB sem bug), mas não movem a agulha. Ficam como
+  knobs opt-in (DYSMANTLE_ISCALE, DYSMANTLE_NO_ETC1).
+- **Ganhos REAIS da sessão**: 🔊 áudio (estava MUDO, fix pulse), T1 vsync (flicker), T5 ring.
+- **O que REALMENTE ajudaria** (deep/arriscado, não feito): fps→reduzir drawcalls (batching
+  da engine); RAM→encolher os pools da engine (RE do alocador). Ambos = trabalho de engine.
+- Veredito: o jogo roda ~tão bem quanto dá nesse Mali-450 via esses levers (~31fps, cabe em
+  832MB com ~160MB swap). O que faltava de verdade era o ÁUDIO (resolvido) e o flicker (T1).
