@@ -13,10 +13,22 @@ namespace Microsoft.Xna.Framework.Content
         [System.Runtime.InteropServices.DllImport("sor4astc")]
         static extern int sor4_astc_decode(byte[] data, ulong len, int w, int h, int bx, int by, byte[] outRGBA);
         static readonly int[,] AstcBlk = {{4,4},{5,4},{5,5},{6,5},{6,6},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
+        static readonly string Sor4CacheDir = System.Environment.GetEnvironmentVariable("SOR4_TEXCACHE");
+        static string Sor4CacheKey(byte[] data, int len, int w, int h, int scale, int tag){
+            ulong hsh=1469598103934665603UL;
+            for(int i=0;i<len;i+= (len>4096?257:1)){ hsh=(hsh^data[i])*1099511628211UL; }
+            hsh=(hsh^(ulong)len)*1099511628211UL; hsh=(hsh^(ulong)(w*8192+h))*1099511628211UL;
+            hsh=(hsh^(ulong)(scale*16+tag))*1099511628211UL;
+            return System.IO.Path.Combine(Sor4CacheDir, hsh.ToString("x16")+"_"+w+"x"+h+"_"+scale+"_"+tag+".rgba");
+        }
+        static byte[] Sor4CacheGet(string key){ try{ if(System.IO.File.Exists(key)) return System.IO.File.ReadAllBytes(key); }catch{} return null; }
+        static void Sor4CachePut(string key, byte[] rgba){ try{ System.IO.File.WriteAllBytes(key, rgba); }catch{} }
         static readonly int Sor4TexScale = SOR4_GetScale();
         static int SOR4_GetScale(){ var v=System.Environment.GetEnvironmentVariable("SOR4_TEXSCALE"); int s; if(!string.IsNullOrEmpty(v)&&int.TryParse(v,out s)&&s>=1&&s<=4) return s; return 2; }
         // decodifica ASTC (w x h) -> RGBA8 e reduz por 'scale' (box filter) -> retorna (w/scale)x(h/scale)
         static byte[] Sor4DecodeAstc(byte[] data, int len, int w, int h, int scale) {
+            string ckey = Sor4CacheDir != null ? Sor4CacheKey(data, len, w, h, scale, 0) : null;
+            if (ckey != null) { var ch = Sor4CacheGet(ckey); if (ch != null) return ch; }
             int nb = len / 16; int bx = 0, by = 0;
             for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0],cby=AstcBlk[i,1];
                 if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
@@ -43,7 +55,7 @@ namespace Microsoft.Xna.Framework.Content
                     System.IO.File.WriteAllBytes($"/tmp/tex_{w}x{h}.raw", full);
                 } catch {}
             }
-            if (scale<=1) return full;
+            if (scale<=1) { if(ckey!=null) Sor4CachePut(ckey, full); return full; }
             int nw=System.Math.Max(w/scale,1), nh=System.Math.Max(h/scale,1);
             var small=new byte[nw*nh*4];
             for(int y=0;y<nh;y++) for(int x=0;x<nw;x++){
@@ -54,6 +66,7 @@ namespace Microsoft.Xna.Framework.Content
                 int d=(y*nw+x)*4; if(cnt==0)cnt=1;
                 small[d]=(byte)(r/cnt); small[d+1]=(byte)(g/cnt); small[d+2]=(byte)(b/cnt); small[d+3]=(byte)(a/cnt);
             }
+            if(ckey!=null) Sor4CachePut(ckey, small);
             return small;
         }
 		public Texture2DReader()
@@ -186,12 +199,17 @@ namespace Microsoft.Xna.Framework.Content
                             break;
 					    case SurfaceFormat.Bgra4444:
 						    {
-                                // SOR4: decodifica BGRA4444 -> RGBA8 (Color) p/ Mali-450
-                                var rgba = new byte[levelWidth*levelHeight*4];
-                                for (int i=0;i<levelWidth*levelHeight;i++){
-                                    ushort p = BitConverter.ToUInt16(levelData, i*2);
-                                    int b=(p)&0xF, g=(p>>4)&0xF, r=(p>>8)&0xF, a=(p>>12)&0xF;
-                                    rgba[i*4]=(byte)(r*17); rgba[i*4+1]=(byte)(g*17); rgba[i*4+2]=(byte)(b*17); rgba[i*4+3]=(byte)(a*17);
+                                // SOR4: decodifica BGRA4444 -> RGBA8 (Color) p/ Mali-450 (com cache)
+                                string bkey = Sor4CacheDir != null ? Sor4CacheKey(levelData, levelDataSizeInBytes, levelWidth, levelHeight, 1, 1) : null;
+                                byte[] rgba = bkey != null ? Sor4CacheGet(bkey) : null;
+                                if (rgba == null) {
+                                    rgba = new byte[levelWidth*levelHeight*4];
+                                    for (int i=0;i<levelWidth*levelHeight;i++){
+                                        ushort p = BitConverter.ToUInt16(levelData, i*2);
+                                        int b=(p)&0xF, g=(p>>4)&0xF, r=(p>>8)&0xF, a=(p>>12)&0xF;
+                                        rgba[i*4]=(byte)(r*17); rgba[i*4+1]=(byte)(g*17); rgba[i*4+2]=(byte)(b*17); rgba[i*4+3]=(byte)(a*17);
+                                    }
+                                    if (bkey != null) Sor4CachePut(bkey, rgba);
                                 }
                                 if(System.Environment.GetEnvironmentVariable("SOR4_DUMPTEX")=="1" && levelWidth<=600){ try{ System.IO.File.WriteAllBytes($"/tmp/font_{levelWidth}x{levelHeight}.raw", rgba);}catch{} }
                                 levelData = rgba; levelDataSizeInBytes = rgba.Length;
