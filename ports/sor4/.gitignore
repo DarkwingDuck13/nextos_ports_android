@@ -1,0 +1,11 @@
+# artefatos grandes / binários — não versionar
+build/
+*.so
+*.dll
+*.xnb
+*.apk
+*.blob
+*.bin
+assets/
+run.out
+log.txt
