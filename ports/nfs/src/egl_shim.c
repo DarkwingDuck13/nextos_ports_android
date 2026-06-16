@@ -1058,11 +1058,18 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
   /* 🔤 NFS_GLYPHRA: loga o return-address do upload da página de glyph (512² RGBA
    * re-uploaded) p/ localizar o código AddTexturePage da engine (patch do 512). */
   if (l==0 && w==512 && h==512 && (fmt==0x1908||ifmt==0x1908) && getenv("NFS_GLYPHRA")){
-    extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
-    void *r0=__builtin_return_address(0);
-    static int n=0; if(n<8){ uintptr_t v=(uintptr_t)r0;
-      if(v>tb && v<tb+0xa00000) fprintf(stderr,"[glyphRA] tex512 ra=+0x%lx\n",(unsigned long)(v-tb));
-      else fprintf(stderr,"[glyphRA] tex512 ra=%p (base=%p)\n",r0,(void*)tb); n++; } }
+    extern void *text_base; uintptr_t tb=(uintptr_t)text_base, te=tb+0xa00000;
+    static int n=0; if(n<3){ n++;
+      /* scan da pilha p/ a cadeia de chamadas em libapp (uploader→AddTexturePage→…) */
+      uintptr_t *sp=(uintptr_t*)__builtin_frame_address(0);
+      uintptr_t last=0; int found=0; char line[512]; int o=0;
+      o+=snprintf(line+o,sizeof line-o,"[glyphRA#%d chain]",n);
+      for(int i=0;i<512 && found<14 && o<(int)sizeof line-16;i++){
+        uintptr_t v=sp[i];
+        if(v>tb && v<te && (v&3)==0 && v!=last){ /* ARM=4-byte aligned */
+          o+=snprintf(line+o,sizeof line-o," +0x%lx",(unsigned long)(v-tb)); found++; last=v; }
+      }
+      fprintf(stderr,"%s\n",line); } }
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<60){ extern unsigned egl_cur_tex0(void); fprintf(stderr,"[texImage2D tex=%u] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",egl_cur_tex0(),w,h,ifmt,fmt,ty,px); g_teximg_n++; }
   if (getenv("NFS_UPLOADLOG")&&l==0){ static int n=0; if(n<1500){ extern unsigned egl_cur_tex0(void); extern int g_disc_frame;

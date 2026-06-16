@@ -89,6 +89,36 @@ Sequência que reproduz o garble: `for k in 96 20 96 4 20 96 4 105 96 20 96 4 10
 ⚠️ MASCARAR emustation ao testar (`systemctl mask`), restaurar ao fim (`unmask`+`start`).
 ⚠️ Screenshots/dumps vão p/ /tmp (tmpfs); NÃO martelar o vfat /storage/roms.
 
+## 🛠️ TENTATIVA DE FIX (patch do tamanho da página) — RE feito, patch NÃO localizado ainda
+Objetivo: 512→1024 na criação da página (`GlyphBuffer::AddTexturePage`). Mapa do código (via
+`NFS_GLYPHRA` = scan da pilha no upload da página de glyph):
+- **Uploader genérico libapp `0x565f60`** (sobe QUALQUER textura): lê **W=[pageobj+44], H=[pageobj+48]**,
+  data=[pageobj? r9] e chama glTexImage2D. Logo o objeto-página guarda W/H em +44/+48 (512/512 p/ a
+  página de glyph). ⇒ patchar o que SETA +44/+48 = 512 no construtor da página resolveria a alloc;
+  packing/UV provavelmente leem os mesmos campos (a confirmar).
+- **Cadeia de chamada do upload** (do mais baixo): `0x565e28`(chama uploader) ← `0x473a5c`(função
+  0x473a3c = libera/clear glyphs bufferizados, refcount boost shared_ptr) ← `0x4684b4` ← `0x467ad8`
+  (gerenciador do cache: null-checks + refcount de shared_ptr) ← `0x3eb720` ← `0x3d5984` ← `0x3f8688`.
+- **NÃO localizado**: a instrução que cria a página com 512 (AddTexturePage). Becos: `#512` aparece
+  **142×** no binário (ranges de rand, tamanhos de snprintf, particle math — todos falso-positivo);
+  xref PIC da string `GlyphBuffer::AddTexturePage(` (@0x9e3b22) **não resolve** (ldr+add e movw/movt
+  não batem — tabela de strings via registrador-base do GOT); par `str[+44]`/`str[+48]` tem **469
+  ocorrências** (offsets genéricos). `getRefreshPageSize` existe mas parece paginação de REDE
+  (string vizinha `/userlist?pageSize`), não glyph.
+- **PRÓXIMO (caminho seguro p/ achar e patchar)**:
+  1. **Hook/detour do uploader `0x565f60`** (trampolim via so_util, como os detours do dysmantle):
+     capturar **r7 (ponteiro do objeto-página)** no upload de tex=7 512² → ter o endereço do objeto.
+  2. Com o objeto em mãos: dump dos campos; achar quem ESCREVE 512 em [obj+44] (watchpoint gdb no
+     device, OU varrer a engine por `str #512 → [obj+44]`); confirmar se packing/UV leem [obj+44].
+  3. **Patch reversível**: ou (a) runtime-patch de [obj+44]/[+48] = 1024 logo após criação +
+     forçar a textura GL 1024 (e abm≥1024, já é); ou (b) patch binário do construtor 512→1024 numa
+     CÓPIA da libapp.so no device (backup → testar boot/render/garble → reverter se quebrar).
+  ⚠️ Risco: se o 512 da página for usado como LITERAL separado no packing E na UV (não só no campo),
+  precisa patchar os 3. Testar incrementalmente (boot → menu → forçar garble) com backup.
+- Alternativa sem patch (frágil, NÃO recomendada): reduzir nº de (char,size) distintos snapando
+  tamanhos no font_shim — muda layout (engine usa nosso measureText) e a engine chaveia pelo
+  PRÓPRIO size, então não reduz a pressão do cache dela. Descartada.
+
 ## RESUMO DE 1 LINHA
 Fonte do menu quebra = **eviction/re-pack do cache de glyph** (página tex=7 512² enche com muitos
 char×tamanho → a engine realoca glyphs em células novas → o texto na tela mantém UVs antigas → glyph
