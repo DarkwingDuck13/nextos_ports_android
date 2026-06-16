@@ -277,6 +277,8 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
  * chama swap. Sem framework, NÓS apresentamos. Não gateia em has_real_gl
  * (thread-local; o tick roda na nossa thread c/ o contexto da engine current). */
 int g_disc_frame = 0; /* 🔬 contador de frames apresentados (p/ gatear logs no disclaimer) */
+int g_last_atlas_frame = -1000; /* frame do último upload de atlas grande (gate logo vs disclaimer) */
+unsigned g_first_atlas_tex = 0; /* 🔑 1º atlas grande (boot, tex=1): contém logos E disclaimer */
 void egl_shim_force_present(void) {
   g_disc_frame++;
   { static int hb = 0; hb++;
@@ -715,21 +717,27 @@ static void atlas_rebind(void){
   if(g_atlashack<0) g_atlashack=getenv("NFS_NOATLASHACK")?0:1; /* PADRÃO ligado */
   if(g_progatlas<0) g_progatlas=getenv("NFS_NOPROGATLAS")?0:1; /* per-prog PADRÃO ligado */
   if(!g_atlashack || g_unit_tex[0]!=0) return;
-  /* 🔑 FALLBACK PADRÃO = textura 1x1 BRANCA p/ draws tex=0 (objeto de textura do
-   * sprite é null → engine liga 0). O quad passa a mostrar a COR DE VÉRTICE:
-   *  - fundo do disclaimer (cor branca) → BRANCO (era preto sem hack / atlas-lixo);
-   *  - sprites/decorações sem textura → cor sólida limpa (em vez do lixo de atlas
-   *    que dava caixa-preta + formas-fantasma "fora de ordem").
-   * Seguro game-wide: conteúdo COM textura (tex!=0, ex. logos/menu) não passa aqui.
-   * NFS_ATLASHACK=1 restaura o modo atlas-rebind antigo (diagnóstico). */
-  static int atlasmode=-1; if(atlasmode<0) atlasmode=getenv("NFS_ATLASHACK")?1:0;
-  if(!atlasmode){ unsigned w=white_tex(); if(w){
+  /* 🔑 CAUSA-RAIZ (RE+medição): os draws tex=0 (objeto de textura do sprite null →
+   * engine liga 0) das LOGOS e do DISCLAIMER querem TODOS o ATLAS DE BOOT (tex=1,
+   * 510x1003, sobe no frame 0 — contém EA/Firemonkeys/MOST WANTED + as decorações do
+   * disclaimer). O bug antigo: o atlas-rebind ligava o "último atlas global", que no
+   * frame ~281 vira um atlas do MENU (tex 10-19) → o disclaimer (frame ~300) ligava o
+   * atlas errado → topo "fora de ordem" (caixa preta/fantasmas). As logos (frames
+   * 40-273) davam certo só porque tex=1 era o único atlas então.
+   * FIX: fixar no PRIMEIRO atlas grande (g_first_atlas_tex = boot) → logos E disclaimer
+   * usam tex=1 → ambos corretos. NFS_LASTATLAS=1 = comportamento antigo (último global);
+   * NFS_FORCEWHITE=1 = textura branca (diagnóstico). Menu usa texturas reais (tex!=0). */
+  extern unsigned g_first_atlas_tex;
+  static int lastatlas=-1; if(lastatlas<0) lastatlas=getenv("NFS_LASTATLAS")?1:0;
+  static int forcewhite=-1; if(forcewhite<0) forcewhite=getenv("NFS_FORCEWHITE")?1:0;
+  if(forcewhite){ unsigned w=white_tex(); if(w){
     if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
     if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
     real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,w); } return; }
-  /* atlas deste shader (per-programa, atlas-only) → fallback p/ o global */
+  /* atlas deste shader (per-programa) → senão atlas de BOOT (pin) → senão global */
   unsigned pa = (g_cur_prog<ATLAS_MAP_SZ) ? g_prog_atlas[g_cur_prog] : 0;
-  unsigned a = (g_progatlas && pa) ? pa : g_nfs_atlas_tex;
+  unsigned boot = lastatlas ? 0 : g_first_atlas_tex;
+  unsigned a = (g_progatlas && pa) ? pa : (boot ? boot : g_nfs_atlas_tex);
   /* 🔬 NFS_REBINDLOG: loga cada draw tex=0 que religamos — programa, atlas que
    * bindamos (a), atlas per-prog (pa) e o global. Pra achar o atlas CERTO do
    * spinner/decorações do disclaimer (que pegam atlas errado = fora de ordem). */
@@ -773,9 +781,9 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   drawlog("elt",c);
   static int draw0log=-1; if(draw0log<0) draw0log=getenv("NFS_BINDLOG")?1:0;
   if(draw0log){ extern int g_disc_frame;
-    if(g_disc_frame>=285 && g_disc_frame<=375 && g_unit_tex[0]==0 && c<64){
-      static int dn=0; if(dn<400){ fprintf(stderr,"[draw0] f=%d prog=%u c=%d ra=%p\n",
-        g_disc_frame,g_cur_prog,c,__builtin_return_address(0)); dn++; } } }
+    if(g_disc_frame>=40 && g_disc_frame<=460 && g_unit_tex[0]==0 && c<64){
+      static int dn=0; if(dn<4000){ fprintf(stderr,"[draw0] f=%d prog=%u c=%d\n",
+        g_disc_frame,g_cur_prog,c); dn++; } } }
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   big3d_state(c);
@@ -820,7 +828,10 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
       if (cur < ATLAS_MAP_SZ) g_is_atlas[cur] = is_atlas ? 1 : 0; /* marca/limpa (id reusado) */
       if (is_atlas) {
         g_nfs_atlas_tex = cur;
-        if(getenv("NFS_TEXLOG")) fprintf(stderr,"[ATLAS candidate tex=%u %dx%d]\n",cur,w,h);
+        { extern unsigned g_first_atlas_tex; extern int g_disc_frame; extern int g_last_atlas_frame;
+          if(!g_first_atlas_tex) g_first_atlas_tex = cur; /* atlas de boot (logos+disclaimer) */
+          g_last_atlas_frame = g_disc_frame;
+          if(getenv("NFS_TEXLOG")) fprintf(stderr,"[ATLAS candidate tex=%u %dx%d f=%d]\n",cur,w,h,g_disc_frame); }
       } } }
   /* NFS_TEXDUMP=1: salva as 1as texturas grandes (atlas) p/ inspeção do que a
    * engine SOBE de verdade (preto vs colorido). */
