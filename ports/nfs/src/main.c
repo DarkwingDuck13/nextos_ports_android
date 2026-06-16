@@ -685,6 +685,29 @@ int main(int argc, char *argv[]) {
             pend_kc=kc; pend_key=1; }
           fclose(kf); remove("/storage/roms/nfs/key.txt"); }
       }
+      /* 🔬 AUTO-NAV (NFS_AUTONAV=período): reproduz a quebra de fontes do usuário —
+       * sequência R2(105) → R1(103, entra na função) → DIREITA(22), repetida várias
+       * vezes. Injeta um keycode da sequência a cada N frames (DOWN no múltiplo de N,
+       * UP na iteração seguinte). NFS_NAVLEFT=1 usa ESQUERDA(21) em vez de direita. */
+      {
+        extern int g_nfs_autonav; extern int g_disc_frame;
+        extern int g_moga_active, g_moga_keycode, g_moga_action, g_moga_calln;
+        typedef void (*mogafn_t)(void*,void*,void*);
+        static mogafn_t anmoga=NULL; static char an_ev[16]; static int aninit=0, anpend=0, anlast=-1, anpkc=0;
+        static int seq[3]={105,103,22}; /* R2, R1, RIGHT */
+        if(g_nfs_autonav>0){
+          if(!aninit){ aninit=1; anmoga=(mogafn_t)so_find_addr_safe("Java_com_ea_ironmonkey_MogaController_nativeOnKeyEvent");
+            if(getenv("NFS_NAVLEFT")) seq[2]=21/*LEFT*/; }
+          if(anpend){ anpend=0; if(anmoga){ g_moga_active=1; g_moga_keycode=anpkc; g_moga_action=1; g_moga_calln=0;
+              anmoga(env, fake_this, an_ev); g_moga_active=0; } }
+          int slot = g_disc_frame / g_nfs_autonav;
+          if(g_disc_frame>150 && slot!=anlast && (g_disc_frame % g_nfs_autonav)==0 && anmoga){ anlast=slot;
+            int kc=seq[slot%3];
+            g_moga_active=1; g_moga_keycode=kc; g_moga_action=0; g_moga_calln=0;
+            anmoga(env, fake_this, an_ev); g_moga_active=0; anpend=1; anpkc=kc;
+            fprintf(stderr,"[autonav] kc=%d #%d (frame %d)\n", kc, slot, g_disc_frame); }
+        }
+      }
       /* 🎮 INJETOR DE GAMEPAD (MogaController) — CAMINHO DO MENU. O log da engine
        * mostra "ShowMogaHighlight" no EULA → os menus navegam por gamepad, não
        * por toque (nativeTouchScreenEvent não é consumido pelo menu).

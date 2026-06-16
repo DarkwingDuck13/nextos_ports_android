@@ -555,6 +555,8 @@ static void jni_CallVoidMethod_v(void *env, void *obj, void *methodID, va_list a
     /* BitmapGraphics.clear() → zera o bitmap antes de desenhar texto */
     unsigned char *b = nfs_abm_buf();
     if (b) memset(b, 0, (size_t)nfs_abm_h() * nfs_abm_stride());
+    if (getenv("NFS_STRLOG")) { extern unsigned egl_cur_tex0(void);
+      fprintf(stderr, "[clear tex0=%u]\n", egl_cur_tex0()); }
     return;
   }
   if (methodID == &g_method_tags[MID_DRAW_STRING]) {
@@ -564,9 +566,15 @@ static void jni_CallVoidMethod_v(void *env, void *obj, void *methodID, va_list a
     int x = va_arg(ap, int);
     int y = va_arg(ap, int);
     const char *s = resolve_jstring(jstr);
-    if (getenv("NFS_FONTLOG"))
-      fprintf(stderr, "[drawString] paint=%p x=%d y=%d '%s'\n", paint, x, y, s ? s : "");
+    extern float font_get_size(void*); extern unsigned egl_cur_tex0(void);
+    if (getenv("NFS_FONTLOG") || getenv("NFS_STRLOG"))
+      fprintf(stderr, "[drawString tex0=%u] size=%.2f x=%d y=%d '%s'\n", egl_cur_tex0(), font_get_size(paint), x, y, s ? s : "");
     font_draw(paint, s, x, y, nfs_abm_buf(), nfs_abm_w(), nfs_abm_h(), nfs_abm_stride());
+    /* 🔬 NFS_ABMDUMP: dumpa o bitmap rasterizado (abm 1024x1024 RGBA) p/ ver se o
+     * font_draw produziu glyphs corretos (vs upload/UV errado). Overwrite periódico. */
+    if (getenv("NFS_ABMDUMP")) { /* /tmp (tmpfs): NÃO martela vfat. Overwrite todo drawString. */
+      FILE*f=fopen("/tmp/abm.raw","wb");
+      if(f){ fwrite(nfs_abm_buf(),1,(size_t)nfs_abm_w()*nfs_abm_h()*4,f); fclose(f); } }
     return;
   }
   (void)obj;

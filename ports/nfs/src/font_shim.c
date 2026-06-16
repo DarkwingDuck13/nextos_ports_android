@@ -29,8 +29,11 @@ typedef struct {
 static FontPaint g_paints[MAXP];
 static FontPaint g_dummy; /* sentinela used=0 p/ falhas (engine não pode receber NULL) */
 
+static int g_paint_used = 0; /* 🔬 nº de slots ocupados (diagnóstico de exaustão) */
 static FontPaint *alloc_paint(void) {
-  for (int i = 0; i < MAXP; i++) if (!g_paints[i].used) return &g_paints[i];
+  for (int i = 0; i < MAXP; i++) if (!g_paints[i].used) { g_paint_used++; return &g_paints[i]; }
+  /* POOL CHEIO → clobber slot 0 (a fonte do slot 0 e todas que o reusam quebram). */
+  if (getenv("NFS_FONTDBG")) fprintf(stderr, "[paint] *** POOL CHEIO (256) — CLOBBER slot0 ***\n");
   return &g_paints[0];
 }
 /* 🔑🔤 CACHE por chave (path/family + size): a engine RE-CRIA os mesmos Paints a
@@ -84,7 +87,10 @@ static void recompute_metrics(FontPaint *p) {
 void *font_create_from_file(const char *path, float size) {
   if (!path || size <= 0) return NULL;
   char key[160]; snprintf(key, sizeof key, "%s|%.2f", path, size);
-  FontPaint *c = cache_find(key); if (c) return c; /* dedup: mesmo font+size */
+  FontPaint *c = cache_find(key);
+  if (getenv("NFS_FONTDBG")) { static int cn=0; if(cn<2000){
+    fprintf(stderr, "[paint] create %s -> %s (used=%d/%d)\n", key, c?"HIT":"MISS", g_paint_used, MAXP); cn++; } }
+  if (c) return c; /* dedup: mesmo font+size */
   long n = 0; unsigned char *ttf = read_file(path, &n);
   if (!ttf) { fprintf(stderr, "[font] FALHOU abrir %s\n", path); return &g_dummy; }
   FontPaint *p = alloc_paint();
@@ -121,6 +127,8 @@ void *font_create_from_family(const char *fontsdir, const char *family, float si
 void font_set_size(void *paintv, float size) {
   FontPaint *p = (FontPaint *)paintv;
   if (!p || !p->used || size <= 0) return;
+  if (getenv("NFS_FONTDBG")) { static int sn=0; if(sn<2000){
+    fprintf(stderr, "[paint] setSize %s -> %.2f\n", p->key, size); sn++; } }
   p->size = size; recompute_metrics(p);
   /* atualiza a chave do cache (o size faz parte dela) p/ não casar errado depois */
   char *bar = strrchr(p->key, '|');

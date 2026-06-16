@@ -279,8 +279,17 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
 int g_disc_frame = 0; /* 🔬 contador de frames apresentados (p/ gatear logs no disclaimer) */
 int g_last_atlas_frame = -1000; /* frame do último upload de atlas grande (gate logo vs disclaimer) */
 unsigned g_first_atlas_tex = 0; /* 🔑 1º atlas grande (boot, tex=1): contém logos E disclaimer */
+extern int g_small_n, g_small_tex0;
 void egl_shim_force_present(void) {
   g_disc_frame++;
+  /* 🔬 NFS_GLYPHLOG: por frame, média de draws UI pequenos e quantos tinham tex=0
+   * (glyphs/sprites sem textura). Quando as fontes quebram, tex0 dispara. */
+  { static int gl=-1; if(gl<0) gl=getenv("NFS_GLYPHLOG")?1:0;
+    if(gl){ static int acc_n=0, acc_t0=0, fr=0;
+      acc_n+=g_small_n; acc_t0+=g_small_tex0; fr++;
+      if(fr>=30){ fprintf(stderr,"[glyph] f=%d small/fr=%d tex0/fr=%d\n",g_disc_frame,acc_n/fr,acc_t0/fr);
+        acc_n=acc_t0=fr=0; } } }
+  g_small_n=0; g_small_tex0=0;
   { static int hb = 0; hb++;
     if (hb == 1 || hb % 30 == 0) { FILE *h = fopen("/tmp/present.txt", "w");
       if (h) { fprintf(h, "present_calls=%d window=%p\n", hb, (void *)egl_window); fclose(h); } } }
@@ -336,9 +345,13 @@ void egl_shim_force_present(void) {
       long nb = 0; for (long p = 0; p < (long)W*H; p++)
         if (shot[p*4] | shot[p*4+1] | shot[p*4+2]) nb++;
       char nm[64];
-      if (seq) snprintf(nm, sizeof nm, "seq_%04d.raw", sc); else snprintf(nm, sizeof nm, "auto.raw");
+      /* 🔑 grava no /tmp (tmpfs/RAM) p/ NÃO martelar o vfat (/storage/roms vira RO →
+       * crash). NFS_SHOTVFAT=1 volta a gravar no CWD (vfat) se precisar. */
+      int totmp = !getenv("NFS_SHOTVFAT");
+      if (seq) snprintf(nm, sizeof nm, "%sseq_%04d.raw", totmp?"/tmp/":"", sc);
+      else snprintf(nm, sizeof nm, totmp?"/tmp/auto.raw":"auto.raw");
       FILE *sf = fopen(nm, "wb"); if (sf) { fwrite(shot, 1, (long)W * H * 4, sf); fclose(sf); }
-      FILE *st = fopen("shotstats.txt", seq ? "a" : "w");
+      FILE *st = fopen(totmp?"/tmp/shotstats.txt":"shotstats.txt", seq ? "a" : "w");
       if (st) { fprintf(st, "frame=%d fbo_bound=%d nonblack=%ld\n", sc, fbo, nb); fclose(st); }
     }
   }
@@ -667,10 +680,12 @@ static void drawlog(const char*k,int n){
 }
 static void atlas_rebind(void);
 static void atlas_record(void);
+int g_small_n = 0, g_small_tex0 = 0; /* 🔬 draws UI pequenos por frame: total e c/ tex=0 */
 void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("arr",c);
+  if (c < 64) { g_small_n++; if(g_unit_tex[0]==0) g_small_tex0++; }
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   real_glDrawArrays(m, f, c);
@@ -785,6 +800,7 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
       static int dn=0; if(dn<4000){ fprintf(stderr,"[draw0] f=%d prog=%u c=%d\n",
         g_disc_frame,g_cur_prog,c); dn++; } } }
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
+  if (c < 64) { g_small_n++; if(g_unit_tex[0]==0) g_small_tex0++; }
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   big3d_state(c);
   real_glDrawElements(m, c, t, i);
@@ -819,6 +835,14 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
   if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<60){ extern unsigned egl_cur_tex0(void); fprintf(stderr,"[texImage2D tex=%u] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",egl_cur_tex0(),w,h,ifmt,fmt,ty,px); g_teximg_n++; }
+  if (getenv("NFS_UPLOADLOG")&&l==0){ static int n=0; if(n<1500){ extern unsigned egl_cur_tex0(void); extern int g_disc_frame;
+    fprintf(stderr,"[texImage2D f=%d tex=%u] %dx%d ifmt=0x%x px=%p\n",g_disc_frame,egl_cur_tex0(),w,h,ifmt,px); n++; } }
+  /* 🔬 NFS_ATLASDUMP: dumpa o buffer REAL que vira a textura (o atlas de glyphs da
+   * engine) p/ ver o conteúdo de cada página (tex). /tmp, overwrite por tex. */
+  if (getenv("NFS_ATLASDUMP") && l==0 && px && w>=256 && h>=256 && (fmt==0x1908||ifmt==0x1908)) {
+    extern unsigned egl_cur_tex0(void); unsigned tx=egl_cur_tex0();
+    char nm[64]; snprintf(nm,sizeof nm,"/tmp/atlas_%u_%dx%d.raw",tx,w,h);
+    FILE*f=fopen(nm,"wb"); if(f){ fwrite(px,1,(size_t)w*h*4,f); fclose(f); } }
   /* rastreia o ÚLTIMO atlas de sprite (RGBA grande, NÃO-quadrado = não é
    * glyph/RT) p/ o ATLASHACK religar nos draws texturizados sem textura. */
   { extern unsigned g_nfs_atlas_tex; extern unsigned egl_cur_tex0(void);
@@ -896,8 +920,22 @@ void my_glViewport(int x,int y,int w,int h){
 /* páginas dinâmicas: a engine cria textura 512x512 vazia e preenche via SubImage */
 typedef void (*pfn_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
 static pfn_glTexSubImage2D real_glTexSubImage2D;
+/* 🔬 glPixelStorei: rastreia GL_UNPACK_ROW_LENGTH/ALIGNMENT — define se o upload do
+ * atlas de glyphs lê o nosso buffer (stride 1024*4) com o stride certo. */
+typedef void (*pfn_glPixelStorei)(unsigned,int);
+static pfn_glPixelStorei real_glPixelStorei;
+static int g_unpack_row=0;
+void my_glPixelStorei(unsigned pname,int val){
+  if(!real_glPixelStorei) real_glPixelStorei=(pfn_glPixelStorei)SDL_GL_GetProcAddress("glPixelStorei");
+  if(pname==0x0CF2/*GL_UNPACK_ROW_LENGTH*/) g_unpack_row=val;
+  if(getenv("NFS_UPLOADLOG")){ static int n=0; if(n<200){
+    fprintf(stderr,"[pixelStorei] pname=0x%x val=%d\n",pname,val); n++; } }
+  real_glPixelStorei(pname,val);
+}
 void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsigned fmt,unsigned ty,const void*px){
   if(!real_glTexSubImage2D) real_glTexSubImage2D=(pfn_glTexSubImage2D)SDL_GL_GetProcAddress("glTexSubImage2D");
+  if(getenv("NFS_UPLOADLOG")){ static int n=0; if(n<3000){ extern unsigned egl_cur_tex0(void);
+    fprintf(stderr,"[texSub tex=%u] +%d,%d %dx%d fmt=0x%x rowlen=%d px=%p\n",egl_cur_tex0(),xo,yo,w,h,fmt,g_unpack_row,px); n++; } }
   if(getenv("NFS_TEXLOG")){ static int n=0; if(n<50){ extern unsigned egl_cur_tex0(void);
     long nb=0; const unsigned char*p=px; if(p) for(long i=0;i<(long)w*h;i++) if(p[i*4]|p[i*4+1]|p[i*4+2]) nb++;
     fprintf(stderr,"[texSub tex=%u] +%d,%d %dx%d fmt=0x%x nonblack=%ld\n",egl_cur_tex0(),xo,yo,w,h,fmt,nb); n++; } }

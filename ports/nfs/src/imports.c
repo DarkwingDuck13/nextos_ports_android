@@ -170,8 +170,10 @@ int g_nfs_dcastlog, g_nfs_rclog, g_nfs_wildlog, g_nfs_tichain;
 int g_nfs_nodcastrec, g_nfs_norecover, g_nfs_noassertignore;
 int g_nfs_dcwalk;  /* NFS_DCWALK=1 usa nosso walker; default=libcxxabi nativo (relocs corretas) */
 int g_nfs_frames = 600; /* NFS_FRAMES cacheado cedo (a engine corrompe environ depois) */
+int g_nfs_autonav = 0;  /* NFS_AUTONAV: período (frames) p/ auto-injetar R2 no menu. 0=off */
 void nfs_cache_flags(void) {
   { const char *f = getenv("NFS_FRAMES"); if (f && *f) g_nfs_frames = atoi(f); }
+  { const char *f = getenv("NFS_AUTONAV"); if (f && *f) g_nfs_autonav = atoi(f); }
   g_nfs_dcwalk = getenv("NFS_DCWALK") != NULL;
   g_nfs_dcastlog = getenv("NFS_DCASTLOG") != NULL;
   g_nfs_rclog = getenv("NFS_RCLOG") != NULL;
@@ -1434,7 +1436,8 @@ static int abm_getInfo(void *env, void *bmp, void *info) {
 static int abm_lock(void *env, void *bmp, void **pix) {
   (void)env; (void)bmp;
   if (pix) *pix = abm_buf();
-  if (getenv("NFS_BMPLOG")) fprintf(stderr, "[abm_lock] bmp=%p -> pix=%p\n", bmp, pix ? *pix : 0);
+  if (getenv("NFS_BMPLOG")||getenv("NFS_STRLOG")) { extern unsigned egl_cur_tex0(void);
+    fprintf(stderr, "[abm_lock bmp=%p tex0=%u pix=%p]\n", bmp, egl_cur_tex0(), pix?*pix:0); }
   return 0;
 }
 static int abm_unlock(void *env, void *bmp) { (void)env; (void)bmp; return 0; }
@@ -1462,6 +1465,7 @@ extern void my_glUniform1i(int,int);
 extern void my_glUniform4fv(int,int,const float*);
 extern void my_glShaderSource(unsigned,int,const char*const*,const int*);
 extern void my_glTexSubImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+extern void my_glPixelStorei(unsigned,int);
 extern void my_glDeleteTextures(int,const unsigned*);
 extern void my_glCompileShader(unsigned);
 extern void my_glLinkProgram(unsigned);
@@ -1507,6 +1511,7 @@ DynLibFunction nfs_shims[] = {
     {"glTexParameterf", (uintptr_t)my_glTexParameterf},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+    {"glPixelStorei", (uintptr_t)my_glPixelStorei},
     {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
     {"glCompileShader", (uintptr_t)my_glCompileShader},
     {"glLinkProgram", (uintptr_t)my_glLinkProgram},
