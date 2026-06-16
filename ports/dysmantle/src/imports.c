@@ -234,6 +234,13 @@ static int my_fseek(void *fp, long off, int wh) {
 static void *my_fopen(const char *path, const char *mode) {
   static void *(*real)(const char *, const char *) = NULL;
   if (!real) real = dlsym(RTLD_DEFAULT, "fopen");
+  /* SILENCIA o log da engine: ela escreve verbose no DYSMANTLE.log a cada linha
+   * (fopen/append no storage) -> trava a thread de audio + choppy. Redireciona p/
+   * /dev/null por padrao; DYSMANTLE_DEBUG=1 mantem o log da engine. */
+  if (path && mode && (mode[0] == 'w' || mode[0] == 'a') &&
+      strstr(path, "DYSMANTLE.log") && !getenv("DYSMANTLE_DEBUG")) {
+    return real("/dev/null", mode);
+  }
   void *fp = real(path, mode);
   static int c = 0;
   if (c < 200) { fprintf(stderr, "[fopen] '%s' %s -> %s\n", path, mode, fp?"OK":"FAIL"); c++; }
@@ -773,6 +780,41 @@ static void my_glTexParameteri(unsigned tgt, unsigned pname, int param) {
   }
   if (real) real(tgt, pname, param);
 }
+/* T3: tenta subir a textura como ETC1 (0x8D64) em vez de RGBA8. Só texturas
+ * OPACAS, mip 0, dim múltipla de 4. ~8× menos VRAM no Utgard (amostra ETC1 nativo).
+ * Encoda 1× por textura (no load, não por frame). Retorna 1 se subiu ETC1; 0 =
+ * caller faz o upload RGBA normal. DYSMANTLE_NO_ETC1 desliga. */
+static int try_upload_etc1(unsigned tgt, int lvl, int w, int h,
+                           const void *data, unsigned fmt) {
+  static int en = -1;
+  if (en < 0) en = getenv("DYSMANTLE_NO_ETC1") ? 0 : 1;
+  if (!en || lvl != 0 || !data) return 0;
+  if (fmt != 0x1908 && fmt != 0x1907) return 0;          /* só RGBA/RGB */
+  if (w < 32 || h < 32 || (w & 3) || (h & 3)) return 0;  /* conteúdo, múltiplo de 4 */
+  int ch = (fmt == 0x1908) ? 4 : 3;
+  const unsigned char *p = (const unsigned char *)data;
+  if (ch == 4) {                                          /* ETC1 não tem alpha: só opacas */
+    long n = (long)w * h;
+    for (long i = 0; i < n; i++) if (p[i * 4 + 3] < 250) return 0;
+  }
+  size_t sz = (size_t)(w / 4) * (h / 4) * 8;
+  unsigned char *buf = (unsigned char *)malloc(sz);
+  if (!buf) return 0;
+  extern void etc1_encode_image(const unsigned char *, int, int, int, unsigned char *);
+  etc1_encode_image(p, w, h, ch, buf);
+  static void (*rc)(unsigned, int, unsigned, int, int, int, int, const void *) = NULL;
+  rgl("glCompressedTexImage2D", (void **)&rc);
+  static unsigned (*ge)(void) = NULL; rgl("glGetError", (void **)&ge);
+  if (ge) while (ge()) {}
+  int ok = 0;
+  if (rc) { rc(tgt, 0, 0x8D64, w, h, 0, (int)sz, buf); ok = (ge ? ge() : 1) == 0; }
+  free(buf);
+  static int log = 0;
+  if (log < 10) { fprintf(stderr, "[ETC1] %dx%d ch=%d -> %s\n", w, h, ch,
+                          ok ? "ETC1" : "falhou->RGBA"); log++; }
+  return ok;
+}
+
 static int g_tex_log = -1, g_tex_fix = -1;
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
                             int border, unsigned fmt, unsigned typ,
@@ -839,6 +881,7 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
             }
           }
           if (gerr) while (gerr()) {}
+          if (try_upload_etc1(tgt, lvl, nw, nh, sb, fmt)) return;  /* T3: ETC1 da textura já escalada */
           if (real) real(tgt, lvl, ifmt, nw, nh, border, fmt, typ, sb);
           static int sn = 0;
           if (sn < 6) { fprintf(stderr, "[TEXSCALE] %dx%d -> %dx%d\n", w, h, nw, nh); sn++; }
@@ -871,6 +914,7 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
     }
   }
   if (gerr) while (gerr()) {}
+  if (try_upload_etc1(tgt, lvl, w, h, px, fmt)) return;  /* T3: ETC1 (opaca, mip0) -> ~8x menos VRAM */
   if (real) real(tgt, lvl, ifmt, w, h, border, fmt, typ, px);
   unsigned e = gerr ? gerr() : 0;
   if (g_tex_log) {
