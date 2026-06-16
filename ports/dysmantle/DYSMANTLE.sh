@@ -120,14 +120,10 @@ export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
-# AUDIO driver: se há PulseAudio rodando (Mali-450/Amlogic NextOS) o ALSA direto
-# rejeita o estéreo do HDMI (AML-M8AUDIO: "Couldn't set audio channels") -> usa pulse.
-# Sem pulseaudio (X5M = PipeWire/alsa direto que já funciona) fica alsa. Overridável.
-if pgrep -x pulseaudio >/dev/null 2>&1; then
-  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
-else
-  export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-alsa}"
-fi
+# AUDIO/VIDEO driver: NAO forçamos NENHUM (nem SDL_AUDIODRIVER nem SDL_VIDEODRIVER).
+# O SDL2 do device AUTO-DETECTA o backend que funciona -> mais portável entre devices
+# (Mali-450/Amlogic=PulseAudio, X5M=PipeWire, outros=alsa). Forçar alsa quebrava o HDMI
+# do Mali-450 ("Couldn't set audio channels"); deixar auto-detectar pega o pulse sozinho.
 export DYSMANTLE_ASSETS=assets
 # Shader ES2 (vale tb no ES3).
 export DYSMANTLE_GLVER=2.0
