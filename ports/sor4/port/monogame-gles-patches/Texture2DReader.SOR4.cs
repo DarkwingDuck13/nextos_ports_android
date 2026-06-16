@@ -25,6 +25,24 @@ namespace Microsoft.Xna.Framework.Content
             else { try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, full);
                 if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<full.Length;p+=4){full[p]=128;full[p+1]=128;full[p+2]=128;full[p+3]=255;} } }
                 catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); } }
+            // SOR4: atlas de fonte/mascara (RGB~0, A com conteudo) -> RGB=A (branco premult) p/ texto visivel
+            {
+                long sr=0,sg=0,sb=0,sa=0,np=full.Length/4;
+                for(int p=0;p<full.Length;p+=4){sr+=full[p];sg+=full[p+1];sb+=full[p+2];sa+=full[p+3];}
+                if (np>0 && (sr+sg+sb)/(np*3) < 8 && sa/np > 12) {
+                    for(int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; }
+                    if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1") System.Console.Error.WriteLine($"[MASKFIX] {w}x{h} RGB=A");
+                }
+            }
+            if (System.Environment.GetEnvironmentVariable("SOR4_DUMPTEX")=="1" && w<=400 && h<=400) {
+                try {
+                    // stats
+                    long sr=0,sg=0,sb=0,sa=0; for(int p=0;p<full.Length;p+=4){sr+=full[p];sg+=full[p+1];sb+=full[p+2];sa+=full[p+3];}
+                    int np=full.Length/4;
+                    System.Console.Error.WriteLine($"[TEXDUMP] {w}x{h} avgR={sr/np} avgG={sg/np} avgB={sb/np} avgA={sa/np}");
+                    System.IO.File.WriteAllBytes($"/tmp/tex_{w}x{h}.raw", full);
+                } catch {}
+            }
             if (scale<=1) return full;
             int nw=System.Math.Max(w/scale,1), nh=System.Math.Max(h/scale,1);
             var small=new byte[nw*nh*4];
@@ -92,6 +110,7 @@ namespace Microsoft.Xna.Framework.Content
 			
             int sor4Scale = 1;
             if ((int)surfaceFormat >= 96) { convertedFormat = SurfaceFormat.Color; sor4Scale = Sor4TexScale; levelCountOutput = 1; } // SOR4: ASTC -> RGBA reduzido (memoria)
+            if (surfaceFormat == SurfaceFormat.Bgra4444) { convertedFormat = SurfaceFormat.Color; levelCountOutput = 1; } // SOR4: 4444 -> RGBA8 (fonte/Mali)
             int sor4TexW = System.Math.Max(width/sor4Scale,1), sor4TexH = System.Math.Max(height/sor4Scale,1);
             texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), sor4TexW, sor4TexH, levelCountOutput > 1, convertedFormat);
 #if OPENGL
@@ -167,21 +186,15 @@ namespace Microsoft.Xna.Framework.Content
                             break;
 					    case SurfaceFormat.Bgra4444:
 						    {
-#if OPENGL
-                                // Shift the channels to suit OpenGL
-							    int offset = 0;
-							    for (int y = 0; y < levelHeight; y++)
-							    {
-								    for (int x = 0; x < levelWidth; x++)
-								    {
-									    ushort pixel = BitConverter.ToUInt16(levelData, offset);
-									    pixel = (ushort)(((pixel & 0x0FFF) << 4) | ((pixel & 0xF000) >> 12));
-									    levelData[offset] = (byte)(pixel);
-									    levelData[offset + 1] = (byte)(pixel >> 8);
-									    offset += 2;
-								    }
-							    }
-#endif
+                                // SOR4: decodifica BGRA4444 -> RGBA8 (Color) p/ Mali-450
+                                var rgba = new byte[levelWidth*levelHeight*4];
+                                for (int i=0;i<levelWidth*levelHeight;i++){
+                                    ushort p = BitConverter.ToUInt16(levelData, i*2);
+                                    int b=(p)&0xF, g=(p>>4)&0xF, r=(p>>8)&0xF, a=(p>>12)&0xF;
+                                    rgba[i*4]=(byte)(r*17); rgba[i*4+1]=(byte)(g*17); rgba[i*4+2]=(byte)(b*17); rgba[i*4+3]=(byte)(a*17);
+                                }
+                                if(System.Environment.GetEnvironmentVariable("SOR4_DUMPTEX")=="1" && levelWidth<=600){ try{ System.IO.File.WriteAllBytes($"/tmp/font_{levelWidth}x{levelHeight}.raw", rgba);}catch{} }
+                                levelData = rgba; levelDataSizeInBytes = rgba.Length;
 						    }
 						    break;
 					    case SurfaceFormat.NormalizedByte4:
