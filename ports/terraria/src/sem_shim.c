@@ -21,7 +21,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <signal.h>
 static int stid(void) { return (int)syscall(SYS_gettid); }
+/* GC-SAFE WAIT (def. em pthread_fake.c): desbloqueia SIGPWR/SIGXCPU em volta do wait real
+   p/ o stop-the-world do GC conseguir suspender a thread enquanto ela está bloqueada aqui. */
+extern void gc_wait_unblock(void *oldp);
+extern void gc_wait_restore(void *oldp);
 
 #define MAX_SEMS 8192   /* 512 estourava no carregamento do título (Unity "Failed to post
                            to a semaphore"=nosso sh_sem_post retornava -1=sem slot livre) */
@@ -53,6 +58,7 @@ static int g_n_init, g_n_post, g_n_wait;
    nunca chega -> a main fica presa esperando a fila esvaziar. Capturamos o(s) sem(s)
    em que threads NÃO-main bloqueiam e os postamos periodicamente p/ dar "ticks". */
 int g_main_tid = 0;
+static unsigned long g_ubase, g_ibase, g_usize, g_isize;  /* bases p/ resolver caller offsets */
 static void *g_tick_sems[8]; static int g_n_tick = 0;
 static void register_tick_sem(void *s) {
   for (int i = 0; i < g_n_tick; i++) if (g_tick_sems[i] == s) return;
@@ -97,14 +103,17 @@ int sh_sem_wait(void *s) {
   pthread_mutex_lock(&m->m);
   if (m->count <= 0 && g_main_tid && stid() != g_main_tid) register_tick_sem(s);
   while (m->count <= 0) {
+    sigset_t o; gc_wait_unblock(&o);
     if (poll) {
       struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
       ts.tv_nsec += (long)g_poll_ms * 1000000L;
       if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += ts.tv_nsec / 1000000000L; ts.tv_nsec %= 1000000000L; }
       int rc = pthread_cond_timedwait(&m->c, &m->m, &ts);
+      gc_wait_restore(&o);
       if (rc == ETIMEDOUT) { pthread_mutex_unlock(&m->m); return 0; } /* polling: retorna sem decrementar */
     } else {
       pthread_cond_wait(&m->c, &m->m);
+      gc_wait_restore(&o);
     }
   }
   m->count--;
@@ -126,14 +135,32 @@ int sh_sem_trywait(void *s) {
 int sh_sem_timedwait(void *s, const struct timespec *abs) {
   struct mysem *m = sem_lookup(s, 1, 0);
   if (!m) return -1;
+  /* TER_SEMWHO: loga o CALLER (engine) de cada sem_timedwait da MAIN — revela QUAL função
+     de libunity/il2cpp está presa no wait do frame 2. Dedup por caller (até 16). */
+  if (getenv("TER_SEMWHO") && g_main_tid && stid() == g_main_tid) {
+    static unsigned long seen[16]; static int nseen;
+    unsigned long ra = (unsigned long)__builtin_return_address(0);
+    int known = 0; for (int i = 0; i < nseen; i++) if (seen[i] == ra) { known = 1; break; }
+    if (!known && nseen < 16) {
+      seen[nseen++] = ra;
+      const char *lib = "?"; unsigned long off = ra;
+      if (g_ubase && ra >= g_ubase && ra < g_ubase + g_usize) { lib = "libunity"; off = ra - g_ubase; }
+      else if (g_ibase && ra >= g_ibase && ra < g_ibase + g_isize) { lib = "libil2cpp"; off = ra - g_ibase; }
+      fprintf(stderr, "[SEMWHO] sem_timedwait caller=%s+0x%lx (sem=%p)\n", lib, off, s);
+      fsync(2);
+    }
+  }
   int rc = 0;
   pthread_mutex_lock(&m->m);
   while (m->count <= 0) {
+    sigset_t o; gc_wait_unblock(&o);
     if (abs) {
       rc = pthread_cond_timedwait(&m->c, &m->m, abs);
+      gc_wait_restore(&o);
       if (rc == ETIMEDOUT) { errno = ETIMEDOUT; rc = -1; break; }
     } else {
       pthread_cond_wait(&m->c, &m->m);
+      gc_wait_restore(&o);
     }
   }
   if (rc == 0) m->count--;
@@ -144,7 +171,6 @@ int sh_sem_timedwait(void *s, const struct timespec *abs) {
 /* detector de livelock: se a MESMA thread posta o MESMO sem N× seguidas (a main
    girando num loop force-complete), loga o caller (return address) UMA vez por
    marco — revela o loop em libunity/il2cpp que está preso. */
-static unsigned long g_ubase, g_ibase, g_usize, g_isize;
 void sh_set_bases(unsigned long ub, unsigned long us, unsigned long ib, unsigned long is) {
   g_ubase = ub; g_usize = us; g_ibase = ib; g_isize = is;
 }

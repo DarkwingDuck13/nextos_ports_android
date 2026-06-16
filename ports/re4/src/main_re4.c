@@ -28,6 +28,7 @@ static int my_stat64(const char*p,void*b){ return (int)syscall(__NR_stat64,p,b);
 static int my_lstat64(const char*p,void*b){ return (int)syscall(__NR_lstat64,p,b); }
 static uintptr_t g_mono_base=0, g_unity_base=0;
 static void getmem_trace(const char*tag);
+static const char *re4_gamedir(void);
 static long my_read(int fd,void*b,unsigned long n){ long r=read(fd,b,n);
   if(n==32768||n>50000){ static int rn=0; if(rn++<24){ void*ra=__builtin_return_address(0); uintptr_t a=(uintptr_t)ra; const char*m="?"; uintptr_t o=a;
     if(g_mono_base&&a>=g_mono_base&&a<g_mono_base+0x600000){m="libmono";o=a-g_mono_base;} else if(g_unity_base&&a>=g_unity_base&&a<g_unity_base+0x2000000){m="libunity";o=a-g_unity_base;}
@@ -68,6 +69,8 @@ static void (*r_glShaderSource)(unsigned,int,const char*const*,const int*);
 static void (*r_glCompileShader)(unsigned);
 static void (*r_glGetShaderiv)(unsigned,unsigned,int*);
 static void (*r_glGetShaderInfoLog)(unsigned,int,int*,char*);
+static void (*r_glTexImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+static void (*r_glRenderbufferStorage)(unsigned,unsigned,int,int);
 /* CACHE de glGetString: o preprocessador de shader do Unity chama glGetString(RENDERER/EXTENSIONS)
    numa WORKER thread que pode NAO ter contexto GL current -> real retorna NULL -> o parse char-a-char
    de NULL crasha. Cacheamos os valores (de quando havia contexto) e devolvemos no lugar de NULL. */
@@ -81,8 +84,41 @@ static const unsigned char* my_glGetString(unsigned n){
   else if(i>=0 && g_glstr_cache[i]){ s=g_glstr_cache[i]; static int w=0; if(w++<8)fprintf(stderr,"[GLSTR] 0x%x NULL->cache %s\n",n,(const char*)s); }
   else if(i>=0){ /* sem cache ainda: devolve default sano (nunca NULL p/ o parser) */
     s=(const unsigned char*)(n==0x1F00?"ARM":n==0x1F01?"Mali-450 MP":n==0x1F02?"OpenGL ES 2.0":n==0x8B8C?"OpenGL ES GLSL ES 1.00":""); }
-  if(getenv("RE4_GLDIAG") && (n==0x1F00||n==0x1F01||n==0x1F02||n==0x8B8C)) fprintf(stderr,"[GLSTR] 0x%x = %s\n",n,s?(const char*)s:"(null)");
+	  if(getenv("RE4_GLDIAG") && (n==0x1F00||n==0x1F01||n==0x1F02||n==0x8B8C)) fprintf(stderr,"[GLSTR] 0x%x = %s\n",n,s?(const char*)s:"(null)");
   return s; }
+static int re4_gl_rt_max(void){
+  const char *v=getenv("RE4_GLRT_MAX"); char *e=NULL; long n;
+  if(!v||!v[0]) return 1024;
+  n=strtol(v,&e,10);
+  if(!e||*e) return 1024;
+  if(n<256) n=256;
+  if(n>4096) n=4096;
+  return (int)n;
+}
+static void my_glTexImage2D(unsigned target,int level,int internalformat,int width,int height,int border,unsigned format,unsigned type,const void *pixels){
+  if(!r_glTexImage2D) r_glTexImage2D=dlsym(RTLD_DEFAULT,"glTexImage2D");
+  if(r_glTexImage2D){
+    int maxdim=re4_gl_rt_max();
+    if(level==0 && pixels==NULL && (width>maxdim || height>maxdim)){
+      int ow=width, oh=height; static int lg=0;
+      while(width>maxdim || height>maxdim){ width=(width+1)/2; height=(height+1)/2; }
+      if(lg++<24) fprintf(stderr,"[GLRT] glTexImage2D %dx%d -> %dx%d fmt=0x%x ifmt=0x%x\n",ow,oh,width,height,format,internalformat);
+    }
+    r_glTexImage2D(target,level,internalformat,width,height,border,format,type,pixels);
+  }
+}
+static void my_glRenderbufferStorage(unsigned target,unsigned internalformat,int width,int height){
+  if(!r_glRenderbufferStorage) r_glRenderbufferStorage=dlsym(RTLD_DEFAULT,"glRenderbufferStorage");
+  if(r_glRenderbufferStorage){
+    int maxdim=re4_gl_rt_max();
+    if(width>maxdim || height>maxdim){
+      int ow=width, oh=height; static int lg=0;
+      while(width>maxdim || height>maxdim){ width=(width+1)/2; height=(height+1)/2; }
+      if(lg++<24) fprintf(stderr,"[GLRT] glRenderbufferStorage %dx%d -> %dx%d ifmt=0x%x\n",ow,oh,width,height,internalformat);
+    }
+    r_glRenderbufferStorage(target,internalformat,width,height);
+  }
+}
 static void my_glShaderSource(unsigned sh,int c,const char*const*str,const int*len){
   if(!r_glShaderSource) r_glShaderSource=dlsym(RTLD_DEFAULT,"glShaderSource");
   if(str&&c>0&&str[0]){ char b[90]; int k=0; for(;k<89&&str[0][k]&&str[0][k]!='\n';k++)b[k]=str[0][k]; b[k]=0;
@@ -94,6 +130,17 @@ static void my_glCompileShader(unsigned sh){
   if(r_glGetShaderiv){ int ok=0; r_glGetShaderiv(sh,0x8B81,&ok);
     static int n=0; if(!ok && n++<8){ char lg[300]; lg[0]=0; if(r_glGetShaderInfoLog)r_glGetShaderInfoLog(sh,299,0,lg); fprintf(stderr,"[SHADER FAIL] %s\n",lg); } } }
 static int my_raise(int sig); static void my_abort(void); static int my_ptkill(unsigned long t,int sig);
+void *re4_gl_override(const char *nm){
+  if(!nm) return NULL;
+  if(!strcmp(nm,"glGetString")) return (void*)my_glGetString;
+  if(!strcmp(nm,"glTexImage2D")) return (void*)my_glTexImage2D;
+  if(!strcmp(nm,"glRenderbufferStorage")) return (void*)my_glRenderbufferStorage;
+  if(getenv("RE4_GLDIAG")){
+    if(!strcmp(nm,"glShaderSource")) return (void*)my_glShaderSource;
+    if(!strcmp(nm,"glCompileShader")) return (void*)my_glCompileShader;
+  }
+  return NULL;
+}
 static void *my_dlsym(void *h,const char *nm){ void *p=0;
   fprintf(stderr,"[DLSYM?] %s\n",nm?nm:"?"); fflush(stderr);
   /* libmono pega pthread_kill/raise/abort via dlsym(RTLD_DEFAULT), furando o GOT override.
@@ -110,10 +157,8 @@ static void *my_dlsym(void *h,const char *nm){ void *p=0;
     if(!strcmp(nm,"SL_IID_ENGINECAPABILITIES")) return (void*)&sl_IID_ENGINECAPABILITIES;
     if(!strcmp(nm,"SL_IID_ENVIRONMENTALREVERB")) return (void*)&sl_IID_ENVIRONMENTALREVERB;
     fprintf(stderr,"[SL] dlsym %s -> NULL\n",nm); return NULL; }
-  /* glGetString SEMPRE wrapado: cache/fallback evita NULL na worker sem contexto (crash do preproc) */
-  if(nm && !strcmp(nm,"glGetString")) return (void*)my_glGetString;
-  /* DIAG (gated): shader source/compile */
-  if(nm && getenv("RE4_GLDIAG")){ if(!strcmp(nm,"glShaderSource"))return (void*)my_glShaderSource; if(!strcmp(nm,"glCompileShader"))return (void*)my_glCompileShader; }
+  p=re4_gl_override(nm);
+  if(p) return p;
   /* CRITICO: Unity dlopen libGLESv2.so/libEGL + dlsym("eglCreateContext"/etc) em runtime.
      Sem isso, cai no libEGL REAL do Mali (dep do SDL2) com nosso display FALSO -> a validacao
      de config (eglCreateContext por config) falha -> "Unable to find a configuration matching
@@ -129,7 +174,7 @@ static void *my_dlsym(void *h,const char *nm){ void *p=0;
 /* getpwuid/getpwnam do glibc fazem dlopen de NSS -> crasha no so-loader. Stub fake. */
 static struct passwd g_pw;
 static struct passwd *my_getpwuid(unsigned u){ (void)u; g_pw.pw_name=(char*)"user"; g_pw.pw_passwd=(char*)"";
-  g_pw.pw_uid=0; g_pw.pw_gid=0; g_pw.pw_gecos=(char*)""; g_pw.pw_dir=(char*)"/storage/roms/re4-recon"; g_pw.pw_shell=(char*)"/bin/sh";
+  g_pw.pw_uid=0; g_pw.pw_gid=0; g_pw.pw_gecos=(char*)""; g_pw.pw_dir=(char*)re4_gamedir(); g_pw.pw_shell=(char*)"/bin/sh";
   fprintf(stderr,"[PWUID] stub\n"); return &g_pw; }
 static const char *my_dlerror(void){ return 0; } /* sem erro -> evita _dl_exception_create */
 static int my_dladdr(const void *a,void *info){ (void)a;(void)info; return 0; }
@@ -258,12 +303,27 @@ static int jobwait_stub(void*this_){ (void)this_; return 0; }
    null-terminava -> Unity lia lixo -> crash em strchrnul/strlen. Aqui zeramos value. */
 static int my_sysprop(const char*name,char*value){ (void)name; if(value)value[0]=0; return 0; }
 static int g_anw=0xA11;
+static int re4_int_env(const char *name, int fallback, int min_value, int max_value){
+  const char *value=getenv(name); char *end=NULL; long parsed;
+  if(!value||!value[0]) return fallback;
+  parsed=strtol(value,&end,10);
+  if(!end||*end) return fallback;
+  if(parsed<min_value) parsed=min_value;
+  if(parsed>max_value) parsed=max_value;
+  return (int)parsed;
+}
+static int re4_screen_width(void){ return re4_int_env("RE4_WIDTH",1280,320,1920); }
+static int re4_screen_height(void){ return re4_int_env("RE4_HEIGHT",720,240,1080); }
 static void *my_aw_fromSurface(void*env,void*surf){ (void)env;(void)surf; fprintf(stderr,"[ANW] fromSurface -> %p\n",(void*)&g_anw); return &g_anw; }
 static int my_aw_setgeom(void*w,int wd,int ht,int f){ (void)w;(void)wd;(void)ht;(void)f; return 0; }
-static int my_aw_getWidth(void*w){ (void)w; return 1280; }
-static int my_aw_getHeight(void*w){ (void)w; return 720; }
+static int my_aw_getWidth(void*w){ (void)w; return re4_screen_width(); }
+static int my_aw_getHeight(void*w){ (void)w; return re4_screen_height(); }
 static void my_aw_acquire(void*w){ (void)w; }
 static void my_aw_release(void*w){ (void)w; }
+static const char *re4_gamedir(void){
+  const char *dir=getenv("RE4_GAMEDIR");
+  return (dir&&dir[0])?dir:"/storage/roms/ports/re4";
+}
 extern void *text_virtbase;
 extern void re4_fill(void);
 extern void recon_wire_pthread(void (*)(const char *, void *));
@@ -358,6 +418,9 @@ static void on_segv(int sig, siginfo_t *si, void *uc_){
   _exit(139);
 }
 int main(void){
+  const char *pkg=getenv("RE4_PACKAGE_NAME");
+  const char *obb=getenv("RE4_OBB_VERSION");
+  int obb_version=(obb&&obb[0])?atoi(obb):1;
   struct sigaction sa; memset(&sa,0,sizeof sa); sa.sa_sigaction=on_segv; sa.sa_flags=SA_SIGINFO;
   sigaction(SIGSEGV,&sa,0); sigaction(SIGBUS,&sa,0); sigaction(SIGABRT,&sa,0); sigaction(SIGILL,&sa,0); sigaction(SIGTRAP,&sa,0); sigaction(SIGFPE,&sa,0);
   /* Mapeia uma pagina no endereco 0 cheia de 'bx lr' -> chamadas via ponteiro NULL (pc=0)
@@ -482,6 +545,8 @@ int main(void){
     else fprintf(stderr,"[MONO] FALHOU carregar libmono\n"); }
   so_use(g_m_unity);
   void *vm=NULL,*env=NULL; jni_shim_init(&vm,&env);
+  jni_shim_set_package((pkg&&pkg[0])?pkg:"com.WS.RE4", obb_version);
+  fprintf(stderr,"[JNI] package=%s obb=%d gamedir=%s\n",(pkg&&pkg[0])?pkg:"com.WS.RE4",obb_version,re4_gamedir());
   uintptr_t onload=so_find_addr_safe("JNI_OnLoad");
   jint ver=((JNI_OnLoad_t)onload)(vm,NULL);
   fprintf(stderr,"[B] JNI_OnLoad=0x%x\n",ver);

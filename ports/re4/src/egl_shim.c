@@ -17,8 +17,8 @@
 #include "egl_shim.h"
 #include "util.h"
 
-#define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 720
+#define DEFAULT_SCREEN_WIDTH 1280
+#define DEFAULT_SCREEN_HEIGHT 720
 
 typedef struct {
   SDL_GLContext sdl_context;
@@ -53,6 +53,8 @@ static unsigned long g_creator_tid=0; /* thread que cria os contextos (setup) ->
                                          a thread de RENDER (outra) usa a surface do WINDOW. */
 static int frame_count = 0;
 static int next_context_id = 1;
+static int cached_width = 0;
+static int cached_height = 0;
 
 static _Thread_local _egl_context *current_context = NULL;
 static _Thread_local _egl_context *last_context = NULL;
@@ -60,7 +62,31 @@ static _Thread_local int has_real_gl = 0;
 
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 
+static int read_env_int(const char *name, int fallback, int min_value, int max_value) {
+  const char *value = getenv(name);
+  char *end = NULL;
+  long parsed;
+  if (!value || !value[0]) return fallback;
+  parsed = strtol(value, &end, 10);
+  if (!end || *end) return fallback;
+  if (parsed < min_value) parsed = min_value;
+  if (parsed > max_value) parsed = max_value;
+  return (int)parsed;
+}
+
+static int screen_width(void) {
+  if (!cached_width) cached_width = read_env_int("RE4_WIDTH", DEFAULT_SCREEN_WIDTH, 320, 1920);
+  return cached_width;
+}
+
+static int screen_height(void) {
+  if (!cached_height) cached_height = read_env_int("RE4_HEIGHT", DEFAULT_SCREEN_HEIGHT, 240, 1080);
+  return cached_height;
+}
+
 void egl_shim_create_window(void) {
+  int width = screen_width();
+  int height = screen_height();
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -74,13 +100,13 @@ void egl_shim_create_window(void) {
 
   egl_window = SDL_CreateWindow(
       PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      SCREEN_WIDTH, SCREEN_HEIGHT,
+      width, height,
       SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
   if (!egl_window) {
     debugPrintf("egl_shim: SDL_CreateWindow FAILED: %s\n", SDL_GetError());
     return;
   }
-  debugPrintf("egl_shim: Window created %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
+  debugPrintf("egl_shim: Window created %dx%d\n", width, height);
 
   egl_share_root = SDL_GL_CreateContext(egl_window);
   if (!egl_share_root) {
@@ -386,8 +412,8 @@ EGLBoolean egl_shim_DestroyContext(EGLDisplay dpy, EGLContext ctx) {
 EGLBoolean egl_shim_QuerySurface(EGLDisplay dpy, EGLSurface surface,
                                   EGLint attribute, EGLint *value) {
   (void)dpy; (void)surface;
-  if (attribute == 0x3057 && value) *value = SCREEN_WIDTH;
-  else if (attribute == 0x3056 && value) *value = SCREEN_HEIGHT;
+  if (attribute == 0x3057 && value) *value = screen_width();
+  else if (attribute == 0x3056 && value) *value = screen_height();
   return EGL_TRUE;
 }
 
@@ -433,9 +459,46 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 }
 
 EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
+extern void *re4_gl_override(const char *procname);
+
+static void *egl_shim_lookup_egl_proc(const char *procname) {
+  if (!procname || procname[0] != 'e' || procname[1] != 'g' || procname[2] != 'l') return NULL;
+  if (!strcmp(procname, "eglGetDisplay")) return (void *)egl_shim_GetDisplay;
+  if (!strcmp(procname, "eglInitialize")) return (void *)egl_shim_Initialize;
+  if (!strcmp(procname, "eglTerminate")) return (void *)egl_shim_Terminate;
+  if (!strcmp(procname, "eglChooseConfig")) return (void *)egl_shim_ChooseConfig;
+  if (!strcmp(procname, "eglGetConfigAttrib")) return (void *)egl_shim_GetConfigAttrib;
+  if (!strcmp(procname, "eglCreateWindowSurface")) return (void *)egl_shim_CreateWindowSurface;
+  if (!strcmp(procname, "eglCreatePbufferSurface")) return (void *)egl_shim_CreatePbufferSurface;
+  if (!strcmp(procname, "eglDestroySurface")) return (void *)egl_shim_DestroySurface;
+  if (!strcmp(procname, "eglCreateContext")) return (void *)egl_shim_CreateContext;
+  if (!strcmp(procname, "eglDestroyContext")) return (void *)egl_shim_DestroyContext;
+  if (!strcmp(procname, "eglMakeCurrent")) return (void *)egl_shim_MakeCurrent;
+  if (!strcmp(procname, "eglSwapBuffers")) return (void *)egl_shim_SwapBuffers;
+  if (!strcmp(procname, "eglSwapInterval")) return (void *)egl_shim_SwapInterval;
+  if (!strcmp(procname, "eglGetCurrentContext")) return (void *)egl_shim_GetCurrentContext;
+  if (!strcmp(procname, "eglGetCurrentSurface")) return (void *)egl_shim_GetCurrentSurface;
+  if (!strcmp(procname, "eglGetError")) return (void *)egl_shim_GetError;
+  if (!strcmp(procname, "eglBindAPI")) return (void *)egl_shim_BindAPI;
+  if (!strcmp(procname, "eglQueryString")) return (void *)egl_shim_QueryString;
+  if (!strcmp(procname, "eglQuerySurface")) return (void *)egl_shim_QuerySurface;
+  return NULL;
+}
 
 void *egl_shim_GetProcAddress(const char *procname) {
-  void *ptr = SDL_GL_GetProcAddress(procname);
+  void *ptr = egl_shim_lookup_egl_proc(procname);
+  if (ptr) {
+    debugPrintf("egl_shim: eglGetProcAddress(%s) -> shim\n", procname);
+    return ptr;
+  }
+
+  ptr = re4_gl_override(procname);
+  if (ptr) {
+    debugPrintf("egl_shim: eglGetProcAddress(%s) -> gl-override\n", procname);
+    return ptr;
+  }
+
+  ptr = SDL_GL_GetProcAddress(procname);
   if (ptr) return ptr;
 
   size_t len = strlen(procname);
@@ -449,7 +512,7 @@ void *egl_shim_GetProcAddress(const char *procname) {
     }
   }
 
-  debugPrintf("egl_shim: eglGetProcAddress(%s) -> NOT FOUND\n", procname);
+	  debugPrintf("egl_shim: eglGetProcAddress(%s) -> NOT FOUND\n", procname);
   return NULL;
 }
 

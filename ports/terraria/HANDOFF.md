@@ -4,27 +4,356 @@
 > inteiro primeiro. Projeto iniciado DO ZERO em 2026-06-16. Device `.89` (Amlogic-old,
 > Mali-450 Utgard, fbdev, EmuELEC 3.14.79 aarch64, senha ssh `nextos`/root).
 
-## ⚡ TL;DR — onde estamos
-Boot do Unity 2021.3 **FUNCIONA quase inteiro** (libunity+libil2cpp carregam, JNI_OnLoad,
-il2cpp_init COMPLETO, engine `MemoryManager`/`SystemInfo`/display 1280x720). **MURO ATUAL:**
-o engine morre em `Unable to initialize the Unity Engine`, causado por
-`[ALOG:6 Unity] assets/bin/Data/unity_app_guid is empty. Will re-extract il2cpp resources`.
-O `data.unity3d` NEM É LIDO (morre na extração il2cpp antes). **Objetivo do usuário: IMAGEM do jogo.**
+## 🧭🧭 SESSÃO 2026-06-16 (++noite, "topologia do job-system") — DADOS NOVOS SÓLIDOS
+**Resultado:** sem imagem ainda, MAS o muro do job-system foi MAPEADO com dados reproduzíveis
+(antes era teoria). Corrigi 1 suposição errada do handoff e estreitei a causa-raiz.
 
-## 🧱 O BUG A RESOLVER AGORA (unity_app_guid lido vazio)
-- O arquivo `/storage/roms/terraria/bin/Data/unity_app_guid` tem **36 bytes válidos**
-  (`9b73490b-5e49-488d-9968-182f2630deff`).
-- Unity o abre por `open()` nativo: log `[open-redir] assets/bin/Data/unity_app_guid -> /storage/roms/terraria/bin/Data/unity_app_guid` (my_open redireciona CERTO, fd válido).
-- MAS o engine conclui que está **vazio**. Já descartado: NÃO é `openFd`/AssetFileDescriptor
-  (não usado no log), NÃO é `mmap` (my_mmap é passthrough real), my_open retorna fd correto.
-- **PRÓXIMO PASSO**: RE da função em libunity que loga "is empty" (string @ vaddr `0x9291a8`,
-  sem `adrp 0x929000` direto → carregada via literal pool). Achar como ela LÊ o guid e o
-  size-check. Opções: (a) Ghidra em `~/re-tools`; (b) hook do `read()`/`pread()` p/ logar o
-  que retorna no fd do guid; (c) checar se lê via outro caminho (fopen? fread? uma 2ª abertura
-  que pega path com prefixo errado?). Hipótese viva: Unity lê via um path/método diferente do
-  `[open-redir]` visto, e esse retorna 0.
-- ⚠️ NÃO-FATAL? A msg diz "on NEXT run" (parece warning), mas `data.unity3d` não carrega e o
-  engine morre logo após — então É o bloqueio. Confirmar.
+**⛔ CORREÇÃO DE SUPOSIÇÃO (FATO 1 estava parcialmente errado):** as threads da ENGINE NÃO passam
+pelo nosso `pthread_create_fake`. `pthread_create` **não está** na `PT_LIST` (main.c:114) — nem
+`pthread_key_create`/`getspecific`/`setspecific`. Elas resolvem p/ o **glibc REAL** (so_resolve
+passthrough). Isso é OK p/ correção (glibc cria thread + keys per-thread certas), mas significa que
+NÃO temos hook nativo na criação das threads da engine por padrão. (FATO 1 acertou que mutex/cond/sem
+passam pelos shims; errou ao implicar que pthread_create também passa.)
+
+**🔬 INFRA NOVA (gated, default OFF) — commitar:** 
+- `TER_JOBLOG=1` agora (a) roteia o `pthread_create` da engine pelo nosso trampoline
+  (`install/patch_pthread_shim`, só sob TER_JOBLOG) e (b) loga p/ cada thread criada:
+  `[JOBTHR] tid start=libunity+0xOFF arg=<ctx> a[0..5]` (pthread_fake.c thr_trampoline).
+- `ter_unity_base()`/`ter_il2cpp_base()` exportados de main.c (symbolizar offsets).
+- Reusei `TER_FUTEXLOG` (já existia) p/ topologia WAIT/WAKE.
+
+**📊 TOPOLOGIA MEDIDA (env: `TER_JOBLOG=1 TER_FUTEXLOG=1 TER_FAKEACK=1 CUP_GCOFF=1 TER_SKIPTASKWAIT=1`,
+chega ao frame 3 `[r3>`):**
+- TODAS as threads têm `comm=UnityMain` (o `pthread_setname_np_fake` é no-op → nenhuma é renomeada;
+  os nomes "Job.Worker"/"Background" do handoff antigo vieram do gdb, NÃO do nosso runtime).
+- Worker loop comum = **`libunity+0x23741c`** (a maioria das ~29 threads). `arg` = contexto per-worker
+  (array contíguo em 0x7f40_1c…; spacing **0x88** p/ o pool de 16 "background", **0x1d0** p/ 3 threads
+  dedicadas). 2 threads especiais usam start=**`libunity+0x80f768`** (prováveis controllers).
+- O worker lê um **manager GLOBAL** em `*(b87000+0xc78)` (x23→x20 em 0x23743c-48; se 0 → lazy-init
+  `0xfdafc`), registra-se numa **lista global** em `c10240` sob lock `c10208` (fn `0x2f0418`), e executa
+  o job via ponteiro em `[arg+56]`/`[arg+64]` (blr). O `mrs tpidr_el0; ldr [x,#40]` é só o **canary**
+  (slot bionic +0x28, coberto pelo pad TLS) — NÃO é índice de worker.
+- **WAIT (quem dorme onde):** 3 workers no sem do pool **`…105360`**; 16 background no sem **`…1c40e0`**;
+  3 dedicadas em sems próprios (`…1c9eb0/ca080/ca250`, spacing 0x1d0, = arg+0x80); +1 thread só em `…107af0`.
+- **WAKE (quem acorda quem):** a **MAIN (tid pai)** só faz `FUTEX_WAKE` em **`…107af0`** (22×) →
+  acorda **1 thread dispatcher** que espera lá; essa dispatcher acorda a main de volta em `…a7a358` (3×).
+  Handshake main↔dispatcher FUNCIONA. **MAS `…105360` e `…1c40e0` (os pools de worker) NUNCA recebem
+  wake de NINGUÉM no run inteiro.** (grep WAKE = 0 nesses uaddr.)
+
+**🎯 CAUSA-RAIZ ESTREITADA:** os workers estão **saudáveis e corretamente PARKED** esperando trabalho;
+o bug é 100% no lado **ENQUEUE/SIGNAL**: a main agenda jobs (alvo do contador sobe) mas **o trabalho
+nunca chega à fila que os workers (e o work-steal da própria main, `0x2c6754`) consultam**, e os pools
+nunca são sinalizados. Não é lost-wakeup (FUTEXPOLL acorda os workers e eles acham fila VAZIA — já testado).
+A main só conversa com 1 dispatcher (`…107af0`), nunca com os pools.
+
+**🥇 HIPÓTESE #1 p/ a PRÓXIMA SESSÃO (mais promissora):** a **MAIN thread não está REGISTRADA** no
+job-system. Os workers se registram via `0x2f0418` (lista global `c10240`). A main é a thread do NOSSO
+loader (não criada pela engine) → pode nunca ter recebido um **índice de thread do job-system** (a fila
+é deque per-thread; o push da main vai p/ um deque ÓRFÃO que ninguém drena). **TESTE decisivo (barato):**
+detour de 8 bytes na ENTRADA de `0x2f0418` logando `tid` → ver se `tid==getpid()` (main) aparece.
+Se a main NÃO registra → achar o `RegisterExternalThread`/`InitializeJobThread` da Unity 2021 e
+forçá-lo p/ a main (ou registrar a main manualmente antes do 1º schedule).
+**Push de job identificado:** `0x2eaafc` (`array[count++]=item`, sem lock/sem-post — caller segura lock);
+tracear quem chama e p/ qual `x1`(fila) vs a fila que o worker dequeia.
+
+**Becos desta sessão (NÃO resolvem):** TLS nativo (libunity tem **0 relocs TLS**, sem PT_TLS → não usa
+`__thread`; índice de worker NÃO vem de TLS-ELF). Flag "threaded" `c0da20` é setada em `0x2eaae8` por 2
+checks de capability no init — forçá-la não muda o enqueue (handoff já sabia). pthread_create hook não
+muda comportamento (só loga).
+
+
+## ⚡⚡ TL;DR REESCRITO (2026-06-16 madrugada++ / sessão "1 erro por vez")
+🟢 **A CONCLUSÃO PESSIMISTA ANTERIOR ESTÁ REFUTADA. O port é viável (como cuphead).**
+
+**FATO 1 — REFUTADO "threads bionic-static":** `readelf -sW --dyn-syms` em libil2cpp.so E libunity.so
+mostra `pthread_create@LIBC`, `pthread_kill`, `pthread_cond_*`, `sem_*`, `sigaction@LIBC`, `syscall`
+TODOS como **UND** → TODAS as threads (incl. GC Finalizer/Loading/Job.Workers) passam pelos NOSSOS
+shims (pthread_fake/sem_shim/my_syscall). Temos controle total. A afirmação "bionic-static, bypassa
+interposição em 3 níveis" era FALSA (a sessão anterior grepou errado).
+
+**FATO 2 — o shim de cond FUNCIONA:** instrumentei `pthread_cond_wait/signal/broadcast_fake`
+(TER_CONDTRACE): a main passa por DEZENAS de cond-waits (caller `libunity+0x2f02e8`) que SÃO
+sinalizados e ela acorda. Sem lost-wakeup.
+
+**FATO 3 — o muro REAL (não é o GC):** com `TER_FAKEACK=1 CUP_GCOFF=1` passa-se do GC e a main
+trava no ÚLTIMO cond-wait: **`libunity+0x2f37c0`** (função em `0x2f367c`), cond `obj+0x88`,
+**NUNCA sinalizado** (TER_CONDTRACE confirma: 0 signals nesse cslot). NÃO é GC, NÃO é lost-wakeup,
+NÃO é Mali. É um **produtor que nunca roda**.
+
+**FATO 4 — o que é a função `0x2f367c`:** classe C++ templada de **job-queue/thread-pool com worker
+dedicado** (módulo libunity ~0x2f0000–0x2f3f00). A main constrói uma "future-task" (functor em
+`obj[0]=libunity+0xb62278`, vtable {0x2f3900,0x2f390c,0x7abe04,0x2f37e8,0x2f3800}; fila `obj+0x58`,
+mutex `obj+0x60`, cond `obj+0x88`), e BLOQUEIA em `while(node->next==0) cond_wait`. Produtores
+(lado worker) = `cond_broadcast` em **0x2f39b0 / 0x2f3a78 / 0x2f3aec**. Workers criados via
+`pthread_create` em **0x2f0330 / 0x2f3e30** (no 0x2f0330: `syscall(sched_setaffinity)` antes).
+A fase é **init de serialização de classes builtin** (caller `0x2c2038` referencia a string
+"Mismatched serialization in the builtin class '%s'"). Acontece no **frame 2 do nativeRender**,
+logo após o setup do Choreographer (HandlerThread/Looper/Handler/FrameCallback — JNI: sendToTarget).
+
+**FATO 5 — becos JÁ testados nesta sessão (NÃO resolvem):**
+- `CUP_1CORE=1` (sysconf=1 core) — workers já criados, não muda.
+- `-force-gfx-direct` (corrigido de `-force-gfx-st`, que NÃO é arg real) — **a engine NEM lê
+  `/proc/self/cmdline`** (o `[CMDLINE]` nunca loga; usa `il2cpp_set_commandline_arguments`).
+  A thread `UnityGfxDeviceW` continua viva. Injeção de cmdline atual = código MORTO.
+- `CUP_SEMPOLL=20 CUP_CONDPOLL=20 TER_FUTEXPOLL=20` (acorda TODOS os waiters periodicamente) — NÃO
+  destrava → o worker, mesmo acordado, não acha trabalho na fila dele → **o dispatch p/ o worker
+  está quebrado/ausente**, não é lost-wakeup.
+- handleMessage driver (sendToTarget→invoca Handler$Callback.handleMessage) — `sendToTarget` só tem
+  o método-ID CACHEADO; **nunca é CHAMADO** antes da trava. O Choreographer é setup, não o gatilho.
+
+## 🟢🟢 AVANÇO (mesma sessão, +tarde): PASSOU DO FRAME 2! + job system identificado
+- **`TER_SKIPTASKWAIT=1`** (patch binário libunity+0x2f37b0 `cbnz x8 -> b 0x2f37c4`, pula a wait da
+  per-object task): **frame 2 AGORA COMPLETA** (`<r2]` aparece, nunca aparecia) e **frame 3 entra
+  (`[r3>`)**. A saída 0x2f37c4 só faz mutex_unlock+ret (não deref o item) → pular é seguro p/ avançar.
+- Frame 3 trava num NOVO wait: **`libunity+0x2f1d1c` = WaitForJobGroup** (`while([0xc10360] < target)
+  cond_wait`, mutex/cond GLOBAIS em 0xc10308/0xc10330). Contador completado **0xc10360 = 0**.
+- Agendador = **`0x2ea800`** (na vdd a função começa antes; bl WaitForJobGroup está em 0x2ea800).
+  Decide threaded (flag byte **0xc0da20**==1 + itemcount>=24). Antes de esperar, tenta work-steal via
+  **`0x2c6754`** (try-execute-1-job, checa flags do job system em **0xc0a180..0xc0a18c**) — retorna
+  false (não acha job) → vai pro wait.
+- Workers (`Job.Worker 0-2` + 16 `Background Job.`): **utime/stime = 0/0** (NUNCA executaram nada),
+  affinity cpus=0-3 (OK, não é pin errado). Force-wake (TER_FUTEXPOLL+CUP_SEMPOLL+CUP_CONDPOLL) NÃO
+  os faz processar → **o job NÃO está na fila que os consumidores (worker E work-steal da main) olham**.
+- **`TER_SKIPJOBWAIT=1`** (pula tb 0x2f1d48 do WaitForJobGroup) → **ABORT (sig 6)**: "The referenced
+  script on this Behaviour (Game Object '<null>') is missing!" → os job-results SÃO necessários (não dá
+  p/ só pular; tem que EXECUTAR).
+- **`TER_JOBINLINE=1`** (sched_getaffinity → 1 CPU, p/ Unity criar 0 workers e rodar inline): NÃO
+  destravou (volta ao wall do frame 2). O worker-count NÃO vem do sched_getaffinity (ou a per-object
+  task não depende dele). Investigar de onde vem o nº de workers (get_nprocs? /sys/devices/system/cpu/
+  online|possible? um global do boot.config?).
+
+## 🎯🎯 SMOKING GUN (mesma sessão, +++tarde): JobQueues DESCONECTADAS
+Via `/proc/<tid>/syscall` (uaddr=campo2, op=campo3) + TER_FUTEXLOG (loga FUTEX_WAIT op 0/9 e
+FUTEX_WAKE op 1/10 que passam pelo `syscall` import / my_syscall):
+- Os workers esperam num **futex PRIVATE** (op=0x80) via helper **libunity+0x6ecd04**
+  (`futex_wait_private(uaddr)`; o `futex_wake_private(uaddr,n)` é **0x6ecd60**; o PLT 0x86700
+  "expf" é na vdd `syscall`). Worker bt: `syscall → my_syscall → libunity+0x6ecd54`.
+- `Job.Worker 0-2` esperam todos em **uaddr=0x7e90105360** (semáforo COMPARTILHADO do pool).
+  `Background Job.`(16) em 0x7f201c40e0. `Loading.Preload` em 0x7f20bdf130. `Loading.AsyncRe` em 0x7ec0000544.
+- A MAIN faz FUTEX_WAKE em **0x7e90107af0**(16×), 0x7f201c3dd8, 0x7f20a7a358 — **NENHUM coincide com
+  os uaddr dos workers**. O semáforo dos Job.Worker (0x7e90105360) **NUNCA recebe wake de ninguém**
+  no run inteiro (`grep WAKE.*0x7e90105360` = 0).
+- **CONCLUSÃO: o scheduler e os workers estão em JobQueues/semáforos DESCONECTADOS.** O scheduler
+  sinaliza semáforos que nenhum worker espera; os workers esperam semáforos que ninguém sinaliza.
+  Provável **2 instâncias do JobQueue** (workers ligados à instância A criada no init; scheduler/main
+  usando instância B) OU a fila do scheduler ≠ a fila que os workers consomem. (NÃO é lost-wakeup:
+  FUTEXPOLL acorda os workers e eles acham a fila VAZIA; NÃO é __cxa_guard: é interno do libunity, OK.)
+- Becos: `0x2ea9dc` (branch `cbz [0xc0da20]`) é só epílogo/return, NÃO execução inline → não dá p/
+  forçar serial por aí. `TER_JOBINLINE` (sched_getaffinity→1 CPU) não mudou o worker-count.
+
+**🔑 PRÓXIMO PASSO DECISIVO p/ a próxima sessão:** descobrir POR QUE há 2 instâncias / fila desconectada.
+- Achar o GLOBAL que guarda o ponteiro do JobQueue (o scheduler 0x2ea800 e o worker-loop 0x6ecd54
+  o leem). Comparar o `this` do JobQueue no scheduler vs nos workers (gdb: dump o objeto, ver o
+  endereço do semáforo embutido). Se diferem → 2 instâncias.
+- Ver o INIT do JobQueue (quem cria os workers + o semáforo) e se roda 2× no nosso loader (init_array
+  duplicado? JNI_OnLoad 2×? um global reiniciado?). Hookar a criação dos workers (pthread_create em
+  0x2f0330) e logar o ponteiro do JobQueue/semáforo passado a cada worker vs o que o scheduler usa.
+- Alternativa de fix se for 2-instâncias: forçar o scheduler a usar a MESMA instância dos workers
+  (ou vice-versa) — ou impedir o segundo init.
+- Outra pista a investigar: o uaddr do worker (0x7e90105360) e o do main-wake (0x7e90107af0) estão na
+  MESMA arena (0x7e90...), diff 0x2790 → instâncias adjacentes alocadas no mesmo pool/heap.
+
+**🔑 SÍNTESE DO MURO:** DOIS mecanismos de worker (1: per-object future-task classe 0x2f367c/0x2f3e30,
+threads dedicadas Loading.Preload/AsyncRe/BatchDelete; 2: job system global 0x2ea800/0x2f1d1c, Job.Worker/
+Background). AMBOS: worker criado e ocioso em wait; main agenda+espera; **o trabalho nunca chega ao
+worker** (force-wake não resolve, contador fica 0). A CONDTRACE prova: o cond em que a main espera
+NUNCA é sinalizado. **Causa-raiz comum provável: o ENQUEUE (main→fila do worker) não coloca o item na
+fila que o worker consome** (≠ lost-wakeup). 
+
+**PRÓXIMO PASSO MAIS PROMISSOR:** instrumentar o lado PRODUTOR/ENQUEUE: tracear cond_signal/broadcast +
+sem_post + FUTEX_WAKE FEITOS PELA MAIN (e por qq thread) ANTES da main esperar — ver SE o enqueue
+acontece e p/ qual fila/cond vai. Comparar com o cond em que o worker dorme. Se o enqueue sinaliza um
+cond ≠ do que o worker espera → achamos o mismatch. (Análogo ao TER_CONDTRACE, mas no lado do post.)
+Hooks candidatos: entrada das fns produtoras 0x2f39b0/0x2f3a78/0x2f3aec (per-object) e o enqueue do
+job system (achar quem incrementa o "submitted"/empurra na fila antes de 0x2ea800).
+Considerar tb: a fila pode ser lock-free (atomics) indexada por WORKER-INDEX/thread — se o índice da
+thread (TLS) estiver errado no nosso env, o enqueue vai p/ deque errado. Verificar pthread_getspecific/
+TLS keys do job system.
+
+**PRÓXIMOS PASSOS (ordem antiga):**
+1. Hookar a ENTRADA das funções produtoras `0x2f39b0/0x2f3a78/0x2f3aec` (log `this`+caller) e a
+   start_routine dos workers `0x2f0330/0x2f3e30` → confirmar que NENHUM worker chega ao "complete"
+   e descobrir ONDE o worker bloqueia (qual sem/cond/fila de ENTRADA dele).
+2. Achar o ENQUEUE (lado main→worker): a main deveria enfileirar a task numa fila GLOBAL do pool +
+   acordar o worker, ANTES de esperar. Tracear se isso acontece (cond/sem/futex do worker).
+3. Identificar a classe exata (templada): comparar com Unity 2021.3 (provável `JobQueue`/`ThreadPool`/
+   `WorkStealingQueue` ou `PersistentManager` load). Ferramentas: `~/re-tools`, objdump do cross.
+4. Plano B: binary-patch p/ pular a wait (estilo NOGCWAIT) e ver o PRÓXIMO muro (progresso), aceitando
+   crash provável (a task pode ser necessária).
+
+**Infra de diagnóstico criada (já no código, gated por env):**
+- `TER_CONDTRACE` (pthread_fake.c): loga `[CT] WAIT tid/cslot/caller` de todo cond-wait + `[CT] SIGNAL/
+  BROADCAST p/ cslot da MAIN`. Decisivo.
+- `TER_FUTEXLOG` (main.c my_syscall): loga caller de cada FUTEX_WAIT (⚠️ gettid usava nº errado;
+  arm64=178, não 186 — corrigir se reusar).
+- handleMessage wiring (jni_shim.c): obtainMessage/sendToTarget→`jni_handlemessage` (inerte por ora).
+- Scripts no device em `/tmp/ter*.sh` (diag de threads/bt/obj-dump/FP-walk via /proc/mem+dd).
+- **Bases libunity/libil2cpp** (loader mmap manual, NÃO aparecem por nome em /proc/maps): pegar as 2
+  regiões `r-xp` anônimas (não /usr/lib, não /storage) — a maior(~48MB)=libil2cpp, ~12MB=libunity.
+
+## (HISTÓRICO — pré-refutação) ⚡ TL;DR — onde estávamos (2026-06-16 noite)
+🎉🎉 **3 muros resolvidos: GUID + CASESENSITIVE + ENLIGHTEN. O jogo BOOTA E CARREGA INTEIRO.**
+Cria contexto **GLES2 no Mali-450**, FMOD, carrega 1ª cena, InControl v1.8.11, **`stopActivityIndicator`
+(loading TERMINA!)**, monta o Choreographer de frames. **MURO NOVO**: o `nativeRender` do **frame 2
+TRAVA** (não retorna) — main thread (UnityMain) presa em wait de semáforo (job-system / async-load),
+no setup do **Choreographer** (HandlerThread+Looper+FrameCallback "UnityChoreographer"). Frames 0 e 1
+completam; frame 2 entra e nunca sai. **0 swaps ainda (sem imagem na tela).**
+**Objetivo do usuário: IMAGEM do jogo.**
+
+## ✅ JOB-SYSTEM DESTRAVADO (2026-06-16 noite tarde) — 2 RAÍZES: `syscall` stub + race no pthread_fake
+Frame 2 travava: a main (nativeRender) ficava em `sh_sem_timedwait` esperando jobs que nunca
+terminavam. Duas causas:
+1. 🔑 **`syscall` STUBADO** (retornava 0). O job-system do Unity usa `syscall(SYS_futex, FUTEX_WAKE)`
+   CRU p/ acordar a main; com o stub no-op, o wake nunca chegava e as Job.Worker/Background
+   busy-spinavam no `stub_syscall` (visto no gdb bt). FIX: `my_syscall` forward real (arm64: nº de
+   syscall igual bionic/glibc/kernel) + set_import/patch_got nos 2 libs. Agora as threads BLOQUEIAM
+   de verdade no futex (sem busy-spin). **LIÇÃO: `syscall` cru tem que ser REAL no so-loader.**
+2. 🔑 **race no lazy-init do `pthread_fake.c`** (`cond_get`/`mtx_get`/`sem_get`/`rwl_get`): 2 threads
+   tocando um primitivo ESTÁTICO (PTHREAD_*_INITIALIZER=0) ao mesmo tempo criavam CADA UMA o seu
+   objeto glibc e a 2ª sobrescrevia → uma espera no cond C1, outra sinaliza C2 → **LOST WAKEUP**
+   (travas entre frames). FIX: lock GLOBAL só no caminho de criação (impede double-create); fast-path
+   = leitura SIMPLES do slot (NÃO usar `__atomic_*`/LDAR — os slots bionic podem ser 4-byte-aligned
+   → LDAR de 8B faulta **SIGBUS**; confirmado fault @...d4). Com isso, frame 2 COMPLETA sem band-aid.
+
+## 🧱🧱 MURO REAL IDENTIFICADO (2026-06-16 madrugada): il2cpp GC STOP-THE-WORLD
+**O Choreographer era RED HERRING.** A main trava (frame 1 OU 2, nondeterminístico por threshold de
+alloc) em `sh_sem_timedwait` chamado de **`libil2cpp+0x74f2c0`** = **`WaitForThreadsToSuspend`**
+(fn @0x74f260, referencia `"pthread_kill failed at suspend"`): o GC faz stop-the-world, manda
+**SIGPWR(30)** p/ suspender as threads e ESPERA cada uma dar ACK (semáforo, timeout 10ms, RETRY
+infinito). **Uma thread nunca dá ACK.**
+- **Diagnóstico DEFINITIVO** (via hook `pthread_kill` [TER_PKLOG] + `/proc/<tid>/status` SigBlk):
+  o GC manda SIGPWR p/ 2 threads; a **thread A** recebe o restart SIGXCPU(24) (=deu ACK), a
+  **thread B (0x7f72f89...≈GC Finalizer)** só recebe SIGPWR repetido, NUNCA o restart. Motivo:
+  GC Finalizer / Loading.Preload / 1 UnityMain têm **SigBlk=0x7ffffffe7ffbbed9** = bloqueiam quase
+  TODOS os sinais async incl. **SIGPWR**. São threads de suspensão **COOPERATIVA** (bloqueiam SIGPWR
+  de propósito; deveriam suspender via safepoint, não via sinal). Thread B está PRESA num bloqueio
+  nativo (futex/sem do NOSSO shim) → nunca chega num safepoint → o GC tenta preemptar via SIGPWR →
+  bloqueado → DEADLOCK.
+- **Becos testados (NÃO resolvem):** pthread_sigmask ABI-fix (correto, necessário, mas insuf.);
+  `il2cpp_gc_disable` (CUP_GCOFF, offset 2021 corrigido p/ 0x73ca6c — NÃO previne o stop-the-world);
+  desbloquear SIGPWR no thread-create (TER_SIGUNBLK → REGRIDE p/ frame 1: threads suspendem sem
+  restart → freeze); filtrar o block de SIGPWR (TER_SIGFILTER → mesma regressão); SEMPOLL/FUTEXPOLL/
+  CONDPOLL (não acordam p/ safepoint); **TER_NOGCWAIT** (patcha 0x74f260→`mov w0,#0;ret`: REMOVE a
+  espera do GC — confirmado, SEMWHO some — MAS a main cai num pthread_cond_wait NOVO que também
+  trava: a engine precisa do stop-the-world COMPLETAR, não ser pulado).
+- **⛔ DESCOBERTA-CHAVE (por que os shims NÃO resolvem):** as threads do GC (GC Finalizer, Loading.Preload)
+  são **bionic-STÁTICAS** — libunity/libil2cpp **NÃO importam `pthread_create`/`clone`** (readelf: 0).
+  Elas se criam via `clone` INLINE, setam a máscara via `rt_sigprocmask` INLINE (svc), e bloqueiam via
+  futex INLINE — **bypassando TODOS os nossos shims** (sem/cond/futex/sigmask). Confirmado: o registro de
+  threads (pthread_create_fake) mostra os alvos do GC como `?(unreg)`; hook de `rt_sigprocmask` no
+  `my_syscall` = **0 hits**; desbloquear SIGPWR nos nossos waits NÃO muda o SigBlk delas (continua
+  0x7ffffffe7ffbbed9). Ou seja: **não dá p/ alcançar a máscara/wait dessas threads por interposição**.
+- **Becos adicionais:** GC-safe-wait (desbloquear SIGPWR em volta dos nossos sem/cond/futex waits,
+  OPT-IN TER_GCSAFEWAIT) — não alcança as threads bionic-static. rt_sigprocmask filter (TER_NORTFILTER) —
+  0 hits (inline). Identificador de thread por nome no [PKILL] (TER_PKLOG agora loga comm/tid).
+- **BYPASS testado (TER_NOGCWAIT=1 TER_NOSUSPEND=1 + CUP_GCOFF=1):** `my_pthread_kill` ENGOLE SIGPWR/
+  SIGXCPU (nenhuma thread suspende) + `WaitForThreadsToSuspend`→ret0. **PASSA do muro do GC** (SEMWHO
+  some). MAS a main cai numa nova espera produtor-consumidor em **`libunity+0x2f37a4`** (fn ctor @0x2f3680,
+  vtable 0xb59e48): cria uma FILA em `obj+0x58` + cond `obj+0x88` e ESPERA um item que NUNCA chega. Polls
+  (COND/SEM/FUTEX) e o driver do Choreographer (TER_CHOREO) NÃO alimentam essa fila. Provável ESTADO
+  CORROMPIDO do bypass (a main "vagou" pra um loop de worker que não devia rodar nela). Bypass = beco
+  pouco confiável. 0 swaps/sem imagem ainda.
+- **🔑 BYPASS LIMPO via FAKEACK (melhor que NOGCWAIT):** `my_pthread_kill`, ao ver SIGPWR/SIGXCPU,
+  **POSTA o sem de ACK** que o WaitForThreadsToSuspend espera (= nosso sem_shim em `il2cpp+0x31666a0`)
+  + engole o sinal. O GC conta o ACK e segue o **fluxo NORMAL** (suspend+restart). Env: `TER_FAKEACK=1`
+  (com CUP_GCOFF). PASSA do GC. MAS cai na MESMA espera produtor-consumidor `libunity+0x2f37a4` que o
+  NOGCWAIT → confirma que é o PRÓXIMO PASSO LEGÍTIMO (não corrupção). 
+- **⛔ DIAGNÓSTICO FINAL (por que para aqui): DEADLOCK TOTAL.** Com FAKEACK, /proc mostra **TODAS as
+  threads PARADAS** (futex_wait/nanosleep/Mali — ZERO em R). A main espera um produtor; o produtor
+  espera outra thread; cascata até tudo parar. As threads que precisariam ACORDAR umas às outras
+  (Job.Workers, GC Finalizer, Loading — **bionic-static**) bloqueiam em **futex INLINE (svc)**, fora
+  do nosso símbolo `syscall` → os poll-wakes (SEM/FUTEX/COND) NÃO as alcançam, e os lost-wakeups do
+  scheduler do Unity não dá p/ band-aidar nelas. **Conclusão honesta: a multi-threading desse jogo
+  (threads bionic-static + GC cooperativo + job-system) está ALÉM do que o so-loader (interposição
+  glibc) alcança — as threads bypassam a interposição em 3 níveis (clone, sigmask, futex inline).**
+- **PRÓXIMO (caminhos viáveis restantes):** (0) RE de quem PRODUZ na fila `obj+0x58`/sinaliza `obj+0x88`
+  (achar o produtor e por que não roda) — se for legítimo, dirigir; se corromp., o bypass é beco.
+  (1) **NEUTRALIZAR o StopWorld/RestartWorld inteiro**: o
+  `WaitForThreadsToSuspend`(0x74f260) NÃO tem `bl` caller (chamado indireto/inline). TER_NOGCWAIT patcha
+  ele p/ `ret 0` (some o wait) mas a main cai noutro `pthread_cond_wait` (provável RestartWorld). Achar e
+  patchar o PAR StopWorld+RestartWorld inteiro (RE do GC_stop_world/GC_start_world internos do bdwgc) —
+  com GC desligado o scan de stack é mínimo. (2) Achar no libil2cpp ONDE a thread bionic-static seta a
+  máscara que bloqueia SIGPWR e patchar esse código estático (difícil). (3) Investigar se o bdwgc tem
+  env/modo de suspensão alternativo. (4) Reconsiderar a base do loader: usar um runtime que NÃO seja
+  bionic-static p/ as threads do GC (improvável). Device .89.
+
+## 🧱 (HISTÓRICO/RED-HERRING) MURO — `nativeRender` do FRAME 2 trava no CHOREOGRAPHER. (correção: é o frame 2 — `[r2>`
+entra, `<r2]` nunca; frames 0,1 OK). A ÚLTIMA chamada JNI é `sendToTarget` — o engine montou o
+Choreographer (FrameCallback "UnityChoreographer" + HandlerThread+Looper+Handler), postou o frame
+callback e a main parou em `sh_sem_timedwait` (confirmado via gdb bt). 0 swaps (sem imagem). NÃO é
+lost-wakeup (TER_FUTEXPOLL/SEMPOLL/CONDPOLL + race-fix NÃO destravam — a condição genuinamente nunca
+fica pronta). Diagnóstico de threads (gdb): main em sh_sem_timedwait; 1 UnityMain em Mali
+`_mali_uku_wait_for_notification` (GPU); workers/loading PARKED.
+
+### Driver do Choreographer (WIP, OPT-IN `TER_CHOREO`) — dispara doFrame mas NÃO destrava ainda
+Implementado: captura do proxy FrameCallback (flag em FindClass(Choreographer$FrameCallback) → próximo
+newInterfaceProxy), Method sentinel doFrame (getName→"doFrame"), args Object[1]={Long(nanos)}
+(GetArrayLength→1 idx171, GetObjectArrayElement→Long idx173, CallLongMethod/longValue→nanos), e uma
+**driver-thread** (`choreo_driver_thread` em main.c) que ESPERA a captura (senão thread_attach cedo
+CRASHA), faz `il2cpp_thread_attach` (via g_il2cpp_base+0x73ccb4, domain_get +0x73c860 — dlsym NÃO acha
+símbolos do so_util), e chama `jni_choreo_doframe` ~60Hz. RESULTADO: doFrame DISPARA e roda igualzinho
+a um Runnable que FUNCIONA (ambos só batem idx7=FromReflectedMethod e retornam limpo, sem crash) — MAS
+a main continua presa. **Hipótese**: (a) a espera é o **handleMessage do Handler.Callback** (cadeia
+Message→handleMessage→postFrameCallback→doFrame), não o doFrame direto — precisa dirigir o
+Handler$Callback (também é proxy); OU (b) a espera é o **GPU/Mali** (não o Choreographer) e doFrame é
+red-herring. Próximo: (1) achar via gdb o offset libunity do caller do sh_sem_timedwait e RE o que ele
+espera (Choreographer vs GPU vs async-load); (2) se Choreographer, dirigir handleMessage; (3) testar se
+a Mali `_mali_uku_wait_for_notification` está esperando um job que não completa (GPU submit travado).
+
+## 🧱 (HISTÓRICO) MURO — nativeRender frame 2 trava (Choreographer / job-wait) — RESOLVIDO acima
+- Frame 0 `[r0>`→`<r0]` OK (il2cpp+scene), frame 1 `[r1>`→`<r1]` OK (InControl/Choreographer/stopActivityIndicator),
+  frame 2 `[r2>` ENTRA e **nunca** `<r2]`. Loop do driver chama nativeRender direto; trava DENTRO dele.
+- Tail = só `[SEM] post/wait`: main (tid X) faz `wait count=1` num semáforo; job-threads fazem `post`.
+  Clássico hang de job-completion / async scene-load OU espera do callback do Choreographer.
+- Frame 2 monta `Choreographer$FrameCallback`(UnityChoreographer)+HandlerThread+Looper+`obtainMessage`/
+  `sendToTarget` — nosso jni_shim trata tudo GENÉRICO (no-op) → o `doFrame` do FrameCallback **nunca
+  dispara** → se o render depende do callback, trava. boot.config já tem `androidUseSwappy=0`.
+- **PRÓXIMO PASSO**: (a) backtrace da thread travada (/proc/<tid>/wchan+stack, ou os offsets do wait
+  em libunity) p/ saber se espera o Choreographer OU um job-group/async-load; (b) se Choreographer:
+  fazer o shim DISPARAR o doFrame(frameTimeNanos) do FrameCallback (drive manual a cada frame do nosso
+  loop); (c) se async-load/job: reusar os helpers do cuphead (CUP_DRAINWAIT/`wait_all`/`preload_step`/
+  drivecr — ver setup ~main.c:3300-3478) — testar habilitar p/ Terraria. Capturar `shot.ppm` (TER_SHOT=N)
+  assim que sair do frame 2.
+
+## ✅ MURO ENLIGHTEN VENCIDO (2026-06-16 noite) — RAIZ: `memalign` stubado
+- Crash era SIGSEGV em libunity+0x85dbe4 (ctor de GeoArray `str x8,[NULL]`); o `this` vinha de uma
+  alloc do Enlighten (HLRTManager, label 9) que retornava **NULL**.
+- 🔑 **RAIZ: `memalign` era a ÚNICA fn de alloc STUBADA** (todas as outras — malloc/calloc/realloc/free/
+  posix_memalign — eram passthrough). libunity E libil2cpp importam `memalign`; o allocator interno do
+  Enlighten usa memalign p/ memória alinhada → stub devolvia 0 → allocator real devolvia NULL → ctor
+  recebe this=NULL → crash. Descoberto com hook do wrapper de alloc (0x861928) logando `mm=<singleton>`
+  válido + `[STUB] memalign` antes de cada alloc.
+- **FIX**: `my_memalign` (impl real via posix_memalign; alinhamento≥sizeof(void*) e pot2) + set_import/
+  patch_got em libunity E libil2cpp. CONFIRMADO sozinho resolve (0 `[STUB] memalign`, sem crash, load
+  completo). **LIÇÃO so-loader: garantir que TODAS as fns de alloc (incl. `memalign`/`aligned_alloc`/
+  `valloc`) sejam reais — uma stubada quebra subsistemas (GI/Enlighten) longe da causa.**
+- Rede de segurança opcional `TER_ENLFIX` (patch 0x861928→my_enl_alloc com fallback malloc) — default OFF.
+
+## ✅ MUROS VENCIDOS NESTA SESSÃO (2026-06-16 tarde)
+10. **🔑🔑 GUID "is empty" → RAIZ = `stat64` não redirecionado.** libunity importa **`stat64`**
+    (NÃO `stat`!). O leitor de arquivos `ReadAllBytes`@0x21db60 pega o TAMANHO via
+    `GetFileSize`@0x22b7c0 → `stat64(path)`. Só redirecionávamos `stat`/`lstat`, então `stat64`
+    caía no passthrough glibc com o path CRU `assets/bin/Data/unity_app_guid` (não existe em
+    disco) → falha → size 0 → lê 0 bytes → guid VAZIO → "re-extract" → trava todo o resource
+    system → "Unable to initialize". O `open()` funcionava (redirecionado, fd válido 36B) mas o
+    **size** vinha de `stat64` cru. FIX: `my_stat64`/`my_lstat64` (redirect + glibc stat64; arm64
+    `struct stat`==`struct stat64`) + set_import/patch_got em libunity E libil2cpp. CONFIRMADO:
+    log agora `read(fd,n=36)->36 first='9b73490b-...'`. **LIÇÃO GERAL so-loader: conferir `stat64`
+    (e `fstatat`/`statx`) além de `stat` — bionic costuma importar a variante 64.**
+11. **CASESENSITIVETEST abort → `/data/local/tmp` não existe (/ é squashfs RO).** O jogo cria um
+    arquivo em `/data/local/tmp` p/ testar case-sensitivity; create falha → exceção C++ → (com
+    `dl_iterate_phdr` STUBADO o unwinder não acha landing pad) → `std::terminate`→abort.
+    FIX: redirect `/data/local/tmp` → `/tmp` (tmpfs gravável) no topo de `asset_redirect` (SEM
+    access-check, é p/ criar) + `my_open` agora passa o **mode** do `O_CREAT` no branch de redirect.
+12. **Instrumentação `TER_GUIDLOG`** (gated, off por padrão): hooks my_read/my_lseek64/my_fstat64/
+    my_mmap64/my_fdopen logam ops no fd do guid. Foi como achei que o size vinha 0. Deixei no código.
+
+## 🐞 PISTA p/ depois (dl_iterate_phdr)
+`dl_iterate_phdr` está STUBADO (`[STUB] dl_iterate_phdr` no log) → retorna 0. Se o jogo lançar
+exceção C++ real depois, o unwinder do libil2cpp/libc++ não acha o eh_frame → `std::terminate`.
+Há `so_register_eh_frame`/`so_record_phdr` no main.c (p/ libunity) mas o SÍMBOLO `dl_iterate_phdr`
+não está wirado como custom → libil2cpp pega o stub. Considerar implementar um `my_dl_iterate_phdr`
+real (itera os PT_LOAD de libunity+libil2cpp) e set_import/patch_got — pode prevenir aborts futuros.
 
 ## 🔁 LOOP DE TRABALHO (build → deploy → test)
 ```sh

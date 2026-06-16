@@ -125,23 +125,32 @@ static void patch_sem_shim(void) {
   X("pthread_rwlock_init", pthread_rwlock_init_fake) X("pthread_rwlock_destroy", pthread_rwlock_destroy_fake) \
   X("pthread_rwlock_rdlock", pthread_rwlock_rdlock_fake) X("pthread_rwlock_wrlock", pthread_rwlock_wrlock_fake) \
   X("pthread_rwlock_tryrdlock", pthread_rwlock_tryrdlock_fake) X("pthread_rwlock_trywrlock", pthread_rwlock_trywrlock_fake) \
-  X("pthread_rwlock_unlock", pthread_rwlock_unlock_fake)
+  X("pthread_rwlock_unlock", pthread_rwlock_unlock_fake) \
+  X("pthread_sigmask", pthread_sigmask_fake)
 #define PT_DECL(n, f) extern int f();
 PT_LIST(PT_DECL)
+extern int pthread_create_fake(pthread_t *, const void *, void *(*)(void *), void *);
 static void install_pthread_shim(void) {
   if (getenv("TER_NOPTSHIM")) return;
 #define PT_SET(n, f) set_import(n, (void *)f);
   PT_LIST(PT_SET)
+  /* TER_JOBLOG: roteia o pthread_create da ENGINE pelo nosso trampoline p/ logar
+     (start_routine, arg=JobQueue) de cada worker — só diagnóstico, opt-in. */
+  if (getenv("TER_JOBLOG")) set_import("pthread_create", (void *)pthread_create_fake);
 }
 static void patch_pthread_shim(void) {
   if (getenv("TER_NOPTSHIM")) return;
 #define PT_PATCH(n, f) patch_got(n, (void *)f);
   PT_LIST(PT_PATCH)
+  if (getenv("TER_JOBLOG")) patch_got("pthread_create", (void *)pthread_create_fake);
 }
 
 /* ---------- crash handler (arm64) ---------- */
 static uintptr_t g_unity_base, g_il2cpp_base, g_unity_data;
 static uintptr_t g_i2heap_base, g_i2heap_size;
+/* exposto p/ pthread_fake.c (TER_JOBLOG: symbolizar start_routine dos workers) */
+uintptr_t ter_unity_base(void) { return g_unity_base; }
+uintptr_t ter_il2cpp_base(void) { return g_il2cpp_base; }
 extern size_t text_size;
 /* /proc/self/maps lido UMA vez (sem malloc — open/read/parse manual; fopen não é
  * async-signal-safe e re-faulta no handler). Buffer estático grande o bastante. */
@@ -381,6 +390,19 @@ static long my_sysconf(int name) {
     r = (512L*1024*1024)/4096;
   return r;
 }
+/* TER_JOBINLINE: faz o Unity ver 1 CPU lógica → cria 0 job-workers → o native job system
+   roda jobs INLINE na própria thread (sem worker). Resolve o deadlock do boot (a main agenda
+   jobs e espera workers que nunca executam: completed-counter 0xc10360 fica 0). hardware_concurrency
+   da glibc usa sched_getaffinity → forçamos máscara de 1 CPU. */
+static int my_sched_getaffinity(int pid, size_t setsize, void *mask) {
+  (void)pid;
+  if (mask && setsize >= sizeof(unsigned long)) {
+    memset(mask, 0, setsize);
+    *(unsigned long *)mask = 1UL;   /* só CPU 0 */
+    return 0;
+  }
+  return -1;
+}
 /* mmap spy: a arena de 2MB @ 0x7f10000000 (onde os vtables corrompidos apontam)
  * é um mmap de 0x200000. Logamos alocações desse tamanho + o caller (RA→libunity/
  * il2cpp offset) p/ identificar QUAL alocador/subsistema cria a arena. CUP_MMAPLOG. */
@@ -424,6 +446,14 @@ static FILE *my_fopen(const char *p, const char *m) {
    engine — globalgamemanagers, level*, sharedassets*, *.assets/.resS/.resource). */
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
   if (!p) return NULL;
+  /* /data/local/tmp -> /tmp (writable tmpfs). O jogo faz um CASESENSITIVETEST criando
+     um arquivo em /data/local/tmp; nosso / é squashfs RO e /data nem existe -> a criação
+     falha -> exceção C++ -> (dl_iterate_phdr stubado) std::terminate -> abort. Redireciona
+     pro /tmp gravável. SEM access-check (é p/ CRIAR arquivo novo). */
+  if (!strncmp(p, "/data/local/tmp", 15)) {
+    snprintf(buf, bufsz, "/tmp%s", p + 15);
+    return buf;
+  }
   /* QUALQUER path .../AssetBundles/<nome> -> /storage/cuphead-sa/AssetBundles/<nome>.
      Resolve o load do DLC (base-path vinha lixo: "Шестигранные врата 1/AssetBundles/..")
      e qualquer base estranha; o path correto redireciona p/ si mesmo (anti-loop). */
@@ -478,7 +508,10 @@ static int cmdline_fd(void) {
     char tmp[200]; strncpy(tmp, extra, sizeof tmp - 1); tmp[sizeof tmp - 1] = 0;
     for (char *t = strtok(tmp, " "); t; t = strtok(NULL, " ")) n += sprintf(buf + n, "%s", t) + 1;
   } else {
-    n += sprintf(buf + n, "-force-gfx-st") + 1;
+    /* -force-gfx-direct = render DIRETO na main thread (sem GfxDeviceWorker). O nome antigo
+       "-force-gfx-st" NÃO é arg real do Unity (era ignorado → worker MT continuava vivo →
+       deadlock main<->worker no boot). */
+    n += sprintf(buf + n, "-force-gfx-direct") + 1;
     n += sprintf(buf + n, "-force-gles20") + 1;
   }
   FILE *t = tmpfile();
@@ -488,6 +521,10 @@ static int cmdline_fd(void) {
   fprintf(stderr, "[CMDLINE] injetado (%d bytes): force-gfx-st\n", n);
   return fd;
 }
+/* TER_GUIDLOG: rastreia o fd do unity_app_guid p/ ver COMO o engine lê (read/
+ * lseek/fstat/mmap/close) — diagnóstico do "guid is empty". */
+static int g_guidlog;
+static int g_guid_fd = -1;
 static int my_open(const char *p, int fl, ...) {
   if (p && !strcmp(p, "/proc/cpuinfo")) {
     int nc = getenv("CUP_1CORE") ? 1 : 4;
@@ -499,14 +536,69 @@ static int my_open(const char *p, int fl, ...) {
   char rb[512];
   const char *r = asset_redirect(p, rb, sizeof rb);
   if (r) {
-    int fd = open(r, fl);
+    int rmode = 0;
+    if (fl & O_CREAT) { va_list ap; va_start(ap, fl); rmode = va_arg(ap, int); va_end(ap); }
+    int fd = open(r, fl, rmode);
     if (g_dllog) fprintf(stderr, "[open-redir%s] %s -> %s\n", fd < 0 ? "-MISS" : "", p, r);
+    if (g_guidlog && p && strstr(p, "unity_app_guid")) {
+      g_guid_fd = fd;
+      struct stat sb; int sr = fstat(fd, &sb);
+      fprintf(stderr, "[GUID] open '%s' fl=0x%x -> fd=%d (fstat rc=%d st_size=%lld)\n",
+              p, fl, fd, sr, sr == 0 ? (long long)sb.st_size : -1LL);
+      fsync(2);
+    }
     return fd;
   }
   va_list ap; va_start(ap, fl); int mo = va_arg(ap, int); va_end(ap);
   int fd = open(p, fl, mo);
   if (g_dllog && p) fprintf(stderr, "[open%s] %s\n", fd < 0 ? "-MISS" : "", p);
+  if (g_guidlog && p && strstr(p, "unity_app_guid")) {
+    g_guid_fd = fd;
+    fprintf(stderr, "[GUID] open(noredir) '%s' fl=0x%x -> fd=%d\n", p, fl, fd);
+    fsync(2);
+  }
   return fd;
+}
+extern ssize_t read(int, void *, size_t);
+extern off64_t lseek64(int, off64_t, int);
+extern int fstat64(int, struct stat64 *);
+extern void *mmap64(void *, size_t, int, int, int, off64_t);
+static ssize_t my_read(int fd, void *buf, size_t n) {
+  ssize_t r = read(fd, buf, n);
+  if (g_guidlog && fd == g_guid_fd) {
+    fprintf(stderr, "[GUID] read(fd=%d, n=%zu) -> %zd  first='%.40s'\n",
+            fd, n, r, r > 0 ? (char *)buf : "");
+    fsync(2);
+  }
+  return r;
+}
+static off64_t my_lseek64(int fd, off64_t off, int wh) {
+  off64_t r = lseek64(fd, off, wh);
+  if (g_guidlog && fd == g_guid_fd)
+    fprintf(stderr, "[GUID] lseek64(fd=%d, off=%lld, wh=%d) -> %lld\n",
+            fd, (long long)off, wh, (long long)r), fsync(2);
+  return r;
+}
+static int my_fstat64(int fd, struct stat64 *st) {
+  int r = fstat64(fd, st);
+  if (g_guidlog && fd == g_guid_fd)
+    fprintf(stderr, "[GUID] fstat64(fd=%d) -> rc=%d st_size=%lld\n",
+            fd, r, r == 0 ? (long long)st->st_size : -1LL), fsync(2);
+  return r;
+}
+static void *my_mmap64(void *a, size_t len, int prot, int fl, int fd, off64_t off) {
+  void *r = mmap64(a, len, prot, fl, fd, off);
+  if (g_guidlog && fd == g_guid_fd)
+    fprintf(stderr, "[GUID] mmap64(fd=%d, len=%zu, off=%lld) -> %p  first='%.40s'\n",
+            fd, len, (long long)off, r,
+            (r && r != MAP_FAILED && (prot & PROT_READ)) ? (char *)r : ""), fsync(2);
+  return r;
+}
+static FILE *my_fdopen(int fd, const char *mode) {
+  FILE *r = fdopen(fd, mode);
+  if (g_guidlog && fd == g_guid_fd)
+    fprintf(stderr, "[GUID] fdopen(fd=%d, '%s') -> %p\n", fd, mode ? mode : "?", (void *)r), fsync(2);
+  return r;
 }
 /* stat/lstat/access com o mesmo redirect — o engine checa existência antes de
    abrir ("No GlobalGameManagers file" pode vir de um stat, não do open).
@@ -521,6 +613,60 @@ static int my_stat(const char *p, void *st) {
 static int my_lstat(const char *p, void *st) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   return lstat(r ? r : p, (struct stat *)st);
+}
+/* 🔑 stat64: libunity importa stat64 (NÃO stat). O leitor de arquivos (ReadAllBytes
+   @0x21db60 -> GetFileSize @0x22b7c0) pega o TAMANHO via stat64(path); sem redirect,
+   o path "assets/bin/Data/unity_app_guid" não existe em disco -> stat64 falha -> size 0
+   -> lê 0 bytes -> guid "is empty" -> re-extract -> "Unable to initialize". O open()
+   funcionava (redirecionado) mas o size não. arm64: struct stat == struct stat64. */
+static int my_stat64(const char *p, void *st) {
+  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  if (r && g_dllog) fprintf(stderr, "[stat64-redir] %s -> %s\n", p, r);
+  int rc = stat64(r ? r : p, (struct stat64 *)st);
+  if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat64-MISS] %s\n", p);
+  return rc;
+}
+static int my_lstat64(const char *p, void *st) {
+  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  return lstat64(r ? r : p, (struct stat64 *)st);
+}
+/* === Enlighten allocator (GI) === FIX do null-deref no HLRTManager/GeoArray.
+ * O allocator do Enlighten é um singleton em libunity+0xc886a0. init-A (0x32ea38) instala
+ * um allocator VÁLIDO no boot (confirmado: SetMemoryManager(0x7f60...)), MAS algo o ZERA
+ * (teardown-B 0x32ec10 = ÚNICO outro writer) antes da criação do HLRTManager (realtime GI da
+ * cena 2D). Com singleton NULL, o wrapper de alloc (0x861928) retorna NULL -> ctor do GeoArray
+ * faz `str x8,[NULL]` -> SIGSEGV. FIX: substituir o wrapper 0x861928 (52B, cabe trampolim 16B)
+ * por my_enl_alloc: usa o allocator REAL quando o singleton é válido (idêntico ao original) e
+ * cai p/ posix_memalign quando NULL (evita o crash). */
+static int g_enllog;
+extern void so_make_text_writable(void), so_make_text_executable(void), so_flush_caches(void);
+static void patch_tramp(uintptr_t off, void *fn) {
+  uint32_t *p = (uint32_t *)(g_unity_base + off);
+  so_make_text_writable();
+  p[0] = 0x58000050u;            /* ldr x16, #8  (carrega o .quad abaixo) */
+  p[1] = 0xd61f0200u;            /* br  x16      */
+  *(uint64_t *)(p + 2) = (uint64_t)fn;  /* .quad fn (ocupa p[2],p[3]) */
+  so_make_text_executable(); so_flush_caches();
+}
+/* assinatura na entrada de 0x861928: (w0=size, w1=align, x2=a2, w3=label, x4=name) -> ptr */
+static void *my_enl_alloc(unsigned long size, unsigned long align, void *a2, int label, void *name) {
+  void *mm = g_unity_base ? *(void **)(g_unity_base + 0xc886a0) : 0;
+  void *r = 0;
+  if (mm) {
+    /* allocator REAL: vtable[+0x10](this, size, align, a2, label, name) — idêntico ao original */
+    void *vt = *(void **)mm;
+    void *(*real)(void *, unsigned long, unsigned long, void *, int, void *) =
+        *(void *(**)(void *, unsigned long, unsigned long, void *, int, void *))((char *)vt + 0x10);
+    r = real(mm, size, align, a2, label, name);
+  }
+  if (!r) {
+    /* singleton NULL OU allocator real devolveu NULL: fallback malloc alinhado (evita o crash) */
+    if (align < 8 || (align & (align - 1))) align = 16;
+    void *p = NULL;
+    if (posix_memalign(&p, align, size ? size : 1) == 0) r = p;
+  }
+  if (g_enllog) { fprintf(stderr, "[ENL] alloc size=%lu align=%lu label=%d mm=%p -> %p\n", size, align, label, mm, r); fsync(2); }
+  return r;
 }
 static int my_access(const char *p, int m) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
@@ -550,6 +696,120 @@ static unsigned long my_strlcpy(char *dst, const char *src, unsigned long sz) {
   unsigned long n = strlen(src);
   if (sz) { unsigned long c = n < sz - 1 ? n : sz - 1; memcpy(dst, src, c); dst[c] = 0; }
   return n;
+}
+/* 🔑 memalign: estava STUBADO (única fn de alloc não-passthrough) -> retornava NULL.
+   libunity E libil2cpp importam memalign; o allocator do Enlighten (GI) usa memalign p/
+   memória alinhada -> NULL -> ctor do HLRTManager/GeoArray recebe `this`=NULL -> SIGSEGV.
+   Impl real via posix_memalign (memalign do glibc é deprecated). Alinhamento >= sizeof(void*)
+   e potência de 2 (exigência do posix_memalign). */
+/* 🔑 syscall: estava STUBADO (retornava 0). O job-system do Unity usa `syscall(SYS_futex,
+   FUTEX_WAKE)` CRU p/ acordar a main thread quando um job termina; com o stub no-op, o
+   futex_wake nunca acontece -> a main (presa em futex_wait via glibc pthread no nativeRender
+   do frame 2) DORME P/ SEMPRE e as Job.Worker/Background ficam em busy-spin no stub. arm64:
+   números de syscall são IGUAIS em bionic/glibc/kernel -> forward direto é seguro. */
+extern long syscall(long, ...);
+/* TER_FUTEXPOLL=ms: defesa GERAL contra lost-wakeup no job-system do Unity. As Job.Worker/
+   Background usam `syscall(SYS_futex, FUTEX_WAIT)` CRU (não passam pelo nosso sem/cond shim,
+   então CUP_SEMPOLL/CONDPOLL não as alcançam). Se a main enfileira trabalho mas perde o
+   FUTEX_WAKE, o worker dorme p/ sempre e a main trava esperando o job. Aqui injetamos um
+   TIMEOUT curto nas esperas de futex SEM timeout → o waiter acorda periodicamente, re-checa
+   seu predicado e re-espera. Cobre TODA a sincronização por futex. */
+static long g_futexpoll_ms = 0;
+#ifndef SYS_futex
+#define SYS_futex 98
+#endif
+extern void gc_wait_unblock(void *oldp);   /* pthread_fake.c: desbloqueia SIGPWR/SIGXCPU no wait */
+extern void gc_wait_restore(void *oldp);
+#ifndef SYS_rt_sigprocmask
+#define SYS_rt_sigprocmask 135
+#endif
+static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
+  /* 🔑 As threads do GC (Finalizer/Loading, bionic-static) BLOQUEIAM SIGPWR(30)/SIGXCPU(24) via
+     rt_sigprocmask CRU (não passam pelos nossos shims pthread). Com SIGPWR bloqueado, o stop-the-world
+     do GC nunca consegue suspendê-las → deadlock. Aqui interceptamos o rt_sigprocmask e TIRAMOS
+     SIGPWR/SIGXCPU de qualquer BLOCK/SETMASK → toda thread fica suspendível pelo GC. */
+  if (!getenv("TER_NORTFILTER") && n == SYS_rt_sigprocmask && a2 &&
+      (a1 == 0 /*SIG_BLOCK*/ || a1 == 2 /*SIG_SETMASK*/)) {
+    unsigned long m = *(const unsigned long *)a2;
+    unsigned long m2 = m & ~((1UL << 29) | (1UL << 23));   /* limpa SIGPWR(bit29)/SIGXCPU(bit23) */
+    if (m2 != m) {
+      static __thread unsigned long copy;   /* per-thread, sobrevive à chamada */
+      copy = m2;
+      if (getenv("TER_RTLOG")) { static int rn; if (rn++ < 20) { fprintf(stderr, "[RTMASK] how=%ld 0x%lx->0x%lx\n", a1, m, m2); fsync(2); } }
+      return syscall(n, a1, (long)&copy, a3, a4, a5, a6);
+    }
+  }
+  if (n == 123 /*SYS_sched_getaffinity arm64*/ && getenv("TER_JOBINLINE") && a3) {
+    long r = syscall(n, a1, a2, a3, a4, a5, a6);
+    if (r > 0) { memset((void *)a3, 0, (size_t)a2); *(unsigned long *)a3 = 1UL; }
+    return r > 0 ? r : (memset((void *)a3, 0, 8), *(unsigned long *)a3 = 1UL, 8);
+  }
+  if (n == SYS_futex) {
+    int op = (int)a2 & 0x7f;
+    if (getenv("TER_FUTEXLOG") && (op == 0 || op == 9 || op == 1 || op == 10)) {
+      /* op 0/9=WAIT, 1/10=WAKE. Loga (tid,comm,uaddr,op). WAIT dedup por (tid,uaddr);
+         WAKE loga todos (raro, e é o que queremos ver: alguém acorda o uaddr do worker?). */
+      int isw = (op == 0 || op == 9);
+      int tid = (int)syscall(178 /*arm64 gettid*/);
+      int show = 1;
+      if (isw) { static struct { int tid; long ua; } seen[200]; static int ns;
+        for (int i = 0; i < ns; i++) if (seen[i].tid == tid && seen[i].ua == a1) { show = 0; break; }
+        if (show && ns < 200) { seen[ns].tid = tid; seen[ns].ua = a1; ns++; } }
+      else { static int wn; if (wn++ > 400) show = 0; }
+      if (show) {
+        char comm[20] = ""; FILE *f = fopen("/proc/self/comm", "r"); if (f) { if (fgets(comm, sizeof comm, f)) { char *nl = strchr(comm, '\n'); if (nl) *nl = 0; } fclose(f); }
+        fprintf(stderr, "[FX] %s tid=%d(%s) uaddr=%p val=%ld\n", isw ? "WAIT" : "WAKE", tid, comm, (void *)a1, a3); fsync(2);
+      }
+    }
+    if (op == 0 || op == 9) {   /* FUTEX_WAIT / FUTEX_WAIT_BITSET: thread vai BLOQUEAR */
+      long t4 = a4;
+      struct timespec ts;
+      if (g_futexpoll_ms && a4 == 0) {  /* injeta timeout (poll anti-lost-wakeup) */
+        if (op == 0) { ts.tv_sec = g_futexpoll_ms / 1000; ts.tv_nsec = (g_futexpoll_ms % 1000) * 1000000L; }
+        else { clock_gettime(((int)a2 & 256) ? CLOCK_REALTIME : CLOCK_MONOTONIC, &ts);
+               ts.tv_sec += g_futexpoll_ms / 1000; ts.tv_nsec += (g_futexpoll_ms % 1000) * 1000000L;
+               if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; } }
+        t4 = (long)&ts;
+      }
+      /* 🔑 GC-SAFE: o futex wait é um ponto seguro → desbloqueia SIGPWR/SIGXCPU em volta dele p/ o
+         stop-the-world do GC conseguir suspender ESTA thread (que bloqueia SIGPWR) enquanto está
+         parada aqui. Sem isso, o GC manda SIGPWR, fica bloqueado, e WaitForThreadsToSuspend trava. */
+      char old[128]; gc_wait_unblock(old);
+      long r = syscall(n, a1, a2, a3, t4, a5, a6);
+      gc_wait_restore(old);
+      return r;
+    }
+  }
+  return syscall(n, a1, a2, a3, a4, a5, a6);
+}
+/* TER_PKLOG: loga pthread_kill (quem o GC sinaliza p/ suspender + qual sinal) — diagnóstico
+   do stop-the-world travado (nenhuma thread dá ACK). */
+extern int pthread_kill(pthread_t, int);
+extern const char *ter_thread_comm(pthread_t t);
+static int my_pthread_kill(pthread_t t, int sig) {
+  static int n;
+  if (getenv("TER_PKLOG") && n++ < 60) { fprintf(stderr, "[PKILL] -> %s sig=%d\n", ter_thread_comm(t), sig); fsync(2); }
+  /* TER_NOSUSPEND: ENGOLE os sinais de stop-the-world do GC (SIGPWR=30 suspend / SIGXCPU=24 restart).
+     Nenhuma thread é suspensa → o GC (com GCOFF, sem scan) só precisa que os WAITs retornem (NOGCWAIT
+     + patch do restart-wait). Neutraliza o STW inteiro sem alcançar as threads bionic-static. */
+  if (getenv("TER_NOSUSPEND") && (sig == 30 || sig == 24)) return 0;
+  /* 🔑 TER_FAKEACK: a thread bionic-static que o GC quer suspender bloqueia SIGPWR e nunca dá ACK.
+     O semáforo de ACK que o WaitForThreadsToSuspend espera é o NOSSO sem_shim em il2cpp+0x31666a0.
+     Então POSTAMOS o sem no lugar da thread (fake ACK) + ENGOLIMOS o sinal (a thread não suspende) →
+     o GC conta o ACK e segue o fluxo NORMAL (≠ NOGCWAIT). Usar com CUP_GCOFF (sem scan de stack viva). */
+  if (getenv("TER_FAKEACK") && (sig == 30 || sig == 24) && g_il2cpp_base) {
+    extern int sh_sem_post(void *);
+    sh_sem_post((void *)(g_il2cpp_base + 0x31666a0));   /* ACK do suspend (sem do WaitForThreadsToSuspend) */
+    return 0;
+  }
+  return pthread_kill(t, sig);
+}
+static void *my_memalign(unsigned long alignment, unsigned long size) {
+  if (alignment < sizeof(void *)) alignment = sizeof(void *);
+  if (alignment & (alignment - 1)) { unsigned long a = sizeof(void *); while (a < alignment) a <<= 1; alignment = a; }
+  void *p = NULL;
+  if (posix_memalign(&p, alignment, size ? size : 1) != 0) return NULL;
+  return p;
 }
 static unsigned long my_strlcat(char *dst, const char *src, unsigned long sz) {
   unsigned long dl = strnlen(dst, sz), sl = strlen(src);
@@ -2391,6 +2651,35 @@ static void *preload_tick_thread(void *arg) {
   while (g_fmod_run) { sh_tick_preload(); usleep(16000); }
   return NULL;
 }
+/* driver do Choreographer: anexa ao il2cpp e dispara doFrame(nanos) ~60Hz. */
+static void *g_choreo_env;
+extern int g_choreo_log;
+static void *choreo_driver_thread(void *arg) {
+  (void)arg;
+  g_choreo_log = getenv("TER_CHOREOLOG") ? 1 : 0;
+  extern int jni_choreo_doframe(void *env, long nanos);
+  extern int jni_choreo_captured(void);
+  /* ESPERA o FrameCallback ser capturado (frame 2) ANTES de anexar — anexar cedo (durante a
+     init do il2cpp no frame 0) crashava o thread_attach (il2cpp ainda não pronto). */
+  while (!jni_choreo_captured()) usleep(20000);
+  /* libil2cpp é carregado pelo so_util (não via dlopen) -> usa g_il2cpp_base + offset
+     (il2cpp_domain_get=0x73c860, il2cpp_thread_attach=0x73ccb4). */
+  if (g_il2cpp_base) {
+    void *(*dom_get)(void) = (void *(*)(void))(g_il2cpp_base + 0x73c860);
+    void *(*thr_attach)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x73ccb4);
+    void *th = thr_attach(dom_get());
+    fprintf(stderr, "[CHOREO] FrameCallback pronto; il2cpp_thread_attach -> %p\n", th); fsync(2);
+  } else fprintf(stderr, "[CHOREO] g_il2cpp_base=0 (sem attach)\n");
+  int started = 0;
+  for (;;) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    long nanos = (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
+    int r = jni_choreo_doframe(g_choreo_env, nanos);
+    if (r && !started) { started = 1; fprintf(stderr, "[CHOREO] doFrame começou a disparar\n"); fsync(2); }
+    usleep(16000);  /* ~60Hz */
+  }
+  return NULL;
+}
 /* CUP_FORCESL: substitui a decisão de backend de áudio do FMOD (0x350298) */
 static long forcesl_hook(void) { return 2; }   /* 2 = OpenSL */
 /* CUP_FMODSPY (s14): loga o retorno das etapas do init do FMOD p/ achar QUAL
@@ -2502,6 +2791,7 @@ int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
   g_main_tid = (int)syscall(SYS_gettid);  /* p/ o sem_shim distinguir main de workers */
   if (getenv("CUP_SEMPOLL")) sh_sem_set_poll(atoi(getenv("CUP_SEMPOLL")));  /* polling do sem_wait */
+  if (getenv("TER_FUTEXPOLL")) { g_futexpoll_ms = atoi(getenv("TER_FUTEXPOLL")); fprintf(stderr, "[FUTEXPOLL] %ldms (timeout em FUTEX_WAIT sem timeout)\n", g_futexpoll_ms); }
   { extern void cond_set_poll(int);  /* polling do pthread_cond_wait (lost-wakeup futex) */
     if (getenv("CUP_CONDPOLL")) cond_set_poll(atoi(getenv("CUP_CONDPOLL"))); }
 
@@ -2585,18 +2875,35 @@ int main(int argc, char **argv) {
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     set_import("eglGetProcAddress", (void *)my_eglGetProcAddress);
   set_import("sysconf", (void *)my_sysconf);
+  if (getenv("TER_JOBINLINE")) {
+    set_import("sched_getaffinity", (void *)my_sched_getaffinity);
+    fprintf(stderr, "[JOBINLINE] sched_getaffinity -> 1 CPU (job system roda inline)\n");
+  }
   g_mmaplog = getenv("CUP_MMAPLOG") ? 1 : 0;
+  g_guidlog = getenv("TER_GUIDLOG") ? 1 : 0;
   set_import("mmap", (void *)my_mmap);
   set_import("mmap64", (void *)my_mmap);
+  if (g_guidlog) {
+    set_import("read", (void *)my_read);
+    set_import("lseek64", (void *)my_lseek64);
+    set_import("fstat64", (void *)my_fstat64);
+    set_import("mmap64", (void *)my_mmap64);
+    set_import("fdopen", (void *)my_fdopen);
+  }
   set_import("fopen", (void *)my_fopen);
   set_import("open", (void *)my_open);
   set_import("stat", (void *)my_stat);
   set_import("lstat", (void *)my_lstat);
+  set_import("stat64", (void *)my_stat64);
+  set_import("lstat64", (void *)my_lstat64);
   set_import("access", (void *)my_access);
   set_import("statfs64", (void *)my_statfs64);
   set_import("statfs", (void *)my_statfs64);
   set_import("strlcpy", (void *)my_strlcpy);
   set_import("strlcat", (void *)my_strlcat);
+  set_import("memalign", (void *)my_memalign);
+  set_import("syscall", (void *)my_syscall);
+  set_import("pthread_kill", (void *)my_pthread_kill);
   set_import("__memmove_chk", (void *)my_memmove_chk);
   set_import("__memcpy_chk", (void *)my_memcpy_chk);
   set_import("__memset_chk", (void *)my_memset_chk);
@@ -2668,11 +2975,19 @@ int main(int argc, char **argv) {
   patch_got("fopen", (void *)my_fopen);
   patch_got("stat", (void *)my_stat);
   patch_got("lstat", (void *)my_lstat);
+  patch_got("stat64", (void *)my_stat64);
+  patch_got("lstat64", (void *)my_lstat64);
   patch_got("access", (void *)my_access);
   patch_got("statfs64", (void *)my_statfs64);
   patch_got("statfs", (void *)my_statfs64);
   patch_got("strlcpy", (void *)my_strlcpy);
   patch_got("strlcat", (void *)my_strlcat);
+  patch_got("memalign", (void *)my_memalign);
+  patch_got("syscall", (void *)my_syscall);
+  patch_got("pthread_kill", (void *)my_pthread_kill);
+  patch_got("memalign", (void *)my_memalign);
+  patch_got("syscall", (void *)my_syscall);
+  patch_got("pthread_kill", (void *)my_pthread_kill);
   patch_got("__memmove_chk", (void *)my_memmove_chk);
   patch_got("__memcpy_chk", (void *)my_memcpy_chk);
   patch_got("__memset_chk", (void *)my_memset_chk);
@@ -2684,6 +2999,13 @@ int main(int argc, char **argv) {
   patch_got("__FD_SET_chk", (void *)my_FD_SET_chk);
   patch_got("exit", (void *)my_exit);
   patch_got("_exit", (void *)my_exit);
+  if (g_guidlog) {
+    patch_got("read", (void *)my_read);
+    patch_got("lseek64", (void *)my_lseek64);
+    patch_got("fstat64", (void *)my_fstat64);
+    patch_got("mmap64", (void *)my_mmap64);
+    patch_got("fdopen", (void *)my_fdopen);
+  }
   patch_sem_shim();  /* sem_* nos slots GOT do libunity */
   patch_pthread_shim();
   /* sensores/looper/profiler google: stub no-op (nao usados no path do gfx) */
@@ -2710,6 +3032,16 @@ int main(int argc, char **argv) {
     *(uint32_t *)((uintptr_t)text_base + 0x2d8fac) = 0xd503201fu; /* NOP */
     so_make_text_executable(); so_flush_caches();
     fprintf(stderr, "[TER] storage-check 0x2d8fac (tbz->dialog) NOPado\n");
+  }
+
+  /* O FIX REAL do null-deref do Enlighten é o `memalign` (acima, deixou de ser stub).
+     Este patch do wrapper 0x861928 -> my_enl_alloc é uma REDE DE SEGURANÇA opcional
+     (fallback malloc se o allocator real devolver NULL por qualquer motivo). OPT-IN via
+     TER_ENLFIX (default OFF — memalign sozinho já resolve). TER_ENLLOG liga log por-alloc. */
+  g_enllog = getenv("TER_ENLLOG") ? 1 : 0;
+  if (getenv("TER_ENLFIX")) {
+    patch_tramp(0x861928, (void *)my_enl_alloc);
+    fprintf(stderr, "[ENL] alloc-wrapper 0x861928 -> my_enl_alloc (rede de segurança)\n");
   }
 
   /* CUP_FORCEIL2: o helper "load library by name" do Unity (0x357938) faz o
@@ -2968,6 +3300,8 @@ int main(int argc, char **argv) {
     patch_got("fopen", (void *)my_fopen);
     patch_got("stat", (void *)my_stat);
     patch_got("lstat", (void *)my_lstat);
+    patch_got("stat64", (void *)my_stat64);
+    patch_got("lstat64", (void *)my_lstat64);
     patch_got("access", (void *)my_access);
   patch_got("statfs64", (void *)my_statfs64);
   patch_got("statfs", (void *)my_statfs64);
@@ -3056,6 +3390,7 @@ int main(int argc, char **argv) {
   /* informa o sem_shim das bases p/ o detector de livelock mapear callers */
   { extern void sh_set_bases(unsigned long, unsigned long, unsigned long, unsigned long);
     sh_set_bases(g_unity_base, 0x2000000, g_il2cpp_base, 0x3000000); }
+  { extern void pt_set_bases(unsigned long, unsigned long); pt_set_bases(g_unity_base, g_il2cpp_base); }
 
   so_use(g_m_unity);  /* volta o contexto p/ libunity */
 
@@ -3146,6 +3481,15 @@ int main(int argc, char **argv) {
     pthread_t tt; pthread_create(&tt, NULL, preload_tick_thread, NULL);
     pthread_detach(tt);
   }
+  /* Choreographer driver: dispara FrameCallback.doFrame(nanos) ~60Hz numa thread própria
+     (anexada ao il2cpp) p/ destravar o nativeRender do frame 2 que espera o vsync/doFrame
+     que nosso Looper fake nunca entrega. Default ON; TER_NOCHOREO desliga. */
+  g_choreo_env = env;
+  if (getenv("TER_CHOREO")) {  /* OPT-IN: dispara doFrame mas ainda NÃO destrava (WIP) */
+    pthread_t ct; pthread_create(&ct, NULL, choreo_driver_thread, NULL);
+    pthread_detach(ct);
+    fprintf(stderr, "[CHOREO] driver-thread de doFrame criada (~60Hz)\n");
+  }
   if (getenv("CUP_PSPY")) {
     pthread_t st; pthread_create(&st, NULL, preload_spy_thread, NULL);
     pthread_detach(st);
@@ -3201,9 +3545,72 @@ int main(int argc, char **argv) {
      heap NÃO crescer indefinido (parado no disclaimer = OOM/thrash). 0 = nunca religa. */
   int gcon_f = getenv("CUP_GCON_F") ? atoi(getenv("CUP_GCON_F")) : 350;
   if (gcoff) {
-    ((void (*)(void))(g_il2cpp_base + 0x1b62acc))();  /* il2cpp_gc_disable */
+    ((void (*)(void))(g_il2cpp_base + 0x73ca6c))();  /* il2cpp_gc_disable */
     fprintf(stderr, "[GCOFF] il2cpp_gc_disable() no boot; religa GC no frame %d\n", gcon_f);
   }
+  /* TER_NOGCWAIT: o muro do frame 2 = il2cpp GC stop-the-world (WaitForThreadsToSuspend
+     @libil2cpp+0x74f260) que ESPERA p/ sempre uma thread cooperativa (que bloqueia SIGPWR)
+     dar ACK do suspend e ela nunca chega num safepoint. EXPERIMENTO: patcha a fn p/ retornar
+     0 (=todas suspensas) imediatamente, deixando o GC seguir. ⚠️ pode scan stack de thread
+     viva (com GC desligado o scan é mínimo). */
+  if (getenv("TER_NOGCWAIT") && g_il2cpp_base) {
+    uintptr_t a = g_il2cpp_base + 0x74f260;
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pa = (void *)(a & ~((uintptr_t)pgsz - 1));
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)a = 0x52800000u;        /* mov w0, #0 */
+    *(uint32_t *)(a + 4) = 0xd65f03c0u;  /* ret */
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+    fprintf(stderr, "[NOGCWAIT] WaitForThreadsToSuspend 0x74f260 -> return 0\n");
+  }
+  /* TER_SKIPTASKWAIT: PLANO B — pula a wait do job-queue em libunity+0x2f37b0 (a main constrói
+     uma future-task no init de serialização e BLOQUEIA p/ sempre pq o worker nunca produz). A
+     saída (0x2f37c4) só faz mutex_unlock+ret (NÃO deref o item), então pular é razoável p/ ver o
+     PRÓXIMO muro. Patcha `cbnz x8, 0x2f37c4` -> `b 0x2f37c4` (sai sem esperar). */
+  if (getenv("TER_SKIPTASKWAIT") && g_unity_base) {
+    uintptr_t a = g_unity_base + 0x2f37b0;
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pa = (void *)(a & ~((uintptr_t)pgsz - 1));
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)a = 0x14000005u;   /* b 0x2f37c4 (+0x14) — sempre sai do loop de espera */
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+    fprintf(stderr, "[SKIPTASKWAIT] libunity+0x2f37b0 cbnz->b (pula a wait do job-queue)\n");
+  }
+  /* TER_SKIPJOBWAIT: pula TAMBÉM o WaitForJobGroup (0x2f1d1c): `while([0xc10360]<target) cond_wait`.
+     ⚠️ causa abort (job results incompletos são necessários) — só p/ diagnóstico. */
+  if (getenv("TER_SKIPJOBWAIT") && g_unity_base) {
+    uintptr_t b = g_unity_base + 0x2f1d48;
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pb = (void *)(b & ~((uintptr_t)pgsz - 1));
+    mprotect(pb, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)b = 0x14000005u;   /* b 0x2f1d5c (+0x14) */
+    mprotect(pb, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pb, (char *)pb + pgsz * 2);
+    fprintf(stderr, "[SKIPJOBWAIT] libunity+0x2f1d48 WaitForJobGroup -> sai imediato\n");
+  }
+  /* TER_FORCETHREADED: o flag "threaded" do job-system (libunity+0xc0da20) fica 0 no nosso env
+     (a capability/boot.config retorna 0) → o scheduler NUNCA despacha p/ os worker threads (que
+     EXISTEM e estão parked) → roda "inline" mas o inline não incrementa o contador (0xc10360) →
+     WaitForJobGroup trava p/ sempre (gdb: flag=0, counter=0, main em 0x2f1d58 cond_wait).
+     FIX: (1) patcha o `cset w20,ne` (0x2eaacc) que computa o flag → `mov w20,#1` (sempre threaded);
+     (2) escreve 1 direto no byte (caso o init já tenha rodado antes deste patch). */
+  if (getenv("TER_FORCETHREADED") && g_unity_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t c = g_unity_base + 0x2eaacc;            /* cset w20, ne */
+    void *pc = (void *)(c & ~((uintptr_t)pgsz - 1));
+    mprotect(pc, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)c = 0x52800034u;                     /* mov w20, #1 */
+    mprotect(pc, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pc, (char *)pc + pgsz * 2);
+    volatile uint8_t *flag = (uint8_t *)(g_unity_base + 0xc0da20);
+    *flag = 1;
+    fprintf(stderr, "[FORCETHREADED] flag c0da20 -> 1 (cset->mov#1 @0x2eaacc + write byte)\n");
+  }
+  /* TER_JOBSPY: lê os contadores globais do job system (0xc10350..0xc10370) periódico p/
+     diagnosticar agendado-vs-completado. */
+  int jobspy = getenv("TER_JOBSPY") ? 1 : 0;
   int gamepad_on = getenv("CUP_GAMEPAD") ? 1 : 0;
   extern void gp_poll(void); extern void gp_frame_end(void);
   /* CUP_LOADYIELD=us: durante o boot/load, cede CPU aos WORKER threads (sched_yield+usleep)
@@ -3268,7 +3675,7 @@ int main(int argc, char **argv) {
         gc_pending = 0; gc_idle = 0;
         fprintf(stderr, "[GCEVERY] limpeza f=%d (mgr %s)\n", f, m ? "ocioso" : "n/d");
         ((void *(*)(void))(g_il2cpp_base + 0x178BAAC))(); /* Resources.UnloadUnusedAssets */
-        ((void (*)(void))(g_il2cpp_base + 0x1b62ac0))();  /* il2cpp_gc_collect */
+        ((void (*)(void))(g_il2cpp_base + 0x73ca5c))();  /* il2cpp_gc_collect */
       }
     }
     { /* log de hits do SCENESKIP + MASKGUARD + NULLGUARD */
@@ -3292,8 +3699,8 @@ int main(int argc, char **argv) {
       }
     }
     if (gcoff && gcon_f > 0 && f == gcon_f) {
-      ((void (*)(void))(g_il2cpp_base + 0x1b62ac8))();  /* il2cpp_gc_enable */
-      ((void (*)(void))(g_il2cpp_base + 0x1b62ac0))();  /* il2cpp_gc_collect */
+      ((void (*)(void))(g_il2cpp_base + 0x73ca68))();  /* il2cpp_gc_enable */
+      ((void (*)(void))(g_il2cpp_base + 0x73ca5c))();  /* il2cpp_gc_collect */
       fprintf(stderr, "[GCOFF] GC RELIGADO + collect no frame %d (boot ja passou)\n", f);
       fflush(stderr);
     }

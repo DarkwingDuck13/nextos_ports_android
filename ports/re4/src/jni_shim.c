@@ -46,8 +46,8 @@ enum {
 static int g_method_tags[16]; /* unique addresses used as method IDs */
 
 /* ---- Configurable package/OBB ---- */
-static const char *g_package_name = "com.microids.syberia";
-static int g_obb_version = 12;
+static const char *g_package_name = "com.WS.RE4";
+static int g_obb_version = 1;
 
 void jni_shim_set_package(const char *package_name, int obb_version) {
   g_package_name = package_name;
@@ -97,14 +97,34 @@ static const char *mid_name(void *tag) {
   return NULL;
 }
 
+static const char *re4_gamedir(void) {
+  const char *dir = getenv("RE4_GAMEDIR");
+  return (dir && dir[0]) ? dir : "/storage/roms/ports/re4";
+}
+
+static const char *re4_userdata_dir(void) {
+  const char *dir = getenv("RE4_USERDATA");
+  static char path[1024];
+  if (dir && dir[0]) return dir;
+  snprintf(path, sizeof(path), "%s/userdata", re4_gamedir());
+  return path;
+}
+
+static const char *re4_assets_dir(void) {
+  const char *dir = getenv("RE4_ASSETDIR");
+  static char path[1024];
+  if (dir && dir[0]) return dir;
+  snprintf(path, sizeof(path), "%s/assets", re4_gamedir());
+  return path;
+}
+
 /* ===================================================================
- * AssetManager bridge — le de /storage/hollow-recon/assets/<path>
+ * AssetManager bridge — le de <RE4_GAMEDIR>/assets/<path>
  * (Unity: getAssets() + AssetManager.open(path) + InputStream.read/close)
  * =================================================================== */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#define ASSET_BASE "/storage/roms/re4-recon/assets/"
 
 static int g_assetmgr;   /* tag do objeto AssetManager */
 static int g_empty_list; /* tag de uma java.util.List vazia */
@@ -136,7 +156,7 @@ static struct astream g_astreams[MAX_ASTREAMS];
 static int g_astream_n = 0;
 static void *asset_open(const char *path) {
   char full[1200];
-  snprintf(full, sizeof(full), ASSET_BASE "%s", path ? path : "");
+  snprintf(full, sizeof(full), "%s/%s", re4_assets_dir(), path ? path : "");
   FILE *fp = fopen(full, "rb");
   debugPrintf("asset: open(%s) -> %s\n", path ? path : "?",
               fp ? "OK" : "FALHOU (sem arquivo)");
@@ -273,7 +293,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   static int fake_obj;
   if (nm) {
     if (strcmp(nm, "getPackageName") == 0)
-      return make_jstring("com.teamcherry.hollowknight");
+      return make_jstring(g_package_name);
     /* AssetManager bridge */
     if (strcmp(nm, "getAssets") == 0) return &g_assetmgr;
     /* listas vazias (queryIntentActivities, etc.) + iterator vazio */
@@ -300,7 +320,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         strcmp(nm, "getDataDir") == 0 || strcmp(nm, "getExternalStorageDirectory") == 0 ||
         strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
         strcmp(nm, "getCanonicalPath") == 0)
-      return make_jstring("/storage/roms/re4-recon/userdata");
+      return make_jstring(re4_userdata_dir());
     /* SharedPreferences.getString(key, default) -> loga a chave + retorna default */
     if (strcmp(nm, "getString") == 0) {
       void *keystr = va_arg(ap, void *);

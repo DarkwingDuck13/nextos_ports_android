@@ -11,6 +11,16 @@ namespace SOR4Bridge {
         string p = Path.Combine(Root, cand);
         if (File.Exists(p)) { Console.Error.WriteLine("[asset] "+name+" -> "+cand); return File.OpenRead(p); }
       }
+      // fallback 1: path absoluto (o jogo as vezes manda CWD-path sem a '/' inicial, ex: fontes)
+      foreach (var p in new[]{ name, "/"+name }) {
+        if (Path.IsPathRooted(p) && File.Exists(p)) { Console.Error.WriteLine("[asset] "+name+" -> ABS "+p); return File.OpenRead(p); }
+      }
+      // fallback 2: por basename dentro de Root (fontes .ttf/.otf ficam na raiz de gameassets)
+      string bn = Path.GetFileName(name);
+      foreach (var cand in new[]{ bn, bn+".xnb" }) {
+        string p = Path.Combine(Root, cand);
+        if (!string.IsNullOrEmpty(bn) && File.Exists(p)) { Console.Error.WriteLine("[asset] "+name+" -> BN "+cand); return File.OpenRead(p); }
+      }
       Console.Error.WriteLine("[asset MISS] "+name+" (root="+Root+")");
       throw new FileNotFoundException("asset: "+name);
     }

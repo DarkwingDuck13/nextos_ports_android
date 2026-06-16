@@ -80,6 +80,26 @@ static int g_proxy_n;
 static int g_run_method_sentinel;   /* Method fake p/ Runnable.run() */
 static int g_empty_args_sentinel;   /* Object[] vazio */
 static int g_runnable_class_sentinel;
+/* Choreographer frame-pacing (Unity 2021): o engine cria um Choreographer$FrameCallback
+ * "UnityChoreographer" + HandlerThread/Looper e ESPERA o doFrame(frameTimeNanos) disparar
+ * p/ avançar o frame. Nosso Looper é fake → doFrame nunca dispara → nativeRender do frame 2
+ * trava. Capturamos o proxy do FrameCallback e uma driver-thread (main.c) chama doFrame
+ * periodicamente (~60Hz) p/ destravar. */
+static int g_doframe_method_sentinel;   /* Method fake p/ FrameCallback.doFrame(long) */
+static int g_doframe_args_sentinel;     /* Object[1] = { Long(frameTimeNanos) } */
+static int g_long_box_sentinel;         /* o Long boxed */
+/* Handler$Callback.handleMessage(Message): a main posta uma Message via Handler.obtainMessage+
+ * sendToTarget e ESPERA (cond nativo em libunity+0x2f3680) o Looper processá-la (handleMessage
+ * → postFrameCallback). Looper fake nunca processa → deadlock. Dirigimos handleMessage no
+ * sendToTarget. */
+static int g_handlemsg_method_sentinel; /* Method fake p/ Handler$Callback.handleMessage(Message)Z */
+static int g_handlemsg_args_sentinel;   /* Object[1] = { Message } */
+static int g_message_sentinel;          /* a Message (obtainMessage->sendToTarget) */
+static volatile int g_message_what;     /* msg.what passado ao obtainMessage */
+void jni_handlemessage(void *env);
+static _Thread_local int g_next_proxy_is_framecb;  /* setado por FindClass(Choreographer$FrameCallback) */
+static void *volatile g_framecb_proxy;  /* proxy do FrameCallback capturado */
+static volatile long g_doframe_nanos;   /* frameTimeNanos atual (a driver-thread atualiza) */
 static void proxy_register(void *obj, long h);
 static long proxy_handle(void *obj);
 static void run_runnable(void *env, void *runnable);
@@ -291,6 +311,8 @@ static void *class_for(const char *name) {
 static void *jni_FindClass(void *env, const char *name) {
   (void)env;
   debugPrintf("jni_shim: FindClass(%s)\n", name);
+  /* o proxy criado logo após FindClass(Choreographer$FrameCallback) é o FrameCallback */
+  g_next_proxy_is_framecb = (name && strstr(name, "Choreographer$FrameCallback")) ? 1 : 0;
   return class_for(name);
 }
 
@@ -324,6 +346,7 @@ static jint jni_GetIntField(void *env, void *obj, void *fieldID) {
   (void)env; (void)obj;
   const char *nm = mid_name(fieldID);
   if (nm) {
+    if (obj == (void *)&g_message_sentinel && strcmp(nm, "what") == 0) return g_message_what;
     if (strcmp(nm, "widthPixels") == 0) return 1280;
     if (strcmp(nm, "heightPixels") == 0) return 720;
     if (strcmp(nm, "densityDpi") == 0) return 160;
@@ -394,6 +417,26 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     if (jni_is_run_method(obj)) {
       if (strcmp(nm, "getName") == 0) return make_jstring("run");
       return &g_run_method_sentinel; /* getReturnType/getParameterTypes/... -> não-nulo */
+    }
+    /* Method fake do FrameCallback (Choreographer): getName()->"doFrame". */
+    if (obj == (void *)&g_doframe_method_sentinel) {
+      if (strcmp(nm, "getName") == 0) return make_jstring("doFrame");
+      return &g_doframe_method_sentinel;
+    }
+    /* Method fake do Handler$Callback: getName()->"handleMessage". */
+    if (obj == (void *)&g_handlemsg_method_sentinel) {
+      if (strcmp(nm, "getName") == 0) return make_jstring("handleMessage");
+      return &g_handlemsg_method_sentinel;
+    }
+    /* Handler.obtainMessage(what[,...]) -> a nossa Message sentinel (guarda o what). */
+    if (strcmp(nm, "obtainMessage") == 0) {
+      g_message_what = va_arg(ap, int);
+      debugPrintf("jni_shim: obtainMessage(what=%d) -> Message sentinel\n", g_message_what);
+      return &g_message_sentinel;
+    }
+    /* Long boxed (arg do doFrame): longValue()/valueOf devolvem o frameTimeNanos. */
+    if (obj == (void *)&g_long_box_sentinel) {
+      return &g_long_box_sentinel;   /* getClass etc. -> não-nulo */
     }
     /* ClassLoader.findLibrary("il2cpp") -> path real do .so (ja' carregamos no F1,
        mas o UnityPlayer valida via findLibrary+System.load senao "Failed to load Il2CPP") */
@@ -558,6 +601,8 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
                                va_list ap) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (obj == (void *)&g_message_sentinel && nm && strcmp(nm, "getWhat") == 0)
+    return g_message_what;
   if (nm) {
     /* checkPermission(INTERNET): armado pelo NewStringUTF → DENIED(-1) p/ desligar a
        Unity Analytics (pula advertising-id/session-start que travava o boot). */
@@ -623,6 +668,13 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  /* Message.sendToTarget(): a main posta a Message no Looper (fake) e bloqueia num cond
+     nativo esperando o handleMessage processá-la. Dirigimos handleMessage AQUI (síncrono no
+     thread da main, ANTES dela bloquear → predicado já satisfeito). TER_NOHANDLEMSG desliga. */
+  if (nm && strcmp(nm, "sendToTarget") == 0 && obj == (void *)&g_message_sentinel) {
+    if (!getenv("TER_NOHANDLEMSG")) jni_handlemessage(env);
+    return;
+  }
   /* runOnUiThread/post(Runnable): EXECUTA o Runnable (senão Unity Analytics/init trava). */
   if (nm && (strcmp(nm, "runOnUiThread") == 0 || strcmp(nm, "post") == 0 ||
              strcmp(nm, "postAtFrontOfQueue") == 0)) {
@@ -685,6 +737,11 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
     void *proxy = malloc(16);
     proxy_register(proxy, h);
     debugPrintf("jni_shim: newInterfaceProxy(handle=%ld) -> %p\n", h, proxy);
+    if (g_next_proxy_is_framecb) {
+      g_framecb_proxy = proxy;
+      g_next_proxy_is_framecb = 0;
+      debugPrintf("jni_shim: [CHOREO] FrameCallback capturado: proxy=%p handle=%ld\n", proxy, h);
+    }
     return proxy;
   }
   debugPrintf("jni_shim: CallStaticObjectMethod(%s)\n", nm ? nm : "?");
@@ -872,11 +929,13 @@ static unsigned char jni_IsSameObject(void *env, void *a, void *b) {
 }
 /* CallLongMethod V — getEventTime/getDownTime do KeyEvent (retornam long) */
 static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap) {
-  (void)env; (void)obj; (void)ap;
+  (void)env; (void)ap;
+  if (obj == (void *)&g_long_box_sentinel) return g_doframe_nanos;  /* Long.longValue() do doFrame */
   const char *nm = mid_name(methodID);
   if (nm) {
     if (strcmp(nm, "getEventTime") == 0) return g_hk_inject.eventTime;
     if (strcmp(nm, "getDownTime") == 0) return g_hk_inject.downTime;
+    if (strcmp(nm, "longValue") == 0) return g_doframe_nanos;
   }
   return 0;
 }
@@ -901,8 +960,17 @@ static void *jni_ExceptionOccurred(void *env) {
 /* Array */
 static jint jni_GetArrayLength(void *env, void *array) {
   (void)env;
+  if (array == (void *)&g_doframe_args_sentinel) return 1;   /* doFrame: Object[1] */
+  if (array == (void *)&g_handlemsg_args_sentinel) return 1; /* handleMessage: Object[1] */
   struct barr *b = barr_find(array);
   return b ? b->len : 0;
+}
+/* GetObjectArrayElement: args do doFrame -> o Long boxed (slot 0) */
+static void *jni_GetObjectArrayElement(void *env, void *array, jint idx) {
+  (void)env; (void)idx;
+  if (array == (void *)&g_doframe_args_sentinel) return &g_long_box_sentinel;
+  if (array == (void *)&g_handlemsg_args_sentinel) return &g_message_sentinel;
+  return NULL;
 }
 /* int[] accessors (InputDevice IDs etc.) */
 static void *jni_GetIntArrayElements(void *env, void *arr, void *isCopy) {
@@ -1016,6 +1084,44 @@ static void run_runnable(void *env, void *runnable) {
       &g_run_method_sentinel, &g_empty_args_sentinel);
   debugPrintf("jni_shim: << Runnable terminou (handle=%ld)\n", h);
   g_in_run--;
+}
+
+/* ---- Choreographer: dispara FrameCallback.doFrame(frameTimeNanos) ----
+ * Mesmo caminho do run_runnable, mas com o Method "doFrame" + args = Object[1]{Long}.
+ * Chamado pela driver-thread (main.c) ~60Hz. Retorna 1 se disparou, 0 se ainda não há
+ * FrameCallback capturado. g_choreo_log liga log detalhado das queries (1ª vez). */
+int g_choreo_log = 0;
+int jni_choreo_doframe(void *env, long nanos) {
+  void *proxy = g_framecb_proxy;
+  if (!proxy) return 0;
+  long h = proxy_handle(proxy);
+  void *invoke = jni_find_native("invoke");
+  if (!h || !invoke) return 0;
+  g_doframe_nanos = nanos;
+  static int once = 0;
+  if (g_choreo_log && !once) { once = 1; debugPrintf("jni_shim: [CHOREO] 1º doFrame(handle=%ld nanos=%ld)\n", h, nanos); }
+  ((void *(*)(void *, void *, long, void *, void *, void *))invoke)(
+      env, &g_runnable_class_sentinel, h, &g_runnable_class_sentinel,
+      &g_doframe_method_sentinel, &g_doframe_args_sentinel);
+  return 1;
+}
+void *jni_shim_env(void) { return jni_env_ptr; }
+int jni_choreo_captured(void) { return g_framecb_proxy != NULL; }
+
+/* ---- Handler$Callback.handleMessage(Message): invoca o delegate C# do proxy ----
+ * Mesmo caminho do doFrame, com Method "handleMessage" + args Object[1]{Message}. O proxy
+ * (g_framecb_proxy) implementa Handler$Callback E Choreographer$FrameCallback (mesmo handle). */
+void jni_handlemessage(void *env) {
+  void *proxy = g_framecb_proxy;
+  if (!proxy) { debugPrintf("jni_shim: handleMessage sem proxy capturado\n"); return; }
+  long h = proxy_handle(proxy);
+  void *invoke = jni_find_native("invoke");
+  if (!h || !invoke) { debugPrintf("jni_shim: handleMessage sem handle/invoke (h=%ld invoke=%p)\n", h, invoke); return; }
+  debugPrintf("jni_shim: >> handleMessage(what=%d handle=%ld) ...\n", g_message_what, h);
+  ((void *(*)(void *, void *, long, void *, void *, void *))invoke)(
+      env, &g_runnable_class_sentinel, h, &g_runnable_class_sentinel,
+      &g_handlemsg_method_sentinel, &g_handlemsg_args_sentinel);
+  debugPrintf("jni_shim: << handleMessage terminou\n");
 }
 
 /* ---- DirectByteBuffer p/ a thread de áudio do FMOD (AudioTrack Java) ----
@@ -1141,6 +1247,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;
   jni_env_vtable[170] = (uintptr_t)jni_ReleaseStringUTFChars;
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength;
+  jni_env_vtable[173] = (uintptr_t)jni_GetObjectArrayElement; /* doFrame args[0]=Long */
   jni_env_vtable[179] = (uintptr_t)jni_NewIntArray;          /* NewIntArray */
   jni_env_vtable[187] = (uintptr_t)jni_GetIntArrayElements;  /* int[] elements */
   jni_env_vtable[195] = (uintptr_t)jni_ReleaseIntArrayElements;

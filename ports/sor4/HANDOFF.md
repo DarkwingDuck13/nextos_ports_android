@@ -9,6 +9,54 @@ Objetivo: rodar **Streets of Rage 4** (APK Android v1.4.5) no device **192.168.3
 
 ---
 
+## 🏆🏆🏆🥊 GAMEPLAY RODANDO (2026-06-16 cont.11) — JOGÁVEL! Blaze em "The Streets" stage 1
+Screenshot /tmp/sor4_streets.png: BLAZE em pé na fase 1 (rua), HUD completo (nome BLAZE + barra de
+vida verde + score 000000 + estrelas), cenário urbano (prédios, cerca, lixeira, poster). NextOS
+JOGOU com o controle REAL dele do menu até a fase. CONTROLES = RESOLVIDOS (pad real funciona 100%
+desde que entramos no menu). CADEIA DE FIXES desta sessão (todos confirmados com LOG/screenshot):
+
+1. **MISTÉRIO DO "controle não passa do título" RESOLVIDO — NÃO era input.** Sonda Cecil (titleprobe,
+   port/tools/titleprobe) em `TitleScreen.handle_input` provou: handle_input RODA todo frame; o press
+   do pad gera borda limpa (`[HI] jbp=True cur=1 prev=0` = A com rising edge). O título JÁ setava
+   `loading=true`. O muro era DEPOIS: `TitleScreen.handle_input` quando loading só chama `start_game()`
+   se `platform.load_save_and_config_is_finished()`==true — e essa retorna
+   `AndroidServices.DidFinishLoadingCloudFiles()` que está STUBADO (noopm) → false p/ SEMPRE → preso
+   em loading eterno. **FIX: rettrue (port/tools/rettrue) força `load_save_and_config_is_finished`→true.**
+2. **NRE `MainMenuScreen.MoreGamesNotificationUpdate`** (Firebase RemoteConfig + Android prefs, promo
+   "more games", nada essencial). FIX: noopm.
+3. **NRE `InterStageVideoScreen.update_gui→platform.video_get_time`** (vídeo de intro de fase). FIX
+   TEMPORÁRIO/scaffold: `noopm platform.video_exists`→false → `transition_to_intro_video` retorna false
+   → vai DIRETO pro gameplay (sem vídeo). A fase CARREGA (loading lento de decors/main_campaign/stage_1)
+   e o gameplay aparece. ⚠️ SERÁ SUBSTITUÍDO por player de vídeo REAL (NextOS quer vídeos de verdade).
+
+PIPELINE SOR4.dll AGORA (port/tools/buildfix.sh, base=/tmp/SOR4.device.dll que já tem patchgam+noopm
++skipvideo+verstub+noopm EOSManager): + titleprobe(DEBUG-remover) + rettrue(load_save) +
+noopm(MoreGamesNotificationUpdate) + [--skipvideo: noopm(video_exists)].
+
+### INFRA DE INPUT AUTÔNOMO (criada nesta sessão, p/ testar SEM o NextOS)
+- **vpad.py / vpadd.py** (port/tools): gamepad VIRTUAL via /dev/uinput clonando EXATO o " USB Gamepad "
+  0810:0001 (mesmo bus/vendor/product/version/nome/caps → SDL calcula a MESMA GUID → mesmo mapping
+  interno → jogo lê idêntico ao pad real). vpadd.py = DAEMON persistente lendo comandos de FIFO
+  /tmp/vpadcmd (p/r/t <code>, hx/hy dpad, ax/ay stick, q). SDL detecta via hotplug udev.
+- ⚠️ MENU só lê o controller **slot 0** (1º aberto = pad real do NextOS = js0/event2). Virtual entra
+  em slot >0 e o MENU IGNORA (só o título aceita qualquer slot). P/ dirigir menu autônomo: unbind do
+  pad real (`echo -n 1-1 > /sys/bus/usb/drivers/usb/unbind`; rebind com .../bind) p/ virtual virar slot0.
+- Mapeamento evdev→jogo (pad 0810:0001): 288=Y, 290=B, 291=X; A≈289 (confirmar). dpad=ABS_HAT0X/Y(16/17).
+- Screenshot autônomo: launcher faz glReadPixels→/tmp/sor4shot.raw + .dim no DEVICE; /tmp/getshot.sh
+  puxa e converte p/ PNG (flip vertical). SOR4_SHOT=N (frame interval).
+
+### MISSÃO ATUAL (NextOS saiu e confiou a mim): VÍDEOS REAIS + SOM REAL + polir load da fase
+- **SOM**: jogo usa **Wwise** (Init/Core/Generic/Music.bnk em gameassets + .wem). Hoje libWwise=STUB=mudo.
+  Meta: áudio REAL. APK tem libWwise.so arm64. Device=PulseAudio (Mali-450). Investigar binding P/Invoke
+  do `BeatThemAll.audio` (post_event/set_music_manager_state) → decidir: usar libWwise real (sink?) ou
+  decodificar .wem (Vorbis/Opus) e tocar via OpenAL/SDL_mixer. Ver memória DYSMANTLE/NFS (áudio so-loader).
+- **VÍDEOS**: .mp4 (H.264) em gameassets/videos/ (game_intro, stageN_intro...). Mali-450 sem decode HW
+  fácil. Precisa player próprio (ffmpeg/libavcodec SW → texturas GL) plugado no MonoGame como o tipo
+  custom `SuperVideoPlayer`/`platform.video_*`. Grande. Tentar "o mais original possível".
+- **LOAD lento da fase**: stage_1 decodifica MUITOS XNB/ASTC no UI thread (~9 tex/s). Otimizar depois.
+
+---
+
 ## Fatos confirmados do APK (FASE 0/1)
 APK fonte: `/home/nextos/Downloads/Streets-of-Rage-4-v1.4.5-unlocked-apkvision(1).apk`
 (1,9 GB, 27.234 arquivos).
@@ -61,6 +109,177 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 - Shaders `.xnb` (DX bytecode) → MojoShader/GL (pode exigir recompilar conteúdo de Effect).
 
 ---
+
+## 🎯 CAUSA-RAIZ do "trava aos 100%" ACHADA NOS LOGS (2026-06-16 cont.5) — NÃO é OOM/hang
+**Dado real** (device .127 `run.log` + `progress.log` após reboot do NextOS): o preload chega a 100%,
+o `ScreenManager` entra na **`StartGameVideoScreen`** (vídeo de abertura) e morre com **exceção
+gerenciada** (NÃO hang, NÃO OOM — `progress.log`: avail=147MB, swapused=250MB, rss caindo p/ 91MB
+quando morreu = morte por exceção, não falta de memória):
+```
+[host] EXC: System.TypeLoadException: Could not load type
+  'Microsoft.Xna.Framework.Media.SuperVideoPlayer' from assembly 'MonoGame.Framework'
+   at CommonLib.platform.video_draw()
+   at BeatThemAll.MetaGame.StartGameVideoScreen.draw()
+   at BeatThemAll.MetaGame.ScreenManager.draw() / program.draw / StandaloneGame.Draw / Game.Tick
+```
+**CAUSA**: `SuperVideoPlayer` é um tipo CUSTOM do fork MonoGame Android do SoR4 (player de vídeo
+das cutscenes/logos). Meu MonoGame buildado do fonte 3.8.4 NÃO tem esse tipo → `TypeLoadException`
+ao primeiro Draw da `StartGameVideoScreen` → game-loop morre.
+**PLANO DE FIX** (a confirmar via IL de `platform.video_draw` + `StartGameVideoScreen`):
+ou (1) adicionar tipo `SuperVideoPlayer` stub no meu MonoGame.Framework (namespace Media) que
+reporta vídeo "terminado" na hora → a tela avança sozinha pro menu; ou (2) Cecil-patch
+`platform.video_draw`→no-op + forçar a tela a avançar. Objetivo: pular a intro e cair no MENU.
+NOTA: memória/TEXSCALE/swap NÃO eram o problema dos 100% — descartado com dado.
+
+## 🎯 cont.9 — cadeia de fixes ATÉ o menu desenhar (cada muro = 1 NRE gerenciado limpo)
+Depois do SDL fix + skipvideo + verstub, a sequencia de muros no caminho do menu (todos resolvidos):
+3. **FileNotFoundException fonte** `storage/roms/sor4-test/host_pkg/NotoSans-Bold.ttf` (path CWD sem
+   "/"): a GUI do menu DESENHA texto e pede a fonte por path absoluto-malformado. FIX: AssetBridge.Open
+   (build/bridge/AssetBridge.cs — NAO a copia em port/tools/bridge!) ganhou fallbacks: path absoluto
+   ("/"+name) e **basename em Root**. Recompilar build/bridge -> SOR4Bridge.dll -> host_pkg. Tb copiei
+   *.ttf/*.otf de gameassets/ pro host_pkg/.
+4. **render_text_to_texture NRE** (SharpFont): rasterizacao de glifo. SharpFont.Core estava STUBADO
+   (19968B). FIX: usar o REAL `build/extract/asm/asm_025.dll` (29696B, SharpFont.Core v1.0.0.0,
+   pinvokeimpl("freetype")) como host_pkg/SharpFont.Core.dll -> resolve /usr/lib/libfreetype.so.6 (existe!).
+   Texto passa a rasterizar de verdade.
+5. **EOSManager.PollMessage NRE**: update loop -> online.receive_state_changes -> EOSManager.PollMessage
+   -> get_p2pHandle -> platform(null).GetP2PInterface(). EOS nao inicializado. FIX: noopm
+   EOSManager.PollMessage -> return null (sem mensagem). Rede nao precisa pro menu single-player.
+PIPELINE SOR4.dll AGORA: patchgam -> noopm(AndroidServices.*+save) -> skipvideo -> verstub ->
+noopm EOSManager.PollMessage. Deploy extra: SharpFont.Core REAL + fontes .ttf/.otf + SOR4Bridge novo.
+Provavel proximo: mais stubs EOS/online no update loop (mesmo padrao, noopm) + audio (Wwise stub=mudo)
++ input (gptokeyb). NextOS confirmou avanco ("porra deu certo"). Foco seguinte: SOM + CONTROLES.
+
+## 🎮🟡 cont.10 — MISSÃO CONTROLES (objetivo da PRÓXIMA sessão): passar da tela de TAP + todos os botões
+### OBJETIVO
+1) Passar da tela de título ("PRESS ANY BUTTON" / "tap anywhere" — é build MOBILE).
+2) Todos os botões do controle funcionais no menu/jogo.
+👉 ESTUDAR como os ports **NFS** (`ports/nfs`, saga de touch/"tap anywhere" + nativeTouchScreenEvent +
+   IsSameObject dispatch — ver memória project_nfs_most_wanted_soloader_mali450) e **DYSMANTLE**
+   (`ports/dysmantle`, GameActivity so-loader input) resolveram input — foi DIFÍCIL nos dois.
+   Também `ports/sonicmania`, `ports/bully` usam gptokeyb (gamepad→teclado) — padrão pronto.
+
+### O QUE JÁ SABEMOS (com DADO, não chute)
+- **O gamepad CHEGA perfeitamente no MonoGame.** Pad = USB genérico **0810:0001**, SDL GUID REAL
+  `0300605b100800000100000010010000` (bytes [2-3]=605b = CRC16 do nome; meu mapeamento manual usava
+  `03000000...` SEM CRC → era IGNORADO). SDL já reconhece via mapping embutido "Twin USB PS2 Adapter"
+  (IsGameController=1). Sonda SDL: `/tmp/sdlprobe` (dlopen libSDL2).
+- Logs `[PAD]` (instrumentei MonoGame: GamePad.SDL.cs, Joystick.SDL.cs, SDLGamePlatform.cs — REMOVER no
+  final) provam in-game: `JoyDeviceAdded → Joystick.AddDevice isGameController=1 → GamePad.AddDevice
+  slot=0 total=1`; e `GetState idx=0` retorna A/B/X/Y/Start/Back/ombros/**dpad** TODOS corretos quando
+  NextOS aperta. Ou seja MonoGame↔SDL↔pad = 100% OK.
+- Cadeia do jogo: `input.update` → `platform.update_game_pad_state_array` → `platform_strict.
+  get_game_pad_state(0)` → `GamePad.GetState(PlayerIndex.One)` (mapeia botões certos: A=0x1000 etc) →
+  `GamePadState_s[]` (current/previous). `TitleScreen.handle_input`: `input.is_any_button_just_pressed
+  (true)` && MetaGameConfig==null → `start_load_save_and_config`; e um path gated por flag →
+  `start_game` quando `load_save_and_config_is_finished()`. `is_any_button_just_pressed` =
+  `is_any_button_just_pressed_controller` (borda: current.is_pressed && !previous, botões enum 1,2,3,4,
+  9,10) OU teclado (Enter=13/Space=32/Esc=27/Backspace=8 + currentPressedKeyList).
+- **MAS o título NÃO avança** apertando o pad. `start_load_save_and_config` NUNCA logou.
+- **TEORIA DO NEXTOS (forte, do Sonic Mania):** título mobile espera um **TAP NA TELA**; o controle só
+  funciona DEPOIS do tap. SoR4 é o mesmo caso provável. NOSSO MonoGame **NÃO alimenta TouchPanel**
+  (sem mouse→touch, sem SDL_FINGER) → toque ausente → título preso.
+
+### PRÓXIMOS PASSOS SUGERIDOS (a próxima sessão decide)
+A) **Confirmar a causa com 1 instrumentação Cecil decisiva**: logar o retorno de `is_any_button_just_
+   pressed` + entrada de `start_load_save_and_config` + `load_save_and_config_is_finished`. Se
+   is_any_button_just_pressed=FALSE com botão apertado → é a borda/ mapeamento do pad no jogo. Se TRUE
+   mas start_game não vem → é o load de save/config (no-opamos saves: conferir start_load_save_and_
+   config / load_save_and_config_is_finished não travam). Ferramenta: port/tools/probe (modelo de sonda).
+B) **TAP sintético**: (b1) habilitar mouse→touch no MonoGame (TouchPanel.EnableMouseTouchPoint + feed
+   no SDLGamePlatform a partir de Mouse/SDL_FINGER) e injetar um clique; (b2) ou Cecil-patch no
+   `TitleScreen`/`input` pra tratar um botão do pad como o "tap" (advance). Ver `merge_touch_input_into
+   _gamepad_state`, `is_touch_action_just_pressed`, `get_lastPressWasTouch`.
+C) **gptokeyb→teclado** (caminho Sonic Mania, JÁ MEIO MONTADO): criei `/storage/roms/sor4-test/sor4.gptk`
+   + `run_gptk.sh` (a=enter,b=esc,start=enter,dpad=setas,x=space). gptokeyb roda MAS não faz "grab" do
+   pad → SDL ainda abre como controller (leitura dupla; A às vezes lê grudado=1). FALTA: confirmar se
+   Enter via gptokeyb avança o título; se sim, talvez setar `SDL_GAMECONTROLLER_IGNORE_DEVICES=0x0810/
+   0x0001` p/ MonoGame NÃO abrir o pad (só gptokeyb→teclado, sem leitura dupla). run_gptk.sh ESQUECEU
+   SOR4_TEXCACHE (re-decodifica do zero; re-adicionar: `export SOR4_TEXCACHE=/storage/roms/sor4-test/texcache`).
+
+### ESTADO/ARTEFATOS
+- Pipeline SOR4.dll (reproduzir de /tmp/SOR4.bak = patchgam+noopm já aplicados): skipvideo → verstub →
+  noopm EOSManager.PollMessage. Tools em port/tools/{skipvideo,verstub,probe,noopm} (dotnet build -c Release -o bin).
+- Deploy: SharpFont.Core REAL (build/extract/asm/asm_025.dll) + fontes *.ttf/*.otf + SOR4Bridge (build/
+  bridge, com fallback de path) + MonoGame.Framework com [PAD] logs (/tmp/mgout). Tudo em host_pkg.
+- ⚠️ Logs [PAD] em MonoGame (3 arquivos) e o log de GetState em PlatformGetState = REMOVER antes do final.
+- Launchers no device: run_diag.sh (minidump+EXITCODE+SHOT, SDL_NO_SIGNAL_HANDLERS+SDL_GAMECONTROLLER
+  CONFIG) e run_gptk.sh (gptokeyb). SOR4_TEXSCALE=3.
+
+## 🏆🏆🏆 MENU PRINCIPAL NA TELA (2026-06-16 cont.9) — MARCO
+Screenshot /tmp/sor4menu.png: TELA DE TITULO do SoR4 renderizando COMPLETA (logo + arte do elenco +
+TEXTO embaixo rasterizado via SharpFont/FreeType real). Estavel, VIVO, SHOT f=4020 sem crash.
+Pipeline final SOR4.dll: patchgam -> noopm(AndroidServices.*+save_save_game+save_config) -> skipvideo
+-> verstub(get_version_identifier="1.4.5") -> noopm(EOSManager.PollMessage). Deploy: SharpFont.Core
+REAL (asm_025.dll) + fontes .ttf/.otf no host_pkg + SOR4Bridge com fallback de path + SDL_NO_SIGNAL_
+HANDLERS=1 no launcher. SOR4_TEXSCALE=3. Launcher: run_diag.sh.
+FALTA: CONTROLES (navegar menu) + SOM (Wwise stub=mudo) + polish/empacotar.
+
+## 🎯 cont.8 — DEPOIS do SDL fix: 2 bugs Android-stub na transição pro menu (debug com sonda Cecil)
+Sequência de muros DEPOIS de SDL_NO_SIGNAL_HANDLERS (cada um virou exceção GERENCIADA legivel):
+1. **video_draw NRE** (videoPlayer null): a tela de video de abertura. FIX: `skipvideo` (Cecil tool,
+   port/tools/skipvideo) patcha `program::reset_game` p/ criar `TitleScreen` no lugar de
+   `StartGameVideoScreen` (intro nao toca no Mali mesmo; destino pos-intro e o menu). 1 site.
+2. **TitleScreen.update_gui NRE**: parecia guiInstance null. Criei sonda Cecil (port/tools/probe)
+   que loga no `GameScreen::update_gui` o `guiDataRef.yaml_serialize()` (path) + thread.
+   RESULTADO: `[PROBE] path=gui/menus/gui_title_screen thr=main` → path VALIDO, GUI CARREGA OK
+   (guiInstance NAO era null!). A stack real (com base expandida) revelou o verdadeiro NRE:
+   `CommonLib.utils.get_version_identifier` → chama **APIs Android** (Application.Context.
+   PackageManager.GetPackageInfo → VersionName/LongVersionCode) que sao STUB → null → NRE ao
+   formatar a string de versao exibida no menu. FIX: `verstub` (Cecil tool, port/tools/verstub)
+   substitui o corpo de `get_version_identifier` por `return "1.4.5"`.
+NOTA: reset_game roda num ThreadPool worker (PreloadingScreen.BeginState via Task) -> excecoes la
+sao UNHANDLED (abort 134); no game-loop (main thread) sao capturadas pelo Host.Main (EXC, exit 0).
+Asset loading (incl. GuiNodeData do bigfile) FUNCIONA em qualquer thread (descartado problema de
+thread/memoria/desserializacao com dado). Pipeline SOR4.dll agora: patchgam -> noopm -> skipvideo
+-> verstub. LICAO: telas do menu chamam APIs Android (versao, etc) -> stubar/retornar constantes.
+Ferramenta-chave de debug: sonda Cecil que loga campo+thread no ponto exato (sem dotnet-dump, que
+nao faz cross-arch x64->arm64; gdb arm64 do device pro PC nativo).
+
+## 🎯 cont.7 — CAUSA DO SIGSEGV ACHADA: handler de sinal do SDL3 × CoreCLR (NÃO era memória)
+**Refutado memória com dado**: scale-3 + 3GB swap → crashou IGUAL (swapused=41MB de 3GB, avail=195MB).
+Crash DETERMINÍSTICO, mesmo IP nas 2 runs. createdump rotula a thread errada (handler em wait4).
+**gdb arm64 NO DEVICE no core (`coredump.5132`) reconstruiu os frames de sinal** e mostrou a verdade:
+```
+#13 0x7f61c10b2c           <- FALHA ORIGINAL (mem anonima = codigo JIT) -> SIGSEGV
+#12 <signal handler called>
+#11 libSDL3.so.0 ...       <- handler de SIGSEGV do SDL3 INTERCEPTOU
+#10 raise()                <- e re-disparou
+#8  <signal handler called> -> libcoreclr -> wait4 (createdump)
+```
+**CAUSA**: SDL3 instala handler de SIGSEGV no `SDL_Init` (dentro de game.Run(), DEPOIS do CoreCLR).
+O CoreCLR usa SIGSEGV LEGITIMO (null-check, write-barrier GC, stack-probe) e trata internamente
+continuando. O SDL rouba o handler e ao pegar esse SIGSEGV chama `raise()` -> mata um AV recuperavel.
+Por isso era deterministico (um caminho especifico de codigo dispara um AV que o CoreCLR trataria).
+**FIX**: `SDL_NO_SIGNAL_HANDLERS=1` no launcher (run_diag.sh, apos SDL_VIDEODRIVER). Deixa o CoreCLR
+tratar. Se era null-check legitimo -> jogo segue; se null-ref real -> vira NullReferenceException
+gerenciada limpa (stack legivel) em vez de crash nativo mudo.
+LICAO GERAL (todo port .NET/CoreCLR sob SDL): SEMPRE setar SDL_NO_SIGNAL_HANDLERS=1.
+Ferramentas: dotnet-dump do host x64 NAO analisa core arm64 (cross-arch nao suportado) -> usar
+gdb arm64 do DEVICE no core (reconstrucao de signal frame revela o PC real da falha).
+
+## 🧩 cont.6 — SuperVideoPlayer RESOLVIDO; novo muro = SIGSEGV na carga final (~97.6%) por MEMÓRIA
+**Fix do vídeo aplicado e validado**: criei `MonoGame.Framework/Media/SuperVideoPlayer.cs` (stub que
+reporta vídeo "terminado": State=Stopped, PlayPosition=Duration=1s → `platform.video_is_finished()`=true
+no 1º frame → StartGameVideoScreen avança sozinho pro TitleScreen) + `Graphics/SpriteOESBatch.cs`
+(SpriteBatch trivial p/ o `newobj` em video_start). Buildado (`/tmp/mgout`, 0 erros) e deployado.
+RESULTADO: `TypeLoadException` SUMIU; jogo renderiza a tela de loading com arte real ("Loading 97.6%")
+e o game-loop roda (SHOT f=120..840).
+
+**NOVO MURO (dado real do crashreport)**: morre em ~97.6% com **EXITCODE=139 = SIGSEGV (signal 11)**,
+SEM exceção gerenciada. createdump: `coredump.4469` + `.crashreport.json`. Stack da thread (managed):
+`libc (img+0x83aa8) ← libcoreclr (img+0x60eb10..0x63b3d8)` — **NÃO tem driver Mali** → não é GL.
+ExceptionType=0x20000000. No instante: swap subindo (298/511MB), avail=175MB, RSS 191→63MB (GC grande
+antes de morrer). Assinatura de **exaustão de memória** (heap cresce com grafos protobuf dos assets de
+gameplay; runtime tenta crescer/mmap sob thrash → memset/memcpy falha → SIGSEGV).
+DESCOBERTA: o `swap2g` (1GB) NÃO estava ativo pós-reboot (só swapfile 511MB) → virtual era só ~1.34GB.
+
+**EXPERIMENTO EM CURSO**: swapon swap2g + criei swap3 (1.5G) → swap total 3071MB + 832MB RAM ≈ 3.9GB.
+Relancei com **SOR4_TEXSCALE=3** (NextOS pediu; reduz RAM RETIDA das texturas GL; cache scale-3 é novo
+→ run mais lenta, re-decodifica ASTC do zero — NÃO matar). Medir se passa de 97.6%→100%→[SVP] Play→menu.
+Launcher diagnóstico: `/storage/roms/sor4-test/run_diag.sh` (minidump on, EXITCODE no log, SHOT).
+Se passar = memória confirmada. Se crashar igual = não é só RAM retida (subir p/ analisar managed stack
+do minidump via dotnet-dump + DAC, ou stack-overflow no deserializer).
 
 ## 🏆🏆 IMAGENS REAIS + jogo boota completo (2026-06-16 cont.4)
 **NextOS confirmou: LOGO do SoR4 com TEXTURA REAL na tela** (ASTC decodificado). Estado:
