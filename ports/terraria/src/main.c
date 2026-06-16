@@ -227,15 +227,16 @@ static void ter_jobworkers0(void) {
   for (size_t i = 0; i < na; i++) {
     void *img = asm_img(asms[i]); if (!img) continue;
     void *cls = cls_from_name(img, "Unity.Jobs.LowLevel.Unsafe", "JobsUtility"); if (!cls) continue;
-    { static int lc = 0; if (lc++ < 1) {
+    static int enum_once = 0;
+    if (getenv("TER_JOBENUM") && !enum_once && ++enum_once) { void (*cls_init)(void *) = (void *)(g_il2cpp_base + 0x73cc80); cls_init(cls);
       fprintf(stderr, "[JOBWORKERS0] JobsUtility achada (asm %zu) — métodos:\n", i);
       void *(*cls_methods)(void *, void **) = (void *)(g_il2cpp_base + 0x73c288);
       const char *(*meth_name)(void *) = (void *)(g_il2cpp_base + 0x73cb9c);
       unsigned (*meth_pc)(void *) = (void *)(g_il2cpp_base + 0x73cbac);
-      void *it = NULL, *mm;
-      while ((mm = cls_methods(cls, &it))) fprintf(stderr, "   %s/%u\n", meth_name(mm), meth_pc(mm));
+      void *it = NULL, *mm; int cnt = 0;
+      while ((mm = cls_methods(cls, &it)) && cnt++ < 60) fprintf(stderr, "   %s/%u\n", meth_name(mm), meth_pc(mm));
       fsync(2);
-    } }
+    }
     int zero = 0; void *params[1] = { &zero }; void *exc = NULL;
     const char *setters[] = { "set_JobWorkerCount", "SetJobQueueMaximumActiveThreadCount", "SetJobQueueMaximumWarpThreadCount" };
     int any = 0;
@@ -246,6 +247,7 @@ static void ter_jobworkers0(void) {
     }
     if (any) { done = 1; return; }
   }
+  if (tries > 30) done = 1;   /* desiste do retry (evita spam) se não achou os setters */
 }
 extern size_t text_size;
 /* /proc/self/maps lido UMA vez (sem malloc — open/read/parse manual; fopen não é
@@ -1407,6 +1409,18 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type, const voi
   ds_r_DrawElements(mode, count, type, idx);
   r->in_progress = 0;
 }
+/* CUP_DRAWCOUNT: conta glClear + loga a clear-color (diag de "Draw roda mas 0 draws") */
+volatile unsigned long g_clear_count;
+static void (*ds_r_Clear)(unsigned);
+static void (*ds_r_ClearColor)(float, float, float, float);
+static void my_glClear(unsigned mask) {
+  g_clear_count++;
+  if (ds_r_Clear) ds_r_Clear(mask);
+}
+static void my_glClearColor(float r, float g, float b, float a) {
+  static int n = 0; if (n++ < 8) { fprintf(stderr, "[CLEARCOL] %.3f %.3f %.3f %.3f\n", r, g, b, a); fsync(2); }
+  if (ds_r_ClearColor) ds_r_ClearColor(r, g, b, a);
+}
 static void my_glDrawArrays(unsigned mode, int first, int count) {
   g_frame_draws++; g_frame_verts += (unsigned)count;
   if (!g_drawdiag) { ds_r_DrawArrays(mode, first, count); return; }  /* fast path */
@@ -1605,9 +1619,9 @@ static void ter_screenshot_maybe(void) {
     fclose(f);
     /* conta pixels não-pretos + draws acumulados p/ diagnóstico de tela preta */
     long nb = 0; for (size_t i = 0; i < (size_t)w*h; i++) if (buf[i*4]+buf[i*4+1]+buf[i*4+2] > 24) nb++;
-    extern volatile unsigned long g_frame_draws, g_frame_verts;
-    fprintf(stderr,"[SHOT] gravado shot.ppm %dx%d (swap #%ld) nao-pretos=%ld/%d draws_acum=%lu verts=%lu\n",
-            w,h,n, nb, w*h, g_frame_draws, g_frame_verts); }
+    extern volatile unsigned long g_frame_draws, g_frame_verts, g_clear_count;
+    fprintf(stderr,"[SHOT] gravado shot.ppm %dx%d (swap #%ld) nao-pretos=%ld/%d draws_acum=%lu verts=%lu clears=%lu\n",
+            w,h,n, nb, w*h, g_frame_draws, g_frame_verts, g_clear_count); }
   free(buf);
 }
 static void ter_nuke_methods(void);
@@ -1637,6 +1651,8 @@ static void *ds_route(const char *nm, void *real) {
   if (g_drawdiag || getenv("CUP_DRAWCOUNT")) {
     if (!strcmp(nm, "glDrawElements")) { ds_r_DrawElements = real; return (void *)my_glDrawElements; }
     if (!strcmp(nm, "glDrawArrays"))   { ds_r_DrawArrays = real;   return (void *)my_glDrawArrays; }
+    if (!strcmp(nm, "glClear"))        { ds_r_Clear = real;        return (void *)my_glClear; }
+    if (!strcmp(nm, "glClearColor"))   { ds_r_ClearColor = real;   return (void *)my_glClearColor; }
   }
   if (!g_drawspy) return real;
   /* TEXTURAS (TEXHALF) — só estas precisam do roteamento em produção */
@@ -1681,6 +1697,14 @@ static void ds_init(void) {
 static void *(*r_eglGetProcAddress)(const char *);
 static unsigned g_egp_n = 0;
 static void *my_eglGetProcAddress(const char *nm) {
+  /* 🔑 egl*: rotear p/ NOSSOS shims (egl_route). Sem isto, o engine pegava o eglChooseConfig
+     REAL do Mali via eglGetProcAddress → o Mali Utgard rejeitava os attribs (GLES3/etc.) com
+     EGL_BAD_ATTRIBUTE → o GfxDevice do Unity virava NULL-renderer → 0 chamadas GL → TELA PRETA.
+     O nosso egl_shim_ChooseConfig ignora os attribs e devolve a config válida da window SDL. */
+  if (nm && nm[0] == 'e' && nm[1] == 'g' && nm[2] == 'l') {
+    void *e = egl_route(nm);
+    if (e) { if (g_egp_n++ < 400) { fprintf(stderr, "[EGP] %s -> SHIM %p\n", nm, e); } return e; }
+  }
   if (!r_eglGetProcAddress) r_eglGetProcAddress = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
   void *p = r_eglGetProcAddress ? r_eglGetProcAddress(nm) : NULL;
   if (nm && getenv("CUP_NOVAO") && strstr(nm, "VertexArray")) p = NULL;  /* (vira no-op no Unity) */
