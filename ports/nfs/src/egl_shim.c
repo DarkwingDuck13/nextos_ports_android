@@ -617,6 +617,21 @@ void my_glShaderSource(unsigned sh,int count,const char*const*str,const int*len)
   free(s);
 }
 unsigned egl_cur_tex0(void){ return g_unit_tex[g_active_unit&7]; }
+/* 🔤 NFS_GENRA: grava o return-address da criação (glGenTextures) por id de textura.
+ * Quando o id vira página de glyph (512² re-uploaded), o RA aponta p/ dentro do
+ * AddTexturePage da engine → acha o 512 p/ patchar. */
+extern unsigned g_tex_genra[];
+typedef void (*pfn_glGenTextures)(int,unsigned*);
+static pfn_glGenTextures real_glGenTextures;
+void my_glGenTextures(int n,unsigned*ids){
+  if(!real_glGenTextures) real_glGenTextures=(pfn_glGenTextures)SDL_GL_GetProcAddress("glGenTextures");
+  real_glGenTextures(n,ids);
+  if(getenv("NFS_GENRA") && ids){ extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
+    uintptr_t ra=(uintptr_t)__builtin_return_address(0);
+    unsigned off = (ra>tb && ra<tb+0xa00000) ? (unsigned)(ra-tb) : 0;
+    extern unsigned g_tex_genra_arr_sz;
+    for(int i=0;i<n;i++){ unsigned id=ids[i]; if(id<g_tex_genra_arr_sz) g_tex_genra[id]=off; } }
+}
 typedef void (*pfn_glDeleteTextures)(int,const unsigned*);
 static pfn_glDeleteTextures real_glDeleteTextures;
 static void atlas_forget(unsigned id); /* 🔑 esquece refs de atlas ao deletar a textura */
@@ -709,6 +724,8 @@ unsigned short g_texw[GP_SZ];      /* W,H do último upload nível-0 por id de t
 unsigned short g_texh[GP_SZ];
 unsigned short g_texup[GP_SZ];     /* nº de uploads nível-0 (re-upload = página de glyph) */
 unsigned char  g_glyphpage[GP_SZ]; /* índice de página (1,2,3...); 0 = não é página */
+unsigned g_tex_genra[GP_SZ];       /* 🔤 RA da criação (glGenTextures) por id (NFS_GENRA) */
+unsigned g_tex_genra_arr_sz = GP_SZ;
 static int g_glyphpage_n = 0;      /* nº de páginas de glyph descobertas */
 /* registra um upload nível-0; promove a "página de glyph" no 2º upload de uma
  * textura quadrada ≥512 RGBA. Chamado de my_glTexImage2D. */
@@ -719,9 +736,9 @@ void gp_note_upload(unsigned id, int w, int h, unsigned fmt, unsigned ifmt) {
   int square_rgba = (w == h && w >= 512 && (fmt == 0x1908 || ifmt == 0x1908));
   if (square_rgba && g_texup[id] >= 2 && !g_glyphpage[id] && g_glyphpage_n < 200) {
     g_glyphpage[id] = (unsigned char)(++g_glyphpage_n);
-    if (getenv("NFS_PAGEHIST") || getenv("NFS_PAGELOG"))
-      fprintf(stderr, "[gpage] NOVA pagina idx=%d tex=%u %dx%d up=%d f=%d\n",
-              g_glyphpage[id], id, w, h, g_texup[id], g_disc_frame);
+    if (getenv("NFS_PAGEHIST") || getenv("NFS_PAGELOG") || getenv("NFS_GENRA"))
+      fprintf(stderr, "[gpage] NOVA pagina idx=%d tex=%u %dx%d up=%d f=%d genRA=+0x%x\n",
+              g_glyphpage[id], id, w, h, g_texup[id], g_disc_frame, g_tex_genra[id]);
   }
 }
 /* histograma por-frame: para cada draw pequeno texturizado, conta por id. */

@@ -1100,6 +1100,61 @@ void nfs_install_getfspath_hook(void) {
   }
 }
 
+/* ============================================================================
+ * 🔤 FIX FONTES: detour em GlyphBuffer::AddTexturePage (libapp +0x565b78) p/
+ * aumentar a página de glyph de 512→1024 (4× capacidade → cache não enche →
+ * sem eviction → sem garble). O 512 vem de um CAMPO do objeto GlyphBuffer (r0).
+ *   NFS_ATPLOG=1   → loga os campos do `this` p/ achar o offset do 512.
+ *   NFS_BIGPAGE=<n>→ patcha o campo no offset <n> (bytes) de 512 p/ <NFS_PAGEDIM
+ *                    ou 1024> ANTES do original rodar. n=0 (ou "auto") = patcha
+ *                    TODO campo==512 nos primeiros 192 bytes (usar só após o log).
+ * Tudo gated, default-off. Reversível (é no shim; remover env/redeploy). ====== */
+static uintptr_t g_atp_tramp;
+void *my_addtexpage(void *a0, void *a1, void *a2, void *a3) {
+  uintptr_t *o = (uintptr_t *)a0;
+  if (getenv("NFS_ATPLOG")) { static int n = 0; if (n < 40) { n++;
+    /* a0 (descriptor) W=+24/H=+28/type=+52 + a1 como ponteiro (campos 0..7) */
+    long a1f[8]; for(int i=0;i<8;i++) a1f[i] = ((uintptr_t)a1>0x10000) ? (long)((uintptr_t*)a1)[i] : -1;
+    fprintf(stderr, "[AddTexPage#%d a0=%p W=%ld H=%ld +52=%ld | a1=%p a1[0..7]=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld %s]\n",
+      n, a0, (long)o[6], (long)o[7], (long)o[13], a1,
+      a1f[0],a1f[1],a1f[2],a1f[3],a1f[4],a1f[5],a1f[6],a1f[7],
+      (o[13]==3) ? "<<GLYPH" : ""); } }
+  /* 🔤 FIX: SÓ a página de GLYPH (descriptor +52==3; outros atlases têm +52==2).
+   * O tamanho ENTRA pelo 2º arg a1: a1[2]=W, a1[3]=H (=512). AddTexturePage lê esses
+   * e cria a textura + o packing. Patcha a1[2]/a1[3] 512→NFS_PAGEDIM (default 1024)
+   * ANTES do original → textura 1024² + packing 1024 → 4× capacidade → cache não
+   * enche → sem eviction → sem garble. (o[13]=descriptor+52=tipo.) */
+  if (getenv("NFS_BIGPAGE") && o[13] == 3 && (uintptr_t)a1 > 0x10000) {
+    int dim = getenv("NFS_PAGEDIM") ? atoi(getenv("NFS_PAGEDIM")) : 1024;
+    uintptr_t *q = (uintptr_t *)a1;
+    if (q[2] == 512 && q[3] == 512) {
+      q[2] = (uintptr_t)dim; q[3] = (uintptr_t)dim;
+      static int logged = 0; if (!logged) { logged = 1;
+        fprintf(stderr, "[BIGPAGE] glyph page W/H 512->%d (a1=%p)\n", dim, a1); }
+    }
+  }
+  void *(*real)(void *, void *, void *, void *) = (void *(*)(void *, void *, void *, void *))g_atp_tramp;
+  return real(a0, a1, a2, a3);
+}
+void nfs_install_addtexpage_hook(void) {
+  extern void hook_arm(uintptr_t, uintptr_t); extern void *text_base;
+  uintptr_t fn = (uintptr_t)text_base + 0x565b78;  /* GlyphBuffer::AddTexturePage (ARM) */
+  uint8_t *tr = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED) return;
+  memcpy(tr, (void *)fn, 8);                       /* push{..}; add fp,sp,#28 (PIC-safe) */
+  *(uint32_t *)(tr + 8) = 0xe51ff004u;
+  *(uint32_t *)(tr + 12) = (uint32_t)(fn + 8);
+  __builtin___clear_cache((char *)tr, (char *)tr + 16);
+  g_atp_tramp = (uintptr_t)tr;
+  long pg = sysconf(_SC_PAGESIZE);
+  uintptr_t pb = fn & ~((uintptr_t)pg - 1);
+  mprotect((void *)pb, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  hook_arm(fn, (uintptr_t)my_addtexpage);
+  __builtin___clear_cache((char *)fn, (char *)fn + 8);
+  mprotect((void *)pb, pg * 2, PROT_READ | PROT_EXEC);
+  fprintf(stderr, "[AddTexPage-hook] @%p tramp=%p\n", (void *)fn, (void *)g_atp_tramp);
+}
+
 void nfs_install_dyncast_hook(void) {
   extern void hook_arm(uintptr_t, uintptr_t);
   if (!g_real_dynamic_cast) return;
@@ -1482,6 +1537,7 @@ extern void my_glShaderSource(unsigned,int,const char*const*,const int*);
 extern void my_glTexSubImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
 extern void my_glPixelStorei(unsigned,int);
 extern void my_glDeleteTextures(int,const unsigned*);
+extern void my_glGenTextures(int,unsigned*);
 extern void my_glCompileShader(unsigned);
 extern void my_glLinkProgram(unsigned);
 extern void my_glVertexAttrib4f(unsigned,float,float,float,float);
@@ -1537,6 +1593,7 @@ DynLibFunction nfs_shims[] = {
     {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
     {"glPixelStorei", (uintptr_t)my_glPixelStorei},
     {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
+    {"glGenTextures", (uintptr_t)my_glGenTextures},
     {"glCompileShader", (uintptr_t)my_glCompileShader},
     {"glLinkProgram", (uintptr_t)my_glLinkProgram},
     {"glVertexAttrib4f", (uintptr_t)my_glVertexAttrib4f},

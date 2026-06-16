@@ -426,6 +426,9 @@ int main(int argc, char *argv[]) {
    * procura no OBB (NFS_FSPATHLOG=1). */
   if (getenv("NFS_FSPATHLOG")) { extern void nfs_install_getfspath_hook(void);
     nfs_install_getfspath_hook(); }
+  /* 🔤 FIX fontes: detour AddTexturePage p/ aumentar a página de glyph (512→1024). */
+  if (getenv("NFS_ATPLOG") || getenv("NFS_BIGPAGE")) {
+    extern void nfs_install_addtexpage_hook(void); nfs_install_addtexpage_hook(); }
 
   /* NFS_RELRO=1: protege .data.rel.ro do libapp (vtables/type_infos) como RO →
    * se a corrupção dos type_infos do shadergen for overflow gravando ali, vira

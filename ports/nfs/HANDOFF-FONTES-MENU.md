@@ -119,6 +119,28 @@ Objetivo: 512→1024 na criação da página (`GlyphBuffer::AddTexturePage`). Ma
   tamanhos no font_shim — muda layout (engine usa nosso measureText) e a engine chaveia pelo
   PRÓPRIO size, então não reduz a pressão do cache dela. Descartada.
 
+## 🛠️ PROGRESSO DO PATCH (sessão 2026-06-16, parte 2) — AddTexturePage LOCALIZADO, detour OK
+- **`GlyphBuffer::AddTexturePage` = libapp `+0x565b78`** (ARM). Achado via `NFS_GENRA` (hook de
+  glGenTextures grava o RA de criação por id; tex=7 → genRA=`+0x565bd8`, dentro dessa função).
+- **Detour funcionando** (trampolim `hook_arm`, igual ao dysmantle/getfspath): `my_addtexpage` em
+  imports.c, instalado por `nfs_install_addtexpage_hook` (gated `NFS_ATPLOG`/`NFS_BIGPAGE`).
+  **Boot OK, sem crash, reversível** (é no shim).
+- **A página de glyph é distinguível**: descriptor `a0` (r0) tem **+52==3** (TODOS os outros atlases
+  — boot 510×1003, sprites, 256² — têm +52==2). Objeto descriptor é ÚNICO (reusado; +4 = contador
+  de geração que sobe a cada re-add).
+- **MAS não achei o lever do TAMANHO**: patchei `a0[+24]/[+28]` (W/H do descriptor) → a engine
+  SOBRESCREVE (são saída, textura seguiu 512). Patchei `a1[+8]/[+12]` (=512/512) → a textura TAMBÉM
+  seguiu 512: `a1` é um **rect de origem de blit** {x=0,y=0,w=512,h=512}, não o tamanho de
+  alocação. O tamanho real da página (textura + buffer CPU 1MB[+60] + packing) é criado via uma
+  **chamada VIRTUAL** dentro de AddTexturePage (`ldr r1,[r0,#28]; blx r1` em 0x565c8c), a partir de
+  um campo que ainda não pinei — provavelmente do **GlyphBuffer MANAGER (o caller)**, não do a0/a1.
+- **PRÓXIMO**: (a) detour do **caller** de AddTexturePage (achar quem passa a0/a1) p/ pegar o campo
+  "page size" do manager e patchar 512→1024 ANTES de criar a 1ª página; OU (b) capturar o objeto-
+  textura (r7 no uploader 0x565f60, [r7+44]=W=512) e rastrear quem escreve 512 ali. ⚠️ resize tem
+  que ser COORDENADO (textura+buffer CPU+packing juntos) senão glyphs além de 512 se perdem.
+- Hooks novos (gated): `NFS_GENRA` (glGenTextures RA), `NFS_ATPLOG` (loga campos de AddTexturePage),
+  `NFS_BIGPAGE`+`NFS_PAGEDIM` (patcha o tamanho — ainda não eficaz, pendente achar o campo certo).
+
 ## RESUMO DE 1 LINHA
 Fonte do menu quebra = **eviction/re-pack do cache de glyph** (página tex=7 512² enche com muitos
 char×tamanho → a engine realoca glyphs em células novas → o texto na tela mantém UVs antigas → glyph
