@@ -62,6 +62,42 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE C — boot: MUITO PERTO (2026-06-16 noite) — crash na 1ª carga de asset
+**Estado atual exato** (cadeia de logs `[MG]` confirma): boot vai até dentro do
+`OnDeviceCreated` → `PreloadingScreen.Initialize()`:
+1. `new SpriteEffect` ✅  2. `Effect ctor(byte[])` ✅  3. `new SpriteBatcher` ✅  4. SpriteBatch ctor **COMPLETO** ✅
+5. **CRASH** em `asset_cache.get<TextureProxy>("gui/mobile/left_filler")** — segfault NATIVO,
+   ANTES de `Texture2D.PlatformConstruct` (sem log `[MG] Tex2D`) e ANTES do `AssetManager.Open`
+   gerenciado (sem log `[asset]`).
+
+**Causa provável**: `asset_cache.get` chama `CommonLib.AssetManagerWrapper.get_AssetManager()` +
+`.Exists(string)` ANTES do `Context.Assets.Open()`. O `AssetManagerWrapper` provavelmente usa um
+**handle de asset nativo (NDK AAssetManager)** derivado do AssetManager Java — que no meu stub é
+um objeto uninitialized (`GetUninitializedObject`, Handle=0/lixo) → ponteiro inválido → segfault
+nativo. (O managed `AssetManager.Open` JÁ está bridgeado p/ filesystem e funcionaria se alcançado.)
+
+**PRÓXIMO PASSO CLARO (retomar aqui)**:
+- Dumpar IL de `CommonLib.AssetManagerWrapper::Exists(string)` e `::get_AssetManager()` (achar o
+  P/Invoke nativo / uso do Handle).
+- Fix provável: Cecil-patchar no SOR4.dll `AssetManagerWrapper.Exists`→`return true` e forçar o
+  caminho do `Context.Assets.Open()` (já bridgeado), OU bridgear o método nativo de asset.
+  Infra de patch pronta: `port/tools/injector` (Cecil).
+- Assets: já extraí `gui/preload`+`gui/mobile`+`shader` em `build/game_assets` (~11MB). O resto
+  (1.9GB) vai p/ device/R2 quando a 1ª imagem sair.
+- Depois: shaders custom `.xnb` (15, GLSL ES) devem compilar no meu MonoGame GLES; validar.
+
+**Notas técnicas acumuladas (GATE C)**:
+- `Threading.BlockOnUIThread` (Platform/Threading.cs): roda inline se `IsOnUIThread()` senão
+  enfileira p/ `Threading.Run()` (game loop). Durante OnDeviceCreated o loop NÃO roda → se algo
+  carregar fora da UI thread, trava. Texture2D.PlatformConstruct usa BlockOnUIThread.
+- O jogo tem P/Invoke "Wwise" (áudio nativo) e `Wwise.load_bank` — tratar na FASE 5.
+- ⚠️ MUITOS logs `[MG]` de debug no source do MonoGame (GraphicsContext/GraphicsDevice/Game.cs/
+  SpriteBatch/Shader/Texture2D/Threading) + `[host]`/`[asset]` — GATEAR por env (ex: SOR4_TRACE)
+  ou remover antes do build final. `SOR4_DUMPGLSL=1` dumpa GLSL dos shaders.
+- Pacote de teste no device: `/storage/roms/sor4-test/host_pkg`. Rodar (parar ES):
+  `LD_LIBRARY_PATH=libs:/usr/lib SDL_VIDEODRIVER=mali DOTNET_EnableWriteXorExecute=0
+   SOR4_ASSETS=$PWD/assets ./sor4host`.
+
 ## GATE C — boot do jogo: QUASE (2026-06-16) — carrega tudo, crash no OnDeviceCreated do jogo
 **Conquistado**: o host `sor4host` (`port/host/`) **carrega SOR4.dll + 15 stubs Android + MonoGame
 GLES**, roda `CommonLib.xna.CreateGame()` (cria `CommonLib.xna+StandaloneGame` : Game), e
