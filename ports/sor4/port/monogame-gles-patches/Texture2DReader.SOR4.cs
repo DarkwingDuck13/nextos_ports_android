@@ -10,6 +10,20 @@ namespace Microsoft.Xna.Framework.Content
     [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)]
     internal class Texture2DReader : ContentTypeReader<Texture2D>
     {
+        [System.Runtime.InteropServices.DllImport("sor4astc")]
+        static extern int sor4_astc_decode(byte[] data, ulong len, int w, int h, int bx, int by, byte[] outRGBA);
+        static readonly int[,] AstcBlk = {{4,4},{5,4},{5,5},{6,5},{6,6},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
+        static byte[] Sor4DecodeAstc(byte[] data, int len, int w, int h) {
+            int nb = len / 16; int bx = 0, by = 0;
+            for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0],cby=AstcBlk[i,1];
+                if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
+            var rgba = new byte[w*h*4];
+            if (bx==0) { for(int p=0;p<rgba.Length;p+=4){rgba[p]=128;rgba[p+1]=128;rgba[p+2]=128;rgba[p+3]=255;} System.Console.Error.WriteLine("[ASTC] bloco?? len="+len+" "+w+"x"+h); return rgba; }
+            try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, rgba);
+                if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<rgba.Length;p+=4){rgba[p]=128;rgba[p+1]=128;rgba[p+2]=128;rgba[p+3]=255;} } }
+            catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); }
+            return rgba;
+        }
 		public Texture2DReader()
 		{
 			// Do nothing
@@ -80,10 +94,9 @@ namespace Microsoft.Xna.Framework.Content
                         continue;
 
                     if ((int)surfaceFormat >= 96) {
-                        // SOR4: ASTC nao suportado no Mali-450 -> placeholder RGBA cinza (decode real depois)
-                        var ph = new byte[levelWidth*levelHeight*4];
-                        for (int pi=0; pi<ph.Length; pi+=4){ ph[pi]=128; ph[pi+1]=128; ph[pi+2]=128; ph[pi+3]=255; }
-                        levelData = ph; levelDataSizeInBytes = ph.Length;
+                        // SOR4: ASTC -> decode p/ RGBA8 via astcenc (Mali-450 nao tem ASTC nativo)
+                        levelData = Sor4DecodeAstc(levelData, levelDataSizeInBytes, levelWidth, levelHeight);
+                        levelDataSizeInBytes = levelData.Length;
                     }
 				    //Convert the image data if required
 				    switch (surfaceFormat)

@@ -13,3 +13,13 @@ No device (frontend PARADO p/ liberar fb0):
   LD_LIBRARY_PATH=<libs>:/usr/lib SDL_VIDEODRIVER=mali ./glprobe
 Resultado esperado: contexto GLES2 do Mali (sem ARB/EXT_framebuffer_object → DesktopGL rejeita;
 por isso vamos de MonoGame GLES).
+
+## Decode ASTC real (libsor4astc.so)
+Mali-450 nao suporta ASTC. Decodificamos em runtime p/ RGBA8 via astcenc:
+- Fonte astcenc 5.0.0 em ~/deadcells-deploy/astc-encoder; build arm64 decompressor-only+NEON, SEM LTO:
+  cmake -DASTCENC_ISA_NEON=ON -DASTCENC_DECOMPRESSOR=ON -DASTCENC_SHAREDLIB=ON -DASTCENC_CLI=OFF
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DASTCENC_INVARIANCE=OFF (cross aarch64)
+- wrapper port/tools/sor4astc.c -> sor4_astc_decode(data,len,w,h,bx,by,outRGBA); linka libastcdec-neon-static.a
+- Texture2DReader (port/monogame-gles-patches/Texture2DReader.SOR4.cs): fmt>=96 -> detecta bloco
+  pelo tamanho dos dados (numBlocks=len/16, casa ceil(w/bx)*ceil(h/by)) -> decode -> Color RGBA8.
+- Deploy libsor4astc.so em libs/. P/Invoke DllImport("sor4astc").
