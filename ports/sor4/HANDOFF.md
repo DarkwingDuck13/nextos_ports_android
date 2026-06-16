@@ -62,6 +62,14 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE B (parte 1) = PASS ✅ — .NET 9 CoreCLR RODA no .127
+Hello-world **self-contained .NET 9 linux-arm64** (CoreCLR) executou no device:
+`.NET 9.0.17 OK on Arm64`, GC + thread + EXIT=0. Kernel Linux 3.14.79 mas userland
+NextOS 4.8.2 / glibc 2.43 → CoreCLR feliz. Flag usada: `DOTNET_EnableWriteXorExecute=0`.
+- Host: SDK .NET 9.0.315 instalado em `~/.dotnet` (via dotnet-install).
+- Build de teste: `build/hello/` (`dotnet publish -c Release -r linux-arm64 --self-contained`).
+- **Conclusão**: caminho gerenciado é VIÁVEL. Runtime resolvido. Falta GATE B parte 2 (GL).
+
 ## GATE A = PASS ✅ (FASE 1) — inventário
 Assembly store = formato **XABA v2**, 58 assemblies em **LZ4 (`XALZ`)**.
 Extração: parsear header XABA (5×u32) → tabela índice (116×12B) → descritores (stride 28B,
