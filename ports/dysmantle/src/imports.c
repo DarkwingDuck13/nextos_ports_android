@@ -256,6 +256,9 @@ static void *my_fopen(const char *path, const char *mode) {
 static int my_attr_setstacksize(void *attr, size_t sz) {
   static int (*real)(void *, size_t) = NULL;
   if (!real) real = dlsym(RTLD_DEFAULT, "pthread_attr_setstacksize");
+  /* NOTA (investigado 2026-06-16): os ~344MB de regiões grandes [stack/anon] no .127
+   * NÃO vêm daqui (só 3 chamadas de 2MB->8MB); são pools próprios da engine (General
+   * Pool/StageObjectAllocatorPage). Capar aqui é no-op. Mantém só o MIN 8MB original. */
   if (sz < 8u * 1024 * 1024) sz = 8u * 1024 * 1024;
   return real(attr, sz);
 }
@@ -348,6 +351,7 @@ static const unsigned char *my_glGetString(unsigned name) {
 /* Roteador p/ funções GL que precisamos controlar (anti stack-smash). */
 static void rgl(const char *n, void **slot);
 static void store_shader_src(unsigned sh, const char *s, int len);
+static void my_glViewport(int, int, int, int);  /* T2: resolução interna */
 static void my_glShaderSource(unsigned, int, const char *const *, const int *);
 static void my_glCompileShader(unsigned);
 static void my_glLinkProgram(unsigned);
@@ -370,6 +374,7 @@ void *dysmantle_gl_proc_override(const char *name) {
   if (name && strcmp(name, "glCompressedTexImage3D") == 0) return (void *)my_glCompressedTexImage3D;
   if (name && strcmp(name, "glCompressedTexImage2D") == 0) return (void *)my_glCompressedTexImage2D;
   if (name && strcmp(name, "glTexStorage2D") == 0) return (void *)my_glTexStorage2D;
+  if (name && strcmp(name, "glViewport") == 0) return (void *)my_glViewport;
   return NULL;
 }
 /* 🧊 ETC2 → RGBA na CPU (GLES2-universal, até Utgard): com FORCE_ETC2 a engine
@@ -629,9 +634,40 @@ static void my_glFramebufferTexture2D(unsigned tgt, unsigned att, unsigned ttgt,
   static int n = 0;
   if (n < 30) { fprintf(stderr, "[FBO] FramebufferTexture2D att=0x%x tex=%u\n", att, tex); n++; }
 }
+/* ===== T2: RESOLUÇÃO INTERNA ===== escala o FBO de cena (cor+depth) por g_iscale
+ * e o viewport quando renderiza nele; o composite p/ tela (fbo 0) faz o upscale.
+ * 89% dos draws são no FBO de cena -> ataca o fill-rate do Utgard (ganho de fps).
+ * DYSMANTLE_ISCALE (0.5-1.0; default 1.0 = OFF). Mira só alvos ~do tamanho da tela. */
+static float g_iscale = -1.0f;
+static int iscale_on(void) {
+  if (g_iscale < 0) {
+    const char *e = getenv("DYSMANTLE_ISCALE");
+    g_iscale = e ? (float)atof(e) : 1.0f;
+    if (g_iscale < 0.4f || g_iscale > 1.0f) g_iscale = 1.0f;
+    if (g_iscale < 0.999f) fprintf(stderr, "[ISCALE] resolução interna = %.2f\n", g_iscale);
+  }
+  return g_iscale < 0.999f;
+}
+/* alvo do FBO de cena: a engine já renderiza em ~768x432 (0.6× de 1280x720) e dá
+ * upscale. Pegamos esse target (>=512 de largura) p/ reduzir AINDA mais via iscale. */
+static int screenish(int w, int h) {
+  return w >= 512 && w <= DYS_W * 11 / 10 && h >= 288 && h <= DYS_H * 11 / 10;
+}
+static int iscaled(int v) { int r = (int)(v * g_iscale + 0.5f); r &= ~1; return r < 2 ? 2 : r; }
+
+static void my_glViewport(int x, int y, int w, int h) {
+  static void (*real)(int, int, int, int) = NULL;
+  rgl("glViewport", (void **)&real);
+  if (iscale_on() && g_cur_fbo != 0 && screenish(w, h)) {
+    w = iscaled(w); h = iscaled(h);  /* renderiza no FBO de cena reduzido */
+  }
+  if (real) real(x, y, w, h);
+}
+
 static void my_glRenderbufferStorage(unsigned tgt, unsigned ifmt, int w, int h) {
   static void (*real)(unsigned, unsigned, int, int) = NULL;
   rgl("glRenderbufferStorage", (void **)&real);
+  if (iscale_on() && screenish(w, h)) { w = iscaled(w); h = iscaled(h); }  /* depth de cena */
   if (real) real(tgt, ifmt, w, h);
   static int n = 0;
   if (n < 30) { fprintf(stderr, "[FBO] RenderbufferStorage ifmt=0x%x %dx%d\n", ifmt, w, h); n++; }
@@ -912,6 +948,14 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
       static int hn = 0; if (hn < 4) { fprintf(stderr, "[TEXHALF] %dx%d -> %dx%d\n", w, h, hw, hh); hn++; }
       return;
     }
+  }
+  /* T2: textura de COR do FBO de cena (sem dados, ~768x432) -> reduzida */
+  if (iscale_on() && !px && lvl == 0 && screenish(w, h)) {
+    int nw = iscaled(w), nh = iscaled(h);
+    if (real) real(tgt, lvl, ifmt, nw, nh, border, fmt, typ, NULL);
+    static int vn = 0;
+    if (vn < 6) { fprintf(stderr, "[ISCALE] FBO color %dx%d -> %dx%d\n", w, h, nw, nh); vn++; }
+    return;
   }
   if (gerr) while (gerr()) {}
   if (try_upload_etc1(tgt, lvl, w, h, px, fmt)) return;  /* T3: ETC1 (opaca, mip0) -> ~8x menos VRAM */
@@ -1300,6 +1344,7 @@ DynLibFunction dysmantle_overrides[] = {
   {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
   {"glCheckFramebufferStatus", (uintptr_t)my_glCheckFramebufferStatus},
   {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
+  {"glViewport", (uintptr_t)my_glViewport},  /* T2: resolução interna */
   {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
   {"pthread_attr_setstacksize", (uintptr_t)my_attr_setstacksize},
   {"fopen", (uintptr_t)my_fopen},
