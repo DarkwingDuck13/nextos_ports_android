@@ -39,7 +39,7 @@ $CC -shared -fPIC -nostdlib -Wl,-soname,libGLESv2.so     "$STUB/gles.c" -o "$STU
 # 3) build do compat (PIE, dinamico, glibc do container). Mesma lista do build.sh nativo.
 SRCS="src/main.c src/so_util.c src/imports.c src/pthread_bridge.c \
       src/egl_shim.c src/android_shim.c src/opensles_shim.c src/jni_shim.c \
-      src/etc2_decode.c src/util.c src/error.c"
+      src/etc2_decode.c src/etc1_encode.c src/util.c src/error.c"
 
 $CC -fPIE -pie -rdynamic -I src -I "$HDR" -O2 -fPIC -D_GNU_SOURCE \
     -Wno-unused-parameter -Wno-unused-function -Wno-comment \
