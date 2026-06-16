@@ -215,6 +215,19 @@ static void id3_set(void *fp, long off){ id3_clear(fp); for(int i=0;i<8;i++) if(
 static void *my_fopen(const char *path, const char *mode) {
   if (!real_fopen) real_fopen = (void *(*)(const char *, const char *))dlsym(RTLD_DEFAULT, "fopen");
   void *fp = real_fopen(path, mode);
+  /* 🔑 REDIRECT (geral): a engine às vezes pede assets de `.../data/files/...` que
+   * NÃO existe — o real está em `.../data/Android/data/com.ea.games.nfs13_row/
+   * files/...`. Sem isto, fontes/sprites/layouts falham após algumas seções de menu
+   * → quebram. Só em FALHA + path data/files (seguro). */
+  if (!fp && path) {
+    const char *mk = "/data/files/"; const char *p = strstr(path, mk);
+    if (p) { char alt[1024];
+      snprintf(alt, sizeof alt, "%.*s/data/Android/data/com.ea.games.nfs13_row/files/%s",
+               (int)(p - path), path, p + 12);
+      fp = real_fopen(alt, mode);
+      if (fp && getenv("NFS_FOPENLOG")) fprintf(stderr, "[fopen-redirect] '%s' -> ok\n", path);
+    }
+  }
   if (path && strstr(path, ".obb")) g_obb_fp = fp;
   if (fp) id3_clear(fp); /* limpa entrada stale (fp reusado) */
   if (fp && path && (strstr(path,".mp3")||strstr(path,".MP3")) && !getenv("NFS_NOID3")) {

@@ -22,6 +22,7 @@ typedef struct {
   stbtt_fontinfo info;
   float size, scale;
   int ascent, descent, linegap; /* em pixels (já escalados) */
+  char key[160];                /* 🔑 path|family + size p/ cache (dedup por menu) */
 } FontPaint;
 
 #define MAXP 256
@@ -32,9 +33,36 @@ static FontPaint *alloc_paint(void) {
   for (int i = 0; i < MAXP; i++) if (!g_paints[i].used) return &g_paints[i];
   return &g_paints[0];
 }
+/* 🔑🔤 CACHE por chave (path/family + size): a engine RE-CRIA os mesmos Paints a
+ * cada menu/aba e NUNCA os destrói → sem cache, o pool de 256 exauria e o
+ * alloc_paint CLOBBERAVA o slot 0 → a fonte daquele slot quebrava e TODAS as abas
+ * seguintes (que reusavam o slot 0) ficavam ruins ("abre várias OK, erro, todas
+ * ruim"). Com cache, o mesmo font+size reusa o slot → o pool não exauri. */
+static FontPaint *cache_find(const char *key) {
+  if (!key || !key[0]) return NULL;
+  for (int i = 0; i < MAXP; i++)
+    if (g_paints[i].used && strcmp(g_paints[i].key, key) == 0) return &g_paints[i];
+  return NULL;
+}
 
 static unsigned char *read_file(const char *path, long *szout) {
   FILE *f = fopen(path, "rb");
+  if (!f && path) {
+    /* 🔑🔤 REDIRECT: a engine às vezes pede fontes (e outros assets) de
+     * `.../data/files/published/...` que NÃO existe — o real está em
+     * `.../data/Android/data/com.ea.games.nfs13_row/files/published/...`. Sem isto,
+     * após ~5 seções de menu a engine pede por esse caminho → FALHOU → fonte vira
+     * dummy → TODAS as fontes que pedem por ele quebram. Reescreve e tenta de novo. */
+    const char *mk = "/data/files/";
+    const char *p = strstr(path, mk);
+    if (p) {
+      char alt[1024];
+      snprintf(alt, sizeof alt, "%.*s/data/Android/data/com.ea.games.nfs13_row/files/%s",
+               (int)(p - path), path, p + strlen(mk));
+      f = fopen(alt, "rb");
+      if (f && getenv("NFS_FONTLOG")) fprintf(stderr, "[font] redirect '%s' -> '%s'\n", path, alt);
+    }
+  }
   if (!f) return NULL;
   fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
   if (n <= 0) { fclose(f); return NULL; }
@@ -55,6 +83,8 @@ static void recompute_metrics(FontPaint *p) {
 
 void *font_create_from_file(const char *path, float size) {
   if (!path || size <= 0) return NULL;
+  char key[160]; snprintf(key, sizeof key, "%s|%.2f", path, size);
+  FontPaint *c = cache_find(key); if (c) return c; /* dedup: mesmo font+size */
   long n = 0; unsigned char *ttf = read_file(path, &n);
   if (!ttf) { fprintf(stderr, "[font] FALHOU abrir %s\n", path); return &g_dummy; }
   FontPaint *p = alloc_paint();
@@ -64,6 +94,7 @@ void *font_create_from_file(const char *path, float size) {
     fprintf(stderr, "[font] InitFont falhou %s\n", path); free(ttf); return &g_dummy;
   }
   p->ttf = ttf; p->size = size; p->used = 1;
+  snprintf(p->key, sizeof p->key, "%s", key);
   recompute_metrics(p);
   if (getenv("NFS_FONTLOG"))
     fprintf(stderr, "[font] file %s size=%.1f asc=%d desc=%d -> %p\n", path, size, p->ascent, p->descent, (void *)p);
@@ -91,6 +122,9 @@ void font_set_size(void *paintv, float size) {
   FontPaint *p = (FontPaint *)paintv;
   if (!p || !p->used || size <= 0) return;
   p->size = size; recompute_metrics(p);
+  /* atualiza a chave do cache (o size faz parte dela) p/ não casar errado depois */
+  char *bar = strrchr(p->key, '|');
+  if (bar) snprintf(bar, (size_t)(p->key + sizeof p->key - bar), "|%.2f", size);
 }
 
 float font_get_size(void *paintv) {
