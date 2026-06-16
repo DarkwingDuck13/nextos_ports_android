@@ -601,9 +601,14 @@ void my_glShaderSource(unsigned sh,int count,const char*const*str,const int*len)
 unsigned egl_cur_tex0(void){ return g_unit_tex[g_active_unit&7]; }
 typedef void (*pfn_glDeleteTextures)(int,const unsigned*);
 static pfn_glDeleteTextures real_glDeleteTextures;
+static void atlas_forget(unsigned id); /* 🔑 esquece refs de atlas ao deletar a textura */
 void my_glDeleteTextures(int n,const unsigned*t){
   if(!real_glDeleteTextures) real_glDeleteTextures=(pfn_glDeleteTextures)SDL_GL_GetProcAddress("glDeleteTextures");
   if(getenv("NFS_DELLOG")&&t){ static int c=0; for(int i=0;i<n&&c<60;i++){ fprintf(stderr,"[glDeleteTextures] id=%u\n",t[i]); c++; } }
+  /* 🔑 ao deletar uma textura, esquece toda ref de atlas a ela — senão o atlas-
+   * rebind binda um id DELETADO/REUSADO (ao sair e voltar a um menu, a fonte/
+   * spinner pegava lixo → quebrava/sumia). */
+  if(t) for(int i=0;i<n;i++) atlas_forget(t[i]);
   real_glDeleteTextures(n,t);
 }
 void my_glActiveTexture(unsigned u){
@@ -696,6 +701,14 @@ static void atlas_record(void){
   unsigned t0=g_unit_tex[0];
   if(t0 && t0<ATLAS_MAP_SZ && g_is_atlas[t0] && g_cur_prog<ATLAS_MAP_SZ)
     g_prog_atlas[g_cur_prog]=t0;
+}
+/* esquece todas as refs de atlas a uma textura deletada (anti-bind de id stale) */
+static void atlas_forget(unsigned id){
+  if(id==g_nfs_atlas_tex) g_nfs_atlas_tex=0;
+  if(id<ATLAS_MAP_SZ && g_is_atlas[id]){
+    g_is_atlas[id]=0;
+    for(unsigned j=0;j<ATLAS_MAP_SZ;j++) if(g_prog_atlas[j]==id) g_prog_atlas[j]=0;
+  }
 }
 /* 🔬 TESTE 3D-preto: desabilita depth/cull nos draws GRANDES (geometria 3D) p/
  * ver se a geometria aparece (depth buffer ausente/quebrado no Mali-450 rejeita
