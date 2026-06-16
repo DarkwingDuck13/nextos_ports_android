@@ -10,5 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../MonoGame/MonoGame.Framework/MonoGame.Framework.SOR4GLES.csproj" />
+    <Reference Include="Mono.Android"><HintPath>../stubs/Mono.Android.dll</HintPath></Reference>
+    <Reference Include="SOR4Bridge"><HintPath>../bridge/out/SOR4Bridge.dll</HintPath></Reference>
   </ItemGroup>
 </Project>

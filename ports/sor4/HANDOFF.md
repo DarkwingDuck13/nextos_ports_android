@@ -62,6 +62,34 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE C — boot: crash isolado no LOADER MULTI-THREAD do jogo (2026-06-16 madrugada)
+**PONTE DE ASSETS PROVADA FUNCIONANDO** ✅: teste isolado no host —
+`Game.Activity.Assets.Open("gui/mobile/title_screen")` abre o .xnb (**len=803079**), tanto via
+tipo `AndroidGameActivity` quanto via slot `Context::get_Assets()` (cast). `AssetManager.Open/List`
+bridgeados + `get_Assets` override no `AndroidGameActivity` (SOR4Compat.cs) + Activity via
+`GetUninitializedObject` (ctors do stub são no-op inválidos). `AssetBridge.List` adicionado (Exists
+do jogo usa `AssetManager.List(dir)`).
+
+**Crash atual**: `asset_cache.get<T>` → `load_asset(AssetId)` → segfault NATIVO **ANTES** de chegar
+no `get_AssetManager`/Open (override de Assets NÃO é chamado). `load_asset` é **multi-thread**:
+`Monitor.Enter/Exit`, `utils.is_main_thread()`, `asset_cache.update_on_main_thread`, `Thread.Sleep/
+Yield`, e uma **"asset loading thread"**. Hipótese forte: o loader cria a textura GL numa **thread
+de background sem o contexto GL current** (ou a fila de `Threading.BlockOnUIThread` não é bombeada
+pois o game loop ainda não roda durante OnDeviceCreated) → Mali segfalta. `is_main_thread()` usa
+`Environment.CurrentManagedThreadId` vs id registrado — se o registro do main thread não casa, o
+loader toma o caminho de background thread.
+
+**PRÓXIMO PASSO (retomar aqui)**:
+- Dump limpo de `CommonLib.utils.is_main_thread()` + onde o main thread id é registrado (provável
+  em algum init que meu host não chama). Garantir que `is_main_thread()`==true na main thread.
+- Entender a "asset loading thread": se ela faz GL, precisa do contexto compartilhado OU forçar
+  loading síncrono na main thread (durante OnDeviceCreated estamos na main thread).
+- Alternativa: bombear `Microsoft.Xna.Framework.Threading.Run()` ou rodar o loader após o game
+  loop começar (mover a 1ª carga p/ depois do 1º Update). 
+- MonoGame: `Threading.BlockOnUIThread` enfileira p/ `Threading.Run()` (chamado no loop) — durante
+  OnDeviceCreated o loop não roda → deadlock/crash se asset thread espera por ele.
+Fontes funcionais sincronizados em `port/` (bridge c/ List, injector c/ List, SOR4Compat c/ override).
+
 ## GATE C — boot: MUITO PERTO (2026-06-16 noite) — crash na 1ª carga de asset
 **Estado atual exato** (cadeia de logs `[MG]` confirma): boot vai até dentro do
 `OnDeviceCreated` → `PreloadingScreen.Initialize()`:

@@ -12,6 +12,17 @@ class Host {
     };
     AppDomain.CurrentDomain.UnhandledException += (s,e)=>{ L("UNHANDLED: "+e.ExceptionObject); };
     try {
+      L("=== TESTE Game.Activity.Assets ===");
+      try {
+        var act = Microsoft.Xna.Framework.Game.Activity;
+        L("act = "+(act==null?"NULL":act.GetType().FullName));
+        var am = act.Assets;
+        L("Assets = "+(am==null?"NULL":am.GetType().FullName));
+        L("am.Open test...");
+        try { var st = am.Open("gui/mobile/title_screen"); L("Open ok len="+(st==null?-1:st.Length)); } catch(Exception ox){ L("Open exc: "+ox.GetType().Name+" "+ox.Message); }
+        L("test via Context slot (como o jogo)...");
+        try { Android.Content.Context ctx = act; var am2 = ctx.Assets; L("ctx.Assets = "+(am2==null?"NULL":am2.GetType().FullName)); } catch(Exception cx){ L("ctx.Assets EXC: "+cx); }
+      } catch (Exception tx) { L("TESTE EXC: "+tx); }
       L("carregando SOR4.dll");
       var sor4 = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(dir,"SOR4.dll"));
       var xna = sor4.GetType("CommonLib.xna", true);
