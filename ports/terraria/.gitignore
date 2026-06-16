@@ -1,0 +1,6 @@
+# payloads do jogo (BYO-data — não versionar)
+payload/
+terraria
+*.o
+run.out
+debug.log
