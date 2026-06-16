@@ -10,6 +10,7 @@ LOGROOT="$GAMEDIR/logs"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 PREVDIR="$LOGROOT/pre-$STAMP"
 RUNLOGDIR="$LOGROOT/$STAMP"
+EXTRA_SWAP_IMG="${RE4_SWAP_IMG:-/storage/.update/re4swap2g.img}"
 
 mkdir -p "$GAMEDIR"
 mkdir -p "$LOGROOT" "$RUNLOGDIR"
@@ -38,6 +39,21 @@ done
   echo "timeout=$TIMEOUT"
   echo "memcap_mb=$MEMCAP_MB"
 } > "$RUNLOGDIR/meta.txt"
+
+echo 1 > /proc/sys/vm/overcommit_memory 2>/dev/null || true
+
+if [ -f "$EXTRA_SWAP_IMG" ] && command -v losetup >/dev/null 2>&1; then
+  EXTRA_LOOP=$(losetup -j "$EXTRA_SWAP_IMG" | cut -d: -f1 | head -1)
+  if [ -z "$EXTRA_LOOP" ]; then
+    EXTRA_LOOP=$(losetup -f --show "$EXTRA_SWAP_IMG" 2>/dev/null)
+  fi
+  if [ -n "$EXTRA_LOOP" ] && ! swapon -s | grep -q "$EXTRA_LOOP"; then
+    mkswap "$EXTRA_LOOP" >/dev/null 2>&1 || true
+    swapon "$EXTRA_LOOP" -p 20 2>/dev/null || true
+  fi
+  echo "extra_swap_img=$EXTRA_SWAP_IMG" >> "$RUNLOGDIR/meta.txt"
+  echo "extra_swap_loop=${EXTRA_LOOP:-none}" >> "$RUNLOGDIR/meta.txt"
+fi
 
 if [ -d /sys/fs/cgroup/memory ]; then
   mkdir -p "$CGROUP" 2>/dev/null

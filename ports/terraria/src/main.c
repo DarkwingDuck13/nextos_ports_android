@@ -172,6 +172,81 @@ void ter_inline_task(void *obj) {
   int n = __atomic_add_fetch(&g_inlinetask_n, 1, __ATOMIC_RELAXED);
   if (n <= 5 || (n % 50) == 0) { fprintf(stderr, "[INLINETASK] #%d obj=%p node=%p c10360++\n", n, obj, node); fsync(2); }
 }
+
+/* TER_NUKEKB: patcha métodos il2cpp que lançam exceção TODA FRAME e ABORTAM o ExecuteFrame
+   ANTES do Draw (KeyboardInput.Update lê o campo Java 'PressedStates' via reflection que falha
+   no nosso JNI fake). Usa a API il2cpp REAL (exportada) p/ achar a classe+método e patchar o
+   methodPointer p/ `ret` (no-op). Roda lazy do swap-hook até achar (il2cpp já inicializado). */
+static void ter_nuke_methods(void) {
+  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_NUKEKB")) { if (!getenv("TER_NUKEKB")) done = 1; return; }
+  static int tries = 0; if (tries++ > 240) { done = 1; return; }
+  void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  /* classes/métodos a neutralizar (no-op): nome de classe (ns vazio) + método + argc */
+  static const char *targets[][3] = { {"KeyboardInput", "Update", (const char*)0} };
+  int patched = 0;
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    for (unsigned t = 0; t < sizeof targets/sizeof targets[0]; t++) {
+      void *cls = cls_from_name(img, "", targets[t][0]); if (!cls) continue;
+      void *m = cls_method(cls, targets[t][1], (int)(intptr_t)targets[t][2]); if (!m) continue;
+      void *mp = *(void **)m;   /* MethodInfo.methodPointer @ off 0 */
+      if (!mp) continue;
+      long pgsz = sysconf(_SC_PAGESIZE);
+      void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pgsz - 1));
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)mp = 0xD65F03C0u;   /* ret */
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+      fprintf(stderr, "[NUKEKB] %s.%s @%p -> ret (asm %zu)\n", targets[t][0], targets[t][1], mp, i);
+      fsync(2); patched++;
+    }
+  }
+  if (patched) done = 1;
+}
+
+/* TER_JOBWORKERS0: chama JobsUtility.JobWorkerCount=0 (e ActiveThreadCount=0) via il2cpp_runtime_invoke
+   → Unity roda os jobs INLINE na própria thread (dispatch pros worker threads está quebrado no
+   so-loader). Fix CORRETO (vs fingir com INLINETASK/SKIPJOBWAIT). Lazy do swap-hook até conseguir. */
+static void ter_jobworkers0(void) {
+  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_JOBWORKERS0")) { if (!getenv("TER_JOBWORKERS0")) done = 1; return; }
+  static int tries = 0; if (tries++ > 240) { done = 1; return; }
+  void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
+  void *(*rt_invoke)(void *, void *, void **, void **) = (void *)(g_il2cpp_base + 0x73cc7c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    void *cls = cls_from_name(img, "Unity.Jobs.LowLevel.Unsafe", "JobsUtility"); if (!cls) continue;
+    { static int lc = 0; if (lc++ < 1) {
+      fprintf(stderr, "[JOBWORKERS0] JobsUtility achada (asm %zu) — métodos:\n", i);
+      void *(*cls_methods)(void *, void **) = (void *)(g_il2cpp_base + 0x73c288);
+      const char *(*meth_name)(void *) = (void *)(g_il2cpp_base + 0x73cb9c);
+      unsigned (*meth_pc)(void *) = (void *)(g_il2cpp_base + 0x73cbac);
+      void *it = NULL, *mm;
+      while ((mm = cls_methods(cls, &it))) fprintf(stderr, "   %s/%u\n", meth_name(mm), meth_pc(mm));
+      fsync(2);
+    } }
+    int zero = 0; void *params[1] = { &zero }; void *exc = NULL;
+    const char *setters[] = { "set_JobWorkerCount", "SetJobQueueMaximumActiveThreadCount", "SetJobQueueMaximumWarpThreadCount" };
+    int any = 0;
+    for (unsigned s = 0; s < sizeof setters/sizeof setters[0]; s++) {
+      void *m = cls_method(cls, setters[s], 1); if (!m) continue;
+      exc = NULL; rt_invoke(m, NULL, params, &exc);
+      fprintf(stderr, "[JOBWORKERS0] %s(0) invoked exc=%p\n", setters[s], exc); fsync(2); any = 1;
+    }
+    if (any) { done = 1; return; }
+  }
+}
 extern size_t text_size;
 /* /proc/self/maps lido UMA vez (sem malloc — open/read/parse manual; fopen não é
  * async-signal-safe e re-faulta no handler). Buffer estático grande o bastante. */
@@ -1535,7 +1610,11 @@ static void ter_screenshot_maybe(void) {
             w,h,n, nb, w*h, g_frame_draws, g_frame_verts); }
   free(buf);
 }
+static void ter_nuke_methods(void);
+static void ter_jobworkers0(void);
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
+  ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
@@ -3007,7 +3086,8 @@ int main(int argc, char **argv) {
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     patch_got("eglGetProcAddress", (void *)my_eglGetProcAddress);
   /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
-  if (rs_enabled() || getenv("TER_SHOT")) patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
+  if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0"))
+    patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
   /* dl* estavam COMENTADOS em imports.gen.c -> set_import foi no-op e o dlopen@plt
      caiu no glibc REAL (falha ao carregar .so Android). Sem isso o il2cpp nao carrega. */
   patch_got("dlopen", (void *)my_dlopen);

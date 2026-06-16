@@ -69,7 +69,28 @@ CAMINHO CUSTOM (FEITO, mas NextOS NÃO quer — fica de fallback/referência):
   wwise_real.c (libWwise.so glibc: dlopen OpenAL+opusfile, post_event toca o .opus). FUNCIONOU end-to-end:
   NextOS ouviu o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
 
-CAMINHO NATIVO (O CERTO — EM ANDAMENTO):
+### 🔊🟢 NATIVO — GRANDE AVANÇO 2026-06-16 cont.12: Wwise REAL CARREGA via so-loader (init=0 falta)
+ports/sor4wwise/ = wrapper glibc libWwise.so (PLUGIN do .NET) que so-carrega a Wwise REAL do APK.
+- Construtor: so_load(libWwise.real.so) + relocate + resolve(tabela combinada extra+gen) + init_array.
+  **FUNCIONA**: "[wwise-native] libWwise REAL carregada OK" (so-loader OK p/ a Wwise C++ 2.9MB!).
+- JNI: nosso host headless NÃO chama JNI_OnLoad. FIX: construtor chama `JNI_OnLoad(jni_shim fake_vm)`
+  -> retorna 65542 (JNI 1.6 OK) + `native_android_preinit(fake activity 0x1000)`. AAssetManager_fromJava
+  é chamado (cadeia JNI funciona). build: build.sh (toolchain NextOS Amlogic-old + -lSDL2, ld warning
+  "bad subsection" do libSDL2 é inofensivo; .so sai OK c/ 21 exports native_wwise).
+- ⚠️ MURO ATUAL: `native_wwise_init` real **retorna 0** (falha). Path: o jogo passa get_data_folder()
+  VAZIO; substituí por gameassets/ no trampolim (SOR4_BANKDIR). MAS init=0 persiste e NENHUMA chamada
+  AAsset_open acontece durante init -> falha é num SUBSISTEMA Wwise (memória/sound engine), NÃO no IO.
+  RE: native_wwise_init@0x122350; em 0x122428 `cmp w0,#1;b.ne fail` apos `AddBasePath`(0x140704); em
+  0x122438 `cbz x0,fail` apos `bl 0x256b24` que chama 0x1441fc(rpmalloc?) + lê global g_pAKPluginList+3520.
+  PRÓXIMO: gdb arm64 no device (logar text_base no construtor p/ achar addr; breakpoint em text_base+offset)
+  OU instrumentar mais shims (rpmalloc usa mmap/TLS bionic?) OU logar retorno de native_android_preinit +
+  InitAndroidIO. Logs: opensles_shim slCreateEngine loga; wwise.log no device. Arquivos: ports/sor4wwise/
+  src/wwise_native.c (wrapper+trampolins+AAsset+__sF+JNI), src/imports.gen.c (tabela; CORRIGIDO: faltava
+  bloco includes + externs _fake + def dynlib_numfunctions + nomes SL_IID — new-port.sh tem esses BUGS).
+- Wwise real em /tmp/apklib/lib/arm64-v8a/libWwise.so -> device host_pkg/libs/libWwise.real.so. Wrapper
+  -> libWwise.so. Stub antigo backup: libWwise.so.stub.bak. Custom (referencia) backup nao guardado.
+
+CAMINHO NATIVO (detalhes anteriores):
 - libWwise.so REAL extraída do APK -> `/tmp/apklib/lib/arm64-v8a/libWwise.so` (2.9MB, exporta os 21
   native_wwise_*, NEEDED libOpenSLES/libandroid/liblog/libc/libm/libdl bionic, 134 imports UND).
 - Scaffold gerado: `tools/new-port.sh libWwise.so sor4wwise` -> **ports/sor4wwise/** (98/134 auto-resolvidos:

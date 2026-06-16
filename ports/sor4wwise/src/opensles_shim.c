@@ -8,6 +8,7 @@
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -1112,7 +1113,7 @@ SLresult slCreateEngine_shim(void **pEngine, SLuint32 numOptions,
   (void)numOptions; (void)pEngineOptions; (void)numInterfaces;
   (void)pInterfaceIds; (void)pInterfaceRequired;
 
-  /* debugPrintf("opensles_shim: slCreateEngine\n"); */
+  { FILE* f=fopen("/storage/roms/sor4-test/wwise.log","a"); if(f){fprintf(f,"[opensles] slCreateEngine chamado\n"); fclose(f);} }
   init_engine();
   if (pEngine) *pEngine = &g_engine_obj_ptr;
   return SL_RESULT_SUCCESS;

@@ -544,8 +544,16 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        reflection montar uma assinatura e o GetFieldID/leitura seguir (campo lido = fake/0). */
     if (getenv("TER_KBFIX") &&
         (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
-         strcmp(nm, "getTypeName") == 0))
+         strcmp(nm, "getTypeName") == 0)) {
+      static int gn = 0; if (gn++ < 30) { debugPrintf("[KBREFLECT] %s -> java.lang.Object\n", nm); }
       return make_jstring("java.lang.Object");
+    }
+    /* log de métodos de reflection p/ diagnóstico (gated) */
+    if (getenv("TER_REFLOG") &&
+        (strstr(nm,"Field")||strstr(nm,"Type")||strstr(nm,"Component")||
+         strstr(nm,"getClass")||strstr(nm,"getDeclar")||strcmp(nm,"getType")==0)) {
+      static int rn=0; if (rn++<40) debugPrintf("[REFLOG-obj] %s\n", nm);
+    }
   }
   return &fake_obj;
 }
@@ -569,6 +577,9 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
   (void)obj;
   const char *nm = mid_name(methodID);
   if (nm) {
+    if (getenv("TER_REFLOG") && (strstr(nm,"isArray")||strstr(nm,"isPrimitive")||strstr(nm,"isAssign"))) {
+      static int bn=0; if (bn++<40) debugPrintf("[REFLOG-bool] %s -> 0\n", nm);
+    }
     if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
     if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
     /* Handler.post/postDelayed(Runnable[,delay]) -> RODA o Runnable, retorna true.

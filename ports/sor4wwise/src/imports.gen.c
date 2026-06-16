@@ -2,7 +2,76 @@
 // 134 simbolos. Resolva os UNKNOWN no fim do arquivo.
 #include "imports.h"
 #include "so_util.h"
+#include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+#include <math.h>
+#include <ctype.h>
+#include <wchar.h>
+#include <wctype.h>
+#include <time.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sched.h>
+#include <sys/ioctl.h>
+#include <malloc.h>
+#include <locale.h>
+#include <signal.h>
+#include <setjmp.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/time.h>
+#include <pthread.h>
+#include "opensles_shim.h"
+#include "android_shim.h"
+static int *bionic_errno(void){ return __errno_location(); }
+#define __errno bionic_errno
+extern void __stack_chk_fail(void);
+extern unsigned long __stack_chk_guard;
+// SL_IID_ANDROIDCONFIGURATION nao existe no shim -> dummy (config de stream Android = no-op)
+static const long sl_IID_ANDROIDCONFIGURATION_dummy = 0;
+// extern decls dos _fake + __cxa (def em pthread_fake.c/glibc)
+extern int __cxa_atexit(void(*)(void*),void*,void*);
+extern void __cxa_finalize(void*);
+extern long pthread_attr_destroy_fake();
+extern long pthread_attr_init_fake();
+extern long pthread_attr_setdetachstate_fake();
+extern long pthread_attr_setstacksize_fake();
+extern long pthread_condattr_destroy_fake();
+extern long pthread_condattr_init_fake();
+extern long pthread_cond_broadcast_fake();
+extern long pthread_cond_destroy_fake();
+extern long pthread_cond_init_fake();
+extern long pthread_cond_signal_fake();
+extern long pthread_cond_wait_fake();
+extern long pthread_create_fake();
+extern long pthread_getspecific_fake();
+extern long pthread_join_fake();
+extern long pthread_key_create_fake();
+extern long pthread_key_delete_fake();
+extern long pthread_mutexattr_destroy_fake();
+extern long pthread_mutexattr_init_fake();
+extern long pthread_mutexattr_settype_fake();
+extern long pthread_mutex_destroy_fake();
+extern long pthread_mutex_init_fake();
+extern long pthread_mutex_lock_fake();
+extern long pthread_mutex_unlock_fake();
+extern long pthread_once_fake();
+extern long pthread_rwlock_rdlock_fake();
+extern long pthread_rwlock_unlock_fake();
+extern long pthread_rwlock_wrlock_fake();
+extern long pthread_self_fake();
+extern long pthread_setschedparam_fake();
+extern long pthread_setspecific_fake();
+extern long sem_destroy_fake();
+extern long sem_init_fake();
+extern long sem_post_fake();
+extern long sem_wait_fake();
+
 
 // === passthrough/pthread/shim: ligados automaticamente ===
 DynLibFunction dynlib_functions[] = {
@@ -104,10 +173,10 @@ DynLibFunction dynlib_functions[] = {
   // TODO {"sincosf", (uintptr_t)&stub_sincosf},  // <<< IMPLEMENTAR
   {"sinf", (uintptr_t)&sinf},  // pass
   {"slCreateEngine", (uintptr_t)&slCreateEngine_shim},  // opensles_shim
-  {"SL_IID_ANDROIDCONFIGURATION", (uintptr_t)&SL_IID_ANDROIDCONFIGURATION_shim},  // opensles_shim
-  {"SL_IID_BUFFERQUEUE", (uintptr_t)&SL_IID_BUFFERQUEUE_shim},  // opensles_shim
-  {"SL_IID_ENGINE", (uintptr_t)&SL_IID_ENGINE_shim},  // opensles_shim
-  {"SL_IID_PLAY", (uintptr_t)&SL_IID_PLAY_shim},  // opensles_shim
+  {"SL_IID_ANDROIDCONFIGURATION", (uintptr_t)&sl_IID_ANDROIDCONFIGURATION_dummy},  // dummy (android config = no-op)
+  {"SL_IID_BUFFERQUEUE", (uintptr_t)&sl_IID_BUFFERQUEUE},  // opensles_shim
+  {"SL_IID_ENGINE", (uintptr_t)&sl_IID_ENGINE},  // opensles_shim
+  {"SL_IID_PLAY", (uintptr_t)&sl_IID_PLAY},  // opensles_shim
   {"__stack_chk_fail", (uintptr_t)&__stack_chk_fail},  // abi
   {"stat", (uintptr_t)&stat},  // pass
   {"strcmp", (uintptr_t)&strcmp},  // pass
@@ -134,6 +203,7 @@ DynLibFunction dynlib_functions[] = {
   // TODO {"__vsnprintf_chk", (uintptr_t)&stub___vsnprintf_chk},  // <<< IMPLEMENTAR
 };
 const int dynlib_functions_count = sizeof(dynlib_functions)/sizeof(dynlib_functions[0]);
+size_t dynlib_numfunctions = sizeof(dynlib_functions)/sizeof(dynlib_functions[0]);
 
 // ===================== SIMBOLOS A IMPLEMENTAR =====================
 //   acosf
