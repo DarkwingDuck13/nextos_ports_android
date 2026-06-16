@@ -746,6 +746,13 @@ static jint jni_GetStaticIntField(void *env, void *clazz, void *fieldID) {
                 g_obb_version);
     return g_obb_version;
   }
+  /* Build.VERSION.SDK_INT: 0 faz Unity 2021.3 abortar ("Unable to initialize the
+     Unity Engine" — feature-level inválido). 30 = Android 11. */
+  { const char *nm = mid_name(fieldID);
+    if (nm && strcmp(nm, "SDK_INT") == 0) {
+      debugPrintf("jni_shim: GetStaticIntField(SDK_INT) -> 30\n");
+      return 30;
+    } }
   debugPrintf("jni_shim: GetStaticIntField(fid=%p) -> 0\n", fieldID);
   return 0;
 }
