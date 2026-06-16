@@ -1142,8 +1142,31 @@ extern void rs_Viewport(int, int, int, int);
 extern void rs_Scissor(int, int, int, int);
 extern void rs_present(void);
 static unsigned (*r_eglSwapBuffers)(void *, void *);
+/* TER_SHOT=N: na N-ésima troca de buffer, faz glReadPixels da tela e grava um PPM
+ * em /storage/roms/terraria/shot.ppm (verificação autônoma de IMAGEM no fbdev Mali). */
+static void ter_screenshot_maybe(void) {
+  static long n = 0; n++;
+  const char *s = getenv("TER_SHOT"); if (!s) return;
+  long target = atoi(s); if (target <= 0) target = 1;
+  if (n != target) return;
+  static int (*p_gi)(unsigned, int*); static void (*p_rp)(int,int,int,int,unsigned,unsigned,void*);
+  if (!p_gi) p_gi = (void*)dlsym(RTLD_DEFAULT, "glGetIntegerv");
+  if (!p_rp) p_rp = (void*)dlsym(RTLD_DEFAULT, "glReadPixels");
+  if (!p_gi || !p_rp) { fprintf(stderr, "[SHOT] sem glGetIntegerv/glReadPixels\n"); return; }
+  int vp[4] = {0,0,0,0}; p_gi(0x0BA2 /*GL_VIEWPORT*/, vp);
+  int w = vp[2], h = vp[3]; if (w <= 0 || h <= 0) { w = g_fbdev_win.w; h = g_fbdev_win.h; }
+  if (w <= 0 || h <= 0) { fprintf(stderr, "[SHOT] viewport 0\n"); return; }
+  unsigned char *buf = malloc((size_t)w*h*4); if (!buf) return;
+  p_rp(0,0,w,h,0x1908/*GL_RGBA*/,0x1401/*GL_UNSIGNED_BYTE*/,buf);
+  FILE *f = fopen("/storage/roms/terraria/shot.ppm","wb");
+  if (f) { fprintf(f,"P6\n%d %d\n255\n", w, h);
+    for (int y=h-1;y>=0;y--) for (int x=0;x<w;x++){ unsigned char*p=buf+((size_t)y*w+x)*4; fwrite(p,1,3,f);}
+    fclose(f); fprintf(stderr,"[SHOT] gravado shot.ppm %dx%d (swap #%ld)\n", w,h,n); }
+  free(buf);
+}
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
+  ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return r_eglSwapBuffers ? r_eglSwapBuffers(dpy, surf) : 1;
 }
@@ -2547,7 +2570,7 @@ int main(int argc, char **argv) {
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     patch_got("eglGetProcAddress", (void *)my_eglGetProcAddress);
   /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
-  if (rs_enabled()) patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
+  if (rs_enabled() || getenv("TER_SHOT")) patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
   /* dl* estavam COMENTADOS em imports.gen.c -> set_import foi no-op e o dlopen@plt
      caiu no glibc REAL (falha ao carregar .so Android). Sem isso o il2cpp nao carrega. */
   patch_got("dlopen", (void *)my_dlopen);
