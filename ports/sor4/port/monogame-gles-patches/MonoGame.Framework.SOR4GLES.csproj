@@ -81,4 +81,9 @@
 
   <Import Project="Platform\OpenGL.targets" />
   <Import Project="Platform\OpenAL.targets" />
+  <ItemGroup>
+    <Compile Include="Platform\SOR4Compat.cs" />
+    <Reference Include="Mono.Android"><HintPath>..\..\stubs\Mono.Android.dll</HintPath></Reference>
+    <Reference Include="Java.Interop"><HintPath>..\..\stubs\Java.Interop.dll</HintPath></Reference>
+  </ItemGroup>
 </Project>

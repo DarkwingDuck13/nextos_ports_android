@@ -62,6 +62,32 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 
 ---
 
+## GATE C — boot do jogo: QUASE (2026-06-16) — carrega tudo, crash no OnDeviceCreated do jogo
+**Conquistado**: o host `sor4host` (`port/host/`) **carrega SOR4.dll + 15 stubs Android + MonoGame
+GLES**, roda `CommonLib.xna.CreateGame()` (cria `CommonLib.xna+StandaloneGame` : Game), e
+`game.Run()` inicializa o **contexto GLES + GraphicsDevice 100%** (PlatformInitialize, FBO,
+states, ApplyRenderTargets — tudo OK). 
+**Crash atual**: segfault nativo (139) dentro de **`GraphicsDeviceManager.OnDeviceCreated`** →
+handler de DeviceCreated DO JOGO (em SOR4.dll). É crash NATIVO (não NullRef gerenciado, pois
+funções GL ausentes retornam null=NullRef; logo é Mali driver/gl4es/Wwise ou GL call inválida).
+Suspeitos: RenderTarget2D/`glDrawBuffers` (GLES3, nil no Mali GLES2), shader compile, ou Wwise.
+
+**Infra de boot que funciona**:
+- Stubs Android (15) via `port/tools/stubber/` (Cecil: zera corpos + retarget corelib→System.Runtime).
+- MonoGame compat `SOR4Compat.cs`: `AndroidGameActivity:Android.App.Activity`(stub) + `Game.Activity`.
+- Host: AssemblyLoadContext.Resolving resolve dlls do dir por nome simples (ignora versão/PKT) →
+  SOR4 referencia MonoGame 3.8.3.1 strong-named mas carrega meu unsigned (Core é leniente). ✓
+- Pacote em device `/storage/roms/sor4-test/host_pkg`. Rodar: parar ES, `LD_LIBRARY_PATH=libs:/usr/lib
+  SDL_VIDEODRIVER=mali DOTNET_EnableWriteXorExecute=0 ./sor4host`.
+- Sequência do jogo (de MainActivity.OnCreate): helpshift/firebase/Wwise preinit → `xna.CreateGame()`
+  → SetContentView(pulado) → `game.Run()`.
+
+**PRÓXIMO (GATE C/D)**: obter backtrace NATIVO do crash no OnDeviceCreated
+(`DOTNET_EnableCrashReport=1` → json com stack nativo+gerenciado). Provável fix: guardar
+`glDrawBuffers`/render-target p/ GLES2 no MonoGame, ou stubar Wwise. Depois: extrair assets p/ o
+device (ContentManager desktop lê do filesystem) p/ a 1ª imagem.
+⚠️ Logs `[MG]` de debug espalhados (GraphicsContext/GraphicsDevice/Game.cs) — gatear por env depois.
+
 ## GATE B = PASS COMPLETO ✅✅ (2026-06-16) — MonoGame GLES RENDERIZA no Mali-450
 **Buildei MonoGame.Framework GLES próprio** (híbrido SDL+GLES, net9, v3.8.3.1) do source 3.8.4
 e ele **renderiza 20 frames (Clear cornflower) no Mali-450 MP, EXIT=0**. Pipeline completo OK:
