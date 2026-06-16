@@ -650,10 +650,12 @@ static void drawlog(const char*k,int n){
     if(n>=64 && g_bigdraw_n<60){ fprintf(stderr,"[BIGDRAW %s n=%d] fbo=%u u0=%u prog=%u blend=%d (max=%d)\n",k,n,g_cur_fbo,g_unit_tex[0],g_cur_prog,g_blend,g_bigdraw_max); g_bigdraw_n++; } }
 }
 static void atlas_rebind(void);
+static void atlas_record(void);
 void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("arr",c);
+  atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   real_glDrawArrays(m, f, c);
 }
@@ -662,6 +664,15 @@ void my_glDrawArrays(unsigned m, int f, int c) {
  * texture2D, não importa). */
 unsigned g_nfs_atlas_tex = 0;
 static int g_atlashack = -1;
+/* 🎨 PER-PROGRAMA (atlas-only): cada shader lembra o último ATLAS (textura grande
+ * não-quadrada) usado com ele. O texto (glyph pequeno/quadrado) NÃO entra em
+ * g_is_atlas → não polui (foi o que quebrou o per-programa antigo). Nos draws com
+ * tex=0, religa o atlas DAQUELE shader → corrige decorações do disclaimer (spinner/
+ * formas) que pegavam o atlas errado. Fallback p/ o último atlas global. */
+#define ATLAS_MAP_SZ 2048
+static unsigned char g_is_atlas[ATLAS_MAP_SZ];
+static unsigned g_prog_atlas[ATLAS_MAP_SZ];
+static int g_progatlas = -1;
 /* 🔑 PER-PROGRAMA: cada shader lembra a última textura REAL usada com ele. A
  * engine liga a textura no 1º draw do batch e desenha os seguintes com tex=0
  * (link sprite->atlas null no .sba) → religamos a textura DAQUELE shader. Tela-
@@ -669,11 +680,22 @@ static int g_atlashack = -1;
  * atlas global" errava quando novos packs carregavam). */
 static void atlas_rebind(void){
   if(g_atlashack<0) g_atlashack=getenv("NFS_NOATLASHACK")?0:1; /* PADRÃO ligado */
-  if(g_atlashack && g_unit_tex[0]==0 && g_nfs_atlas_tex){
+  if(g_progatlas<0) g_progatlas=getenv("NFS_NOPROGATLAS")?0:1; /* per-prog PADRÃO ligado */
+  if(!g_atlashack || g_unit_tex[0]!=0) return;
+  /* atlas deste shader (per-programa, atlas-only) → fallback p/ o global */
+  unsigned a = (g_progatlas && g_cur_prog<ATLAS_MAP_SZ && g_prog_atlas[g_cur_prog])
+                 ? g_prog_atlas[g_cur_prog] : g_nfs_atlas_tex;
+  if(a){
     if(!real_glBindTexture) real_glBindTexture=(pfn_glBindTexture)SDL_GL_GetProcAddress("glBindTexture");
     if(!real_glActiveTexture) real_glActiveTexture=(pfn_glActiveTexture)SDL_GL_GetProcAddress("glActiveTexture");
-    real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,g_nfs_atlas_tex);
+    real_glActiveTexture(0x84C0); real_glBindTexture(0x0DE1,a);
   }
+}
+/* registra o atlas usado por este shader (chamado nos draws com textura real) */
+static void atlas_record(void){
+  unsigned t0=g_unit_tex[0];
+  if(t0 && t0<ATLAS_MAP_SZ && g_is_atlas[t0] && g_cur_prog<ATLAS_MAP_SZ)
+    g_prog_atlas[g_cur_prog]=t0;
 }
 /* 🔬 TESTE 3D-preto: desabilita depth/cull nos draws GRANDES (geometria 3D) p/
  * ver se a geometria aparece (depth buffer ausente/quebrado no Mali-450 rejeita
@@ -691,6 +713,7 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   if (!real_glDrawElements) real_glDrawElements = (pfn_glDrawElements)SDL_GL_GetProcAddress("glDrawElements");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
   drawlog("elt",c);
+  atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
   big3d_state(c);
   real_glDrawElements(m, c, t, i);
@@ -728,10 +751,14 @@ void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,un
   /* rastreia o ÚLTIMO atlas de sprite (RGBA grande, NÃO-quadrado = não é
    * glyph/RT) p/ o ATLASHACK religar nos draws texturizados sem textura. */
   { extern unsigned g_nfs_atlas_tex; extern unsigned egl_cur_tex0(void);
-    if (l==0 && w>=256 && h>=256 && w!=h && (ifmt==0x1908||fmt==0x1908)) {
-      g_nfs_atlas_tex = egl_cur_tex0();
-      if(getenv("NFS_TEXLOG")) fprintf(stderr,"[ATLAS candidate tex=%u %dx%d]\n",g_nfs_atlas_tex,w,h);
-    } }
+    if (l==0) {
+      unsigned cur = egl_cur_tex0();
+      int is_atlas = (w>=256 && h>=256 && w!=h && (ifmt==0x1908||fmt==0x1908));
+      if (cur < ATLAS_MAP_SZ) g_is_atlas[cur] = is_atlas ? 1 : 0; /* marca/limpa (id reusado) */
+      if (is_atlas) {
+        g_nfs_atlas_tex = cur;
+        if(getenv("NFS_TEXLOG")) fprintf(stderr,"[ATLAS candidate tex=%u %dx%d]\n",cur,w,h);
+      } } }
   /* NFS_TEXDUMP=1: salva as 1as texturas grandes (atlas) p/ inspeção do que a
    * engine SOBE de verdade (preto vs colorido). */
   if (getenv("NFS_TEXDUMP") && l==0 && w>=256 && h>=256 && px && ty==0x1401) {
