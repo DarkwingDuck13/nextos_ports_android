@@ -88,6 +88,20 @@ Mali GLES2. Windowing já funciona (sdl2-compat→SDL3-mali). gl4es descartado.
 Próximo: clonar MonoGame, achar a config GLES (`#if GLES`/OpenGL backend), buildar
 MonoGame.Framework.dll GLES net9 v compatível com 3.8.3.1.
 
+**Análise de assets (define rota p/ 1ª imagem)**: 25.224 `.xnb` (quase tudo TEXTURA/sprite),
+**ZERO arquivos de shader** (.fx/.mgfx/.glsl). Áudio = Wwise (613 `.wem` + 4 `.bnk`).
+Vídeo `.mp4` (cutscenes), fontes `.otf/.ttf` (SharpFont/FreeType). → a **1ª imagem (título/menu)
+precisa só de SpriteBatch (shader GLSL-ES EMBUTIDO no MonoGame) + texturas + fontes**. Effects
+customizados (se houver, embedded) são poucos e ficam p/ depois. Forte validação da rota GLES.
+
+**Insight SpriteBatch**: o shader do SpriteBatch vem EMBUTIDO no MonoGame.Framework (não do .xnb
+do jogo). Build GLES → SpriteEffect em GLSL ES → roda no Mali GLES2. Texturas .xnb são
+backend-agnósticas. Por isso a 1ª imagem é alcançável mesmo antes de Effects customizados.
+
+**Versão/assinatura p/ o swap final**: SOR4.dll referencia MonoGame.Framework 3.8.3.1 (strong-named).
+Meu build precisa: mesmo PublicKeyToken (assinar com .snk público do repo MonoGame) + AssemblyVersion
+3.8.3.1 (ou usar AssemblyLoadContext/resolver p/ redirecionar). Tratar no swap.
+
 ## GATE B (parte 2) — windowing/GL: estratégia (HISTÓRICO)
 **Muro**: device é Mali-450 **fbdev-puro** (sem /dev/dri, sem X, sem wayland compositor).
 - SDL2 do sistema (2.32.69): drivers = x11/kmsdrm/wayland/vivante → **NENHUM serve**.
