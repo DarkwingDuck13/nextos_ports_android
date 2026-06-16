@@ -13,16 +13,30 @@ namespace Microsoft.Xna.Framework.Content
         [System.Runtime.InteropServices.DllImport("sor4astc")]
         static extern int sor4_astc_decode(byte[] data, ulong len, int w, int h, int bx, int by, byte[] outRGBA);
         static readonly int[,] AstcBlk = {{4,4},{5,4},{5,5},{6,5},{6,6},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
-        static byte[] Sor4DecodeAstc(byte[] data, int len, int w, int h) {
+        static readonly int Sor4TexScale = SOR4_GetScale();
+        static int SOR4_GetScale(){ var v=System.Environment.GetEnvironmentVariable("SOR4_TEXSCALE"); int s; if(!string.IsNullOrEmpty(v)&&int.TryParse(v,out s)&&s>=1&&s<=4) return s; return 2; }
+        // decodifica ASTC (w x h) -> RGBA8 e reduz por 'scale' (box filter) -> retorna (w/scale)x(h/scale)
+        static byte[] Sor4DecodeAstc(byte[] data, int len, int w, int h, int scale) {
             int nb = len / 16; int bx = 0, by = 0;
             for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0],cby=AstcBlk[i,1];
                 if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
-            var rgba = new byte[w*h*4];
-            if (bx==0) { for(int p=0;p<rgba.Length;p+=4){rgba[p]=128;rgba[p+1]=128;rgba[p+2]=128;rgba[p+3]=255;} System.Console.Error.WriteLine("[ASTC] bloco?? len="+len+" "+w+"x"+h); return rgba; }
-            try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, rgba);
-                if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<rgba.Length;p+=4){rgba[p]=128;rgba[p+1]=128;rgba[p+2]=128;rgba[p+3]=255;} } }
-            catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); }
-            return rgba;
+            var full = new byte[w*h*4];
+            if (bx==0) { for(int p=0;p<full.Length;p+=4){full[p]=128;full[p+1]=128;full[p+2]=128;full[p+3]=255;} System.Console.Error.WriteLine("[ASTC] bloco?? len="+len+" "+w+"x"+h); }
+            else { try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, full);
+                if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<full.Length;p+=4){full[p]=128;full[p+1]=128;full[p+2]=128;full[p+3]=255;} } }
+                catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); } }
+            if (scale<=1) return full;
+            int nw=System.Math.Max(w/scale,1), nh=System.Math.Max(h/scale,1);
+            var small=new byte[nw*nh*4];
+            for(int y=0;y<nh;y++) for(int x=0;x<nw;x++){
+                int sx=x*scale, sy=y*scale, r=0,g=0,b=0,a=0,cnt=0;
+                for(int dy=0;dy<scale;dy++) for(int dx=0;dx<scale;dx++){
+                    int px=sx+dx, py=sy+dy; if(px>=w||py>=h) continue;
+                    int o=(py*w+px)*4; r+=full[o]; g+=full[o+1]; b+=full[o+2]; a+=full[o+3]; cnt++; }
+                int d=(y*nw+x)*4; if(cnt==0)cnt=1;
+                small[d]=(byte)(r/cnt); small[d+1]=(byte)(g/cnt); small[d+2]=(byte)(b/cnt); small[d+3]=(byte)(a/cnt);
+            }
+            return small;
         }
 		public Texture2DReader()
 		{
@@ -76,8 +90,10 @@ namespace Microsoft.Xna.Framework.Content
 					break;
 			}
 			
-            if ((int)surfaceFormat >= 96) convertedFormat = SurfaceFormat.Color; // SOR4: ASTC -> RGBA (Mali-450 nao suporta ASTC)
-            texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), width, height, levelCountOutput > 1, convertedFormat);
+            int sor4Scale = 1;
+            if ((int)surfaceFormat >= 96) { convertedFormat = SurfaceFormat.Color; sor4Scale = Sor4TexScale; levelCountOutput = 1; } // SOR4: ASTC -> RGBA reduzido (memoria)
+            int sor4TexW = System.Math.Max(width/sor4Scale,1), sor4TexH = System.Math.Max(height/sor4Scale,1);
+            texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), sor4TexW, sor4TexH, levelCountOutput > 1, convertedFormat);
 #if OPENGL
             Threading.BlockOnUIThread(() =>
             {
@@ -95,7 +111,7 @@ namespace Microsoft.Xna.Framework.Content
 
                     if ((int)surfaceFormat >= 96) {
                         // SOR4: ASTC -> decode p/ RGBA8 via astcenc (Mali-450 nao tem ASTC nativo)
-                        levelData = Sor4DecodeAstc(levelData, levelDataSizeInBytes, levelWidth, levelHeight);
+                        levelData = Sor4DecodeAstc(levelData, levelDataSizeInBytes, levelWidth, levelHeight, sor4Scale);
                         levelDataSizeInBytes = levelData.Length;
                     }
 				    //Convert the image data if required
