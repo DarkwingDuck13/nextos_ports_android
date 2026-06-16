@@ -5,8 +5,13 @@ class Host {
   static void Main(){
     string dir = AppContext.BaseDirectory;
     AssemblyLoadContext.Default.Resolving += (ctx, name) => {
-      string p = Path.Combine(dir, name.Name + ".dll");
-      if (File.Exists(p)) return ctx.LoadFromAssemblyPath(p);
+      var n = name.Name;
+      // System.*/Microsoft.*/netstandard/mscorlib -> deixa o runtime resolver (forwards corretos)
+      if (n.StartsWith("System.") || n.StartsWith("Microsoft.") || n=="System" || n=="netstandard" || n=="mscorlib" || n=="WindowsBase") {
+        L("skip resolver p/ "+n+" (runtime)"); return null;
+      }
+      string p = Path.Combine(dir, n + ".dll");
+      if (File.Exists(p)) { return ctx.LoadFromAssemblyPath(p); }
       L("NAO resolvido: "+name.FullName); return null;
     };
     AppDomain.CurrentDomain.UnhandledException += (s,e)=>{ L("UNHANDLED: "+e.ExceptionObject); };

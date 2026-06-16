@@ -5,6 +5,23 @@ class Stubber {
     // uso: stubber <in.dll> <out.dll> [throw|default]
     string inp=a[0], outp=a[1]; bool doThrow = a.Length>2 && a[2]=="throw";
     var asm=AssemblyDefinition.ReadAssembly(inp);
+    // retarget corelib: System.Private.CoreLib -> System.Runtime (facade net9, p/ compilar contra os stubs)
+    foreach(var r in asm.MainModule.AssemblyReferences){
+      if(r.Name=="System.Private.CoreLib"){
+        r.Name="System.Runtime";
+        r.PublicKeyToken=new byte[]{0xb0,0x3f,0x5f,0x7f,0x11,0xd5,0x0a,0x3a};
+        r.Version=new Version(9,0,0,0);
+      }
+    }
+    // remove CustomAttributes que referenciam tipos interop problematicos (retarget quebra reflection)
+    void StripCA(Mono.Collections.Generic.Collection<CustomAttribute> ca){
+      for(int i=ca.Count-1;i>=0;i--){ var n=ca[i].AttributeType.Name;
+        if(n=="DefaultDllImportSearchPathsAttribute"||n=="UnmanagedFunctionPointerAttribute") ca.RemoveAt(i); }
+    }
+    StripCA(asm.CustomAttributes); StripCA(asm.MainModule.CustomAttributes);
+    foreach(var t in AllTypes(asm.MainModule)){ StripCA(t.CustomAttributes);
+      foreach(var m in t.Methods) StripCA(m.CustomAttributes);
+      foreach(var fld in t.Fields) StripCA(fld.CustomAttributes); }
     int methods=0, types=0;
     foreach(var t in AllTypes(asm.MainModule)){
       types++;
