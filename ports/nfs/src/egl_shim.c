@@ -290,6 +290,7 @@ void egl_shim_force_present(void) {
       if(fr>=30){ fprintf(stderr,"[glyph] f=%d small/fr=%d tex0/fr=%d\n",g_disc_frame,acc_n/fr,acc_t0/fr);
         acc_n=acc_t0=fr=0; } } }
   g_small_n=0; g_small_tex0=0;
+  { extern void gp_hist_flush(void); gp_hist_flush(); } /* 🔤 NFS_PAGEHIST */
   { static int hb = 0; hb++;
     if (hb == 1 || hb % 30 == 0) { FILE *h = fopen("/tmp/present.txt", "w");
       if (h) { fprintf(h, "present_calls=%d window=%p\n", hb, (void *)egl_window); fclose(h); } } }
@@ -681,6 +682,220 @@ static void drawlog(const char*k,int n){
 static void atlas_rebind(void);
 static void atlas_record(void);
 int g_small_n = 0, g_small_tex0 = 0; /* 🔬 draws UI pequenos por frame: total e c/ tex=0 */
+
+/* ============================================================================
+ * 🔤 GLYPH-PAGE PROBE (bug das fontes do menu) — instrumentação decisiva
+ * ----------------------------------------------------------------------------
+ * O texto do menu usa um GLYPH-CACHE: a engine rasteriza glyphs numa textura-
+ * atlas QUADRADA (512×512). Quando enche, cria a PÁGINA 2 (outro id). A quebra
+ * ("garbled") coincide com a criação da página 2. As páginas dumpadas estão
+ * LIMPAS → a falha é na COMPOSIÇÃO (qual página/escala os quads amostram).
+ *
+ * Aqui marcamos cada PÁGINA DE GLYPH (textura quadrada ≥512 RGBA que é RE-
+ * uploaded — sprites/UI estáticos sobem 1× só) e damos um índice de página em
+ * ordem de descoberta (página 1 = idx 1, página 2 = idx 2, ...). Depois:
+ *   - NFS_PAGEHIST: por janela de frames, histograma de qual página os quads de
+ *     texto pequenos (c<64) amostram (id, WxH, nº de uploads, nº de draws).
+ *   - NFS_SKIPPAGE=<n>: SUPRIME os draws pequenos que amostram a página idx>=n.
+ *     Teste visual decisivo: se o corpo "garbled" SOME → ele amostra essa página
+ *     (conteúdo da página certo, escala/UV errada). Se PERMANECE → ele amostra
+ *     OUTRA página (a engine bindou a página errada).
+ *   - NFS_PAGETEX=<id>/NFS_PAGEW=<w>: força que a textura <id> seja tratada como
+ *     página (caso a heurística não pegue).
+ * Tudo gated por env (default-off) — não afeta o jogo normal.
+ * ========================================================================== */
+#define GP_SZ 8192
+unsigned short g_texw[GP_SZ];      /* W,H do último upload nível-0 por id de textura */
+unsigned short g_texh[GP_SZ];
+unsigned short g_texup[GP_SZ];     /* nº de uploads nível-0 (re-upload = página de glyph) */
+unsigned char  g_glyphpage[GP_SZ]; /* índice de página (1,2,3...); 0 = não é página */
+static int g_glyphpage_n = 0;      /* nº de páginas de glyph descobertas */
+/* registra um upload nível-0; promove a "página de glyph" no 2º upload de uma
+ * textura quadrada ≥512 RGBA. Chamado de my_glTexImage2D. */
+void gp_note_upload(unsigned id, int w, int h, unsigned fmt, unsigned ifmt) {
+  if (id >= GP_SZ) return;
+  g_texw[id] = (unsigned short)w; g_texh[id] = (unsigned short)h;
+  if (g_texup[id] < 0xffff) g_texup[id]++;
+  int square_rgba = (w == h && w >= 512 && (fmt == 0x1908 || ifmt == 0x1908));
+  if (square_rgba && g_texup[id] >= 2 && !g_glyphpage[id] && g_glyphpage_n < 200) {
+    g_glyphpage[id] = (unsigned char)(++g_glyphpage_n);
+    if (getenv("NFS_PAGEHIST") || getenv("NFS_PAGELOG"))
+      fprintf(stderr, "[gpage] NOVA pagina idx=%d tex=%u %dx%d up=%d f=%d\n",
+              g_glyphpage[id], id, w, h, g_texup[id], g_disc_frame);
+  }
+}
+/* histograma por-frame: para cada draw pequeno texturizado, conta por id. */
+#define GP_HIST 48
+static unsigned g_hist_id[GP_HIST]; static unsigned g_hist_cnt[GP_HIST]; static int g_hist_used;
+static void gp_hist_add(unsigned id) {
+  for (int i = 0; i < g_hist_used; i++) if (g_hist_id[i] == id) { g_hist_cnt[i]++; return; }
+  if (g_hist_used < GP_HIST) { g_hist_id[g_hist_used] = id; g_hist_cnt[g_hist_used] = 1; g_hist_used++; }
+}
+void gp_hist_flush(void) {
+  static int en = -1; if (en < 0) en = getenv("NFS_PAGEHIST") ? 1 : 0;
+  if (!en) { g_hist_used = 0; return; }
+  static int fr = 0; fr++;
+  if (fr % 30 == 0 && g_hist_used) {
+    char line[512]; int o = 0;
+    o += snprintf(line + o, sizeof line - o, "[phist f=%d]", g_disc_frame);
+    for (int i = 0; i < g_hist_used && o < (int)sizeof line - 40; i++) {
+      unsigned id = g_hist_id[i];
+      o += snprintf(line + o, sizeof line - o, " t%u(%ux%u,up%u,pg%d)x%u", id,
+                    id < GP_SZ ? g_texw[id] : 0, id < GP_SZ ? g_texh[id] : 0,
+                    id < GP_SZ ? g_texup[id] : 0, id < GP_SZ ? g_glyphpage[id] : 0, g_hist_cnt[i]);
+    }
+    fprintf(stderr, "%s\n", line);
+  }
+  if (fr % 30 == 0) g_hist_used = 0;
+}
+/* probe por draw pequeno (c<64). Retorna 1 se o draw deve ser SUPRIMIDO
+ * (NFS_SKIPPAGE). Acumula histograma. */
+static int gp_probe(void) {
+  static int en = -1, skip = -2;
+  if (en < 0) { en = (getenv("NFS_PAGEHIST") || getenv("NFS_SKIPPAGE")) ? 1 : 0;
+    const char *s = getenv("NFS_SKIPPAGE"); skip = s ? atoi(s) : 0; }
+  if (!en) return 0;
+  unsigned t = g_unit_tex[0];
+  if (!t) return 0;
+  gp_hist_add(t);
+  if (skip > 0 && t < GP_SZ && g_glyphpage[t] && g_glyphpage[t] >= skip) return 1;
+  return 0;
+}
+
+/* ============================================================================
+ * 🔤 UV PROBE — captura as UVs dos quads de texto (verdade absoluta do remap)
+ * A engine usa VBOs (glBufferData) p/ os quads de glyph. Capturamos o conteúdo
+ * dos ARRAY_BUFFERs pequenos + o layout (glVertexAttribPointer) e, nos draws
+ * pequenos sobre a página de glyph, dumpamos pos+uv de cada vértice. Assim
+ * vemos QUAL célula do atlas cada quad amostra (vs onde o glyph realmente está).
+ * Gated por NFS_UVLOG. ========================================================= */
+#define VBUF_SLOTS 16
+static unsigned g_vbuf_id[VBUF_SLOTS]; static unsigned char *g_vbuf_data[VBUF_SLOTS];
+static int g_vbuf_cap[VBUF_SLOTS], g_vbuf_sz[VBUF_SLOTS];
+static unsigned g_array_buf = 0, g_elem_buf = 0;
+struct gattr { int en, size, type, stride; unsigned long off; unsigned buf; };
+static struct gattr g_attr[16];
+typedef void (*pfn_glBindBuffer)(unsigned,unsigned);
+typedef void (*pfn_glBufferData)(unsigned,long,const void*,unsigned);
+typedef void (*pfn_glVertexAttribPointer)(unsigned,int,unsigned,unsigned char,int,const void*);
+static pfn_glBindBuffer real_glBindBuffer;
+static pfn_glBufferData real_glBufferData;
+static pfn_glVertexAttribPointer real_glVertexAttribPointer;
+void my_glBindBuffer(unsigned tgt, unsigned id){
+  if(!real_glBindBuffer) real_glBindBuffer=(pfn_glBindBuffer)SDL_GL_GetProcAddress("glBindBuffer");
+  if(tgt==0x8892) g_array_buf=id; else if(tgt==0x8893) g_elem_buf=id; /* ARRAY / ELEMENT_ARRAY */
+  real_glBindBuffer(tgt,id);
+}
+void my_glBufferData(unsigned tgt, long size, const void*data, unsigned usage){
+  if(!real_glBufferData) real_glBufferData=(pfn_glBufferData)SDL_GL_GetProcAddress("glBufferData");
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en && tgt==0x8892 && data && size>0 && size<=8192){
+    int slot=g_array_buf % VBUF_SLOTS;
+    if(g_vbuf_cap[slot]<size){ free(g_vbuf_data[slot]); g_vbuf_data[slot]=malloc(size); g_vbuf_cap[slot]=(int)size; }
+    if(g_vbuf_data[slot]){ g_vbuf_id[slot]=g_array_buf; g_vbuf_sz[slot]=(int)size; memcpy(g_vbuf_data[slot],data,size); }
+  }
+  real_glBufferData(tgt,size,data,usage);
+}
+/* a engine escreve as UVs via glMapBufferRange (mapeamento de memória), NÃO
+ * glBufferData → capturamos o range no UNMAP, copiando p/ o nosso espelho. */
+typedef void* (*pfn_glMapBufferRange)(unsigned,long,long,unsigned);
+typedef void* (*pfn_glMapBufferOES)(unsigned,unsigned);
+typedef unsigned char (*pfn_glUnmapBuffer)(unsigned);
+static pfn_glMapBufferRange real_glMapBufferRange;
+static pfn_glMapBufferOES real_glMapBufferOES;
+static pfn_glUnmapBuffer real_glUnmapBuffer, real_glUnmapBufferOES;
+static void *g_map_ptr; static long g_map_off, g_map_len; static unsigned g_map_buf;
+static int g_map_calls=0, g_map_caps=0;
+void *my_glMapBufferRange(unsigned tgt,long off,long len,unsigned acc){
+  if(!real_glMapBufferRange) real_glMapBufferRange=(pfn_glMapBufferRange)SDL_GL_GetProcAddress("glMapBufferRange");
+  void *p=real_glMapBufferRange(tgt,off,len,acc);
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en && tgt==0x8892){ g_map_ptr=p; g_map_off=off; g_map_len=len; g_map_buf=g_array_buf; g_map_calls++; }
+  return p;
+}
+void *my_glMapBufferOES(unsigned tgt,unsigned acc){
+  if(!real_glMapBufferOES) real_glMapBufferOES=(pfn_glMapBufferOES)SDL_GL_GetProcAddress("glMapBufferOES");
+  void *p=real_glMapBufferOES?real_glMapBufferOES(tgt,acc):0;
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en && tgt==0x8892){ g_map_ptr=p; g_map_off=0; g_map_len=g_vbuf_cap[g_array_buf%VBUF_SLOTS]; if(g_map_len<=0)g_map_len=8192; g_map_buf=g_array_buf; g_map_calls++; }
+  return p;
+}
+static void map_capture(unsigned tgt){
+  if(tgt!=0x8892 || !g_map_ptr) return; /* chaveia por g_map_buf (registrado no map) */
+  long need=g_map_off+g_map_len; if(need<=0||need>262144){ g_map_ptr=0; return; }
+  int slot=g_map_buf % VBUF_SLOTS;
+  if(g_vbuf_cap[slot]<need){ free(g_vbuf_data[slot]); g_vbuf_data[slot]=malloc(need); g_vbuf_cap[slot]=(int)need; }
+  if(g_vbuf_data[slot]){ g_vbuf_id[slot]=g_map_buf; if(g_vbuf_sz[slot]<need)g_vbuf_sz[slot]=(int)need;
+    memcpy(g_vbuf_data[slot]+g_map_off, g_map_ptr, g_map_len); g_map_caps++; }
+  g_map_ptr=0;
+}
+unsigned char my_glUnmapBuffer(unsigned tgt){
+  if(!real_glUnmapBuffer) real_glUnmapBuffer=(pfn_glUnmapBuffer)SDL_GL_GetProcAddress("glUnmapBuffer");
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en) map_capture(tgt);
+  return real_glUnmapBuffer?real_glUnmapBuffer(tgt):1;
+}
+unsigned char my_glUnmapBufferOES(unsigned tgt){
+  if(!real_glUnmapBufferOES) real_glUnmapBufferOES=(pfn_glUnmapBuffer)SDL_GL_GetProcAddress("glUnmapBufferOES");
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en) map_capture(tgt);
+  return real_glUnmapBufferOES?real_glUnmapBufferOES(tgt):1;
+}
+typedef void (*pfn_glBufferSubData)(unsigned,long,long,const void*);
+static pfn_glBufferSubData real_glBufferSubData;
+void my_glBufferSubData(unsigned tgt,long off,long size,const void*data){
+  if(!real_glBufferSubData) real_glBufferSubData=(pfn_glBufferSubData)SDL_GL_GetProcAddress("glBufferSubData");
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(en && tgt==0x8892 && data && size>0){
+    long need=off+size; if(need>0 && need<=262144){
+      int slot=g_array_buf % VBUF_SLOTS;
+      if(g_vbuf_cap[slot]<need){ free(g_vbuf_data[slot]); g_vbuf_data[slot]=malloc(need); g_vbuf_cap[slot]=(int)need; }
+      if(g_vbuf_data[slot]){ g_vbuf_id[slot]=g_array_buf; if(g_vbuf_sz[slot]<need)g_vbuf_sz[slot]=(int)need;
+        memcpy(g_vbuf_data[slot]+off,data,size); g_map_caps++; }
+    }
+  }
+  real_glBufferSubData(tgt,off,size,data);
+}
+void my_glVertexAttribPointer(unsigned idx,int size,unsigned type,unsigned char norm,int stride,const void*ptr){
+  if(!real_glVertexAttribPointer) real_glVertexAttribPointer=(pfn_glVertexAttribPointer)SDL_GL_GetProcAddress("glVertexAttribPointer");
+  if(idx<16){ g_attr[idx].en=1; g_attr[idx].size=size; g_attr[idx].type=type; g_attr[idx].stride=stride;
+    g_attr[idx].off=(unsigned long)ptr; g_attr[idx].buf=g_array_buf; }
+  real_glVertexAttribPointer(idx,size,type,norm,stride,ptr);
+}
+static float gattr_read(int a, int vert, int comp){
+  if(a<0||a>=16||!g_attr[a].en) return -999.0f;
+  unsigned buf=g_attr[a].buf; int slot=buf%VBUF_SLOTS;
+  if(g_vbuf_id[slot]!=buf||!g_vbuf_data[slot]) return -999.0f;
+  int stride=g_attr[a].stride? g_attr[a].stride : g_attr[a].size*4;
+  long o=(long)g_attr[a].off + (long)vert*stride + (long)comp*4;
+  if(o<0||o+4>g_vbuf_sz[slot]) return -888.0f;
+  float v; memcpy(&v,g_vbuf_data[slot]+o,4); return v;
+}
+/* dump pos+uv dos primeiros vértices de um draw de texto. */
+static void uv_dump(int c, int first){
+  static int en=-1; if(en<0) en=getenv("NFS_UVLOG")?1:0;
+  if(!en) return;
+  unsigned t=g_unit_tex[0];
+  if(!(t<GP_SZ && g_glyphpage[t])) return; /* só draws sobre a página de glyph */
+  if(c<12) return; /* foca nos batches de texto (>=2 glyphs); pula quads de fundo c=6 */
+  /* trigger por arquivo: re-checa 1×/frame; quando /storage/roms/nfs/uvon existe,
+   * libera ~12 dumps NESTE frame (capturo só os draws do estado garbled). */
+  static int armed=0, last_f=-1, n=0;
+  if(g_disc_frame!=last_f){ last_f=g_disc_frame; armed=(access("/storage/roms/nfs/uvon",0)==0); n=0; }
+  if(!armed || n>=12) return; n++;
+  char line[640]; int o=0;
+  o+=snprintf(line+o,sizeof line-o,"[uv f=%d tex=%u c=%d first=%d]",g_disc_frame,t,c,first);
+  fprintf(stderr,"%s\n",line);
+  /* pos (a0.xy) + uv (a1.xy)*512 = texel do atlas, por vértice (a partir de first) */
+  int nv = c>18?18:c;
+  for(int v=0;v<nv;v++){ o=0;
+    float px=gattr_read(0,first+v,0), py=gattr_read(0,first+v,1);
+    float u=gattr_read(1,first+v,0), uv=gattr_read(1,first+v,1);
+    o+=snprintf(line+o,sizeof line-o,"   v%d pos=(%.1f,%.1f) uv=(%.4f,%.4f) texel=(%.0f,%.0f)",
+                v,px,py,u,uv,u*512.0f,uv*512.0f);
+    fprintf(stderr,"%s\n",line); }
+}
+
 void my_glDrawArrays(unsigned m, int f, int c) {
   if (!real_glDrawArrays) real_glDrawArrays = (pfn_glDrawArrays)SDL_GL_GetProcAddress("glDrawArrays");
   if (g_cur_fbo == 0) g_draw_fbo0++; else g_draw_fboN++;
@@ -688,6 +903,8 @@ void my_glDrawArrays(unsigned m, int f, int c) {
   if (c < 64) { g_small_n++; if(g_unit_tex[0]==0) g_small_tex0++; }
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
+  if (c < 64) uv_dump(c, f); /* 🔤 NFS_UVLOG */
+  if (c < 64 && gp_probe()) return; /* 🔤 NFS_SKIPPAGE: suprime quads da página de glyph idx>=n */
   real_glDrawArrays(m, f, c);
 }
 /* ATLASHACK: religa o atlas quando um draw texturizado tem tex=0 (link sprite->
@@ -802,6 +1019,8 @@ void my_glDrawElements(unsigned m, int c, unsigned t, const void *i) {
   atlas_record(); /* lembra o atlas deste shader (draws com textura real) */
   if (c < 64) { g_small_n++; if(g_unit_tex[0]==0) g_small_tex0++; }
   if (c < 64) atlas_rebind(); /* só UI (draws pequenos); o atlas-hack estraga o 3D */
+  if (c < 64) uv_dump(c, 0); /* 🔤 NFS_UVLOG */
+  if (c < 64 && gp_probe()) return; /* 🔤 NFS_SKIPPAGE: suprime quads da página de glyph idx>=n */
   big3d_state(c);
   real_glDrawElements(m, c, t, i);
 }
@@ -833,6 +1052,17 @@ static pfn_glCompressedTexImage2D real_glCompressedTexImage2D;
 static int g_teximg_log = -1, g_teximg_n = 0;
 void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,unsigned ty,const void*px){
   if (!real_glTexImage2D) real_glTexImage2D=(pfn_glTexImage2D)SDL_GL_GetProcAddress("glTexImage2D");
+  /* 🔤 glyph-page probe: registra W/H/upcount e promove páginas de glyph. */
+  if (l==0) { extern void gp_note_upload(unsigned,int,int,unsigned,unsigned); extern unsigned egl_cur_tex0(void);
+    gp_note_upload(egl_cur_tex0(), w, h, fmt, ifmt); }
+  /* 🔤 NFS_GLYPHRA: loga o return-address do upload da página de glyph (512² RGBA
+   * re-uploaded) p/ localizar o código AddTexturePage da engine (patch do 512). */
+  if (l==0 && w==512 && h==512 && (fmt==0x1908||ifmt==0x1908) && getenv("NFS_GLYPHRA")){
+    extern void *text_base; uintptr_t tb=(uintptr_t)text_base;
+    void *r0=__builtin_return_address(0);
+    static int n=0; if(n<8){ uintptr_t v=(uintptr_t)r0;
+      if(v>tb && v<tb+0xa00000) fprintf(stderr,"[glyphRA] tex512 ra=+0x%lx\n",(unsigned long)(v-tb));
+      else fprintf(stderr,"[glyphRA] tex512 ra=%p (base=%p)\n",r0,(void*)tb); n++; } }
   if (g_teximg_log<0) g_teximg_log=getenv("NFS_TEXLOG")?1:0;
   if (g_teximg_log&&l==0&&g_teximg_n<60){ extern unsigned egl_cur_tex0(void); fprintf(stderr,"[texImage2D tex=%u] %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%p\n",egl_cur_tex0(),w,h,ifmt,fmt,ty,px); g_teximg_n++; }
   if (getenv("NFS_UPLOADLOG")&&l==0){ static int n=0; if(n<1500){ extern unsigned egl_cur_tex0(void); extern int g_disc_frame;

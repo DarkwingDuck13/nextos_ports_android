@@ -1414,12 +1414,19 @@ static void *b_cxa_type_match(void *a, void *b, char c) { (void)a; (void)b; (voi
  * tem fallback gracioso — fazia memcpy dos pixels NULL → SIGSEGV (PARTE 8). Agora
  * retornamos SUCESSO com um buffer REAL zerado: o texto/glifo fica em branco mas
  * a engine prossegue e RENDERIZA. */
-#define ABM_W 1024
-#define ABM_H 1024
-#define ABM_STRIDE (ABM_W * 4)
+/* 🔤 TESTE NFS_ABMBIG: dobra o tamanho reportado do bitmap de glyph (getInfo).
+ * HIPÓTESE: a engine deriva o tamanho da PÁGINA de glyph do getInfo/2 (1024→512).
+ * Se sim, reportar 2048 → página 1024 → 4× capacidade → não enche → SEM eviction
+ * → sem garble. abm_w/h/stride passam a refletir o tamanho reportado p/ o
+ * font_draw escrever no stride certo. Buffer 64MB (2048²×4=16MB + folga). */
+static int abm_dim(void){ static int d=-1; if(d<0) d=getenv("NFS_ABMBIG")?2048:1024; return d; }
+#define ABM_W   (abm_dim())
+#define ABM_H   (abm_dim())
+#define ABM_STRIDE (abm_dim() * 4)
 static unsigned char *abm_buf(void) {
   static unsigned char *buf;
-  if (!buf) buf = (unsigned char *)calloc(1, 16 * 1024 * 1024); /* 16MB: folga contra over-read */
+  /* 16MB normal (1024²×4=4MB+folga); 64MB só com NFS_ABMBIG (2048²×4=16MB+folga). */
+  if (!buf) buf = (unsigned char *)calloc(1, (abm_dim()>1024 ? 64 : 16) * 1024 * 1024);
   return buf;
 }
 static int abm_getInfo(void *env, void *bmp, void *info) {
@@ -1453,6 +1460,14 @@ int nfs_abm_stride(void) { return ABM_STRIDE; }
 extern void my_glBindFramebuffer(unsigned, unsigned);
 extern void my_glDrawArrays(unsigned, int, int);
 extern void my_glDrawElements(unsigned, int, unsigned, const void *);
+extern void my_glBindBuffer(unsigned, unsigned);
+extern void my_glBufferData(unsigned, long, const void *, unsigned);
+extern void my_glBufferSubData(unsigned, long, long, const void *);
+extern void my_glVertexAttribPointer(unsigned, int, unsigned, unsigned char, int, const void *);
+extern void *my_glMapBufferRange(unsigned, long, long, unsigned);
+extern void *my_glMapBufferOES(unsigned, unsigned);
+extern unsigned char my_glUnmapBuffer(unsigned);
+extern unsigned char my_glUnmapBufferOES(unsigned);
 extern void my_glClear(unsigned);
 extern void my_glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
 extern void my_glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
@@ -1485,6 +1500,15 @@ DynLibFunction nfs_shims[] = {
     {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
     {"glDrawArrays", (uintptr_t)my_glDrawArrays},
     {"glDrawElements", (uintptr_t)my_glDrawElements},
+    {"glBindBuffer", (uintptr_t)my_glBindBuffer},
+    {"glBufferData", (uintptr_t)my_glBufferData},
+    {"glBufferSubData", (uintptr_t)my_glBufferSubData},
+    {"glVertexAttribPointer", (uintptr_t)my_glVertexAttribPointer},
+    {"glMapBufferRange", (uintptr_t)my_glMapBufferRange},
+    {"glMapBufferRangeEXT", (uintptr_t)my_glMapBufferRange},
+    {"glMapBufferOES", (uintptr_t)my_glMapBufferOES},
+    {"glUnmapBuffer", (uintptr_t)my_glUnmapBuffer},
+    {"glUnmapBufferOES", (uintptr_t)my_glUnmapBufferOES},
     {"glClear", (uintptr_t)my_glClear},
     {"glTexImage2D", (uintptr_t)my_glTexImage2D},
     {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},

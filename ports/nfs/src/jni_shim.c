@@ -385,7 +385,9 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   }
   if (methodID == &g_method_tags[MID_GET_BITMAP]) {
     static int bitmap_obj; /* handle distinto p/ o Bitmap (abm_* ignoram o ptr) */
-    if (getenv("NFS_BMPLOG")) fprintf(stderr, "[jni getBitmap] -> %p\n", (void *)&bitmap_obj);
+    /* 🔬 NFS_GFXLOG: loga o objeto BitmapGraphics (obj) — se houver MÚLTIPLOS
+     * distintos (várias páginas de glyph) usando o MESMO buffer abm, é colisão. */
+    if (getenv("NFS_BMPLOG")||getenv("NFS_GFXLOG")) fprintf(stderr, "[jni getBitmap] gfx=%p -> %p\n", obj, (void *)&bitmap_obj);
     return &bitmap_obj;
   }
   if (methodID == &g_method_tags[MID_GET_FONT_METRICS]) {
@@ -567,6 +569,7 @@ static void jni_CallVoidMethod_v(void *env, void *obj, void *methodID, va_list a
     int y = va_arg(ap, int);
     const char *s = resolve_jstring(jstr);
     extern float font_get_size(void*); extern unsigned egl_cur_tex0(void);
+    if (getenv("NFS_GFXLOG")) fprintf(stderr, "[drawString gfx=%p tex0=%u] x=%d y=%d '%s'\n", obj, egl_cur_tex0(), x, y, s?s:"");
     if (getenv("NFS_FONTLOG") || getenv("NFS_STRLOG"))
       fprintf(stderr, "[drawString tex0=%u] size=%.2f x=%d y=%d '%s'\n", egl_cur_tex0(), font_get_size(paint), x, y, s ? s : "");
     font_draw(paint, s, x, y, nfs_abm_buf(), nfs_abm_w(), nfs_abm_h(), nfs_abm_stride());
