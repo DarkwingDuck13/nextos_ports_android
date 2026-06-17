@@ -296,6 +296,7 @@ static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
 static int g_in_menu=0;  /* 1 = menu CODEX visivel; 0 = gameplay (reabilita injecao android_shim p/ mover Leon) */
 static int g_gameplay=0; /* 1 = entrou no gameplay (New/Continue) -> PARA toda poke-Mono (evita FREEZE) */
+static int g_gameplay_frame=0; /* frame em que entrou no gameplay (p/ esperar a cena carregar antes do touch-move) */
 /* ESTUDO: registra vocabulario DISTINTO de input consultado pelo jogo (sem cap).
    Gated por RE4_INDUMP. Imprime [INDUMP] <chave> uma vez por chave nova. */
 static int re4_indump(const char *key){
@@ -2969,7 +2970,7 @@ static void re4_menu_nav(int frame){
     /* se o botao for New/Continue (entra no gameplay) -> marca g_gameplay p/ PARAR a poke-Mono */
     void* en2=0; void* snm2=MN.runtime_invoke(m_getname,gos[ci],NULL,&en2);
     if(!en2&&snm2&&g_mono_string_to_utf8_fn){ char* u=g_mono_string_to_utf8_fn(snm2);
-      if(u && (!strcasecmp(u,"New")||!strcasecmp(u,"Continue"))){ g_gameplay=1; fprintf(stderr,"[MENUNAV2] gameplay START (%s) -> para poke-Mono f=%d\n",u,frame); } }
+      if(u && (!strcasecmp(u,"New")||!strcasecmp(u,"Continue"))){ g_gameplay=1; g_gameplay_frame=frame; fprintf(stderr,"[MENUNAV2] gameplay START (%s) -> para poke-Mono f=%d\n",u,frame); } }
     void* e6=0; void* evt=MN.runtime_invoke(m_onclick,sels[ci],NULL,&e6);
     if(!e6&&evt){ void* e7=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e7); fprintf(stderr,"[MENUNAV2] A->onClick ci=%d exc=%p f=%d\n",ci,e7,frame); fsync(2); }
     cur=0; /* forca reavaliacao do cursor no proximo frame (painel pode mudar) */
@@ -3019,9 +3020,10 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
      android_shim era redundante e FLOODAVA a navegacao -> a selecao ciclava ate o "Back".
      Por padrao DESLIGAMOS a injecao do android_shim (so drenamos a fila). RE4_SHIMINJECT=1
      reativa (caminho legado p/ gameplay por KeyEvent). */
-  /* No MENU: injecao OFF (re4_menu_nav dirige). No GAMEPLAY (!g_in_menu): injecao ON ->
-     dpad/stick viram KeyEvent/MotionEvent Android e o Leon anda (RE4 classico). */
-  int shiminject = (!g_in_menu) || getenv("RE4_SHIMINJECT")!=NULL;
+  /* android_shim injection DESLIGADA por padrao (2026-06-17): com controle FISICO, injetar
+     os eventos dele via nativeInjectEvent durante o load do gameplay TRAVAVA a tela. Nao e
+     necessaria: menu=re4_menu_nav, gameplay=touch-move. RE4_SHIMINJECT=1 reativa (debug). */
+  int shiminject = getenv("RE4_SHIMINJECT")!=NULL;
   while (android_shim_pop_input_event(&ev)) {
     if(!shiminject) continue;   /* drena sem injetar */
     if (ev.type == AINPUT_EVENT_TYPE_KEY) {
@@ -3094,7 +3096,8 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   /* MOVIMENTO NO GAMEPLAY (Leon anda): o gameplay e TOUCH (dpad na tela inf-esq). Traduzimos
      a direcao do gamepad (dpad ou analogico esq) num ARRASTO de toque sobre esse dpad virtual.
      So no gameplay (!g_in_menu). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
-  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE")){   /* default ON no gameplay: anda o Leon */
+  /* touch-move so DEPOIS da cena carregar (settle) p/ nao injetar toque durante o load (freeze) */
+  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE") && g_gameplay && frame > g_gameplay_frame+240){
     static int touching=0; static float lx2=0,ly2=0;
     float cx=(float)re4_int_env("RE4_DPAD_CX",95,0,1920);
     float cy=(float)re4_int_env("RE4_DPAD_CY",555,0,1080);
