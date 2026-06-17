@@ -2393,9 +2393,18 @@ static void ter_ctrl_feed(void) {
   float x=0,y=0; int invy = getenv("TER_CTRL_INVY")?1:0;
   if (g_gp_log[2]) x=-1.0f; else if (g_gp_log[3]) x=1.0f;
   if (g_gp_log[0]) y= (invy? 1.0f:-1.0f); else if (g_gp_log[1]) y=(invy?-1.0f:1.0f); /* up/down */
-  g_inj_axis[0]=x; g_inj_axis[1]=y;   /* LeftX, LeftY */
-  g_inj_axis[2]=x; g_inj_axis[3]=y;   /* RightX, RightY (alguns menus usam o stick direito) */
-  g_inj_axis[4]=x; g_inj_axis[5]=y;   /* DPadX, DPadY */
+  /* 🕹️ eixos analógicos PROPORCIONAIS × escala (cursor do gameplay). Antes era digital ±1 = sempre
+     deflexão MÁXIMA → cursor rápido demais. Agora segue a intensidade do stick × TER_CURSPEED.
+     DPad continua digital (navegação). Movimento (push firme) ainda passa o threshold do jogo. */
+  float cs = getenv("TER_CURSPEED") ? atof(getenv("TER_CURSPEED")) : 0.65f;
+  int lxa=getenv("TER_GP_LX")?atoi(getenv("TER_GP_LX")):0, lya=getenv("TER_GP_LY")?atoi(getenv("TER_GP_LY")):1;
+  int rxa=getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3, rya=getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
+  float alx=g_gp_axis[lxa]/32768.0f, aly=g_gp_axis[lya]/32768.0f;
+  float arx=g_gp_axis[rxa]/32768.0f, ary=g_gp_axis[rya]/32768.0f;
+  g_inj_axis[0] = (alx>0.12f||alx<-0.12f) ? alx*cs : x;   /* LeftX  (analógico ou dpad) */
+  g_inj_axis[1] = (aly>0.12f||aly<-0.12f) ? aly*cs : y;   /* LeftY */
+  g_inj_axis[2] = arx*cs; g_inj_axis[3] = ary*cs;          /* RightX/Y (cursor) escalado */
+  g_inj_axis[4]=x; g_inj_axis[5]=y;                        /* DPadX/Y digital (navegação) */
   /* TER_CTRLTEST: auto-teste autônomo (sem js0) — pulsa Down/Up/Action1 em padrão p/ provar a
      navegação. Sobrescreve o estado injetado. Down 0-10 de cada 60; a cada 5º ciclo, Action1. */
   if (getenv("TER_CTRLTEST")) {
@@ -2424,8 +2433,11 @@ static void ter_ctrl_feed(void) {
     extern int g_cur_regions; static int entered=0, eframe=0;
     if (g_cur_regions>8 && !entered){ entered=1; eframe=f; }
     if (f>from){
-      if (entered){ int e=f-eframe;   /* já no Settings: assenta 40f, depois 3 DOWN p/ testar nav interna */
-        if (e>40){ int st=(e-40)/25, ph=(e-40)%25; if(st<3 && ph<8) g_gp_log[1]=1; } }
+      if (entered){ int e=f-eframe;   /* na tela nova: assenta 40f, TER_AFTERDOWN downs + clique opcional */
+        int adown = getenv("TER_AFTERDOWN")?atoi(getenv("TER_AFTERDOWN")):3;
+        if (e>40){ int st=(e-40)/25, ph=(e-40)%25;
+          if(st<adown){ if(ph<8) g_gp_log[1]=1; }
+          else if(getenv("TER_AFTERCLICK") && st==adown+1 && ph<12){ g_gp_log[4]=1; } } }
       else { int s=f-from, step=s/25, ph=s%25;
         if (step<ndown){ if(ph<8) g_gp_log[1]=1; }        /* DOWN ×ndown até Settings */
         else { if(ph<10) g_gp_log[4]=1; }                 /* clica até a tela trocar */
