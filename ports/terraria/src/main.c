@@ -3779,24 +3779,29 @@ static void *fmod_audio_thread(void *arg) {
   void *fp = NULL;
   while (g_fmod_run && !(fp = jni_find_native("fmodProcess"))) usleep(20000);
   if (!fp) return NULL;
-  /* s14 (FORCESL): se o FMOD inicializou o output OpenSL (shim ativo), o mixer
-     dele bombeia sozinho via buffer queue — alimentar fmodProcess em paralelo
-     seria mix dobrado. Espera o init e só alimenta se o OpenSL NÃO assumiu
-     (fallback = comportamento antigo do null output). CUP_FMODFEED força. */
-  usleep(3000000);
-  if (opensles_shim_engine_active() && !getenv("CUP_FMODFEED")) {
-    fprintf(stderr, "[AUDIO] OpenSL ativo -> feeder fmodProcess DESLIGADO\n");
-    return NULL;
-  }
-  fprintf(stderr, "[AUDIO] fmodProcess=%p; thread alimentando (10ms)\n", fp);
-  static long dev = 0xFAD;            /* this (FMODAudioDevice) fake */
+  /* FMOD usa AudioTrack Java: a thread Java chamaria fmodProcess(buf) e escreveria no AudioTrack.
+     Replicamos: chamamos fmodProcess (enche g_fmod_pcm) IMEDIATAMENTE e enfileiramos o PCM num
+     SDL audio device (→ PulseAudio do Mali-450). Sem os 3s antigos (eram p/ o caminho OpenSL). */
+  SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
+  want.freq = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 48000;
+  want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;
+  if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
+  SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
+  if (dev) SDL_PauseAudioDevice(dev, 0);
+  fprintf(stderr, "[AUDIO] FMOD->SDL dev=%d freq=%d ch=%d fmt=0x%x (err=%s)\n",
+          dev, have.freq, have.channels, have.format, dev ? "" : SDL_GetError());
+  static long fdev = 0xFAD;            /* this (FMODAudioDevice) fake */
   void *bb = jni_fmod_bytebuffer();
-  unsigned long n = 0;
+  void *pcm = jni_fmod_pcm();
+  unsigned long n = 0, fed = 0;
   while (g_fmod_run) {
-    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &dev, bb);
-    if (n < 3 || n % 500 == 0) { fprintf(stderr, "[AUDIO] fmodProcess #%lu -> %d\n", n, r); dbg_sync(); }
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    if (r > 0 && dev) { SDL_QueueAudio(dev, pcm, (Uint32)r); fed += r; }
+    if (n < 5 || n % 500 == 0) {
+      fprintf(stderr, "[AUDIO] fmodProcess #%lu -> %d (fed=%lu q=%u)\n",
+              n, r, fed, dev ? SDL_GetQueuedAudioSize(dev) : 0); dbg_sync(); }
     n++;
-    usleep(10000);
+    usleep(8000);
   }
   return NULL;
 }

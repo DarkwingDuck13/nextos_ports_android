@@ -470,7 +470,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "getProperty") == 0) {
       void *keyo = va_arg(ap, void *);
       const char *key = resolve_jstring(keyo);
-      const char *val = "44100";
+      const char *val = getenv("TER_AUDIO_RATE") ? getenv("TER_AUDIO_RATE") : "44100";
       if (key && strstr(key, "FRAMES_PER_BUFFER")) val = "256";
       debugPrintf("jni_shim: getProperty(%s) -> %s\n", key ? key : "?", val);
       return make_jstring(val);
