@@ -1,5 +1,45 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🏆🎮 SESSÃO 2026-06-17 — CONTROLES + SINGLE PLAYER RESOLVIDOS (LEIA PRIMEIRO)
+**CONTROLE FUNCIONA NO MENU E NO GAMEPLAY (incl. cursor no jogo) — NextOS validou no Tutorial.**
+Caminho CORRETO descoberto: o build mobile usa **InControl/Controller.ControllerDevice** pra TUDO
+(menu + gameplay + cursor), NÃO o FNA `GamePad.GetState` (que NUNCA é chamado, 0×). Alimentamos via:
+- **`Controller.ControllerDevice.GetKeyRaw`@il2cpp+0xc5c51c** e **`GetAxisRaw`@0xc5c2f0** SUBSTITUÍDOS
+  (`my_ctrl_getkeyraw/getaxisraw`) devolvendo o estado do js0 (`g_gp_log`/`g_gp_axis`). O `Update`
+  do device computa _KeyState/edges/AxisValue → PlayerInput/GUIController* nativos respondem.
+- Força `ControllerActionManager.Instance._controllerActive=1` (off 0x30) toda frame (senão a GUI
+  fica em modo touch e ignora o controle). (`ter_ctrl_force_active`)
+- **Navegação do MENU** (`ter_menu_nav`, TER_NAVMENU): só ↑/↓ por LINHAS agrupadas (dedup + cluster
+  por Y) do `GUIInputRegionManager.Instance` (_mouseX@0x14/_mouseY@0x18, regiões em arr@0x48 structs
+  16B xMin/xMax/yMin/yMax). Hover via hook de `SetMousePosition`@0xcbf18c (substitui coords pela
+  nossa, com relocação adrp). ←/→ é o L1/R1 NATIVO. Espaço de coord da UI ≈ **902×507** (não 1280!).
+  Clique = A → Mouse.GetState.LeftButton (g_gp_log[4]) sobre a posição.
+- **CURSOR do gameplay**: eixo PROPORCIONAL × `TER_CURSPEED` (default 0.65) — era digital ±1 (rápido).
+
+**SINGLE PLAYER tela preta RESOLVIDA** (`ter_fix_singleplayer`, TER_FIXSP) — 2 bugs em série:
+1. `OldSaveSynchronise.CopyOldSaves` → NullReferenceException (migração save antigo, path nulo) → no-op.
+2. `GUILowDiskSpacePopup.DiskSpace`@0xd158ac retornava ≤50MB (statfs nativo quebrado, espaço real
+   93GB) → patch retorna 1GB → some "Your device is low on storage". +jni_shim StatFs/File getXspace.
+Agora Single Player → tela **New Player** (criação de personagem) renderiza.
+
+**BOOT**: `run.sh` precisa `CUP_NOLOGFILE=1` (log em arquivo trava init) + `CUP_FRAMES=999999999`
+(default dev=600 encerrava antes do menu). Boot é INTERMITENTE (às vezes trava no logo ~frame 300,
+busy-loop do job-system) — relançar resolve.
+
+**Env de produção (run.sh)**: `CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
+CUP_NOLOGFILE=1 CUP_FRAMES=999999999 TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1 TER_FIXSP=1`.
+
+**FALTA (próximas missões, em andamento):**
+- 🔤 **Nome do personagem (sem teclado)**: ao clicar Name, o campo FOCA (amarelo) mas NENHUM teclado
+  abre (`DrKeyboard_IME`/Android não existe no so-loader). O jogo TEM `DrKeyboard_Touch`/`_XBO` e
+  `Terraria.GameContent.UI.States.UIVirtualKeyboard` (teclado console). PLANO: forçar a factory
+  `DrKeyboard_Base.Create`@0x7b66c4 a escolher `DrKeyboard_Touch` (renderiza teclas na tela → clicar
+  c/ o cursor) ou `_XBO` (D-pad), patchando os `get_isSupported`. Bloqueia criar personagem→mundo.
+- 🌍 **Criação de mundo**: depende do teclado (nome do mundo). Tutorial JÁ dá um mundo jogável (preset).
+- 🔊 **Som**: FMOD "Error initializing output device" (reusar opensles_shim→PulseAudio).
+- 🕹️ Ajustar `TER_CURSPEED` ao gosto (NextOS testar o feeling do cursor no jogo).
+
+## 🎮🎮 CONTROLES — SESSÃO 2026-06-16 (HISTÓRICO — superado acima)
 ## 🎮🎮 CONTROLES — PRÓXIMA SESSÃO (2026-06-16) — LEIA PRIMEIRO
 **Status: jogo RODA no menu (60fps, renderiza), mas NENHUM input funciona no menu.**
 **🔑 PISTA DECISIVA: até um MOUSE USB REAL não funciona no menu (NextOS testou).** Logo o problema
@@ -14,21 +54,25 @@ NÃO é a nossa injeção — é que **input nenhum (real OU injetado) chega ao 
 - ⚠️ O "mouse USB real não funciona" é PORQUE o nosso hook do Mouse.GetState SOBRESCREVE o mouse real
   (esperado, NÃO é sinal de que o engine não lê input).
 
-### 🎯 HIPÓTESE PRINCIPAL p/ a próxima sessão: o Terraria MOBILE usa **TOUCH**, não mouse, pro menu.
-O menu do Terraria Android é touch (tocar nos botões), não point-and-click de mouse. Por isso o
-cursor de mouse não navega. **Próximo passo:**
-1. Achar e hookar a entrada de TOUCH da FNA/Terraria:
-   - `Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState()` → `TouchCollection` (lista de
-     TouchLocation: id, state, position). Injetar 1 TouchLocation na posição do cursor quando A
-     apertado (state: Pressed/Moved/Released).
-   - OU `Terraria.Main` campos de touch (`Main.lastNPCFocus`? não — procurar `touchState`/
-     `TouchPanelState`). Sondar com a mesma sonda GPPROBE (já em main.c, gated): namespaces
-     "Microsoft.Xna.Framework.Input.Touch" classe "TouchPanel"/"TouchPanelState", método "GetState".
-2. Alternativa: o Terraria tem suporte a gamepad NATIVO no menu via `PlayerInput`/`UILinkPointNavigator`.
-   Hookar `PlayerInput.UpdateInput` (0x837e9c) pode não bastar (lê de várias fontes). Investigar se
-   `PlayerInput.UsingGamepad`/`CurrentInputMode` precisa ser forçado p/ "Gamepad" — aí o menu usa
-   navegação por D-pad (e o Keyboard.GetState hook OU um GamePad.GetState hook alimentaria).
-   GamePad.GetState/1 @0xe114ac (struct GamePadState — desmontar p/ layout: Buttons/DPad/ThumbSticks).
+### 🎯 HIPÓTESE PRINCIPAL (CORRIGIDA 2026-06-17): hookar `GamePad.GetState`, NÃO touch/mouse.
+⚠️ A hipótese "touch-only" estava ERRADA — NextOS confirmou que o Terraria mobile suporta SIM
+controle/teclado/mouse. Estudo completo (decompilação da FNA): **TERRARIA-INPUT-ESTUDO-FNA-vs-
+SOLOADER-2026-06-17.md** em `~/Área de trabalho/TRABALHO AGENTE CODE/`. Achados decisivos:
+- O menu do Terraria num CONTROLE usa `UILinkPointNavigator` (D-pad), dirigido por `GamePadInput`
+  que lê **`Microsoft.Xna.Framework.Input.GamePad.GetState(0)`** (API FNA/XNA, NÃO InControl direto).
+- `CurrentInputMode` é mútuo-exclusivo: com gamepad "ativo" (modo XBoxGamepadUI=4) →
+  `IgnoreMouseInterface=true` → **o cursor de mouse que dirigimos é IGNORADO**. Hookamos Keyboard
+  (0xe16030) e Mouse (0xe18388) mas **NUNCA o GamePad.GetState** → terra-de-ninguém (mouse ignorado,
+  gamepad não alimentado).
+- BUG concreto: o layout de `MouseState` que assumimos (`[8]=scroll [12]=Left`) está provavelmente
+  ERRADO — na FNA é `{X@0,Y@4,LeftButton@8,Right@12,Mid@16,XB1@20,XB2@24,Scroll@28}` (32B). Clique
+  ia pro offset errado.
+**PRÓXIMO PASSO:** hookar `GamePad.GetState/1` @**0xe114ac** (struct-return x8, já temos o shim)
+retornando `GamePadState{IsConnected=true, Buttons/DPad/ThumbSticks do js0}` e deixar o
+`GamePadInput`/`UILinkPointNavigator` NATIVOS dirigirem o menu (mode auto-vira XBoxGamepadUI).
+Layout do GamePadState e flags dos botões XNA estão no doc de estudo. Garantir
+`Main.SettingBlockGamepadsEntirely==false` + `FocusHelper.AllowInputProcessingForGamepad→true`.
+Mesmo padrão do cuphead (hook da API de input GERENCIADA ← js0).
 
 ### O que JÁ FOI FEITO (não repetir):
 - ❌ `nativeInjectEvent(KeyEvent)`: BECO. Retorna false, nunca lê o evento (Unity 2021 espera ponteiro
