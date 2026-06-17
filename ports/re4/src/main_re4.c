@@ -129,9 +129,22 @@ static int my_input_get_key_down_string(void *mono_string);
 static int my_input_get_key_up_string(void *mono_string);
 static int my_input_any_key(void);
 static int my_input_any_key_down(void);
+/* MOUSE virtual: o menu CODEX e uGUI/EventSystem (touch/mouse). Hookamos a API de
+   mouse do Unity para simular um cursor+clique que o StandaloneInputModule processa,
+   navegando os botoes. Driver ao vivo via /tmp/re4mouse. */
+static int my_input_get_mouse_button(int button);
+static int my_input_get_mouse_button_down(int button);
+static int my_input_get_mouse_button_up(int button);
+static void my_icall_get_mousePosition(void *out_vec3);
+static int my_input_get_mouse_present(void);
+/* TOUCH virtual: o menu CODEX le Input.touchCount + Input.GetTouch (custom controller).
+   Hookamos para reportar 1 toque na posicao do cursor com fase Began/Stationary/Ended. */
+static int my_input_get_touch_count(void);
+static void my_icall_get_touch(int index, void *out_touch);
 static unsigned my_xinput_get_state(unsigned player_index, void *raw_state);
 static void my_xinput_set_state(unsigned player_index, float left_motor, float right_motor);
 static int re4_int_env(const char *name, int fallback, int min_value, int max_value);
+static int re4_screen_height(void);
 static int re4_input_hook_enabled(void){
   const char *v = getenv("RE4_NO_INPUTHOOK");
   return (!v || !v[0] || strcmp(v, "0") == 0);
@@ -195,6 +208,27 @@ static void my_mono_add_internal_call(const char *name, const void *method){
         if(!g_orig_input_any_key) g_orig_input_any_key = (re4_input_anykey_icall_t)method;
         resolved = (const void*)my_input_any_key;
         fprintf(stderr, "[ICALL] override %s -> SDL anyKey\n", name);
+      } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "GetMouseButtonDown")){
+        resolved = (const void*)my_input_get_mouse_button_down;
+        fprintf(stderr, "[ICALL] override %s -> virtual mouse down\n", name);
+      } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "GetMouseButtonUp")){
+        resolved = (const void*)my_input_get_mouse_button_up;
+        fprintf(stderr, "[ICALL] override %s -> virtual mouse up\n", name);
+      } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "GetMouseButton")){
+        resolved = (const void*)my_input_get_mouse_button;
+        fprintf(stderr, "[ICALL] override %s -> virtual mouse\n", name);
+      } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "INTERNAL_get_mousePosition")){
+        resolved = (const void*)my_icall_get_mousePosition;
+        fprintf(stderr, "[ICALL] override %s -> virtual mouse pos\n", name);
+      } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "get_mousePresent")){
+        resolved = (const void*)my_input_get_mouse_present;
+        fprintf(stderr, "[ICALL] override %s -> mousePresent=1\n", name);
+      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
+        resolved = (const void*)my_icall_get_touch;
+        fprintf(stderr, "[ICALL] override %s -> virtual touch\n", name);
+      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "get_touchCount")){
+        resolved = (const void*)my_input_get_touch_count;
+        fprintf(stderr, "[ICALL] override %s -> virtual touchCount\n", name);
       }
     }
     if(re4_skip_fullscreen_movie_enabled() &&
@@ -260,6 +294,19 @@ static unsigned g_snap_tex=0;   /* snapshot do composite (capturado quando FBO0 
 static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
+/* ESTUDO: registra vocabulario DISTINTO de input consultado pelo jogo (sem cap).
+   Gated por RE4_INDUMP. Imprime [INDUMP] <chave> uma vez por chave nova. */
+static int re4_indump(const char *key){
+  if(!getenv("RE4_INDUMP") || !key) return 0;
+  static char *seen[512]; static int nseen=0;
+  for(int i=0;i<nseen;i++) if(!strcmp(seen[i],key)) return 0;
+  if(nseen < (int)(sizeof(seen)/sizeof(seen[0]))){
+    seen[nseen++]=strdup(key);
+    fprintf(stderr,"[INDUMP] %s (f=%d)\n", key, g_re4_frame);
+    fsync(2);
+  }
+  return 1;
+}
 /* ===== RE4 input hook: SDL_GameController -> UnityEngine.Input / XInput =====
    O nativeInjectEvent funciona para alguns botões, mas Unity 2018 Mono não lê direção por
    MotionEvent nesse port. Estes hooks alimentam a API que o C# realmente consulta:
@@ -408,14 +455,17 @@ static void re4_gp_apply_stick_dpad(void){
   if(g_re4_gp_ly < -0.55f) g_re4_gp_btn[RE4_BTN_DU] = 1;
   if(g_re4_gp_ly >  0.55f) g_re4_gp_btn[RE4_BTN_DD] = 1;
 }
+/* raw_ps2: REMAPEAMENTO MANUAL de botoes por indice cru. DESLIGADO por padrao.
+   CAUSA-RAIZ do "preso no BACK / botoes embaralhados" (2026-06-17): a sessao
+   anterior chutou indices {2,1,3,0,6,7,...} que NAO batem com este adaptador.
+   O mapeamento CERTO (gamecontrollerdb do device, "USB Gamepad" 0810:0001) e
+   a:b1 b:b2 x:b0 y:b3 dpad=hat lb:b4 rb:b5 lt:b6 rt:b7 -> o SDL_GameController ja
+   aplica isso quando SDL_GAMECONTROLLERCONFIG esta setado (o que o RE4.sh faz via
+   get_controls). Os outros jogos funcionam justamente por confiar no SDL. Entao
+   confiamos no SDL e so usamos raw_ps2 se o usuario forcar RE4_RAW_PS2=1. */
 static int re4_gp_raw_ps2_enabled(void){
   const char *force = getenv("RE4_RAW_PS2");
-  if(force) return atoi(force) != 0;
-  if(!g_re4_gp_ctrl) return 0;
-  const char *name = SDL_GameControllerName(g_re4_gp_ctrl);
-  return name && (strcasestr(name, "Twin USB PS2") ||
-                  strcasestr(name, "PS2 Adapter") ||
-                  strcasestr(name, "USB Gamepad"));
+  return force && atoi(force) != 0;
 }
 static void re4_gp_apply_raw_ps2_buttons(void){
   if(!g_re4_gp_ctrl || !re4_gp_raw_ps2_enabled()) return;
@@ -437,6 +487,16 @@ static void re4_gp_apply_raw_ps2_buttons(void){
   g_re4_gp_btn[RE4_BTN_DD] = (h & SDL_HAT_DOWN) ? 1 : 0;
   g_re4_gp_btn[RE4_BTN_DL] = (h & SDL_HAT_LEFT) ? 1 : 0;
   g_re4_gp_btn[RE4_BTN_DR] = (h & SDL_HAT_RIGHT) ? 1 : 0;
+  /* DRIFT-FIX: o analogico destes adaptadores PS2/USB baratos NAO e calibrado
+     (rest fica fora de centro, ex. Vertical=0.397 parado) -> passa do deadzone ->
+     vira movimento-FANTASMA continuo -> tempestade de GetButtonDown no menu ->
+     cursor voa e cola no BACK. A direcao confiavel aqui e o D-PAD (hat) lido acima.
+     Entao ZERAMOS o analogico no modo raw_ps2. RE4_PS2_ANALOG=1 reabilita (se o
+     controle tiver analogico bom). Os sticks tambem alimentam apply_stick_dpad,
+     entao zerar aqui impede o drift de criar dpad falso. */
+  if(!getenv("RE4_PS2_ANALOG")){
+    g_re4_gp_lx = g_re4_gp_ly = g_re4_gp_rx = g_re4_gp_ry = 0.0f;
+  }
 }
 static void re4_gp_poll(void){
   if(g_re4_gp_poll_frame == g_re4_frame) return;
@@ -450,6 +510,42 @@ static void re4_gp_poll(void){
   re4_gp_open();
   if(g_re4_gp_ctrl){
     SDL_GameControllerUpdate();
+    /* DIAG: loga eixos/botoes CRUS do joystick para descobrir o estado de REPOUSO
+       real do adaptador (RE4_RAWAXLOG). Sem isso so vejo o valor ja processado. */
+    if(getenv("RE4_RAWAXLOG") && (g_re4_frame<400 || (g_re4_frame%30)==0)){
+      SDL_Joystick *rj = SDL_GameControllerGetJoystick(g_re4_gp_ctrl);
+      if(rj){
+        int na=SDL_JoystickNumAxes(rj), nh=SDL_JoystickNumHats(rj);
+        char buf[256]; int o=0;
+        o+=snprintf(buf+o,sizeof(buf)-o,"[RAWAX] f=%d axes(%d):",g_re4_frame,na);
+        for(int i=0;i<na && o<(int)sizeof(buf)-16;i++)
+          o+=snprintf(buf+o,sizeof(buf)-o," a%d=%d",i,SDL_JoystickGetAxis(rj,i));
+        o+=snprintf(buf+o,sizeof(buf)-o," gcLY=%d gcLX=%d hat0=%d",
+          SDL_GameControllerGetAxis(g_re4_gp_ctrl,SDL_CONTROLLER_AXIS_LEFTY),
+          SDL_GameControllerGetAxis(g_re4_gp_ctrl,SDL_CONTROLLER_AXIS_LEFTX),
+          nh>0?SDL_JoystickGetHat(rj,0):-1);
+        fprintf(stderr,"%s\n",buf); fsync(2);
+      }
+    }
+    /* DIAG GUIADO: loga QUALQUER mudanca de botao/hat/eixo cru (RE4_RAWALL).
+       Permite descobrir exatamente o que o adaptador do NextOS envia por input. */
+    if(getenv("RE4_RAWALL")){
+      SDL_Joystick *rj = SDL_GameControllerGetJoystick(g_re4_gp_ctrl);
+      if(rj){
+        static int pb[32], ph=-1; static int paxd[8]; static int init=0;
+        int na=SDL_JoystickNumAxes(rj), nbq=SDL_JoystickNumButtons(rj), nh=SDL_JoystickNumHats(rj);
+        if(na>8)na=8; if(nbq>32)nbq=32;
+        int h = nh>0?SDL_JoystickGetHat(rj,0):0;
+        if(!init){ init=1; ph=h; for(int i=0;i<nbq;i++) pb[i]=SDL_JoystickGetButton(rj,i);
+          for(int i=0;i<na;i++) paxd[i]=SDL_JoystickGetAxis(rj,i)/4000; }
+        for(int i=0;i<nbq;i++){ int v=SDL_JoystickGetButton(rj,i);
+          if(v!=pb[i]){ fprintf(stderr,"[RAWALL] f=%d BUTTON %d -> %d\n",g_re4_frame,i,v); fsync(2); pb[i]=v; } }
+        if(h!=ph){ fprintf(stderr,"[RAWALL] f=%d HAT0 -> %d (U%d D%d L%d R%d)\n",g_re4_frame,h,
+          !!(h&SDL_HAT_UP),!!(h&SDL_HAT_DOWN),!!(h&SDL_HAT_LEFT),!!(h&SDL_HAT_RIGHT)); fsync(2); ph=h; }
+        for(int i=0;i<na;i++){ int d=SDL_JoystickGetAxis(rj,i)/4000;
+          if(d!=paxd[i]){ fprintf(stderr,"[RAWALL] f=%d AXIS %d -> %d (~%d)\n",g_re4_frame,i,SDL_JoystickGetAxis(rj,i),d); fsync(2); paxd[i]=d; } }
+      }
+    }
     float dz = getenv("RE4_GP_DEADZONE") ? atof(getenv("RE4_GP_DEADZONE")) : 0.18f;
     g_re4_gp_lx = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_LEFTX)), dz);
     g_re4_gp_ly = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_LEFTY)), dz);
@@ -685,6 +781,27 @@ static int re4_input_button_orig(void *mono_string, int edge){
   if(edge < 0 && g_orig_input_get_button_up) return g_orig_input_get_button_up(mono_string);
   return 0;
 }
+/* MODO ESTRITO (default ON): para nomes de input que o MENU do RE4 usa
+   (Submit/Cancel/Vertical/Horizontal), NAO cair no input original do Unity.
+   O jni_shim enumera um joystick fake -> o backend do Unity gera valores-FANTASMA
+   nesses eixos/botoes -> o cursor pula sozinho e fica preso em BACK/Cancel, e
+   ciclando as opcoes. Estrito = devolve SO o estado do nosso gamepad SDL.
+   Desliga com RE4_GP_NOSTRICT=1 (debug). */
+static int re4_gp_strict(void){
+  static int c=-1;
+  /* DEFAULT OFF: descoberto 2026-06-17 que o estrito (retornar 0 quando nao temos
+     input) BLOQUEIA o input REAL do Unity alimentado pelos eventos injetados
+     (android_shim -> nativeInjectEvent -> estado de input do Unity -> GetAxis/
+     GetButton ORIGINAL). Com o raw_ps2 desligado nao ha mais botao embaralhado,
+     entao nao precisamos do estrito; deixamos o original fluir. RE4_GP_STRICT=1 liga. */
+  if(c<0) c = getenv("RE4_GP_STRICT") ? 1 : 0;
+  return c;
+}
+/* Fallback ao original SO quando NAO estrito (debug). */
+static int re4_input_button_fallback(void *mono_string, int edge){
+  if(re4_gp_strict()) return 0;
+  return re4_input_button_orig(mono_string, edge);
+}
 static char *re4_mono_string_to_utf8(void *mono_string){
   if(!mono_string || !g_mono_string_to_utf8_fn) return NULL;
   return g_mono_string_to_utf8_fn(mono_string);
@@ -695,6 +812,7 @@ static void re4_mono_free_utf8(char *s){
 static float my_input_get_axis_common(void *mono_string, int raw){
   char *name = re4_mono_string_to_utf8(mono_string);
   re4_gp_poll();
+  if(getenv("RE4_INDUMP")){ char k[80]; snprintf(k,sizeof k,"%s(\"%s\")", raw?"GetAxisRaw":"GetAxis", name?name:"(null)"); re4_indump(k); }
   int known = 0;
   float v = re4_gp_axis_from_name(name, &known);
   if(getenv("RE4_GPTRACE")){
@@ -727,6 +845,7 @@ static float my_input_get_axis_raw(void *mono_string){ return my_input_get_axis_
 static int my_input_get_button_common(void *mono_string, int edge){
   char *name = re4_mono_string_to_utf8(mono_string);
   re4_gp_poll();
+  if(getenv("RE4_INDUMP")){ char k[80]; snprintf(k,sizeof k,"%s(\"%s\")", edge==0?"GetButton":(edge>0?"GetButtonDown":"GetButtonUp"), name?name:"(null)"); re4_indump(k); }
   int axis_kind = re4_gp_axis_button_kind_from_name(name);
   if(axis_kind){
     int r = re4_gp_axis_button_state(axis_kind, edge);
@@ -747,7 +866,7 @@ static int my_input_get_button_common(void *mono_string, int edge){
       re4_mono_free_utf8(name);
       return r;
     }
-    int orig = re4_input_button_orig(mono_string, edge);
+    int orig = re4_input_button_fallback(mono_string, edge);
     re4_mono_free_utf8(name);
     return orig;
   }
@@ -757,10 +876,12 @@ static int my_input_get_button_common(void *mono_string, int edge){
     int prev = g_re4_gp_prev[submit] ? 1 : 0;
     int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
     if(r){
+      if(getenv("RE4_GPLOG")) fprintf(stderr,"[RINPUT] %s(\"Submit\") -> %d f=%d\n",
+        edge==0?"GetButton":(edge>0?"GetButtonDown":"GetButtonUp"), r, g_re4_frame);
       re4_mono_free_utf8(name);
       return r;
     }
-    int orig = re4_input_button_orig(mono_string, edge);
+    int orig = re4_input_button_fallback(mono_string, edge);
     re4_mono_free_utf8(name);
     return orig;
   }
@@ -770,10 +891,12 @@ static int my_input_get_button_common(void *mono_string, int edge){
     int prev = g_re4_gp_prev[cancel] ? 1 : 0;
     int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
     if(r){
+      if(getenv("RE4_GPLOG")) fprintf(stderr,"[RINPUT] %s(\"Cancel\") -> %d f=%d\n",
+        edge==0?"GetButton":(edge>0?"GetButtonDown":"GetButtonUp"), r, g_re4_frame);
       re4_mono_free_utf8(name);
       return r;
     }
-    int orig = re4_input_button_orig(mono_string, edge);
+    int orig = re4_input_button_fallback(mono_string, edge);
     re4_mono_free_utf8(name);
     return orig;
   }
@@ -800,9 +923,10 @@ static int my_input_get_button_common(void *mono_string, int edge){
     }
     re4_mono_free_utf8(name);
     if(r) return r;
-    return re4_input_button_orig(mono_string, edge);
+    return re4_input_button_fallback(mono_string, edge);
   }
   re4_mono_free_utf8(name);
+  /* nome DESCONHECIDO: ai sim deixa o original (pode ser algo que nao mapeamos). */
   return re4_input_button_orig(mono_string, edge);
 }
 static int my_input_get_button(void *mono_string){ return my_input_get_button_common(mono_string, 0); }
@@ -821,17 +945,27 @@ static int re4_gp_button_from_unity_key(int keycode){
     return joy_map[(keycode - 330) % 20];
   }
   switch(keycode){
-    case 13: return RE4_BTN_A;      /* Return */
-    case 27: return RE4_BTN_B;      /* Escape */
+    case 13: return RE4_BTN_A;      /* Return = confirmar */
+    case 27: return RE4_BTN_B;      /* Escape = cancelar */
     case 273: return RE4_BTN_DU;    /* UpArrow */
     case 274: return RE4_BTN_DD;    /* DownArrow */
     case 275: return RE4_BTN_DR;    /* RightArrow */
     case 276: return RE4_BTN_DL;    /* LeftArrow */
+    /* TECLADO WASD+Space: o menu CODEX (MainMenu_KeyboardController) e o gameplay
+       leem MOVIMENTO/ACAO por estas teclas (GetKey 119/115/97/100/32), NAO pelo
+       EventSystem (Submit/Vertical). Mapear o gamepad aqui e o que faz o menu
+       navegar/entrar e o Leon andar. RE4_NO_WASD desliga (debug). */
+    case 119: return getenv("RE4_NO_WASD") ? -1 : RE4_BTN_DU; /* W = cima/frente */
+    case 115: return getenv("RE4_NO_WASD") ? -1 : RE4_BTN_DD; /* S = baixo/tras */
+    case 97:  return getenv("RE4_NO_WASD") ? -1 : RE4_BTN_DL; /* A = esquerda */
+    case 100: return getenv("RE4_NO_WASD") ? -1 : RE4_BTN_DR; /* D = direita */
+    case 32:  return getenv("RE4_NO_WASD") ? -1 : RE4_BTN_A;  /* Space = confirmar/acao */
     default: return -1;
   }
 }
 static int my_input_get_key_common(int keycode, int edge){
   re4_gp_poll();
+  if(getenv("RE4_INDUMP")){ char k[64]; snprintf(k,sizeof k,"%s(%d)", edge==0?"GetKey":(edge>0?"GetKeyDown":"GetKeyUp"), keycode); re4_indump(k); }
   int id = re4_gp_button_from_unity_key(keycode);
   if(getenv("RE4_GPTRACE")){
     static int tn = 0;
@@ -863,9 +997,93 @@ static int my_input_get_key_common(int keycode, int edge){
 static int my_input_get_key(int keycode){ return my_input_get_key_common(keycode, 0); }
 static int my_input_get_key_down(int keycode){ return my_input_get_key_common(keycode, 1); }
 static int my_input_get_key_up(int keycode){ return my_input_get_key_common(keycode, -1); }
+/* ===== MOUSE VIRTUAL (navegacao do menu uGUI via EventSystem) =====
+   /tmp/re4mouse contem "x y" (posicao do cursor, pixels topo-esquerda). Um clique e
+   simulado por re4_mouse_click() (down N frames, up). O StandaloneInputModule do Unity
+   le mousePosition + GetMouseButtonDown(0) -> raycast na UI -> aciona o botao sob o cursor. */
+static float g_mouse_x=640.0f, g_mouse_y=360.0f;   /* pixels, origem topo-esquerda */
+static int g_mouse_down=0, g_mouse_down_prev=0;
+static int g_mouse_click_until=-1;
+static void re4_mouse_poll(void){
+  static int last=-999999;
+  if(last==g_re4_frame) return; last=g_re4_frame;
+  g_mouse_down_prev = g_mouse_down;
+  /* le posicao do cursor (persistente) */
+  FILE *f=fopen("/tmp/re4mouse","r");
+  if(f){ float x,y; if(fscanf(f,"%f %f",&x,&y)==2 && x>=0){ g_mouse_x=x; g_mouse_y=y; } fclose(f); }
+  /* clique pendente (arquivo gatilho /tmp/re4click) */
+  f=fopen("/tmp/re4click","r");
+  if(f){ int c=0; if(fscanf(f,"%d",&c)==1 && c>0){ fclose(f); f=fopen("/tmp/re4click","w"); if(f)fclose(f);
+      g_mouse_click_until = g_re4_frame + re4_int_env("RE4_CLICK_HOLD",4,1,30);
+    } else fclose(f); }
+  g_mouse_down = (g_re4_frame <= g_mouse_click_until) ? 1 : 0;
+}
+static int my_input_get_mouse_button(int button){
+  re4_mouse_poll();
+  if(button==0) return g_mouse_down;
+  return 0;
+}
+static int my_input_get_mouse_button_down(int button){
+  re4_mouse_poll();
+  if(button==0){ int r = g_mouse_down && !g_mouse_down_prev;
+    if(r && getenv("RE4_GPLOG")){ fprintf(stderr,"[MOUSE] DOWN x=%.0f y=%.0f f=%d\n",g_mouse_x,g_mouse_y,g_re4_frame); fsync(2);} return r; }
+  return 0;
+}
+static int my_input_get_mouse_button_up(int button){
+  re4_mouse_poll();
+  if(button==0) return !g_mouse_down && g_mouse_down_prev;
+  return 0;
+}
+static int my_input_get_mouse_present(void){ return 1; }
+/* INTERNAL_get_mousePosition(out Vector3): Unity usa origem BOTTOM-left -> y invertido. */
+static void my_icall_get_mousePosition(void *out_vec3){
+  re4_mouse_poll();
+  if(!out_vec3) return;
+  float *v=(float*)out_vec3;
+  int h = re4_screen_height();
+  v[0]=g_mouse_x;
+  v[1]=(float)h - g_mouse_y;   /* inverte Y p/ coords do Unity */
+  v[2]=0.0f;
+}
+/* touchCount: 1 enquanto o toque esta ativo (inclui o frame do Ended). */
+static int my_input_get_touch_count(void){
+  re4_mouse_poll();
+  int active = g_mouse_down || (!g_mouse_down && g_mouse_down_prev);
+  return active ? 1 : 0;
+}
+/* INTERNAL_CALL_GetTouch(int index, out Touch). Layout Unity 2018 (ARM32, 4B campos):
+   0:fingerId 4:pos.x 8:pos.y 12:rawPos.x 16:rawPos.y 20:dPos.x 24:dPos.y 28:dTime
+   32:tapCount 36:phase 40:type 44:pressure ... Preenchemos o essencial p/ o EventSystem. */
+static void my_icall_get_touch(int index, void *out_touch){
+  re4_mouse_poll();
+  if(!out_touch) return;
+  unsigned char *t=(unsigned char*)out_touch;
+  memset(t, 0, 56);
+  int h = re4_screen_height();
+  float px=g_mouse_x, py=(float)h - g_mouse_y;   /* Unity touch = bottom-left */
+  int phase; /* 0=Began 1=Moved 2=Stationary 3=Ended 4=Canceled */
+  if(g_mouse_down && !g_mouse_down_prev) phase=0;        /* Began */
+  else if(!g_mouse_down && g_mouse_down_prev) phase=3;   /* Ended */
+  else phase=2;                                          /* Stationary */
+  *(int*)(t+0)   = 0;        /* fingerId */
+  *(float*)(t+4) = px;       /* position.x */
+  *(float*)(t+8) = py;       /* position.y */
+  *(float*)(t+12)= px;       /* rawPosition.x */
+  *(float*)(t+16)= py;       /* rawPosition.y */
+  *(float*)(t+20)= 0.0f;     /* deltaPosition.x */
+  *(float*)(t+24)= 0.0f;     /* deltaPosition.y */
+  *(float*)(t+28)= 0.016f;   /* deltaTime */
+  *(int*)(t+32)  = 1;        /* tapCount */
+  *(int*)(t+36)  = phase;    /* phase */
+  *(int*)(t+40)  = 0;        /* type */
+  *(float*)(t+44)= 1.0f;     /* pressure */
+  *(float*)(t+48)= 1.0f;     /* maximumPossiblePressure */
+  if(getenv("RE4_GPLOG") && phase!=2){ fprintf(stderr,"[TOUCHV] idx=%d phase=%d x=%.0f y=%.0f f=%d\n",index,phase,px,py,g_re4_frame); fsync(2); }
+}
 static int my_input_get_key_string_common(void *mono_string, int edge){
   char *name = re4_mono_string_to_utf8(mono_string);
   re4_gp_poll();
+  if(getenv("RE4_INDUMP")){ char k[80]; snprintf(k,sizeof k,"%s(\"%s\")", edge==0?"GetKeyString":(edge>0?"GetKeyDownString":"GetKeyUpString"), name?name:"(null)"); re4_indump(k); }
   int id = re4_gp_button_id_from_name(name);
   if(getenv("RE4_GPTRACE")){
     static int tn = 0;
@@ -2442,6 +2660,29 @@ static int re4_inject_motion_event(void *env, void *thiz, void *inject,
             ev->axes[AMOTION_EVENT_AXIS_Z], ev->axes[AMOTION_EVENT_AXIS_RZ], handled, frame);
   return handled;
 }
+/* Injeta um TOQUE (tap) na tela via nativeInjectEvent (MotionEvent TOUCHSCREEN).
+   O menu CODEX do RE4 e TOUCH (jogo mobile): nem KeyEvent nem icall navegam.
+   getX/getY sao servidos de axes[0]/axes[1]; getSource de g_hk_inject.source. */
+static int re4_inject_touch(void *env, void *thiz, void *inject, int action, float x, float y, int frame){
+  if(!inject) return 0;
+  long now = re4_now_ms();
+  memset(&g_hk_inject.axes, 0, sizeof(g_hk_inject.axes));
+  g_hk_inject.action   = action;
+  g_hk_inject.keycode  = 0;
+  g_hk_inject.source   = AINPUT_SOURCE_TOUCHSCREEN;  /* 0x1002 */
+  g_hk_inject.deviceId = 0;                          /* touchscreen device 0 */
+  g_hk_inject.metaState= 0;
+  g_hk_inject.repeat   = 0;
+  g_hk_inject.flags    = 0;
+  g_hk_inject.eventTime= now;
+  g_hk_inject.downTime = now;
+  g_hk_inject.axes[0]  = x;  /* getX */
+  g_hk_inject.axes[1]  = y;  /* getY */
+  int handled = ((int (*)(void *, void *, void *))inject)(env, thiz, hk_motionevent_object());
+  fprintf(stderr,"[TOUCH] action=%d x=%.0f y=%.0f handled=%d f=%d\n",action,x,y,handled,frame);
+  fsync(2);
+  return handled;
+}
 static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   FakeInputEvent ev;
   android_shim_pump_sdl_events();
@@ -2477,6 +2718,41 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
       if(ph==0 && held!=key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,key,0,frame,"TESTKEY"); held=key; }
       else if(ph==per/2 && held==key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_UP,key,0,frame,"TESTKEY"); held=-1; }
       else if(held==key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,key,1,frame,"TESTKEY"); } /* repeat=hold */
+    }
+  }
+  /* INJETOR DE TECLA ANDROID AO VIVO: escreve um keycode em /tmp/re4key -> injeta
+     DOWN agora + UP alguns frames depois (RE4_LIVEKEY_HOLD). Testa se o menu/jogo
+     responde ao caminho Android KeyEvent (nativeInjectEvent). Gated RE4_LIVEKEY. */
+  if(getenv("RE4_LIVEKEY")){
+    static int pend_key=-1, pend_up_frame=-1;
+    if(pend_key>=0 && frame>=pend_up_frame){
+      re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_UP,pend_key,0,frame,"LIVEKEY");
+      pend_key=-1;
+    }
+    if(pend_key<0){
+      FILE *kf=fopen("/tmp/re4key","r");
+      if(kf){ int k=-1; if(fscanf(kf,"%d",&k)==1 && k>=0){ fclose(kf); kf=fopen("/tmp/re4key","w"); if(kf)fclose(kf);
+          int hold=re4_int_env("RE4_LIVEKEY_HOLD",3,1,60);
+          re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,k,0,frame,"LIVEKEY");
+          pend_key=k; pend_up_frame=frame+hold;
+        } else fclose(kf);
+      }
+    }
+  }
+  /* INJETOR DE TOQUE AO VIVO: escreve "x y" em /tmp/re4touch -> tap (DOWN+MOVE+UP).
+     Testa se o menu CODEX (touch) responde. Gated RE4_LIVETOUCH. */
+  if(getenv("RE4_LIVETOUCH")){
+    static int st=0; static float tx,ty; static int up_frame=-1;
+    if(st==0){
+      FILE *tf=fopen("/tmp/re4touch","r");
+      if(tf){ float x=-1,y=-1; if(fscanf(tf,"%f %f",&x,&y)==2 && x>=0){ fclose(tf); tf=fopen("/tmp/re4touch","w"); if(tf)fclose(tf);
+          tx=x; ty=y; re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_DOWN,tx,ty,frame);
+          st=1; up_frame=frame+re4_int_env("RE4_LIVETOUCH_HOLD",4,1,60);
+        } else fclose(tf);
+      }
+    } else if(st==1){
+      if(frame>=up_frame){ re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_UP,tx,ty,frame); st=0; }
+      else re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_MOVE,tx,ty,frame);
     }
   }
 }
