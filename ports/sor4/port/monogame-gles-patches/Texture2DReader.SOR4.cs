@@ -27,7 +27,7 @@ namespace Microsoft.Xna.Framework.Content
         static int SOR4_GetScale(){ var v=System.Environment.GetEnvironmentVariable("SOR4_TEXSCALE"); int s; if(!string.IsNullOrEmpty(v)&&int.TryParse(v,out s)&&s>=1&&s<=4) return s; return 2; }
         // decodifica ASTC (w x h) -> RGBA8 e reduz por 'scale' (box filter) -> retorna (w/scale)x(h/scale)
         static byte[] Sor4DecodeAstc(byte[] data, int len, int w, int h, int scale) {
-            string ckey = Sor4CacheDir != null ? Sor4CacheKey(data, len, w, h, scale, 0) : null;
+            string ckey = Sor4CacheDir != null ? Sor4CacheKey(data, len, w, h, scale, 1) : null;
             if (ckey != null) { var ch = Sor4CacheGet(ckey); if (ch != null) return ch; }
             int nb = len / 16; int bx = 0, by = 0;
             for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0],cby=AstcBlk[i,1];
@@ -37,13 +37,22 @@ namespace Microsoft.Xna.Framework.Content
             else { try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, full);
                 if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<full.Length;p+=4){full[p]=128;full[p+1]=128;full[p+2]=128;full[p+3]=255;} } }
                 catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); } }
-            // SOR4: atlas de fonte/mascara (RGB~0, A com conteudo) -> RGB=A (branco premult) p/ texto visivel
-            {
-                long sr=0,sg=0,sb=0,sa=0,np=full.Length/4;
-                for(int p=0;p<full.Length;p+=4){sr+=full[p];sg+=full[p+1];sb+=full[p+2];sa+=full[p+3];}
-                if (np>0 && (sr+sg+sb)/(np*3) < 8 && sa/np > 12) {
+            // SOR4: atlas de FONTE/mascara = glifos guardados SO no ALPHA, com RGB=0 em
+            // PRATICAMENTE TODOS os pixels -> RGB=A (branco premult) p/ o texto ficar visivel.
+            // ANTES usava media de RGB<8, o que pegava por engano CERCAS/GRADES/ESCADAS do
+            // cenario (quase todas transparentes c/ RGB=0 nos buracos) e as pintava de BRANCO.
+            // Agora exigimos que <1% dos pixels tenham COR real (fio de cerca tem RGB>0 ->
+            // NAO dispara). SOR4_NOMASKFIX=1 desliga de vez (A/B). Mudanca invalida o texcache.
+            if (System.Environment.GetEnvironmentVariable("SOR4_NOMASKFIX")!="1") {
+                long sa=0; int colored=0, np=full.Length/4;
+                for(int p=0;p<full.Length;p+=4){
+                    sa+=full[p+3];
+                    int mx=full[p]; if(full[p+1]>mx)mx=full[p+1]; if(full[p+2]>mx)mx=full[p+2];
+                    if(mx>16) colored++;
+                }
+                if (np>0 && sa/np > 12 && (long)colored*100 < (long)np) {
                     for(int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; }
-                    if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1") System.Console.Error.WriteLine($"[MASKFIX] {w}x{h} RGB=A");
+                    if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1") System.Console.Error.WriteLine($"[MASKFIX] {w}x{h} RGB=A (colored={colored}/{np})");
                 }
             }
             if (System.Environment.GetEnvironmentVariable("SOR4_DUMPTEX")=="1" && w<=400 && h<=400) {
