@@ -36,7 +36,23 @@ CUP_NOLOGFILE=1 CUP_FRAMES=999999999 TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1 TER_
   `DrKeyboard_Base.Create`@0x7b66c4 a escolher `DrKeyboard_Touch` (renderiza teclas na tela → clicar
   c/ o cursor) ou `_XBO` (D-pad), patchando os `get_isSupported`. Bloqueia criar personagem→mundo.
 - 🌍 **Criação de mundo**: depende do teclado (nome do mundo). Tutorial JÁ dá um mundo jogável (preset).
-- 🔊 **Som**: FMOD "Error initializing output device" (reusar opensles_shim→PulseAudio).
+- 🔊 **Som (investigado 2026-06-17, NÃO resolvido)**: o FMOD usa o backend **AudioTrack Java
+  (`org.fmod.FMODAudioDevice`)**, NÃO OpenSL ES (nem dá dlopen em libOpenSLES → o opensles_shim
+  NÃO engata). Sequência: getProperty(OUTPUT_SAMPLE_RATE)=44100 → RegisterNatives(fmodGetInfo@?,
+  `fmodProcess(ByteBuffer)@`, fmodProcessMicData) → GetMethodID(FMODAudioDevice.<init>) → **"FMOD
+  failed to initialize the output device (60=FMOD_ERR_OUTPUT_INIT)"** → "Cannot create FMOD::Sound".
+  CAUSA: o jni_shim NÃO tem handler de NewObject/FMODAudioDevice (init cai no genérico → falha) E
+  não há thread Java chamando fmodProcess. INFRA JÁ EXISTE mas DESLIGADA: `fmod_audio_thread`
+  (main.c ~3777, gated por `if(0)` na ~4495) chama fmodProcess a cada 10ms; jni_shim tem o
+  DirectByteBuffer (g_fmod_pcm[32768], jni_fmod_bytebuffer/pcm). FALTA (2 caminhos):
+  (A) COMPLETAR AudioTrack: fingir FMODAudioDevice.init/start OK no jni_shim (NewObject→fake device
+      taggeado, init→sucesso/bufsize, start→OK) + ligar fmod_audio_thread + **escrever g_fmod_pcm no
+      SDL/PulseAudio** (a thread atual só chama fmodProcess, NÃO manda o PCM pro alto-falante — peça
+      que falta). Formato do PCM via fmodGetInfo (provável 16-bit stereo 44100/48000).
+  (B) FORÇAR OpenSL: fazer o FMOD escolher OUTPUTTYPE_OPENSL (o opensles_shim já resolve OpenSL→SDL→
+      Pulse). Tentar SDK menor em my_sysprop (hoje "25") ou setOutput. Menos provável (o jogo
+      registrou FMODAudioDevice = decidiu AudioTrack).
+  ⚠️ Mali-450 = PulseAudio (ver memória nextos_openal_pulse). Precisa do NextOS confirmar de OUVIDO.
 - 🕹️ Ajustar `TER_CURSPEED` ao gosto (NextOS testar o feeling do cursor no jogo).
 
 ## 🎮🎮 CONTROLES — SESSÃO 2026-06-16 (HISTÓRICO — superado acima)
