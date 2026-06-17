@@ -877,13 +877,27 @@ static const unsigned char* my_glGetString(unsigned n){
 	  if(getenv("RE4_GLDIAG") && (n==0x1F00||n==0x1F01||n==0x1F02||n==0x8B8C)) fprintf(stderr,"[GLSTR] 0x%x = %s\n",n,s?(const char*)s:"(null)");
   return s; }
 static int re4_gl_rt_max(void){
-  const char *v=getenv("RE4_GLRT_MAX"); char *e=NULL; long n;
-  if(!v||!v[0]) return 1024;
-  n=strtol(v,&e,10);
-  if(!e||*e) return 1024;
-  if(n<256) n=256;
-  if(n>4096) n=4096;
-  return (int)n;
+  /* Limite p/ ENCOLHER render targets grandes demais p/ a GPU. O cap antigo era 1024
+     hardcoded -> em 1280x720 a textura de cor do FBO da cena (1280x720) era dividida
+     p/ 640x360, MAS o Unity continuava com glViewport(0,0,1280,720) nela -> só um canto
+     renderizava -> ZOOM proporcional à resolução. Em 960x540 (<1024) nunca encolhia ->
+     preenchia certo. FIX: usar o limite REAL da GPU (GL_MAX_TEXTURE_SIZE, Mali-450=4096)
+     -> RTs na resolução de tela (720p/1080p/...) nunca encolhem -> sem zoom, automático
+     em qualquer device. RE4_GLRT_MAX força (debug). */
+  const char *v=getenv("RE4_GLRT_MAX");
+  if(v&&v[0]){ char *e=NULL; long n=strtol(v,&e,10);
+    if(e&&!*e){ if(n<256)n=256; if(n>8192)n=8192; return (int)n; } }
+  static int cached=0;
+  if(cached) return cached;
+  if(!r_glGetIntegerv) r_glGetIntegerv=dlsym(RTLD_DEFAULT,"glGetIntegerv");
+  if(r_glGetIntegerv){
+    int mts=0, mrb=0;
+    r_glGetIntegerv(0x0D33,&mts);  /* GL_MAX_TEXTURE_SIZE */
+    r_glGetIntegerv(0x84E8,&mrb);  /* GL_MAX_RENDERBUFFER_SIZE */
+    int m=mts; if(mrb>0 && mrb<m) m=mrb;
+    if(m>=512){ cached=m; return cached; }   /* só cacheia query válida (contexto current) */
+  }
+  return 2048; /* fallback antes de haver contexto GL (floor seguro p/ 1080p) */
 }
 static int re4_next_pot(int v){ int p=1; while(p<v) p<<=1; return p; }
 static int re4_bpp_for(unsigned format,unsigned type){
@@ -1270,6 +1284,9 @@ static void my_glBindTexture(unsigned target,unsigned texture){
 static void my_glViewport(int x,int y,int width,int height){
   if(!r_glViewport) r_glViewport=dlsym(RTLD_DEFAULT,"glViewport");
   g_gl_viewport[0]=x; g_gl_viewport[1]=y; g_gl_viewport[2]=width; g_gl_viewport[3]=height;
+  { static int n=0; if(getenv("RE4_VPLOG") && n++<60)
+      fprintf(stderr,"[VPLOG] glViewport(%d,%d,%d,%d) fbo=%u screen=%dx%d\n",
+              x,y,width,height,g_gl_bound_fbo,re4_screen_width(),re4_screen_height()); }
   if(r_glViewport) r_glViewport(x,y,width,height);
 }
 static void my_glScissor(int x,int y,int width,int height){

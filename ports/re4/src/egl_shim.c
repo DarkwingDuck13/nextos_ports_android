@@ -11,6 +11,7 @@
 #include <SDL2/SDL.h>
 #include <GLES2/gl2.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -91,6 +92,20 @@ static int screen_height(void) {
 }
 
 void egl_shim_create_window(void) {
+  /* RESOLUCAO AUTOMATICA/PORTATIL: se RE4_WIDTH/HEIGHT nao foram fixados, usa a resolucao
+     NATIVA do display (SDL_GetDesktopDisplayMode) -> 480p/720p/1080p sem hardcode. setenv ANTES
+     de qualquer screen_width()/re4_screen_width() -> egl_shim e main_re4 concordam. O fix do
+     GL_MAX_TEXTURE_SIZE garante que o render target na resolucao nativa nao encolha (era o cap
+     1024 que encolhia o RT da cena sem ajustar o viewport -> ZOOM em 1280+). */
+  if (!getenv("RE4_WIDTH") || !getenv("RE4_HEIGHT")) {
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+      char b[16];
+      snprintf(b, sizeof b, "%d", dm.w); setenv("RE4_WIDTH", b, 1);
+      snprintf(b, sizeof b, "%d", dm.h); setenv("RE4_HEIGHT", b, 1);
+      debugPrintf("egl_shim: [AUTO] native display %dx%d -> RE4_WIDTH/HEIGHT\n", dm.w, dm.h);
+    }
+  }
   int width = screen_width();
   int height = screen_height();
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
@@ -133,6 +148,15 @@ void egl_shim_create_window(void) {
   unsigned (*r_querySurface)(void*,void*,int,int*)=dlsym(RTLD_DEFAULT,"eglQuerySurface");
   if(r_getCurDisplay&&r_getCurSurface&&r_getCurContext&&r_makeCurrent&&r_createContext&&r_chooseConfig&&r_querySurface){
     g_real_dpy=r_getCurDisplay(); g_real_surf=r_getCurSurface(EGL_DRAW_ATTR); g_real_ctx=r_getCurContext();
+    /* DIAG: tamanho REAL da surface mali-fbdev (decisivo p/ o bug de zoom/fullscreen) */
+    { int rw=-1,rh=-1; r_querySurface(g_real_dpy,g_real_surf,0x3057/*WIDTH*/,&rw);
+      r_querySurface(g_real_dpy,g_real_surf,0x3056/*HEIGHT*/,&rh);
+      int dw=0,dh=0; SDL_GL_GetDrawableSize(egl_window,&dw,&dh);
+      int mts=0,mrb=0,mvp[2]={0,0};
+      void (*r_getiv)(unsigned,int*)=dlsym(RTLD_DEFAULT,"glGetIntegerv");
+      if(r_getiv){ r_getiv(0x0D33,&mts); r_getiv(0x84E8,&mrb); r_getiv(0x0D3A,mvp); }
+      debugPrintf("egl_shim: [DIAG] REAL surface=%dx%d  SDL drawable=%dx%d  requested=%dx%d  GL_MAX_TEX=%d MAX_RB=%d MAX_VP=%dx%d\n",
+                  rw,rh,dw,dh,width,height,mts,mrb,mvp[0],mvp[1]); }
     /* config EXATO da surface do SDL (via CONFIG_ID) -> os contextos compartilhados batem com a
        surface (senao eglMakeCurrent = EGL_BAD_MATCH 0x3009). */
     int cfgid=0, n=0; r_querySurface(g_real_dpy, g_real_surf, 0x3028 /*EGL_CONFIG_ID*/, &cfgid);

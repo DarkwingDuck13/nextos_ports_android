@@ -100,12 +100,16 @@ export RE4_NOSIGH="${RE4_NOSIGH:-1}"
 export RE4_NOGCCOLLECT="${RE4_NOGCCOLLECT:-1}"
 export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-268435456}"
 export GC_FREE_SPACE_DIVISOR="${GC_FREE_SPACE_DIVISOR:-1}"
-# RESOLUCAO: 960x540 = estado JOGAVEL confirmado ("janela completa" na TV deste device).
-# ⚠️ ABERTO: fullscreen automático/portátil NÃO resolvido — ver RE4-FULLSCREEN-PENDENTE.md.
-#   1280x720 (FULLSCREEN ou FULLSCREEN_DESKTOP) = ZOOM GIGANTE (conteúdo ampliado ~3x, cortado).
-#   960x540 + SDL_WINDOW_FULLSCREEN = preenche certo. O zoom é proporcional à resolução.
-export RE4_WIDTH="${RE4_WIDTH:-960}"
-export RE4_HEIGHT="${RE4_HEIGHT:-540}"
+# RESOLUCAO AUTOMATICA/PORTATIL (zoom RESOLVIDO 2026-06-17): o cap de render target era 1024
+# hardcoded -> em 1280+ o RT da cena encolhia p/ 640x360 mas o viewport ficava 1280x720 -> só um
+# canto renderizava -> ZOOM. FIX = cap = GL_MAX_TEXTURE_SIZE real da GPU (Mali-450=4096). Agora
+# roda na resolucao NATIVA de qualquer device sem zoom.
+# Prioridade: RE4_WIDTH/HEIGHT do ambiente > $DISPLAY_WIDTH/$DISPLAY_HEIGHT (PortMaster) >
+# auto-detect via SDL (egl_shim) > fallback 1280x720.
+if [ -n "$DISPLAY_WIDTH" ] && [ -n "$DISPLAY_HEIGHT" ]; then
+  export RE4_WIDTH="${RE4_WIDTH:-$DISPLAY_WIDTH}"
+  export RE4_HEIGHT="${RE4_HEIGHT:-$DISPLAY_HEIGHT}"
+fi
 # audio FMOD (AudioTrack -> SDL callback -> PulseAudio) precisa do backend pulse
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
 
