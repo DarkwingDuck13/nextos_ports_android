@@ -11,6 +11,8 @@
 #include <stdarg.h>
 #include <dlfcn.h>
 #include <pwd.h>
+#include <math.h>
+#include <strings.h>
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -96,11 +98,105 @@ static int my_icall_PlayFullScreenMovie(void *mono_string, const void *bg_color,
     g_mono_free_fn(utf8);
   return 1;
 }
+typedef float (*re4_input_axis_icall_t)(void*);
+typedef int (*re4_input_button_icall_t)(void*);
+typedef int (*re4_input_key_icall_t)(int);
+typedef int (*re4_input_key_string_icall_t)(void*);
+typedef int (*re4_input_anykey_icall_t)(void);
+static re4_input_axis_icall_t g_orig_input_get_axis = 0;
+static re4_input_axis_icall_t g_orig_input_get_axis_raw = 0;
+static re4_input_button_icall_t g_orig_input_get_button = 0;
+static re4_input_button_icall_t g_orig_input_get_button_down = 0;
+static re4_input_button_icall_t g_orig_input_get_button_up = 0;
+static re4_input_key_icall_t g_orig_input_get_key = 0;
+static re4_input_key_icall_t g_orig_input_get_key_down = 0;
+static re4_input_key_icall_t g_orig_input_get_key_up = 0;
+static re4_input_key_string_icall_t g_orig_input_get_key_string = 0;
+static re4_input_key_string_icall_t g_orig_input_get_key_down_string = 0;
+static re4_input_key_string_icall_t g_orig_input_get_key_up_string = 0;
+static re4_input_anykey_icall_t g_orig_input_any_key = 0;
+static re4_input_anykey_icall_t g_orig_input_any_key_down = 0;
+static float my_input_get_axis(void *mono_string);
+static float my_input_get_axis_raw(void *mono_string);
+static int my_input_get_button(void *mono_string);
+static int my_input_get_button_down(void *mono_string);
+static int my_input_get_button_up(void *mono_string);
+static int my_input_get_key(int keycode);
+static int my_input_get_key_down(int keycode);
+static int my_input_get_key_up(int keycode);
+static int my_input_get_key_string(void *mono_string);
+static int my_input_get_key_down_string(void *mono_string);
+static int my_input_get_key_up_string(void *mono_string);
+static int my_input_any_key(void);
+static int my_input_any_key_down(void);
+static unsigned my_xinput_get_state(unsigned player_index, void *raw_state);
+static void my_xinput_set_state(unsigned player_index, float left_motor, float right_motor);
+static int re4_int_env(const char *name, int fallback, int min_value, int max_value);
+static int re4_input_hook_enabled(void){
+  const char *v = getenv("RE4_NO_INPUTHOOK");
+  return (!v || !v[0] || strcmp(v, "0") == 0);
+}
 static void my_mono_add_internal_call(const char *name, const void *method){
   const void *resolved = method;
   if(name){
-    if((strstr(name, "Handheld") || strstr(name, "Movie") || strstr(name, "Video")) && method)
+    int is_input = strstr(name, "UnityEngine.Input::") != NULL;
+    if((is_input || strstr(name, "Handheld") || strstr(name, "Movie") || strstr(name, "Video")) && method)
       fprintf(stderr, "[ICALL] %s -> %p\n", name, method);
+    if(re4_input_hook_enabled() && is_input){
+      if(strstr(name, "GetAxisRaw")){
+        if(!g_orig_input_get_axis_raw) g_orig_input_get_axis_raw = (re4_input_axis_icall_t)method;
+        resolved = (const void*)my_input_get_axis_raw;
+        fprintf(stderr, "[ICALL] override %s -> SDL axis raw\n", name);
+      } else if(strstr(name, "GetAxis")){
+        if(!g_orig_input_get_axis) g_orig_input_get_axis = (re4_input_axis_icall_t)method;
+        resolved = (const void*)my_input_get_axis;
+        fprintf(stderr, "[ICALL] override %s -> SDL axis\n", name);
+      } else if(strstr(name, "GetButtonDown")){
+        if(!g_orig_input_get_button_down) g_orig_input_get_button_down = (re4_input_button_icall_t)method;
+        resolved = (const void*)my_input_get_button_down;
+        fprintf(stderr, "[ICALL] override %s -> SDL button down\n", name);
+      } else if(strstr(name, "GetButtonUp")){
+        if(!g_orig_input_get_button_up) g_orig_input_get_button_up = (re4_input_button_icall_t)method;
+        resolved = (const void*)my_input_get_button_up;
+        fprintf(stderr, "[ICALL] override %s -> SDL button up\n", name);
+      } else if(strstr(name, "GetButton")){
+        if(!g_orig_input_get_button) g_orig_input_get_button = (re4_input_button_icall_t)method;
+        resolved = (const void*)my_input_get_button;
+        fprintf(stderr, "[ICALL] override %s -> SDL button\n", name);
+      } else if(strstr(name, "GetKeyDownString")){
+        if(!g_orig_input_get_key_down_string) g_orig_input_get_key_down_string = (re4_input_key_string_icall_t)method;
+        resolved = (const void*)my_input_get_key_down_string;
+        fprintf(stderr, "[ICALL] override %s -> SDL key string down\n", name);
+      } else if(strstr(name, "GetKeyDownInt")){
+        if(!g_orig_input_get_key_down) g_orig_input_get_key_down = (re4_input_key_icall_t)method;
+        resolved = (const void*)my_input_get_key_down;
+        fprintf(stderr, "[ICALL] override %s -> SDL key down\n", name);
+      } else if(strstr(name, "GetKeyUpString")){
+        if(!g_orig_input_get_key_up_string) g_orig_input_get_key_up_string = (re4_input_key_string_icall_t)method;
+        resolved = (const void*)my_input_get_key_up_string;
+        fprintf(stderr, "[ICALL] override %s -> SDL key string up\n", name);
+      } else if(strstr(name, "GetKeyUpInt")){
+        if(!g_orig_input_get_key_up) g_orig_input_get_key_up = (re4_input_key_icall_t)method;
+        resolved = (const void*)my_input_get_key_up;
+        fprintf(stderr, "[ICALL] override %s -> SDL key up\n", name);
+      } else if(strstr(name, "GetKeyString")){
+        if(!g_orig_input_get_key_string) g_orig_input_get_key_string = (re4_input_key_string_icall_t)method;
+        resolved = (const void*)my_input_get_key_string;
+        fprintf(stderr, "[ICALL] override %s -> SDL key string\n", name);
+      } else if(strstr(name, "GetKeyInt")){
+        if(!g_orig_input_get_key) g_orig_input_get_key = (re4_input_key_icall_t)method;
+        resolved = (const void*)my_input_get_key;
+        fprintf(stderr, "[ICALL] override %s -> SDL key\n", name);
+      } else if(strstr(name, "get_anyKeyDown")){
+        if(!g_orig_input_any_key_down) g_orig_input_any_key_down = (re4_input_anykey_icall_t)method;
+        resolved = (const void*)my_input_any_key_down;
+        fprintf(stderr, "[ICALL] override %s -> SDL anyKeyDown\n", name);
+      } else if(strstr(name, "get_anyKey")){
+        if(!g_orig_input_any_key) g_orig_input_any_key = (re4_input_anykey_icall_t)method;
+        resolved = (const void*)my_input_any_key;
+        fprintf(stderr, "[ICALL] override %s -> SDL anyKey\n", name);
+      }
+    }
     if(re4_skip_fullscreen_movie_enabled() &&
        (strstr(name, "PlayFullScreenMovie") || strstr(name, "INTERNAL_CALL_PlayFullScreenMovie"))){
       resolved = (const void*)my_icall_PlayFullScreenMovie;
@@ -164,6 +260,552 @@ static unsigned g_snap_tex=0;   /* snapshot do composite (capturado quando FBO0 
 static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
+/* ===== RE4 input hook: SDL_GameController -> UnityEngine.Input / XInput =====
+   O nativeInjectEvent funciona para alguns botões, mas Unity 2018 Mono não lê direção por
+   MotionEvent nesse port. Estes hooks alimentam a API que o C# realmente consulta:
+   UnityEngine.Input.GetAxis/GetButton/GetKey e XInputDotNetPure. */
+static SDL_GameController *g_re4_gp_ctrl = NULL;
+static int g_re4_gp_index = -1;
+static int g_re4_gp_poll_frame = -999999;
+static unsigned char g_re4_gp_btn[24], g_re4_gp_prev[24];
+static float g_re4_gp_lx, g_re4_gp_ly, g_re4_gp_rx, g_re4_gp_ry, g_re4_gp_lt, g_re4_gp_rt;
+static unsigned long g_re4_gp_polls;
+
+enum {
+  RE4_BTN_A = 0, RE4_BTN_B, RE4_BTN_X, RE4_BTN_Y,
+  RE4_BTN_LB, RE4_BTN_RB, RE4_BTN_BACK, RE4_BTN_START,
+  RE4_BTN_L3, RE4_BTN_R3, RE4_BTN_DU, RE4_BTN_DD, RE4_BTN_DL, RE4_BTN_DR,
+  RE4_BTN_LT, RE4_BTN_RT, RE4_BTN_COUNT
+};
+
+static float re4_gp_axis_norm(Sint16 v){
+  return v < 0 ? (float)v / 32768.0f : (float)v / 32767.0f;
+}
+static float re4_gp_axis_dead(float v, float dz){
+  float a = fabsf(v);
+  if(a <= dz) return 0.0f;
+  if(dz < 0.0f) dz = 0.0f;
+  if(dz > 0.9f) dz = 0.9f;
+  return (v < 0.0f ? -1.0f : 1.0f) * ((a - dz) / (1.0f - dz));
+}
+static float re4_gp_clamp_unit(float v){
+  if(v < -1.0f) return -1.0f;
+  if(v > 1.0f) return 1.0f;
+  return v;
+}
+static int re4_gp_have_pad(void){
+  return (g_re4_gp_ctrl && SDL_GameControllerGetAttached(g_re4_gp_ctrl)) ||
+         getenv("RE4_GPAUTO") || getenv("RE4_GPVIRT");
+}
+static void re4_gp_open(void){
+  if(g_re4_gp_ctrl && SDL_GameControllerGetAttached(g_re4_gp_ctrl)) return;
+  if(g_re4_gp_ctrl){
+    SDL_GameControllerClose(g_re4_gp_ctrl);
+    g_re4_gp_ctrl = NULL;
+    g_re4_gp_index = -1;
+  }
+  if((SDL_WasInit(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) & SDL_INIT_GAMECONTROLLER) == 0){
+    if(SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0){
+      static int logged_init = 0;
+      if(!logged_init++){
+        fprintf(stderr, "[RGP] SDL_InitSubSystem(GAMECONTROLLER) falhou: %s\n", SDL_GetError());
+        fsync(2);
+      }
+      return;
+    }
+  }
+  if(getenv("RE4_GC_MAP")){
+    static int added = 0;
+    if(!added){
+      int r = SDL_GameControllerAddMapping(getenv("RE4_GC_MAP"));
+      fprintf(stderr, "[RGP] RE4_GC_MAP AddMapping -> %d (%s)\n", r, r < 0 ? SDL_GetError() : "ok");
+      fsync(2);
+      added = 1;
+    }
+  }
+  int n = SDL_NumJoysticks();
+  static int logged_n = -9999;
+  if(n != logged_n || getenv("RE4_GPLOG")){
+    fprintf(stderr, "[RGP] SDL_NumJoysticks=%d\n", n);
+    for(int i = 0; i < n; i++)
+      fprintf(stderr, "[RGP]  js%d: \"%s\" isGameController=%d\n",
+              i, SDL_JoystickNameForIndex(i), SDL_IsGameController(i));
+    fsync(2);
+    logged_n = n;
+  }
+  for(int i = 0; i < n; i++){
+    if(!SDL_IsGameController(i)) continue;
+    g_re4_gp_ctrl = SDL_GameControllerOpen(i);
+    if(g_re4_gp_ctrl){
+      g_re4_gp_index = i;
+      fprintf(stderr, "[RGP] Xbox layout via SDL_GameController js%d: %s\n",
+              i, SDL_GameControllerName(g_re4_gp_ctrl));
+      fsync(2);
+      return;
+    }
+    fprintf(stderr, "[RGP] SDL_GameControllerOpen(%d) falhou: %s\n", i, SDL_GetError());
+    fsync(2);
+  }
+}
+static void re4_gp_apply_virtual(void){
+  if(getenv("RE4_GPAUTO") && g_re4_frame > 120){
+    int per = re4_int_env("RE4_GPAUTO_PERIOD", 180, 30, 2000);
+    int ph = g_re4_frame % per;
+    if(ph < per / 2) g_re4_gp_ly = -1.0f;
+  }
+  if(getenv("RE4_GPVIRT")){
+    static int vframes[RE4_BTN_COUNT];
+    static int axframes; static float axx, axy, arx, ary;
+    FILE *vf = fopen("/tmp/re4gp", "r");
+    if(vf){
+      char tok[48] = {0};
+      int got = fscanf(vf, "%47s", tok) == 1 && tok[0];
+      fclose(vf);
+      if(got){
+        vf = fopen("/tmp/re4gp", "w");
+        if(vf) fclose(vf);
+        int dur = re4_int_env("RE4_GPVDUR", 5, 1, 120);
+        static const char *names[RE4_BTN_COUNT] = {
+          "a","b","x","y","lb","rb","back","start","l3","r3",
+          "up","down","left","right","lt","rt"
+        };
+        for(int i = 0; i < RE4_BTN_COUNT; i++)
+          if(!strcasecmp(tok, names[i])){
+            vframes[i] = dur;
+            fprintf(stderr, "[RGPV] %s -> btn[%d] x%d\n", tok, i, dur);
+            fsync(2);
+          }
+        if(!strncasecmp(tok, "ls:", 3)){
+          int x = 0, y = 0;
+          if(sscanf(tok + 3, "%d:%d", &x, &y) == 2){
+            axx = (float)x / 100.0f; axy = (float)y / 100.0f; axframes = dur;
+            fprintf(stderr, "[RGPV] ls -> %.2f,%.2f x%d\n", axx, axy, dur);
+            fsync(2);
+          }
+        } else if(!strncasecmp(tok, "rs:", 3)){
+          int x = 0, y = 0;
+          if(sscanf(tok + 3, "%d:%d", &x, &y) == 2){
+            arx = (float)x / 100.0f; ary = (float)y / 100.0f; axframes = dur;
+            fprintf(stderr, "[RGPV] rs -> %.2f,%.2f x%d\n", arx, ary, dur);
+            fsync(2);
+          }
+        }
+      }
+    }
+    for(int i = 0; i < RE4_BTN_COUNT; i++){
+      if(vframes[i] > 0){ g_re4_gp_btn[i] = 1; vframes[i]--; }
+    }
+    if(axframes > 0){
+      g_re4_gp_lx = axx; g_re4_gp_ly = axy; g_re4_gp_rx = arx; g_re4_gp_ry = ary;
+      axframes--;
+    }
+  }
+}
+static void re4_gp_apply_stick_dpad(void){
+  if(getenv("RE4_NO_STICKDPAD") || getenv("RE4_NO_STICK_DPAD")) return;
+  if(g_re4_gp_lx < -0.55f) g_re4_gp_btn[RE4_BTN_DL] = 1;
+  if(g_re4_gp_lx >  0.55f) g_re4_gp_btn[RE4_BTN_DR] = 1;
+  if(g_re4_gp_ly < -0.55f) g_re4_gp_btn[RE4_BTN_DU] = 1;
+  if(g_re4_gp_ly >  0.55f) g_re4_gp_btn[RE4_BTN_DD] = 1;
+}
+static void re4_gp_poll(void){
+  if(g_re4_gp_poll_frame == g_re4_frame) return;
+  g_re4_gp_poll_frame = g_re4_frame;
+  g_re4_gp_polls++;
+  memcpy(g_re4_gp_prev, g_re4_gp_btn, sizeof(g_re4_gp_prev));
+  memset(g_re4_gp_btn, 0, sizeof(g_re4_gp_btn));
+  g_re4_gp_lx = g_re4_gp_ly = g_re4_gp_rx = g_re4_gp_ry = 0.0f;
+  g_re4_gp_lt = g_re4_gp_rt = 0.0f;
+
+  re4_gp_open();
+  if(g_re4_gp_ctrl){
+    SDL_GameControllerUpdate();
+    float dz = getenv("RE4_GP_DEADZONE") ? atof(getenv("RE4_GP_DEADZONE")) : 0.18f;
+    g_re4_gp_lx = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_LEFTX)), dz);
+    g_re4_gp_ly = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_LEFTY)), dz);
+    g_re4_gp_rx = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_RIGHTX)), dz);
+    g_re4_gp_ry = re4_gp_axis_dead(re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_RIGHTY)), dz);
+    g_re4_gp_lt = re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_TRIGGERLEFT));
+    g_re4_gp_rt = re4_gp_axis_norm(SDL_GameControllerGetAxis(g_re4_gp_ctrl, SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
+    if(g_re4_gp_lt < 0.0f) g_re4_gp_lt = 0.0f;
+    if(g_re4_gp_rt < 0.0f) g_re4_gp_rt = 0.0f;
+    if(g_re4_gp_lt > 1.0f) g_re4_gp_lt = 1.0f;
+    if(g_re4_gp_rt > 1.0f) g_re4_gp_rt = 1.0f;
+#define RGBTN(idx, sdlbtn) g_re4_gp_btn[(idx)] = SDL_GameControllerGetButton(g_re4_gp_ctrl, (sdlbtn)) ? 1 : 0
+    RGBTN(RE4_BTN_A, SDL_CONTROLLER_BUTTON_A);
+    RGBTN(RE4_BTN_B, SDL_CONTROLLER_BUTTON_B);
+    RGBTN(RE4_BTN_X, SDL_CONTROLLER_BUTTON_X);
+    RGBTN(RE4_BTN_Y, SDL_CONTROLLER_BUTTON_Y);
+    RGBTN(RE4_BTN_LB, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    RGBTN(RE4_BTN_RB, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    RGBTN(RE4_BTN_BACK, SDL_CONTROLLER_BUTTON_BACK);
+    RGBTN(RE4_BTN_START, SDL_CONTROLLER_BUTTON_START);
+    RGBTN(RE4_BTN_L3, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+    RGBTN(RE4_BTN_R3, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+    RGBTN(RE4_BTN_DU, SDL_CONTROLLER_BUTTON_DPAD_UP);
+    RGBTN(RE4_BTN_DD, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+    RGBTN(RE4_BTN_DL, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+    RGBTN(RE4_BTN_DR, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+#undef RGBTN
+    g_re4_gp_btn[RE4_BTN_LT] = g_re4_gp_lt > 0.30f ? 1 : 0;
+    g_re4_gp_btn[RE4_BTN_RT] = g_re4_gp_rt > 0.30f ? 1 : 0;
+  }
+  re4_gp_apply_virtual();
+  re4_gp_apply_stick_dpad();
+  if(getenv("RE4_GPAXLOG")){
+    static int lf = -9999;
+    if(g_re4_frame != lf && (g_re4_frame < 300 || (g_re4_frame % 30) == 0)){
+      fprintf(stderr,
+              "[RGPAX] f=%d pad=%d lx=%.2f ly=%.2f rx=%.2f ry=%.2f lt=%.2f rt=%.2f dpad=%d%d%d%d abxy=%d%d%d%d start=%d back=%d\n",
+              g_re4_frame, g_re4_gp_index, g_re4_gp_lx, g_re4_gp_ly, g_re4_gp_rx, g_re4_gp_ry,
+              g_re4_gp_lt, g_re4_gp_rt,
+              g_re4_gp_btn[RE4_BTN_DU], g_re4_gp_btn[RE4_BTN_DD],
+              g_re4_gp_btn[RE4_BTN_DL], g_re4_gp_btn[RE4_BTN_DR],
+              g_re4_gp_btn[RE4_BTN_A], g_re4_gp_btn[RE4_BTN_B],
+              g_re4_gp_btn[RE4_BTN_X], g_re4_gp_btn[RE4_BTN_Y],
+              g_re4_gp_btn[RE4_BTN_START], g_re4_gp_btn[RE4_BTN_BACK]);
+      fsync(2);
+      lf = g_re4_frame;
+    }
+  }
+}
+static void re4_gp_apply_motion_event(const FakeInputEvent *ev){
+  if(!ev) return;
+  float dz = getenv("RE4_GP_DEADZONE") ? atof(getenv("RE4_GP_DEADZONE")) : 0.18f;
+  g_re4_gp_lx = re4_gp_axis_dead(ev->axes[AMOTION_EVENT_AXIS_X], dz);
+  g_re4_gp_ly = re4_gp_axis_dead(ev->axes[AMOTION_EVENT_AXIS_Y], dz);
+  g_re4_gp_rx = re4_gp_axis_dead(ev->axes[AMOTION_EVENT_AXIS_Z], dz);
+  g_re4_gp_ry = re4_gp_axis_dead(ev->axes[AMOTION_EVENT_AXIS_RZ], dz);
+  g_re4_gp_lt = ev->axes[AMOTION_EVENT_AXIS_LTRIGGER];
+  g_re4_gp_rt = ev->axes[AMOTION_EVENT_AXIS_RTRIGGER];
+  if(g_re4_gp_lt < 0.0f) g_re4_gp_lt = 0.0f;
+  if(g_re4_gp_rt < 0.0f) g_re4_gp_rt = 0.0f;
+  if(g_re4_gp_lt > 1.0f) g_re4_gp_lt = 1.0f;
+  if(g_re4_gp_rt > 1.0f) g_re4_gp_rt = 1.0f;
+  g_re4_gp_btn[RE4_BTN_LT] = g_re4_gp_lt > 0.30f ? 1 : g_re4_gp_btn[RE4_BTN_LT];
+  g_re4_gp_btn[RE4_BTN_RT] = g_re4_gp_rt > 0.30f ? 1 : g_re4_gp_btn[RE4_BTN_RT];
+  float hx = ev->axes[AMOTION_EVENT_AXIS_HAT_X];
+  float hy = ev->axes[AMOTION_EVENT_AXIS_HAT_Y];
+  if(hx < -0.5f) g_re4_gp_btn[RE4_BTN_DL] = 1;
+  if(hx >  0.5f) g_re4_gp_btn[RE4_BTN_DR] = 1;
+  if(hy < -0.5f) g_re4_gp_btn[RE4_BTN_DU] = 1;
+  if(hy >  0.5f) g_re4_gp_btn[RE4_BTN_DD] = 1;
+  re4_gp_apply_stick_dpad();
+}
+static int re4_gp_button_id_from_name(const char *name){
+  if(!name || !name[0]) return -1;
+  if(!strcasecmp(name, "A") || !strcasecmp(name, "Submit") ||
+     !strcasecmp(name, "Cross") ||
+     !strcasecmp(name, "Fire1") || !strcasecmp(name, "Action") ||
+     !strcasecmp(name, "Interact") || !strcasecmp(name, "Use") ||
+     !strcasecmp(name, "Confirm") || !strcasecmp(name, "Jump"))
+    return getenv("RE4_AB_SWAP") ? RE4_BTN_B : RE4_BTN_A;
+  if(!strcasecmp(name, "B") || !strcasecmp(name, "Cancel") ||
+     !strcasecmp(name, "Circle") || !strcasecmp(name, "Escape"))
+    return getenv("RE4_AB_SWAP") ? RE4_BTN_A : RE4_BTN_B;
+  if(!strcasecmp(name, "X") || !strcasecmp(name, "Fire3") ||
+     !strcasecmp(name, "Square") || !strcasecmp(name, "Reload") ||
+     !strcasecmp(name, "Run")) return RE4_BTN_X;
+  if(!strcasecmp(name, "Y") || !strcasecmp(name, "Triangle") ||
+     !strcasecmp(name, "Inventory") ||
+     !strcasecmp(name, "Crouch")) return RE4_BTN_Y;
+  if(!strcasecmp(name, "LB") || !strcasecmp(name, "L1") ||
+     !strcasecmp(name, "Knife")) return RE4_BTN_LB;
+  if(!strcasecmp(name, "RB") || !strcasecmp(name, "R1") ||
+     !strcasecmp(name, "Aim") || !strcasecmp(name, "Fire")) return RE4_BTN_RB;
+  if(!strcasecmp(name, "LT") || !strcasecmp(name, "L2") ||
+     !strcasecmp(name, "Fire4")) return RE4_BTN_LT;
+  if(!strcasecmp(name, "RT") || !strcasecmp(name, "R2") ||
+     !strcasecmp(name, "Fire2") || !strcasecmp(name, "Shoot")) return RE4_BTN_RT;
+  if(!strcasecmp(name, "Back") || !strcasecmp(name, "Select") ||
+     !strcasecmp(name, "View")) return RE4_BTN_BACK;
+  if(!strcasecmp(name, "Start") || !strcasecmp(name, "Pause") ||
+     !strcasecmp(name, "Menu") || !strcasecmp(name, "Options")) return RE4_BTN_START;
+  if(!strcasecmp(name, "LeftStickClick") || !strcasecmp(name, "LeftThumb") || !strcasecmp(name, "L3")) return RE4_BTN_L3;
+  if(!strcasecmp(name, "RightStickClick") || !strcasecmp(name, "RightThumb") || !strcasecmp(name, "R3")) return RE4_BTN_R3;
+  if(!strcasecmp(name, "DPadUp") || !strcasecmp(name, "D-Pad Up") ||
+     !strcasecmp(name, "D Pad Up") || !strcasecmp(name, "Up")) return RE4_BTN_DU;
+  if(!strcasecmp(name, "DPadDown") || !strcasecmp(name, "D-Pad Down") ||
+     !strcasecmp(name, "D Pad Down") || !strcasecmp(name, "Down")) return RE4_BTN_DD;
+  if(!strcasecmp(name, "DPadLeft") || !strcasecmp(name, "D-Pad Left") ||
+     !strcasecmp(name, "D Pad Left") || !strcasecmp(name, "Left")) return RE4_BTN_DL;
+  if(!strcasecmp(name, "DPadRight") || !strcasecmp(name, "D-Pad Right") ||
+     !strcasecmp(name, "D Pad Right") || !strcasecmp(name, "Right")) return RE4_BTN_DR;
+  if(!strncasecmp(name, "joystick button ", 16) ||
+     (!strncasecmp(name, "joystick ", 9) && strcasestr(name, " button "))){
+    const char *p = strcasestr(name, "button ");
+    int n = p ? atoi(p + 7) : atoi(name + 16);
+    static const int map[] = {
+      RE4_BTN_A, RE4_BTN_B, RE4_BTN_X, RE4_BTN_Y,
+      RE4_BTN_LB, RE4_BTN_RB, RE4_BTN_BACK, RE4_BTN_START,
+      RE4_BTN_L3, RE4_BTN_R3
+    };
+    if(n >= 0 && n < (int)(sizeof(map) / sizeof(map[0]))) return map[n];
+  }
+  return -1;
+}
+static float re4_gp_axis_from_name(const char *name, int *known){
+  if(known) *known = 1;
+  if(!name) { if(known) *known = 0; return 0.0f; }
+  if(!strcasecmp(name, "Horizontal") || !strcasecmp(name, "LeftAnalogHorizontal") ||
+     !strcasecmp(name, "Left Stick X") || !strcasecmp(name, "LeftStickX") ||
+     !strcasecmp(name, "MoveHorizontal") || !strcasecmp(name, "HorizontalArrow"))
+    return re4_gp_clamp_unit(g_re4_gp_lx + (g_re4_gp_btn[RE4_BTN_DR] ? 1.0f : 0.0f) - (g_re4_gp_btn[RE4_BTN_DL] ? 1.0f : 0.0f));
+  if(!strcasecmp(name, "Vertical") || !strcasecmp(name, "LeftAnalogVertical") ||
+     !strcasecmp(name, "Left Stick Y") || !strcasecmp(name, "LeftStickY") ||
+     !strcasecmp(name, "MoveVertical") || !strcasecmp(name, "VerticalArrow"))
+    return re4_gp_clamp_unit(-g_re4_gp_ly + (g_re4_gp_btn[RE4_BTN_DU] ? 1.0f : 0.0f) - (g_re4_gp_btn[RE4_BTN_DD] ? 1.0f : 0.0f));
+  if(!strcasecmp(name, "RightAnalogHorizontal") || !strcasecmp(name, "Right Stick X") ||
+     !strcasecmp(name, "RightStickX") || !strcasecmp(name, "CameraHorizontal") ||
+     !strcasecmp(name, "LookHorizontal") || !strcasecmp(name, "Mouse X"))
+    return g_re4_gp_rx;
+  if(!strcasecmp(name, "RightAnalogVertical") || !strcasecmp(name, "Right Stick Y") ||
+     !strcasecmp(name, "RightStickY") || !strcasecmp(name, "CameraVertical") ||
+     !strcasecmp(name, "LookVertical") || !strcasecmp(name, "Mouse Y"))
+    return -g_re4_gp_ry;
+  if(!strcasecmp(name, "D-Pad Horizontal") || !strcasecmp(name, "D - Pad Horizontal") ||
+     !strcasecmp(name, "DPadHorizontal") || !strcasecmp(name, "D Pad Horizontal"))
+    return (g_re4_gp_btn[RE4_BTN_DR] ? 1.0f : 0.0f) - (g_re4_gp_btn[RE4_BTN_DL] ? 1.0f : 0.0f);
+  if(!strcasecmp(name, "D-Pad Vertical") || !strcasecmp(name, "D - Pad Vertical") ||
+     !strcasecmp(name, "DPadVertical") || !strcasecmp(name, "D Pad Vertical"))
+    return (g_re4_gp_btn[RE4_BTN_DU] ? 1.0f : 0.0f) - (g_re4_gp_btn[RE4_BTN_DD] ? 1.0f : 0.0f);
+  if(!strcasecmp(name, "LT") || !strcasecmp(name, "L2")) return g_re4_gp_lt;
+  if(!strcasecmp(name, "RT") || !strcasecmp(name, "R2")) return g_re4_gp_rt;
+  if(!strcasecmp(name, "Mouse ScrollWheel")) return 0.0f;
+  if(known) *known = 0;
+  return 0.0f;
+}
+static char *re4_mono_string_to_utf8(void *mono_string){
+  if(!mono_string || !g_mono_string_to_utf8_fn) return NULL;
+  return g_mono_string_to_utf8_fn(mono_string);
+}
+static void re4_mono_free_utf8(char *s){
+  if(s && g_mono_free_fn) g_mono_free_fn(s);
+}
+static float my_input_get_axis_common(void *mono_string, int raw){
+  char *name = re4_mono_string_to_utf8(mono_string);
+  re4_gp_poll();
+  int known = 0;
+  float v = re4_gp_axis_from_name(name, &known);
+  if(getenv("RE4_GPTRACE")){
+    static int tn = 0;
+    if(tn++ < 240){
+      fprintf(stderr, "[RTRACE] %s(\"%s\") known=%d v=%.3f f=%d\n",
+              raw ? "GetAxisRaw" : "GetAxis", name ? name : "(null)", known, v, g_re4_frame);
+      fsync(2);
+    }
+  }
+  if(known){
+    if(getenv("RE4_GPLOG") && v != 0.0f){
+      static int n = 0;
+      if(n++ < 160){
+        fprintf(stderr, "[RINPUT] %s(\"%s\") -> %.3f f=%d\n",
+                raw ? "GetAxisRaw" : "GetAxis", name ? name : "(null)", v, g_re4_frame);
+        fsync(2);
+      }
+    }
+    re4_mono_free_utf8(name);
+    return v;
+  }
+  re4_mono_free_utf8(name);
+  if(raw && g_orig_input_get_axis_raw) return g_orig_input_get_axis_raw(mono_string);
+  if(!raw && g_orig_input_get_axis) return g_orig_input_get_axis(mono_string);
+  return 0.0f;
+}
+static float my_input_get_axis(void *mono_string){ return my_input_get_axis_common(mono_string, 0); }
+static float my_input_get_axis_raw(void *mono_string){ return my_input_get_axis_common(mono_string, 1); }
+static int my_input_get_button_common(void *mono_string, int edge){
+  char *name = re4_mono_string_to_utf8(mono_string);
+  re4_gp_poll();
+  int id = re4_gp_button_id_from_name(name);
+  if(getenv("RE4_GPTRACE")){
+    static int tn = 0;
+    if(tn++ < 240)
+      fprintf(stderr, "[RTRACE] %s(\"%s\") id=%d f=%d\n",
+              edge == 0 ? "GetButton" : (edge > 0 ? "GetButtonDown" : "GetButtonUp"),
+              name ? name : "(null)", id, g_re4_frame);
+  }
+  if(id >= 0 && id < RE4_BTN_COUNT){
+    int now = g_re4_gp_btn[id] ? 1 : 0;
+    int prev = g_re4_gp_prev[id] ? 1 : 0;
+    int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
+    if(getenv("RE4_GPLOG") && r){
+      static int n = 0;
+      if(n++ < 160){
+        fprintf(stderr, "[RINPUT] %s(\"%s\") -> %d f=%d\n",
+                edge == 0 ? "GetButton" : (edge > 0 ? "GetButtonDown" : "GetButtonUp"),
+                name ? name : "(null)", r, g_re4_frame);
+        fsync(2);
+      }
+    }
+    re4_mono_free_utf8(name);
+    return r;
+  }
+  re4_mono_free_utf8(name);
+  if(edge == 0 && g_orig_input_get_button) return g_orig_input_get_button(mono_string);
+  if(edge > 0 && g_orig_input_get_button_down) return g_orig_input_get_button_down(mono_string);
+  if(edge < 0 && g_orig_input_get_button_up) return g_orig_input_get_button_up(mono_string);
+  return 0;
+}
+static int my_input_get_button(void *mono_string){ return my_input_get_button_common(mono_string, 0); }
+static int my_input_get_button_down(void *mono_string){ return my_input_get_button_common(mono_string, 1); }
+static int my_input_get_button_up(void *mono_string){ return my_input_get_button_common(mono_string, -1); }
+static int re4_gp_button_from_unity_key(int keycode){
+  if(keycode >= 330 && keycode <= 369){
+    static const int joy_map[20] = {
+      RE4_BTN_A, RE4_BTN_B, RE4_BTN_X, RE4_BTN_Y,
+      RE4_BTN_LB, RE4_BTN_RB, RE4_BTN_BACK, RE4_BTN_START,
+      RE4_BTN_L3, RE4_BTN_R3,
+      RE4_BTN_A, RE4_BTN_B, RE4_BTN_X, RE4_BTN_Y,
+      RE4_BTN_LB, RE4_BTN_RB, RE4_BTN_BACK, RE4_BTN_START,
+      RE4_BTN_L3, RE4_BTN_R3
+    };
+    return joy_map[(keycode - 330) % 20];
+  }
+  switch(keycode){
+    case 13: return RE4_BTN_A;      /* Return */
+    case 27: return RE4_BTN_B;      /* Escape */
+    case 32: return RE4_BTN_X;      /* Space */
+    case 273: return RE4_BTN_DU;    /* UpArrow */
+    case 274: return RE4_BTN_DD;    /* DownArrow */
+    case 275: return RE4_BTN_DR;    /* RightArrow */
+    case 276: return RE4_BTN_DL;    /* LeftArrow */
+    case 97: return RE4_BTN_A;      /* A */
+    case 98: return RE4_BTN_B;      /* B */
+    case 99: return RE4_BTN_Y;      /* C */
+    case 113: return RE4_BTN_B;     /* Q */
+    case 114: return RE4_BTN_LB;    /* R */
+    case 120: return RE4_BTN_X;     /* X */
+    case 121: return RE4_BTN_Y;     /* Y */
+    case 122: return RE4_BTN_RB;    /* Z */
+    case 304: return RE4_BTN_L3;    /* LeftShift */
+    case 9: return RE4_BTN_R3;      /* Tab */
+    default: return -1;
+  }
+}
+static int my_input_get_key_common(int keycode, int edge){
+  re4_gp_poll();
+  int id = re4_gp_button_from_unity_key(keycode);
+  if(getenv("RE4_GPTRACE")){
+    static int tn = 0;
+    if(tn++ < 240)
+      fprintf(stderr, "[RTRACE] %s(%d) id=%d f=%d\n",
+              edge == 0 ? "GetKey" : (edge > 0 ? "GetKeyDown" : "GetKeyUp"),
+              keycode, id, g_re4_frame);
+  }
+  if(id >= 0 && id < RE4_BTN_COUNT){
+    int now = g_re4_gp_btn[id] ? 1 : 0;
+    int prev = g_re4_gp_prev[id] ? 1 : 0;
+    int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
+    if(getenv("RE4_GPLOG") && r){
+      static int n = 0;
+      if(n++ < 160){
+        fprintf(stderr, "[RINPUT] %s(%d) -> %d f=%d\n",
+                edge == 0 ? "GetKey" : (edge > 0 ? "GetKeyDown" : "GetKeyUp"),
+                keycode, r, g_re4_frame);
+        fsync(2);
+      }
+    }
+    return r;
+  }
+  if(edge == 0 && g_orig_input_get_key) return g_orig_input_get_key(keycode);
+  if(edge > 0 && g_orig_input_get_key_down) return g_orig_input_get_key_down(keycode);
+  if(edge < 0 && g_orig_input_get_key_up) return g_orig_input_get_key_up(keycode);
+  return 0;
+}
+static int my_input_get_key(int keycode){ return my_input_get_key_common(keycode, 0); }
+static int my_input_get_key_down(int keycode){ return my_input_get_key_common(keycode, 1); }
+static int my_input_get_key_up(int keycode){ return my_input_get_key_common(keycode, -1); }
+static int my_input_get_key_string_common(void *mono_string, int edge){
+  char *name = re4_mono_string_to_utf8(mono_string);
+  re4_gp_poll();
+  int id = re4_gp_button_id_from_name(name);
+  if(getenv("RE4_GPTRACE")){
+    static int tn = 0;
+    if(tn++ < 240)
+      fprintf(stderr, "[RTRACE] %s(\"%s\") id=%d f=%d\n",
+              edge == 0 ? "GetKeyString" : (edge > 0 ? "GetKeyDownString" : "GetKeyUpString"),
+              name ? name : "(null)", id, g_re4_frame);
+  }
+  if(id >= 0 && id < RE4_BTN_COUNT){
+    int now = g_re4_gp_btn[id] ? 1 : 0;
+    int prev = g_re4_gp_prev[id] ? 1 : 0;
+    int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
+    if(getenv("RE4_GPLOG") && r){
+      static int n = 0;
+      if(n++ < 160){
+        fprintf(stderr, "[RINPUT] %s(\"%s\") -> %d f=%d\n",
+                edge == 0 ? "GetKeyString" : (edge > 0 ? "GetKeyDownString" : "GetKeyUpString"),
+                name ? name : "(null)", r, g_re4_frame);
+        fsync(2);
+      }
+    }
+    re4_mono_free_utf8(name);
+    return r;
+  }
+  re4_mono_free_utf8(name);
+  if(edge == 0 && g_orig_input_get_key_string) return g_orig_input_get_key_string(mono_string);
+  if(edge > 0 && g_orig_input_get_key_down_string) return g_orig_input_get_key_down_string(mono_string);
+  if(edge < 0 && g_orig_input_get_key_up_string) return g_orig_input_get_key_up_string(mono_string);
+  return 0;
+}
+static int my_input_get_key_string(void *mono_string){ return my_input_get_key_string_common(mono_string, 0); }
+static int my_input_get_key_down_string(void *mono_string){ return my_input_get_key_string_common(mono_string, 1); }
+static int my_input_get_key_up_string(void *mono_string){ return my_input_get_key_string_common(mono_string, -1); }
+static int my_input_any_key(void){
+  re4_gp_poll();
+  for(int i = 0; i < RE4_BTN_COUNT; i++)
+    if(g_re4_gp_btn[i]) return 1;
+  return g_orig_input_any_key ? g_orig_input_any_key() : 0;
+}
+static int my_input_any_key_down(void){
+  re4_gp_poll();
+  for(int i = 0; i < RE4_BTN_COUNT; i++)
+    if(g_re4_gp_btn[i] && !g_re4_gp_prev[i]) return 1;
+  return g_orig_input_any_key_down ? g_orig_input_any_key_down() : 0;
+}
+typedef struct {
+  uint32_t packet;
+  uint16_t buttons;
+  uint8_t lt, rt;
+  int16_t lx, ly, rx, ry;
+} re4_xinput_raw_t;
+static void re4_xinput_fill(re4_xinput_raw_t *s){
+  memset(s, 0, sizeof(*s));
+  s->packet = (uint32_t)g_re4_gp_polls;
+  if(g_re4_gp_btn[RE4_BTN_DU]) s->buttons |= 0x0001;
+  if(g_re4_gp_btn[RE4_BTN_DD]) s->buttons |= 0x0002;
+  if(g_re4_gp_btn[RE4_BTN_DL]) s->buttons |= 0x0004;
+  if(g_re4_gp_btn[RE4_BTN_DR]) s->buttons |= 0x0008;
+  if(g_re4_gp_btn[RE4_BTN_START]) s->buttons |= 0x0010;
+  if(g_re4_gp_btn[RE4_BTN_BACK]) s->buttons |= 0x0020;
+  if(g_re4_gp_btn[RE4_BTN_L3]) s->buttons |= 0x0040;
+  if(g_re4_gp_btn[RE4_BTN_R3]) s->buttons |= 0x0080;
+  if(g_re4_gp_btn[RE4_BTN_LB]) s->buttons |= 0x0100;
+  if(g_re4_gp_btn[RE4_BTN_RB]) s->buttons |= 0x0200;
+  if(g_re4_gp_btn[RE4_BTN_A]) s->buttons |= 0x1000;
+  if(g_re4_gp_btn[RE4_BTN_B]) s->buttons |= 0x2000;
+  if(g_re4_gp_btn[RE4_BTN_X]) s->buttons |= 0x4000;
+  if(g_re4_gp_btn[RE4_BTN_Y]) s->buttons |= 0x8000;
+  s->lt = (uint8_t)(g_re4_gp_lt * 255.0f);
+  s->rt = (uint8_t)(g_re4_gp_rt * 255.0f);
+  s->lx = (int16_t)(g_re4_gp_lx * 32767.0f);
+  s->ly = (int16_t)(-g_re4_gp_ly * 32767.0f); /* XInput Y positivo para cima */
+  s->rx = (int16_t)(g_re4_gp_rx * 32767.0f);
+  s->ry = (int16_t)(-g_re4_gp_ry * 32767.0f);
+}
+static unsigned my_xinput_get_state(unsigned player_index, void *raw_state){
+  (void)player_index;
+  re4_gp_poll();
+  if(!raw_state) return 1167u; /* ERROR_DEVICE_NOT_CONNECTED */
+  re4_xinput_raw_t s;
+  re4_xinput_fill(&s);
+  memcpy(raw_state, &s, sizeof(s));
+  return re4_gp_have_pad() ? 0u : 1167u;
+}
+static void my_xinput_set_state(unsigned player_index, float left_motor, float right_motor){
+  (void)player_index; (void)left_motor; (void)right_motor;
+}
 /* SWAP UNICO POR FRAME: a Unity NAO chama eglSwapBuffers pelo shim; force_present e o unico
    present. Antes faziamos swap APOS CADA draw no FBO0 -> com double-buffer os 2 draws do composite
    caem em PAGINAS diferentes -> a pagina exibida nunca tem o frame completo (loading=1 draw=ok,
@@ -1378,6 +2020,16 @@ static void *my_dlsym(void *h,const char *nm){ void *p=0;
     if(!strcmp(nm,"SL_IID_ENGINECAPABILITIES")) return (void*)&sl_IID_ENGINECAPABILITIES;
     if(!strcmp(nm,"SL_IID_ENVIRONMENTALREVERB")) return (void*)&sl_IID_ENVIRONMENTALREVERB;
     fprintf(stderr,"[SL] dlsym %s -> NULL\n",nm); return NULL; }
+  if(nm){
+    if(!strcmp(nm,"XInputGamePadGetState")){
+      fprintf(stderr,"[DLSYM-XINPUT] %s -> SDL_GameController\n",nm);
+      return (void*)my_xinput_get_state;
+    }
+    if(!strcmp(nm,"XInputGamePadSetState")){
+      fprintf(stderr,"[DLSYM-XINPUT] %s -> no-op\n",nm);
+      return (void*)my_xinput_set_state;
+    }
+  }
   p=re4_gl_override(nm);
   if(p) return p;
   /* CRITICO: Unity dlopen libGLESv2.so/libEGL + dlsym("eglCreateContext"/etc) em runtime.
@@ -1646,12 +2298,14 @@ static int re4_inject_motion_event(void *env, void *thiz, void *inject,
 static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   FakeInputEvent ev;
   android_shim_pump_sdl_events();
+  re4_gp_poll();
   while (android_shim_pop_input_event(&ev)) {
     if (ev.type == AINPUT_EVENT_TYPE_KEY) {
       re4_inject_key_event(env, thiz, inject, ev.action, ev.keycode, 0, frame, "SDL");
       continue;
     }
     if (ev.type == AINPUT_EVENT_TYPE_MOTION && ev.source == AINPUT_SOURCE_JOYSTICK) {
+      re4_gp_apply_motion_event(&ev);
       re4_inject_motion_event(env, thiz, inject, &ev, frame);  /* stick/dpad -> getAxisValue */
       continue;
     }
