@@ -3774,34 +3774,155 @@ static long fmod_alloc2_hook(long a, long b, long c, long d, long e, long f, lon
   }
   return fmod_alloc2_orig(a, b, c, d, e, f, g, h);
 }
+/* ---- TER_AUDIOSPY: espião do createSound do Unity-FMOD (wrapper @0x806cb4) ----
+ * RE: AudioClip::CreateFMODSound (0x3cf...) chama System::createSound(sys, data, mode, exinfo,
+ * &sound) = 0x806cb4 -> impl real 0x7bcf98. O log "Cannot create FMOD::Sound ... INTERNAL"
+ * (code 33) vem daqui. Spy loga mode/exinfo/result p/ ver QUAIS sons falham (SFX sample vs
+ * Music stream) e o código de erro exato. Gated; default OFF. */
+static long (*cs_orig)(void *, void *, int, void *, void *);
+/* TER_AUDIOSPY: hook do MIXER (0x805a94) — ground-truth de count(x2) + formato real do
+   system ([output+0x60]). Loga 3× e segue. */
+static long (*mix_orig)(void *, void *, int);
+static long mix_hook(void *output, void *buf, int count) {
+  static int n;
+  if (n++ < 3) {
+    void *sys = (output && addr_readable((uintptr_t)output + 0x60)) ? *(void **)((char *)output + 0x60) : NULL;
+    if (sys && addr_readable((uintptr_t)sys + 0x800))
+      fprintf(stderr, "[MIXSPY] count(x2)=%d output=%p sys=%p | 7c4=%u 7c8=%u 7d4=%u 7f4=%u 7f8=%u 97e8=%u\n",
+              count, output, sys,
+              *(uint32_t *)((char *)sys + 0x7c4), *(uint32_t *)((char *)sys + 0x7c8),
+              *(uint32_t *)((char *)sys + 0x7d4), *(uint32_t *)((char *)sys + 0x7f4),
+              *(uint32_t *)((char *)sys + 0x7f8), *(uint32_t *)((char *)sys + 0x97e8));
+    dbg_sync();
+  }
+  return mix_orig(output, buf, count);
+}
+static int g_stream_fallback;
+static long cs_hook(void *sys, void *data, int mode, void *exinfo, void *out) {
+  long r = cs_orig(sys, data, mode, exinfo, out);
+  static int nfail, nok;
+  int openmem = (mode & 0x800) || (mode & 0x10000000);
+  /* TER_STREAMFALLBACK: o open de STREAM (0x864f78) falha INTERNAL(33) no so-loader
+     (maquinaria de stream/stream-thread). Refaz como SAMPLE não-streamado (mesma fonte
+     via file-callback do Unity) -> a música carrega inteira na memória e toca. SFX (sem
+     bit 0x80) não passam por aqui. */
+  if (r != 0 && (mode & 0x80) && g_stream_fallback) {
+    int m2 = mode & ~0x80;               /* tira CREATESTREAM */
+    long r2 = cs_orig(sys, data, m2, exinfo, out);
+    static int nf; if (nf++ < 8)
+      fprintf(stderr, "[CSSPY] STREAM falhou(%ld) -> retry sample mode=0x%x -> %ld\n", r, (unsigned)m2, r2);
+    dbg_sync();
+    if (r2 == 0) return 0;
+    r = r2;
+  }
+  if (r != 0) {  /* FALHA: dump detalhado do data source */
+    if (nfail++ < 40) {
+      char nm[80]; nm[0] = 0;
+      if (data && !openmem && addr_readable((uintptr_t)data)) {
+        const char *s = (const char *)data; int ok = 1;
+        for (int i = 0; i < 70; i++) { char c = s[i]; if (!c) break; if (c < 9 || (unsigned char)c > 126) { ok = 0; break; } }
+        if (ok) snprintf(nm, sizeof nm, "\"%.70s\"", s);
+      }
+      unsigned long d0 = (data && addr_readable((uintptr_t)data)) ? *(unsigned long *)data : 0;
+      /* exinfo dump: cbsize@0 length@4 numchannels@? — campos crus p/ diagnóstico */
+      fprintf(stderr, "[CSSPY] FAIL createSound mode=0x%x stream=%d openmem=%d data=%p name=%s d[0]=0x%lx exinfo=%p -> %ld\n",
+              (unsigned)mode, (mode >> 7) & 1, openmem, data, nm, d0, exinfo, r);
+      if (exinfo && addr_readable((uintptr_t)exinfo + 0x40))
+        fprintf(stderr, "[CSSPY]   exinfo: cb=%u len=%u +8=%u +c=%u +10=%u +14=%u +18=%u +1c=0x%x +20=0x%lx +28=0x%lx\n",
+                *(uint32_t *)((char *)exinfo + 0), *(uint32_t *)((char *)exinfo + 4),
+                *(uint32_t *)((char *)exinfo + 8), *(uint32_t *)((char *)exinfo + 0xc),
+                *(uint32_t *)((char *)exinfo + 0x10), *(uint32_t *)((char *)exinfo + 0x14),
+                *(uint32_t *)((char *)exinfo + 0x18), *(uint32_t *)((char *)exinfo + 0x1c),
+                *(unsigned long *)((char *)exinfo + 0x20), *(unsigned long *)((char *)exinfo + 0x28));
+      dbg_sync();
+    }
+  } else if (nok++ < 4) {
+    fprintf(stderr, "[CSSPY] ok createSound mode=0x%x stream=%d -> 0\n", (unsigned)mode, (mode >> 7) & 1);
+  }
+  return r;
+}
+/* ---- output do FMOD (AudioTrack Java) bombeado em C -> SDL -> Pulse/PipeWire/ALSA ----
+ * RAIZ (RE libunity, fmodProcess @0x811378): a thread Java chamaria fmodProcess(ByteBuffer)
+ * e escreveria no AudioTrack. fmodProcess: GetDirectBufferAddress -> mixa `blockSize` frames
+ * (via 0x805a94) no buffer -> RETORNA 0 em SUCESSO (-1 se o output *0xc7c2f0 ainda é NULL).
+ * BUG anterior: o pump só enfileirava se r>0; como fmodProcess SEMPRE retorna 0 no sucesso,
+ * NUNCA mandávamos PCM (silêncio total mesmo com o mixer rodando). Fix: enfileirar quando
+ * r==0; o nº de bytes preenchidos = blockSize*canais*2 (PCM interleaved s16), lido do struct
+ * do FMOD System em runtime ([*(unity+0xc7c2f0)]+0x60 = system; +0x7f4=block, +0x7c4/+0x7c8=
+ * rate/canais). Back-pressure (mantém ~6 blocos na fila do SDL) -> ritmo = consumo real-time;
+ * fmodProcess É o clock do mixer (mixa só quando chamado). Backend SDL = auto (pulse/pipewire/
+ * alsa) via device NULL — portável a qualquer device. */
+static unsigned g_fmod_blk, g_fmod_rate, g_fmod_ch;
+static int fmod_read_format(unsigned *blk, unsigned *rate, unsigned *ch, void **sysout) {
+  uintptr_t outp = g_unity_base + 0xc7c2f0;
+  if (!addr_readable(outp)) return 0;
+  void *out = *(void **)outp;
+  if (!out || !addr_readable((uintptr_t)out + 0x60)) return 0;
+  void *sys = *(void **)((char *)out + 0x60);
+  if (!sys || !addr_readable((uintptr_t)sys + 0x7f8)) return 0;
+  if (blk)  *blk  = *(uint32_t *)((char *)sys + 0x7f4);
+  /* RAIZ do "acelerado": a taxa do PCM entregue ao AudioTrack é [system+0x7d4]
+     (= o que fmodGetInfo @0x8112b0 reporta como samplerate), NÃO [+0x7c4]. O +0x7c4
+     é a taxa do device de saída; o mixer entrega no rate +0x7d4 (mobile costuma usar
+     24000). Tocar 24000 como 44100 = ~1.8x rápido/agudo. */
+  if (rate) *rate = *(uint32_t *)((char *)sys + 0x7d4);
+  if (ch)   *ch   = *(uint32_t *)((char *)sys + 0x7c8);
+  if (sysout) *sysout = sys;
+  return 1;
+}
 static void *fmod_audio_thread(void *arg) {
   (void)arg;
   void *fp = NULL;
   while (g_fmod_run && !(fp = jni_find_native("fmodProcess"))) usleep(20000);
   if (!fp) return NULL;
-  /* FMOD usa AudioTrack Java: a thread Java chamaria fmodProcess(buf) e escreveria no AudioTrack.
-     Replicamos: chamamos fmodProcess (enche g_fmod_pcm) IMEDIATAMENTE e enfileiramos o PCM num
-     SDL audio device (→ PulseAudio do Mali-450). Sem os 3s antigos (eram p/ o caminho OpenSL). */
-  SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
-  want.freq = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 48000;
-  want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;
-  if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
-  SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
-  if (dev) SDL_PauseAudioDevice(dev, 0);
-  fprintf(stderr, "[AUDIO] FMOD->SDL dev=%d freq=%d ch=%d fmt=0x%x (err=%s)\n",
-          dev, have.freq, have.channels, have.format, dev ? "" : SDL_GetError());
   static long fdev = 0xFAD;            /* this (FMODAudioDevice) fake */
   void *bb = jni_fmod_bytebuffer();
   void *pcm = jni_fmod_pcm();
+  int pcmcap = jni_fmod_pcm_size();
+  /* espera o FMOD output ficar pronto (*0xc7c2f0 != NULL) + lê o formato REAL */
+  unsigned rate = 0, ch = 0, blk = 0; void *sys = NULL;
+  for (int t = 0; g_fmod_run && t < 800; t++) {
+    if (fmod_read_format(&blk, &rate, &ch, &sys) && blk) {
+      fprintf(stderr, "[AUDIO] FMOD fmt: blk=%u rate(7d4)=%u ch(7c8)=%u outrate(7c4)=%u sys=%p\n",
+              blk, rate, ch, *(uint32_t *)((char *)sys + 0x7c4), sys);
+      /* DUMP cru p/ desfazer a confusão de offsets: acha o samplerate/channels/format reais */
+      for (unsigned o = 0x7c0; o <= 0x800; o += 0x10)
+        fprintf(stderr, "[AUDIO] sys+0x%x: %08x %08x %08x %08x\n", o,
+                *(uint32_t *)((char *)sys + o), *(uint32_t *)((char *)sys + o + 4),
+                *(uint32_t *)((char *)sys + o + 8), *(uint32_t *)((char *)sys + o + 0xc));
+      fprintf(stderr, "[AUDIO] sys+0x97e8=%08x  out+0x50..68: %p %p %p\n",
+              *(uint32_t *)((char *)sys + 0x97e8),
+              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x50),
+              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x58),
+              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x60));
+      break;
+    }
+    usleep(10000);
+  }
+  if (rate < 8000 || rate > 192000) rate = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 44100;
+  if (ch != 1 && ch != 2) ch = 2;
+  if (blk == 0 || blk > 8192) blk = 1024;
+  g_fmod_blk = blk; g_fmod_rate = rate; g_fmod_ch = ch;
+  unsigned bytes = blk * ch * 2;
+  if ((int)bytes > pcmcap) bytes = pcmcap;
+  SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
+  want.freq = rate; want.format = AUDIO_S16SYS; want.channels = ch; want.samples = 1024;
+  if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
+  SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+  if (dev) SDL_PauseAudioDevice(dev, 0);
+  fprintf(stderr, "[AUDIO] SDL dev=%d rate=%u ch=%u blk=%u bytes=%u (have f=%d c=%d) err=%s\n",
+          dev, rate, ch, blk, bytes, have.freq, have.channels, dev ? "" : SDL_GetError());
+  Uint32 target = bytes * 6;           /* ~6 blocos de back-pressure */
   unsigned long n = 0, fed = 0;
   while (g_fmod_run) {
+    if (dev && SDL_GetQueuedAudioSize(dev) > target) { usleep(2000); continue; }
     int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
-    if (r > 0 && dev) { SDL_QueueAudio(dev, pcm, (Uint32)r); fed += r; }
-    if (n < 5 || n % 500 == 0) {
+    if (r == 0 && dev) { SDL_QueueAudio(dev, pcm, bytes); fed += bytes; }
+    else if (r < 0) usleep(5000);      /* output ainda não pronto */
+    if (n < 5 || n % 1000 == 0) {
       fprintf(stderr, "[AUDIO] fmodProcess #%lu -> %d (fed=%lu q=%u)\n",
               n, r, fed, dev ? SDL_GetQueuedAudioSize(dev) : 0); dbg_sync(); }
     n++;
-    usleep(8000);
   }
   return NULL;
 }
@@ -4197,6 +4318,33 @@ int main(int argc, char **argv) {
       hook_arm64((uintptr_t)text_base + 0x54220c, (uintptr_t)deser542_hook);
       so_make_text_executable(); so_flush_caches();
       fprintf(stderr, "[DESERGUARD] hook 0x54220c (skip se *arg0==NULL)\n");
+    }
+  }
+  /* TER_AUDIOSPY/TER_STREAMFALLBACK: hook do createSound (libunity 0x806cb4).
+     SPY loga result de cada som; STREAMFALLBACK refaz streams falhos como sample.
+     Instalado aqui (contexto libunity, text_base=libunity, ANTES do F1/il2cpp). */
+  if (getenv("TER_AUDIOSPY") || getenv("TER_STREAMFALLBACK")) {
+    g_stream_fallback = getenv("TER_STREAMFALLBACK") ? 1 : 0;
+    void *tr = mk_tramp((uintptr_t)text_base + 0x806cb4, "createSound");
+    if (tr) {
+      cs_orig = (long (*)(void *, void *, int, void *, void *))tr;
+      extern void so_make_text_writable(void), so_make_text_executable(void);
+      so_make_text_writable();
+      hook_arm64((uintptr_t)text_base + 0x806cb4, (uintptr_t)cs_hook);
+      so_make_text_executable(); so_flush_caches();
+      fprintf(stderr, "[CSSPY] hook createSound(0x806cb4) instalado (fallback=%d)\n", g_stream_fallback);
+    } else fprintf(stderr, "[CSSPY] mk_tramp falhou\n");
+    /* MIXSPY: ground-truth do mixer (count real + formato) p/ achar a causa do áudio rápido */
+    if (getenv("TER_AUDIOSPY")) {
+      void *trm = mk_tramp((uintptr_t)text_base + 0x805a94, "mixer");
+      if (trm) {
+        mix_orig = (long (*)(void *, void *, int))trm;
+        extern void so_make_text_writable(void), so_make_text_executable(void);
+        so_make_text_writable();
+        hook_arm64((uintptr_t)text_base + 0x805a94, (uintptr_t)mix_hook);
+        so_make_text_executable(); so_flush_caches();
+        fprintf(stderr, "[MIXSPY] hook mixer(0x805a94) instalado\n");
+      } else fprintf(stderr, "[MIXSPY] mk_tramp falhou\n");
     }
   }
   /* CUP_WAITGATE: FORCEINTEG cirúrgico — ignora o gate de budget SÓ dentro do

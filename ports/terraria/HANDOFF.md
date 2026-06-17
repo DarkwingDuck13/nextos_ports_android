@@ -1,5 +1,75 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🔊🎮 SESSÃO 2026-06-17 (tarde) — SOM SAINDO + PRÓXIMAS 3 TAREFAS (LEIA PRIMEIRO)
+**Device: `192.168.31.89` (ssh root / senha `nextos`). Jogo em `/storage/roms/terraria/`.**
+**Lançar pra jogar: `ssh root@192.168.31.89 'cd /storage/roms/terraria; sh run.sh'`** (run.sh já tem som).
+Diário de build/test: `cd ~/nextos_ports_android/ports/terraria; ./build.sh` → `scp terraria` → `sh audiotest.sh 80`.
+
+### ✅ SOM AGORA SAI DO ALTO-FALANTE (NextOS confirmou "to ouvindo bem")
+O FMOD aqui é o **áudio nativo do Unity (FMOD Ex 4.x) DENTRO de libunity.so** (NÃO libfmod separada,
+NÃO FMOD Studio; org.fmod.FMODAudioDevice = backend AudioTrack do Unity). 3 fixes (todos em `src/main.c`):
+1. **🔑 PUMP CORRIGIDO** (`fmod_audio_thread`): o nativo **`fmodProcess`@libunity+0x811378 retorna 0 em
+   SUCESSO** (-1 se output NULL), NÃO um byte-count. O pump antigo só enfileirava se `r>0` → **NUNCA
+   mandava PCM** (silêncio mesmo com mixer rodando). Agora enfileira quando `r==0`. Bytes/chamada =
+   `blk*ch*2` (PCM interleaved s16). Output via `fmodProcess` mixa `blk` frames (`0x805a94`), `blk`=
+   `[system+0x7f4]`. SDL device NULL = backend AUTO (pulse/pipewire/alsa, portável). Back-pressure
+   (~6 blocos). `system` = `*(*(libunity+0xc7c2f0) + 0x60)`.
+2. **SFX funcionam 100%**: createSound de samples (mode `0x10000252` OPENMEMORY_POINT+COMPRESSEDSAMPLE)
+   → **result 0** (78 sons OK no teste). O wrapper público createSound = libunity+0x806cb4 (impl
+   real 0x7bcf98; valida handle via 0x7b3d68).
+3. **MÚSICA via fallback** (`TER_STREAMFALLBACK`, ON no run.sh): a música usa **FMOD_CREATESTREAM**
+   (mode `0xd2`, fonte = file-callback do Unity) e o **open de stream (0x864f78) falha INTERNAL=33**
+   no so-loader (maquinaria de stream). `cs_hook` detecta a falha e **refaz createSound SEM o bit
+   0x80** → carrega como SAMPLE (mesma fonte) → toca. Resultado: "Cannot create" = 0, música carrega.
+   Tabela de erros FMOD Ex do Unity: code 33(0x21)=INTERNAL, 25(0x19)=FORMAT (ErrorString@0x3ceb7c,
+   tabela em VMA 0xb66948, 8B/código).
+
+### ⚠️ PROBLEMA ABERTO #1 — ÁUDIO TOCA RÁPIDO/ACELERADO (pitch alto)
+**NextOS: "áudio acelerado no gameplay ENQUANTO O VÍDEO RODA BEM"** (vídeo OK ~58fps, só o som rápido).
+Logo NÃO é frame-pacing; é taxa/contagem do PCM. Análise até agora (INCOMPLETA, resolver na próxima):
+- Abro SDL a **44100/2ch** e enfileiro `blk*ch*2=4096` bytes/chamada (blk=1024). MAS descobri que em
+  vários boots o `fmod_read_format` **caiu no FALLBACK** (44100/2/1024) — o output `*0xc7c2f0` não ficou
+  pronto dentro dos 8s do loop de detecção → os "44100" podem NÃO ser os valores reais do FMOD.
+- Confusão de offsets: `fmodGetInfo`@0x8112b0 diz samplerate=`[system+0x7d4]`, channels=`[system+0x7c8]`.
+  MAS o mixer 0x805a94 trata `[system+0x7c4]` como FORMATO (cmp #0xf) e usa `[system+0x7d4]` como
+  multiplicador — inconsistente com "rate=44100". **Preciso de ground-truth.**
+- **FERRAMENTA PRONTA**: `TER_AUDIOSPY=1` instala `mix_hook` no mixer (0x805a94) → loga 3× o **count(x2)
+  REAL** + campos do system (7c4/7c8/7d4/7f4/7f8/97e8). RODAR: `TER_AUDIOSPY=1` no audiotest.sh e ler
+  `[MIXSPY]`. Hipótese principal: **count está em SAMPLES (não frames)** → enfileiro 2× → ~2× rápido;
+  fix seria `bytes = blk*2` (ou achar o samplerate real e abrir SDL nele). Confirmar com o MIXSPY:
+  ver se `count` casa com 1024 frames stereo (4096B) ou só 2048B; e qual offset tem o rate real
+  (procurar 22050/24000/44100/48000 no dump). Ajustar `fmod_read_format` + a conta de bytes.
+- Gates: `TER_AUDIO` (liga pump), `TER_STREAMFALLBACK` (música→sample), `TER_AUDIOSPY` (cs_hook +
+  mix_hook diagnóstico). run.sh tem AUDIO+STREAMFALLBACK (sem SPY).
+
+### ⚠️ PROBLEMA ABERTO #2 — MAPEAMENTO XBOX COMPLETO (faltam muitos botões)
+NextOS quer o controle mapeado **como um Xbox completo** (todos os botões; hoje só D-pad↑↓ + A + L1/R1
+navegam). Pesquisar na internet o mapeamento PADRÃO Xbox (A/B/X/Y, LB/RB, LT/RT, Start/Back/Guide,
+L3/R3, D-pad, sticks) e o que o Terraria espera (InControl/ControllerDevice). A infra de input está em
+`src/gamepad.c` + `ter_gamepad_poll`/`ter_input_hook` em `main.c` (substitui
+`Controller.ControllerDevice.GetKeyRaw`@il2cpp+0xc5c51c e `GetAxisRaw`@0xc5c2f0 com o estado do js0).
+Mapear TODOS os botões/eixos do js0 (SDL) → os action-IDs do InControl. Ver memória de controles na
+sessão 2026-06-17 (manhã) acima.
+
+### ⚠️ PROBLEMA ABERTO #3 — SETTINGS: 3ª ABA / SELEÇÃO DE IDIOMA não funciona
+No menu inicial → Settings: a navegação não consegue **selecionar a 3ª aba** nem entrar em
+itens tipo **Language** e escolher o idioma (ex.: clicar Settings → Language → selecionar). O
+`ter_menu_nav` (TER_NAVMENU) navega só ↑/↓ por linhas e ←/→ é L1/R1 nativo; submenus/abas horizontais
+e dropdowns (idioma) não respondem. Investigar a navegação de ABAS (provável `UILinkPointNavigator`
+ou tabs próprias) + seleção em dropdown. Talvez precise do mapeamento Xbox (#2) completo primeiro.
+
+### 📂 Arquivos tocados nesta sessão
+`src/main.c`: `fmod_audio_thread` (pump reescrito), `fmod_read_format`, `cs_hook`+`g_stream_fallback`
+(stream→sample), `mix_hook` (MIXSPY), install em ~linha 4214 (gated TER_AUDIOSPY/TER_STREAMFALLBACK).
+`run.sh`: + `TER_AUDIO=1 TER_STREAMFALLBACK=1`. Offsets-chave libunity: fmodProcess 0x811378,
+mixer 0x805a94, fmodGetInfo 0x8112b0, createSound 0x806cb4/impl 0x7bcf98, stream-open 0x864f78,
+ErrorString 0x3ceb7c, output global *0xc7c2f0. Ferramentas RE: capstone (`/tmp/xref.py`,
+`/tmp/disasm_arm.py`); VMA==fileoff p/ .text/.rodata em libunity.
+
+---
+
+# HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
+
 ## 🏆🎮 SESSÃO 2026-06-17 — CONTROLES + SINGLE PLAYER RESOLVIDOS (LEIA PRIMEIRO)
 **CONTROLE FUNCIONA NO MENU E NO GAMEPLAY (incl. cursor no jogo) — NextOS validou no Tutorial.**
 Caminho CORRETO descoberto: o build mobile usa **InControl/Controller.ControllerDevice** pra TUDO
