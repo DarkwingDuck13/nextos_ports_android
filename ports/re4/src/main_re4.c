@@ -408,6 +408,36 @@ static void re4_gp_apply_stick_dpad(void){
   if(g_re4_gp_ly < -0.55f) g_re4_gp_btn[RE4_BTN_DU] = 1;
   if(g_re4_gp_ly >  0.55f) g_re4_gp_btn[RE4_BTN_DD] = 1;
 }
+static int re4_gp_raw_ps2_enabled(void){
+  const char *force = getenv("RE4_RAW_PS2");
+  if(force) return atoi(force) != 0;
+  if(!g_re4_gp_ctrl) return 0;
+  const char *name = SDL_GameControllerName(g_re4_gp_ctrl);
+  return name && (strcasestr(name, "Twin USB PS2") ||
+                  strcasestr(name, "PS2 Adapter") ||
+                  strcasestr(name, "USB Gamepad"));
+}
+static void re4_gp_apply_raw_ps2_buttons(void){
+  if(!g_re4_gp_ctrl || !re4_gp_raw_ps2_enabled()) return;
+  SDL_Joystick *js = SDL_GameControllerGetJoystick(g_re4_gp_ctrl);
+  if(!js) return;
+  static int logged = 0;
+  if(!logged++){
+    fprintf(stderr, "[RGP] using raw PS2/Twin USB button map\n");
+    fsync(2);
+  }
+  static const int raw_buttons[10] = {
+    2, 1, 3, 0, 6, 7, 8, 9, 10, 11
+  };
+  int nb = SDL_JoystickNumButtons(js);
+  for(int i = 0; i < 10; i++)
+    g_re4_gp_btn[i] = (raw_buttons[i] < nb && SDL_JoystickGetButton(js, raw_buttons[i])) ? 1 : 0;
+  int h = SDL_JoystickNumHats(js) > 0 ? SDL_JoystickGetHat(js, 0) : 0;
+  g_re4_gp_btn[RE4_BTN_DU] = (h & SDL_HAT_UP) ? 1 : 0;
+  g_re4_gp_btn[RE4_BTN_DD] = (h & SDL_HAT_DOWN) ? 1 : 0;
+  g_re4_gp_btn[RE4_BTN_DL] = (h & SDL_HAT_LEFT) ? 1 : 0;
+  g_re4_gp_btn[RE4_BTN_DR] = (h & SDL_HAT_RIGHT) ? 1 : 0;
+}
 static void re4_gp_poll(void){
   if(g_re4_gp_poll_frame == g_re4_frame) return;
   g_re4_gp_poll_frame = g_re4_frame;
@@ -447,6 +477,7 @@ static void re4_gp_poll(void){
     RGBTN(RE4_BTN_DL, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
     RGBTN(RE4_BTN_DR, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
 #undef RGBTN
+    re4_gp_apply_raw_ps2_buttons();
     g_re4_gp_btn[RE4_BTN_LT] = g_re4_gp_lt > 0.30f ? 1 : 0;
     g_re4_gp_btn[RE4_BTN_RT] = g_re4_gp_rt > 0.30f ? 1 : 0;
   }
@@ -520,7 +551,7 @@ static int re4_gp_button_id_from_name(const char *name){
   if(!strcasecmp(name, "Back") || !strcasecmp(name, "Select") ||
      !strcasecmp(name, "View")) return RE4_BTN_BACK;
   if(!strcasecmp(name, "Start") || !strcasecmp(name, "Pause") ||
-     !strcasecmp(name, "Menu") || !strcasecmp(name, "Options")) return RE4_BTN_START;
+     !strcasecmp(name, "Menu")) return RE4_BTN_START;
   if(!strcasecmp(name, "LeftStickClick") || !strcasecmp(name, "LeftThumb") || !strcasecmp(name, "L3")) return RE4_BTN_L3;
   if(!strcasecmp(name, "RightStickClick") || !strcasecmp(name, "RightThumb") || !strcasecmp(name, "R3")) return RE4_BTN_R3;
   if(!strcasecmp(name, "DPadUp") || !strcasecmp(name, "D-Pad Up") ||
@@ -575,6 +606,85 @@ static float re4_gp_axis_from_name(const char *name, int *known){
   if(known) *known = 0;
   return 0.0f;
 }
+static int re4_gp_axis_button_kind_from_name(const char *name){
+  if(!name) return 0;
+  if(!strcasecmp(name, "Horizontal") || !strcasecmp(name, "LeftAnalogHorizontal") ||
+     !strcasecmp(name, "Left Stick X") || !strcasecmp(name, "LeftStickX") ||
+     !strcasecmp(name, "MoveHorizontal") || !strcasecmp(name, "HorizontalArrow") ||
+     !strcasecmp(name, "D-Pad Horizontal") || !strcasecmp(name, "DPadHorizontal"))
+    return 1;
+  if(!strcasecmp(name, "Vertical") || !strcasecmp(name, "LeftAnalogVertical") ||
+     !strcasecmp(name, "Left Stick Y") || !strcasecmp(name, "LeftStickY") ||
+     !strcasecmp(name, "MoveVertical") || !strcasecmp(name, "VerticalArrow") ||
+     !strcasecmp(name, "D-Pad Vertical") || !strcasecmp(name, "DPadVertical"))
+    return 2;
+  return 0;
+}
+static int re4_gp_axis_button_sign(int kind){
+  if(kind == 1){
+    if(g_re4_gp_btn[RE4_BTN_DL] && !g_re4_gp_btn[RE4_BTN_DR]) return -1;
+    if(g_re4_gp_btn[RE4_BTN_DR] && !g_re4_gp_btn[RE4_BTN_DL]) return 1;
+    if(g_re4_gp_lx <= -0.55f) return -1;
+    if(g_re4_gp_lx >= 0.55f) return 1;
+  } else if(kind == 2){
+    if(g_re4_gp_btn[RE4_BTN_DU] && !g_re4_gp_btn[RE4_BTN_DD]) return 1;
+    if(g_re4_gp_btn[RE4_BTN_DD] && !g_re4_gp_btn[RE4_BTN_DU]) return -1;
+    float v = -g_re4_gp_ly;
+    if(v >= 0.55f) return 1;
+    if(v <= -0.55f) return -1;
+  }
+  return 0;
+}
+static int re4_gp_axis_button_state(int kind, int edge){
+  int now = 0, prev = 0;
+  static int last_sign[3] = {0, 0, 0};
+  static int hold_start[3] = {-1, -1, -1};
+  static int last_down_frame[3] = {-999999, -999999, -999999};
+  int sign = re4_gp_axis_button_sign(kind);
+  int sign_changed = sign != last_sign[kind];
+  if(sign_changed){
+    hold_start[kind] = -1;
+    last_sign[kind] = sign;
+  }
+  now = sign != 0;
+  prev = (kind == 1) ?
+    (g_re4_gp_prev[RE4_BTN_DL] || g_re4_gp_prev[RE4_BTN_DR]) :
+    (g_re4_gp_prev[RE4_BTN_DU] || g_re4_gp_prev[RE4_BTN_DD]);
+  if(edge == 0) return now;
+  if(edge < 0){
+    if(!now) hold_start[kind] = -1;
+    return !now && prev;
+  }
+  if(!now){
+    hold_start[kind] = -1;
+    return 0;
+  }
+  if(!prev || hold_start[kind] < 0) hold_start[kind] = g_re4_frame;
+  int fire = !prev || sign_changed;
+  if(!fire){
+    int delay = re4_int_env("RE4_MENU_REPEAT_DELAY", 18, 4, 120);
+    int interval = re4_int_env("RE4_MENU_REPEAT_INTERVAL", 6, 2, 60);
+    int held = g_re4_frame - hold_start[kind];
+    fire = held >= delay && ((held - delay) % interval) == 0;
+  }
+  if(fire && last_down_frame[kind] != g_re4_frame){
+    last_down_frame[kind] = g_re4_frame;
+    return 1;
+  }
+  return 0;
+}
+static int re4_gp_submit_like_name(const char *name){
+  return name && (!strcasecmp(name, "Submit") || !strcasecmp(name, "Confirm"));
+}
+static int re4_gp_cancel_like_name(const char *name){
+  return name && (!strcasecmp(name, "Cancel") || !strcasecmp(name, "Escape"));
+}
+static int re4_input_button_orig(void *mono_string, int edge){
+  if(edge == 0 && g_orig_input_get_button) return g_orig_input_get_button(mono_string);
+  if(edge > 0 && g_orig_input_get_button_down) return g_orig_input_get_button_down(mono_string);
+  if(edge < 0 && g_orig_input_get_button_up) return g_orig_input_get_button_up(mono_string);
+  return 0;
+}
 static char *re4_mono_string_to_utf8(void *mono_string){
   if(!mono_string || !g_mono_string_to_utf8_fn) return NULL;
   return g_mono_string_to_utf8_fn(mono_string);
@@ -617,6 +727,56 @@ static float my_input_get_axis_raw(void *mono_string){ return my_input_get_axis_
 static int my_input_get_button_common(void *mono_string, int edge){
   char *name = re4_mono_string_to_utf8(mono_string);
   re4_gp_poll();
+  int axis_kind = re4_gp_axis_button_kind_from_name(name);
+  if(axis_kind){
+    int r = re4_gp_axis_button_state(axis_kind, edge);
+    if(getenv("RE4_GPTRACE")){
+      static int tn = 0;
+      if(tn++ < 240)
+        fprintf(stderr, "[RTRACE] %s(\"%s\") axis_button=%d -> %d f=%d\n",
+                edge == 0 ? "GetButton" : (edge > 0 ? "GetButtonDown" : "GetButtonUp"),
+                name ? name : "(null)", axis_kind, r, g_re4_frame);
+    }
+    if(r){
+      if(getenv("RE4_GPLOG")){
+        fprintf(stderr, "[RINPUT] %s(\"%s\") -> %d f=%d\n",
+                edge == 0 ? "GetButton" : (edge > 0 ? "GetButtonDown" : "GetButtonUp"),
+                name ? name : "(null)", r, g_re4_frame);
+        fsync(2);
+      }
+      re4_mono_free_utf8(name);
+      return r;
+    }
+    int orig = re4_input_button_orig(mono_string, edge);
+    re4_mono_free_utf8(name);
+    return orig;
+  }
+  if(re4_gp_submit_like_name(name)){
+    int submit = getenv("RE4_AB_SWAP") ? RE4_BTN_B : RE4_BTN_A;
+    int now = g_re4_gp_btn[submit] ? 1 : 0;
+    int prev = g_re4_gp_prev[submit] ? 1 : 0;
+    int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
+    if(r){
+      re4_mono_free_utf8(name);
+      return r;
+    }
+    int orig = re4_input_button_orig(mono_string, edge);
+    re4_mono_free_utf8(name);
+    return orig;
+  }
+  if(re4_gp_cancel_like_name(name)){
+    int cancel = getenv("RE4_AB_SWAP") ? RE4_BTN_A : RE4_BTN_B;
+    int now = g_re4_gp_btn[cancel] ? 1 : 0;
+    int prev = g_re4_gp_prev[cancel] ? 1 : 0;
+    int r = edge == 0 ? now : (edge > 0 ? (now && !prev) : (!now && prev));
+    if(r){
+      re4_mono_free_utf8(name);
+      return r;
+    }
+    int orig = re4_input_button_orig(mono_string, edge);
+    re4_mono_free_utf8(name);
+    return orig;
+  }
   int id = re4_gp_button_id_from_name(name);
   if(getenv("RE4_GPTRACE")){
     static int tn = 0;
@@ -639,13 +799,11 @@ static int my_input_get_button_common(void *mono_string, int edge){
       }
     }
     re4_mono_free_utf8(name);
-    return r;
+    if(r) return r;
+    return re4_input_button_orig(mono_string, edge);
   }
   re4_mono_free_utf8(name);
-  if(edge == 0 && g_orig_input_get_button) return g_orig_input_get_button(mono_string);
-  if(edge > 0 && g_orig_input_get_button_down) return g_orig_input_get_button_down(mono_string);
-  if(edge < 0 && g_orig_input_get_button_up) return g_orig_input_get_button_up(mono_string);
-  return 0;
+  return re4_input_button_orig(mono_string, edge);
 }
 static int my_input_get_button(void *mono_string){ return my_input_get_button_common(mono_string, 0); }
 static int my_input_get_button_down(void *mono_string){ return my_input_get_button_common(mono_string, 1); }
@@ -665,21 +823,10 @@ static int re4_gp_button_from_unity_key(int keycode){
   switch(keycode){
     case 13: return RE4_BTN_A;      /* Return */
     case 27: return RE4_BTN_B;      /* Escape */
-    case 32: return RE4_BTN_X;      /* Space */
     case 273: return RE4_BTN_DU;    /* UpArrow */
     case 274: return RE4_BTN_DD;    /* DownArrow */
     case 275: return RE4_BTN_DR;    /* RightArrow */
     case 276: return RE4_BTN_DL;    /* LeftArrow */
-    case 97: return RE4_BTN_A;      /* A */
-    case 98: return RE4_BTN_B;      /* B */
-    case 99: return RE4_BTN_Y;      /* C */
-    case 113: return RE4_BTN_B;     /* Q */
-    case 114: return RE4_BTN_LB;    /* R */
-    case 120: return RE4_BTN_X;     /* X */
-    case 121: return RE4_BTN_Y;     /* Y */
-    case 122: return RE4_BTN_RB;    /* Z */
-    case 304: return RE4_BTN_L3;    /* LeftShift */
-    case 9: return RE4_BTN_R3;      /* Tab */
     default: return -1;
   }
 }
