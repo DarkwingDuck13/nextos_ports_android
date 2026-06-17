@@ -1626,6 +1626,8 @@ static void ter_screenshot_maybe(void) {
 }
 static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
+/* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
+void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_screenshot_maybe(); }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */

@@ -401,6 +401,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (!egl_window) return EGL_TRUE;
 
   if (has_real_gl && (tls_is_window || (current_context && !current_context->is_pbuffer))) {
+    { extern void ter_shot_hook(void); ter_shot_hook(); }  /* captura na thread DONA da window (antes do swap) */
     SDL_GL_SwapWindow(egl_window);
     int fc = ++frame_count;
     if (fc <= 10 || fc % 60 == 0) {
