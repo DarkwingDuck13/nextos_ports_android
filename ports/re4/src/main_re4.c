@@ -24,10 +24,17 @@
 /* RAIZ do "invalid CIL": glibc fstatat64 preenche struct stat64 layout GLIBC, mas Unity
    (bionic) le st_size no offset BIONIC -> tamanho errado (32KB) -> le so 32KB do .dll.
    Fix: syscall CRU -> o kernel preenche o layout stat64 do kernel (== bionic). */
-static int my_fstatat64(int dfd,const char*p,void*b,int fl){ return (int)syscall(__NR_fstatat64,dfd,p,b,fl); }
+static const char *re4_fixpath(const char *p);  /* '\'->'/' (paths de save Windows) */
+static int my_fstatat64(int dfd,const char*p,void*b,int fl){ return (int)syscall(__NR_fstatat64,dfd,re4_fixpath(p),b,fl); }
 static int my_fstat64(int fd,void*b){ return (int)syscall(__NR_fstat64,fd,b); }
-static int my_stat64(const char*p,void*b){ return (int)syscall(__NR_stat64,p,b); }
-static int my_lstat64(const char*p,void*b){ return (int)syscall(__NR_lstat64,p,b); }
+static int my_stat64(const char*p,void*b){ return (int)syscall(__NR_stat64,re4_fixpath(p),b); }
+static int my_lstat64(const char*p,void*b){ return (int)syscall(__NR_lstat64,re4_fixpath(p),b); }
+static int my_access(const char*p,int m){ return access(re4_fixpath(p),m); }
+static int my_unlink(const char*p){ return unlink(re4_fixpath(p)); }
+static int my_rename(const char*a,const char*b){ char tmp[1024]; const char*fa=re4_fixpath(a);
+  /* re4_fixpath usa buffer thread-local unico -> copia o 1o antes do 2o */
+  strncpy(tmp,fa,sizeof tmp-1); tmp[sizeof tmp-1]=0; return rename(tmp,re4_fixpath(b)); }
+static int my_mkdir(const char*p,unsigned m){ return mkdir(re4_fixpath(p),m); }
 static uintptr_t g_mono_base=0, g_unity_base=0;
 static void getmem_trace(const char*tag);
 static const char *re4_gamedir(void);
@@ -450,9 +457,31 @@ static void re4_dump_window_draw_if_needed(const char *tag){
   free(pixels);
   dumped=1;
 }
+/* RE4_DUMP_FBO_FRAMES="900,1500,2500" -> dumpa o FBO atual em cada frame (multi-shot).
+   Tem prioridade sobre RE4_DUMP_FBO_FRAME (single). Retorna 1 se deve dumpar neste frame. */
+static int re4_multi_dump_hit(int frame){
+  static int parsed=0; static int frames[32]; static int n=0;
+  if(!parsed){ parsed=1; const char *s=getenv("RE4_DUMP_FBO_FRAMES");
+    if(s&&s[0]){ const char *p=s; while(*p&&n<32){ frames[n++]=atoi(p); const char*c=strchr(p,','); if(!c)break; p=c+1; } } }
+  for(int i=0;i<n;i++) if(frames[i]==frame) return 1;
+  return 0;
+}
 static void re4_dump_framebuffers_if_needed(int frame){
   static int dump_frame=-2;
   static int dumped=0;
+  if(re4_multi_dump_hit(frame)){
+    /* multi-shot: dumpa o FBO atualmente ligado (= o que esta sendo composto/apresentado) */
+    unsigned sv=g_gl_bound_fbo;
+    int w=(g_gl_viewport[2]>0)?g_gl_viewport[2]:re4_screen_width();
+    int h=(g_gl_viewport[3]>0)?g_gl_viewport[3]:re4_screen_height();
+    if(!r_glReadPixels) r_glReadPixels=dlsym(RTLD_DEFAULT,"glReadPixels");
+    if(!r_glBindFramebuffer) r_glBindFramebuffer=dlsym(RTLD_DEFAULT,"glBindFramebuffer");
+    if(r_glReadPixels&&r_glBindFramebuffer){
+      char tag[16]; snprintf(tag,sizeof tag,"cur");
+      re4_dump_bound_framebuffer(tag, sv?sv:1, w, h);   /* sv 0 cedo? usa fbo1 */
+    }
+    return;
+  }
   unsigned saved_fbo=g_gl_bound_fbo;
   int cur_w=(g_gl_viewport[2]>0)?g_gl_viewport[2]:re4_screen_width();
   int cur_h=(g_gl_viewport[3]>0)?g_gl_viewport[3]:re4_screen_height();
@@ -1443,8 +1472,20 @@ static void* my_jit_init_version(const char* name, const char* ver){
 static void my_assert_handler(const char* file, int line, const char* a, const char* b){ (void)a;(void)b;
   static int n=0; if(n++<60){ fprintf(stderr,"[ASSERT-SKIP] %s:%d\n", file?file:"?", line); fflush(stderr); }
 }
+/* RE4 (port de Windows/Android) monta paths de SAVE com '\' (separador Windows):
+   "/roms/ports/re4/userdata\quickSave6.json". No Linux '\' e literal -> arquivo nao encontrado
+   -> IOException no load do quicksave -> gameplay nao entra (tela azul presa). Normaliza '\'->'/'.
+   Retorna o proprio ponteiro se nao ha '\' (sem custo); senao copia p/ buffer thread-local. */
+static const char *re4_fixpath(const char *p){
+  if(!p || !strchr(p,'\\')) return p;
+  static __thread char buf[1024];
+  size_t i=0; for(; p[i] && i<sizeof(buf)-1; i++) buf[i] = (p[i]=='\\') ? '/' : p[i];
+  buf[i]=0;
+  static int n=0; if(n++<20) fprintf(stderr,"[PATHFIX] '%s' -> '%s'\n",p,buf);
+  return buf;
+}
 /* loga open/fopen -> acha a fonte de memoria (/proc/meminfo etc) */
-static FILE* my_fopen(const char*p,const char*m){ if(p&&(strstr(p,"proc")||strstr(p,"mem")||strstr(p,"sys"))) fprintf(stderr,"[FOPEN] %s\n",p);
+static FILE* my_fopen(const char*p0,const char*m){ const char*p=re4_fixpath(p0); if(p&&(strstr(p,"proc")||strstr(p,"mem")||strstr(p,"sys"))) fprintf(stderr,"[FOPEN] %s\n",p);
   if(p&&!strcmp(p,"/proc/meminfo")){ fprintf(stderr,"[FOPEN] meminfo -> fake 512MB\n");
     FILE*t=tmpfile(); if(t){ fputs("MemTotal:      524288 kB\nMemFree:       262144 kB\nMemAvailable:  262144 kB\n",t); rewind(t); return t; } }
   /* core count vem daqui (/sys/.../possible|present) -> Unity dimensiona job workers. Forcamos 1
@@ -1452,7 +1493,7 @@ static FILE* my_fopen(const char*p,const char*m){ if(p&&(strstr(p,"proc")||strst
   if(p&&(!strcmp(p,"/sys/devices/system/cpu/possible")||!strcmp(p,"/sys/devices/system/cpu/present")||!strcmp(p,"/sys/devices/system/cpu/online"))){
     fprintf(stderr,"[FOPEN] %s -> fake 2 cores\n",p); FILE*t=tmpfile(); if(t){ fputs("0-1\n",t); rewind(t); return t; } }
   return fopen(p,m); }
-static int my_open(const char*p,int fl,...){ if(p&&(strstr(p,"proc")||strstr(p,"mem"))) fprintf(stderr,"[OPEN] %s\n",p);
+static int my_open(const char*p0,int fl,...){ const char*p=re4_fixpath(p0); if(p&&(strstr(p,"proc")||strstr(p,"mem"))) fprintf(stderr,"[OPEN] %s\n",p);
   /* /proc/cpuinfo: Unity conta cores p/ dimensionar o job worker pool. Forcamos 1 core (1 entrada
      "processor") -> jobs rodam INLINE, sem workers, sem WaitForJobGroup deadlock. */
   if(p&&!strcmp(p,"/proc/cpuinfo")){ FILE*t=tmpfile();
@@ -1584,6 +1625,30 @@ static void re4_autotap(void *env, void *thiz, void *inject, int frame){
     re4_inject_key_event(env, thiz, inject, AKEY_EVENT_ACTION_DOWN, tapkey, 0, frame, "AUTOTAP");
   else if (phase == hold)
     re4_inject_key_event(env, thiz, inject, AKEY_EVENT_ACTION_UP, tapkey, 0, frame, "AUTOTAP");
+}
+/* SEQUENCIA de teclas em frames especificos: RE4_KEYSEQ="frame:key,frame:key,..."
+   Cada entrada injeta DOWN no frame e UP em frame+hold (RE4_KEYSEQ_HOLD, default 4).
+   Permite navegar o menu de forma deterministica (ex: 200:108 passa o press-any-key,
+   900:23 confirma START). keycodes Android: 19=UP 20=DOWN 21=LEFT 22=RIGHT 23=DPAD_CENTER
+   66=ENTER 96=BUTTON_A 108=BUTTON_START 4=BACK. */
+#define RE4_SEQ_MAX 64
+static void re4_keyseq(void *env, void *thiz, void *inject, int frame){
+  static int parsed=0; static int sf[RE4_SEQ_MAX], sk[RE4_SEQ_MAX]; static int sn=0; static int hold=4;
+  if(!parsed){ parsed=1;
+    const char *s=getenv("RE4_KEYSEQ");
+    const char *h=getenv("RE4_KEYSEQ_HOLD"); if(h&&h[0]){ hold=atoi(h); if(hold<1)hold=4; }
+    if(s&&s[0]){ const char *p=s;
+      while(*p && sn<RE4_SEQ_MAX){ int fr=atoi(p); const char *c=strchr(p,':'); if(!c)break;
+        int kc=atoi(c+1); sf[sn]=fr; sk[sn]=kc; sn++;
+        const char *comma=strchr(c,','); if(!comma)break; p=comma+1; }
+      fprintf(stderr,"[KEYSEQ] %d entradas hold=%d\n",sn,hold);
+    }
+  }
+  if(sn<=0||!inject) return;
+  for(int i=0;i<sn;i++){
+    if(frame==sf[i]) re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,sk[i],0,frame,"KEYSEQ");
+    else if(frame==sf[i]+hold) re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_UP,sk[i],0,frame,"KEYSEQ");
+  }
 }
 /* BRIDGE de TLS bionic auto-contido: as keys do engine viram SLOTS minhas (1 glibc key so
    guarda o array por-thread). O engine nunca toca o pthread_key do glibc -> sem corrupcao. */
@@ -1787,6 +1852,11 @@ int main(void){
   re4_set_import("stat64",(void*)my_stat64);
   re4_set_import("stat",(void*)my_stat64);
   re4_set_import("lstat64",(void*)my_lstat64);
+  re4_set_import("access",(void*)my_access);
+  re4_set_import("unlink",(void*)my_unlink);
+  re4_set_import("remove",(void*)my_unlink);
+  re4_set_import("rename",(void*)my_rename);
+  re4_set_import("mkdir",(void*)my_mkdir);
   re4_set_import("raise",(void*)my_raise);
   re4_set_import("pthread_kill",(void*)my_ptkill);
   re4_set_import("sigaction",(void*)my_sigaction);
@@ -1928,6 +1998,7 @@ int main(void){
     g_re4_frame=f;
     re4_pump_sdl_input(env, &t, inject, f);
     re4_autotap(env, &t, inject, f);
+    re4_keyseq(env, &t, inject, f);
     ((unsigned char(*)(void*,void*))render)(env,&t);
     re4_probe_frame_pixels(f);
     re4_dump_framebuffers_if_needed(f);

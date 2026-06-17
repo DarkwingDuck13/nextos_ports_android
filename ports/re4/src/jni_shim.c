@@ -74,6 +74,29 @@ static const char *resolve_jstring(void *jstr) {
   return jstr ? (const char *)jstr : "";
 }
 
+/* ---- SharedPreferences store REAL (key->value) ----
+   RE4 mobile guarda "sceneToLoad" (e outros) via SharedPreferences.Editor.putString e LE de volta
+   com getString. Sem armazenar, getString devolve o default -> a cena a carregar fica vazia -> o
+   loader volta pro menu (gameplay nunca inicia). Aqui mantemos um mapa em memoria (sessao). */
+#define PREFS_MAX 256
+static struct { char *key; char *val; int isint; long ival; } g_prefs[PREFS_MAX];
+static int g_prefs_n = 0;
+static int g_prefs_editor;   /* sentinela do SharedPreferences.Editor (putString retorna isto) */
+static int prefs_find(const char *k){ if(!k)return -1; for(int i=0;i<g_prefs_n;i++) if(g_prefs[i].key&&strcmp(g_prefs[i].key,k)==0) return i; return -1; }
+static void prefs_set_str(const char *k, const char *v){ if(!k)return; int i=prefs_find(k);
+  if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
+  if(g_prefs[i].val) free(g_prefs[i].val); g_prefs[i].val=strdup(v?v:""); g_prefs[i].isint=0;
+  debugPrintf("[PREFS] set str '%s'='%s'\n", k, v?v:""); }
+static void prefs_set_int(const char *k, long v){ if(!k)return; int i=prefs_find(k);
+  if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
+  g_prefs[i].ival=v; g_prefs[i].isint=1;
+  debugPrintf("[PREFS] set int '%s'=%ld\n", k, v); }
+static const char *prefs_get_str(const char *k){ int i=prefs_find(k); return (i>=0&&!g_prefs[i].isint&&g_prefs[i].val)?g_prefs[i].val:NULL; }
+static int prefs_has_int(const char *k, long *out){ int i=prefs_find(k); if(i>=0&&g_prefs[i].isint){ if(out)*out=g_prefs[i].ival; return 1; } return 0; }
+static void prefs_remove(const char *k){ int i=prefs_find(k); if(i<0)return; free(g_prefs[i].key); if(g_prefs[i].val)free(g_prefs[i].val);
+  for(int j=i;j<g_prefs_n-1;j++) g_prefs[j]=g_prefs[j+1]; g_prefs_n--; }
+void *jni_prefs_editor(void){ return &g_prefs_editor; }
+
 /* ---- Registry de method/field IDs por NOME (recon Unity) ---- */
 struct mid_entry { const char *name; const char *sig; };
 static struct mid_entry g_midreg[1024];
@@ -324,13 +347,39 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
         strcmp(nm, "getCanonicalPath") == 0)
       return make_jstring(re4_userdata_dir());
-    /* SharedPreferences.getString(key, default) -> loga a chave + retorna default */
+    /* SharedPreferences.edit() -> Editor (mesmo obj p/ encadear puts e commit) */
+    if (strcmp(nm, "edit") == 0) return &g_prefs_editor;
+    /* SharedPreferences.getString(key, default) -> valor armazenado ou default */
     if (strcmp(nm, "getString") == 0) {
       void *keystr = va_arg(ap, void *);
       void *defstr = va_arg(ap, void *);
-      debugPrintf("[PREFS] getString key='%s'\n", resolve_jstring(keystr));
+      const char *k = resolve_jstring(keystr);
+      const char *v = prefs_get_str(k);
+      debugPrintf("[PREFS] getString key='%s' -> '%s'\n", k, v ? v : (defstr?resolve_jstring(defstr):"(def null)"));
+      if (v) return make_jstring(v);
       return defstr ? defstr : make_jstring("");
     }
+    /* SharedPreferences.Editor.putString(key, val) -> armazena, retorna o Editor (encadeavel) */
+    if (strcmp(nm, "putString") == 0) {
+      void *keystr = va_arg(ap, void *);
+      void *valstr = va_arg(ap, void *);
+      prefs_set_str(resolve_jstring(keystr), resolve_jstring(valstr));
+      return &g_prefs_editor;
+    }
+    /* Editor.putInt/putFloat/putBoolean/putLong tambem retornam o Editor */
+    if (strcmp(nm, "putInt") == 0 || strcmp(nm, "putLong") == 0) {
+      void *keystr = va_arg(ap, void *);
+      long v = va_arg(ap, long);
+      prefs_set_int(resolve_jstring(keystr), v);
+      return &g_prefs_editor;
+    }
+    if (strcmp(nm, "putFloat") == 0 || strcmp(nm, "putBoolean") == 0) {
+      (void)va_arg(ap, void *);  /* key */
+      return &g_prefs_editor;    /* armazenamento simples: ignora valor, mantem encadeamento */
+    }
+    /* Editor.remove(key) / clear() -> retorna o Editor */
+    if (strcmp(nm, "remove") == 0) { void *keystr = va_arg(ap, void *); prefs_remove(resolve_jstring(keystr)); return &g_prefs_editor; }
+    if (strcmp(nm, "clear") == 0) { g_prefs_n = 0; return &g_prefs_editor; }
     if (strcmp(nm, "toString") == 0)
       return make_jstring("");
   }
@@ -354,6 +403,9 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   if (nm) {
     if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
     if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
+    if (strcmp(nm, "commit") == 0) return 1;   /* SharedPreferences.Editor.commit() -> true */
+    if (strcmp(nm, "contains") == 0) return 0; /* contains(key): default ausente */
+    if (strcmp(nm, "getBoolean") == 0) return 0;
   }
   return 0;
 }
@@ -375,6 +427,7 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "getRepeatCount") == 0) return g_hk_inject.repeat;
     if (strcmp(nm, "getScanCode") == 0) return g_hk_inject.scancode;
     if (strcmp(nm, "getInt") == 0) { void *k = va_arg(ap, void *); int d = va_arg(ap, int);
+      long sv; if (prefs_has_int(resolve_jstring(k), &sv)) { debugPrintf("[PREFS] getInt key='%s' -> %ld\n", resolve_jstring(k), sv); return (jint)sv; }
       debugPrintf("[PREFS] getInt key='%s' def=%d\n", resolve_jstring(k), d); return d; }
     if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
     if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
@@ -418,16 +471,29 @@ static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
   }
 }
 
-/* CallStaticObjectMethod (index 113) */
-static void *jni_CallStaticObjectMethod(void *env, void *clazz,
-                                        void *methodID, ...) {
+/* CallStaticObjectMethod — variante V (va_list, usada pelo il2cpp/Unity) */
+static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
+                                         void *methodID, va_list ap) {
   (void)env;
   (void)clazz;
-
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallStaticObjectMethod(%s)\n", nm ? nm : "?");
+  /* encode/decode (String)->String: o RE4 OFUSCA chave+valor do SharedPreferences (sceneToLoad
+     etc.) com encode() antes de gravar e decode() ao ler. IDENTIDADE (devolve o argumento)
+     mantem o round-trip exato (encode e decode sao inversos) -> a cena a carregar nao se perde. */
+  if (nm && (strcmp(nm, "encode") == 0 || strcmp(nm, "decode") == 0)) {
+    void *arg = va_arg(ap, void *);
+    return arg ? arg : make_jstring("");
+  }
   static int fake_result;
   return &fake_result;  /* fake Class/objeto nao-nulo (forName etc.) */
+}
+static void *jni_CallStaticObjectMethod(void *env, void *clazz,
+                                        void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  void *r = jni_CallStaticObjectMethodV(env, clazz, methodID, ap);
+  va_end(ap);
+  return r;
 }
 
 /* CallStaticBooleanMethod (index 124) */
@@ -771,7 +837,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;
   jni_env_vtable[113] = (uintptr_t)jni_GetStaticMethodID;
   jni_env_vtable[114] = (uintptr_t)jni_CallStaticObjectMethod;
-  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethod; /* V */
+  jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethodV; /* V (va_list) — encode/decode */
   jni_env_vtable[117] = (uintptr_t)jni_CallStaticBooleanMethod;
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethod; /* V */
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;

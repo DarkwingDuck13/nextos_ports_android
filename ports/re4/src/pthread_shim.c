@@ -78,6 +78,18 @@ static void *pmap_get(void *bionic, int kind, unsigned sem_val) {
   pthread_mutex_unlock(&g_pmap_lock);
   return ret;
 }
+/* true se o bionic->glibc ja existe no mapa (lookup lock-free, append-only) */
+static int pmap_has(void *bionic) {
+  if (!bionic) return 0;
+  uintptr_t h = ((uintptr_t)bionic >> 4) % PMAP_SZ;
+  for (int i = 0; i < PMAP_SZ; i++) {
+    int idx = (int)((h + i) % PMAP_SZ);
+    void *b = g_pmap[idx].bionic;
+    if (b == bionic) return 1;
+    if (b == NULL) return 0;
+  }
+  return 0;
+}
 static void *gmtx(void *b) { return pmap_get(b, K_MUTEX, 0); }
 static void *gcnd(void *b) { return pmap_get(b, K_COND, 0); }
 static void *grwl(void *b) { return pmap_get(b, K_RWLOCK, 0); }
@@ -105,13 +117,24 @@ static int sh_cond_destroy(void *c) { (void)c; return 0; }
 /* ---- semaforo (job system do Unity: bionic sem_t=4B vs glibc=32B) ---- */
 static int sh_sem_init(void *s, int pshared, unsigned val) {
   (void)pshared;
-  /* RE-INIT OBRIGATORIO: sh_sem_destroy e no-op -> a entrada do mapa SOBREVIVE. Quando o Unity
-     RECRIA um semaforo no MESMO endereco (reuso de pool ao abrir o menu), pmap_get devolve o sem
-     glibc VELHO (valor drenado=0) sem re-inicializar -> o novo sem fica com valor errado ->
-     sem_wait trava pra sempre (deadlock no menu). Aqui forcamos o valor correto sempre. */
+  /* Na PRIMEIRA vez pmap_get cria o sem glibc ja com `val` (sem_init). Em chamadas seguintes no
+     MESMO endereco NAO destruimos/reinicializamos por padrao: o Unity reinicializa os semaforos de
+     COMPLETION do job-system (ex: unity+0xf0117dcc/dd4, ~2400x) a cada ciclo; se um worker postou a
+     conclusao e nos destruimos+reinicializamos para 0, o POST e PERDIDO -> a main fica eternamente
+     no sem_wait (deadlock que so o SEMBREAK quebrava, deixando a cena carregar incompleta).
+     RE4_SEM_REINIT=1 restaura o comportamento antigo (destroi+reinit sempre). */
+  int existed = pmap_has(s);
   sem_t *g = (sem_t *)pmap_get(s, K_SEM, val);
-  if (g) { sem_destroy(g); sem_init(g, 0, val); }
-  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<5000)fprintf(stderr,"[SEM] init  b=%p val=%u tid=%p\n",s,val,(void*)pthread_self());}
+  if (g && existed) {
+    /* POLITICA: so reinicializa se o sem esta DRENADO (valor<=0). Se valor>0 ha um POST
+       pendente (ex: worker do job-system sinalizou conclusao) -> PRESERVA (reinit perderia o
+       post -> a main travaria eternamente no sem_wait -> cena carrega incompleta). Drenado:
+       reinit p/ `val` cobre o reuso de endereco (sem novo com valor inicial != 0). */
+    int cur = -1; sem_getvalue(g, &cur);
+    if (cur <= 0 && cur != (int)val) { sem_destroy(g); sem_init(g, 0, val); }
+    if (getenv("RE4_SEM_REINIT")) { sem_destroy(g); sem_init(g, 0, val); }  /* legado/debug */
+  }
+  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<5000)fprintf(stderr,"[SEM] init  b=%p val=%u existed=%d tid=%p\n",s,val,existed,(void*)pthread_self());}
   return 0;
 }
 static int sh_sem_wait(void *s) {
