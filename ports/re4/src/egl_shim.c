@@ -60,6 +60,12 @@ static _Thread_local _egl_context *current_context = NULL;
 static _Thread_local _egl_context *last_context = NULL;
 static _Thread_local int has_real_gl = 0;
 
+static int real_current_is_window_surface(void) {
+  if (!g_use_real_egl || !r_getCurSurface || !g_real_surf)
+    return 0;
+  return r_getCurSurface(EGL_DRAW_ATTR) == g_real_surf;
+}
+
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 
 static int read_env_int(const char *name, int fallback, int min_value, int max_value) {
@@ -141,6 +147,17 @@ void egl_shim_create_window(void) {
     if(g_real_dpy&&g_real_surf&&g_real_ctx&&g_real_cfg&&n>0){ g_use_real_egl=1;
       debugPrintf("egl_shim: REAL EGL dpy=%p surf=%p ctx=%p cfg=%p (Bully-style, 1 ctx/thread)\n",
                   g_real_dpy,g_real_surf,g_real_ctx,g_real_cfg); }
+    /* EGL_BUFFER_PRESERVED: no Mali fbdev double-buffer (page0/page1), o back buffer e DESCARTADO
+       no swap -> o composite-draw da Unity num buffer reciclado nao "sobrevive" (tile nao resolve)
+       -> tela preta apos o menu. Preservar o back buffer no swap faz o conteudo do composite chegar
+       ao scanout. (clear sobrevive, draw nao -> preservar resolve a diferenca.) */
+    if(!getenv("RE4_NO_PRESERVE")){
+      unsigned (*r_surfAttrib)(void*,void*,int,int)=dlsym(RTLD_DEFAULT,"eglSurfaceAttrib");
+      if(r_surfAttrib){
+        unsigned ok=r_surfAttrib(g_real_dpy,g_real_surf,0x3093 /*EGL_SWAP_BEHAVIOR*/,0x3094 /*EGL_BUFFER_PRESERVED*/);
+        debugPrintf("egl_shim: eglSurfaceAttrib(SWAP_BEHAVIOR=PRESERVED) -> %u err=0x%x\n",ok,r_getError?r_getError():0);
+      }
+    }
   }
   if(!g_use_real_egl) debugPrintf("egl_shim: REAL EGL indisponivel -> fallback SDL\n");
 
@@ -281,6 +298,13 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
   if (g_use_real_egl) {
     unsigned r;
     if (context == NULL || draw == NULL) {
+      /* FRAME-END: a render thread esta SOLTANDO a window -> e o fim do frame dela, o FBO0 (window)
+         tem o frame FINAL do Unity. Apresenta AGORA (snapshot+blit+swap) enquanto a window e current
+         -> captura a cena renderizada por ultimo (o composite mid-frame era cedo/plano). */
+      if (real_current_is_window_surface()) {
+        extern void re4_frame_end_present(void);
+        re4_frame_end_present();
+      }
       r = r_makeCurrent(g_real_dpy, NULL, NULL, NULL);
       current_context = NULL; has_real_gl = 0;
     } else {
@@ -365,10 +389,18 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
 EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (g_use_real_egl) {
-    if (r_swapBuffers && g_real_dpy && g_real_surf) {
+    if (r_swapBuffers && g_real_dpy && g_real_surf && real_current_is_window_surface()) {
       r_swapBuffers(g_real_dpy, g_real_surf);
       int fc = ++frame_count; static int sl=0;
       if (sl < 8) { debugPrintf("egl_shim: REAL SwapBuffers #%d [tid=%lx]\n", fc, (unsigned long)pthread_self()); sl++; }
+    } else {
+      static _Thread_local int skip_log = 0;
+      if (skip_log < 8) {
+        debugPrintf("egl_shim: REAL SwapBuffers SKIPPED [tid=%lx] cur=%p want=%p\n",
+                    (unsigned long)pthread_self(),
+                    r_getCurSurface ? r_getCurSurface(EGL_DRAW_ATTR) : NULL, g_real_surf);
+        skip_log++;
+      }
     }
     return EGL_TRUE;
   }
@@ -394,7 +426,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
 
 void egl_shim_force_present(const char *reason) {
   if (g_use_real_egl) {
-    if (r_swapBuffers && g_real_dpy && g_real_surf) {
+    if (r_swapBuffers && g_real_dpy && g_real_surf && real_current_is_window_surface()) {
       r_swapBuffers(g_real_dpy, g_real_surf);
       int fc = ++frame_count;
       static _Thread_local int sl=0;
@@ -402,6 +434,14 @@ void egl_shim_force_present(const char *reason) {
         debugPrintf("egl_shim: FORCE SwapBuffers #%d [tid=%lx] %s\n",
                     fc, (unsigned long)pthread_self(), reason ? reason : "?");
         sl++;
+      }
+    } else {
+      static _Thread_local int skip_log = 0;
+      if (skip_log < 12) {
+        debugPrintf("egl_shim: FORCE SwapBuffers SKIPPED [tid=%lx] %s cur=%p want=%p\n",
+                    (unsigned long)pthread_self(), reason ? reason : "?",
+                    r_getCurSurface ? r_getCurSurface(EGL_DRAW_ATTR) : NULL, g_real_surf);
+        skip_log++;
       }
     }
     return;
