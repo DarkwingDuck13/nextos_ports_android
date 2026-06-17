@@ -1641,9 +1641,13 @@ static unsigned (*r_eglSwapBuffers)(void *, void *);
  * em /storage/roms/terraria/shot.ppm (verificação autônoma de IMAGEM no fbdev Mali). */
 static void ter_screenshot_maybe(void) {
   static long n = 0; n++;
-  const char *s = getenv("TER_SHOT"); if (!s) return;
-  long target = atoi(s); if (target <= 0) target = 1;
-  if (n != target) return;
+  const char *s = getenv("TER_SHOT");
+  /* TER_SHOTLIVE: captura SOB DEMANDA — quando /tmp/tershot existir, grava shot.ppm e remove o
+     gatilho. Permite tirar print a qualquer momento navegando o menu por ssh (depurar Settings). */
+  int live = getenv("TER_SHOTLIVE") && access("/tmp/tershot", F_OK) == 0;
+  if (live) unlink("/tmp/tershot");
+  if (!s && !live) return;
+  if (s && !live) { long target = atoi(s); if (target <= 0) target = 1; if (n != target) return; }
   static int (*p_gi)(unsigned, int*); static void (*p_rp)(int,int,int,int,unsigned,unsigned,void*);
   if (!p_gi) p_gi = (void*)dlsym(RTLD_DEFAULT, "glGetIntegerv");
   if (!p_rp) p_rp = (void*)dlsym(RTLD_DEFAULT, "glReadPixels");
@@ -1680,8 +1684,10 @@ extern struct hk_inject_s { int action, keycode, source, deviceId, metaState, re
 extern void *hk_keyevent_object(void);
 static int g_gp_fd = -2;
 static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
-/* estado lógico: 0=up 1=down 2=left 3=right 4=A(confirm) 5=B(back) 6=X 7=Y 8=start 9=select 10=L1 11=R1 */
-static unsigned char g_gp_log[12], g_gp_log_prev[12];
+/* estado lógico (Xbox completo): 0=up 1=down 2=left 3=right 4=A 5=B 6=X 7=Y 8=Start 9=Back/Select
+   10=LB 11=RB 12=LT 13=RT 14=L3(stick esq) 15=R3(stick dir) */
+static unsigned char g_gp_log[16], g_gp_log_prev[16];
+float g_lt_analog, g_rt_analog;   /* gatilhos analógicos 0..1 (LT/RT) */
 /* lê o js0 e recalcula o estado lógico (1×/frame); guarda o anterior p/ edge (GetKeyDown). */
 static void ter_gamepad_poll(void) {
   if (g_gp_fd == -2) {
@@ -1712,6 +1718,21 @@ static void ter_gamepad_poll(void) {
   g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
   g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
   g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
+  /* 🎮 Xbox completo: gatilhos LT/RT (eixos analógicos 2/5 no layout xpad/SDL) + cliques L3/R3
+     (botões 9/10). Gatilho: rest pode ser -32768 (xpad clássico) ou 0 (não-inicializado/hid);
+     em AMBOS o press vai p/ POSITIVO -> normalizo só o lado positivo (v>0 ? v/32767 : 0) -> imune
+     a meio-gatilho-fantasma no boot. Digital = >30%. */
+  int axLT = getenv("TER_GP_AXLT") ? atoi(getenv("TER_GP_AXLT")) : 2;
+  int axRT = getenv("TER_GP_AXRT") ? atoi(getenv("TER_GP_AXRT")) : 5;
+  int bL3  = getenv("TER_GP_L3")   ? atoi(getenv("TER_GP_L3"))   : 9;
+  int bR3  = getenv("TER_GP_R3")   ? atoi(getenv("TER_GP_R3"))   : 10;
+  g_lt_analog = (g_gp_axis[axLT] > 0) ? g_gp_axis[axLT] / 32767.0f : 0.0f;
+  g_rt_analog = (g_gp_axis[axRT] > 0) ? g_gp_axis[axRT] / 32767.0f : 0.0f;
+  if (g_lt_analog > 1.0f) g_lt_analog = 1.0f; if (g_rt_analog > 1.0f) g_rt_analog = 1.0f;
+  g_gp_log[12] = g_lt_analog > 0.30f ? 1 : 0;
+  g_gp_log[13] = g_rt_analog > 0.30f ? 1 : 0;
+  g_gp_log[14] = (bL3 < 24) ? g_gp_btn[bL3] : 0;
+  g_gp_log[15] = (bR3 < 24) ? g_gp_btn[bR3] : 0;
   /* cursor do mouse: analógico direito (3,4 default) E esquerdo movem o cursor (point-and-click do menu) */
   extern float g_cursor_x, g_cursor_y;
   int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
@@ -1730,7 +1751,46 @@ static void ter_gamepad_poll(void) {
   /* TER_GPAUTO: auto-press sintético (Down a cada 45 frames por 4 frames) p/ VERIFICAR o hook
      sem precisar apertar — se o menu navegar sozinho, o Keyboard.GetState hook funciona. */
   if (getenv("TER_GPAUTO")) { static int fc=0; int ph=(fc++)%45; if (ph<4) g_gp_log[1]=1; }
-  if (getenv("TER_GPLOG")) for (int i=0;i<12;i++) if (g_gp_log[i] && !g_gp_log_prev[i]) { fprintf(stderr,"[TGP] logical[%d] DOWN\n", i); fsync(2); }
+  /* TER_GPVIRT: input VIRTUAL via /tmp/tergp (1 token) p/ dirigir o menu por ssh sem pad físico
+     (testar/depurar navegação, ex.: chegar no Settings e dumpar regiões). Token -> pulso de N
+     frames (TER_GPVDUR, def 4) no MESMO g_gp_log que alimenta tudo. Tokens: up/down/left/right/
+     a/b/x/y/start/select/l1/r1/lt/rt/l3/r3. */
+  if (getenv("TER_GPVIRT")) {
+    static int vframes[16];
+    static int rsframes; static short rsx, rsy;   /* injeção virtual do stick DIREITO (teste fcur) */
+    FILE *vf = fopen("/tmp/tergp", "r");
+    if (vf) {
+      char tok[24] = {0}; int got = (fscanf(vf, "%23s", tok) == 1 && tok[0]); fclose(vf);
+      if (got) {
+        vf = fopen("/tmp/tergp", "w"); if (vf) fclose(vf);   /* consome */
+        int dur = getenv("TER_GPVDUR") ? atoi(getenv("TER_GPVDUR")) : 4;
+        static const char *nm[16] = {"up","down","left","right","a","b","x","y",
+                                     "start","select","l1","r1","lt","rt","l3","r3"};
+        int idx = -1; for (int i = 0; i < 16; i++) if (!strcasecmp(tok, nm[i])) { idx = i; break; }
+        if (idx >= 0) { vframes[idx] = dur; fprintf(stderr, "[TGPV] %s -> log[%d] x%d\n", tok, idx, dur); fsync(2); }
+        else if (!strncasecmp(tok, "cur:", 4)) {   /* cur:X:Y -> posiciona o cursor (teste de clique touch) */
+          extern float g_cursor_x, g_cursor_y; extern int g_fcmode; extern float g_fcx, g_fcy;
+          int cx=0, cy=0;
+          if (sscanf(tok+4, "%d:%d", &cx, &cy) == 2) {
+            extern int g_girm_ovr, g_girm_mx, g_girm_my;
+            g_cursor_x=(float)cx; g_cursor_y=(float)cy; g_girm_mx=cx; g_girm_my=cy; g_girm_ovr=1;
+            g_fcmode=1; g_fcx=(float)cx; g_fcy=(float)cy;   /* fixa o cursor-livre na posição (teste) */
+            fprintf(stderr, "[TGPV] cursor -> %d,%d\n", cx, cy); fsync(2);
+          }
+        }
+        else if (!strncasecmp(tok, "rs:", 3)) {   /* rs:DX:DY -> empurra o stick direito por dur frames */
+          int dx=0, dy=0; if (sscanf(tok+3, "%d:%d", &dx, &dy) == 2) {
+            rsx=(short)dx; rsy=(short)dy; rsframes = dur*3;
+            fprintf(stderr, "[TGPV] rstick %d,%d x%d\n", dx, dy, rsframes); fsync(2);
+          }
+        }
+        else { fprintf(stderr, "[TGPV] token desconhecido: %s\n", tok); fsync(2); }
+      }
+    }
+    for (int i = 0; i < 16; i++) if (vframes[i] > 0) { vframes[i]--; g_gp_log[i] = 1; }
+    if (rsframes > 0) { rsframes--; g_gp_axis[3] = rsx; g_gp_axis[4] = rsy; }
+  }
+  if (getenv("TER_GPLOG")) for (int i=0;i<16;i++) if (g_gp_log[i] && !g_gp_log_prev[i]) { fprintf(stderr,"[TGP] logical[%d] DOWN\n", i); fsync(2); }
 }
 /* Unity KeyCode -> índice lógico (setas/WASD + Enter/Espaço=confirm + Esc=back) */
 static int ter_kc_to_log(int kc) {
@@ -1768,6 +1828,8 @@ void ter_fna_keyboard_getstate(void *result) {
 }
 /* cursor do mouse virtual (movido pelo analógico direito). Terraria é point-and-click. */
 float g_cursor_x = 640.0f, g_cursor_y = 360.0f;
+/* modo cursor-livre do menu (stick direito) — usado por ter_menu_nav p/ dropdowns (ex.: Idioma) */
+int g_fcmode = 0; float g_fcx = 451.0f, g_fcy = 253.0f;
 /* 🔑 FNA Mouse.GetState() -> MouseState (36 bytes, 9 ints): [0]=X [4]=Y [8]=scroll
    [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll. A=clique esquerdo. */
 void ter_fna_mouse_getstate(void *result) {
@@ -2102,13 +2164,19 @@ TerGPS my_gamepad_getstate(int index, void *mi) {
   if (g_gp_log[7]) b |= 0x8000;   /* Y */
   if (g_gp_log[8]) b |= 0x10;     /* Start */
   if (g_gp_log[9]) b |= 0x20;     /* Back (Select) */
-  if (g_gp_log[10]) b |= 0x100;   /* LB */
-  if (g_gp_log[11]) b |= 0x200;   /* RB */
+  if (g_gp_log[10]) b |= 0x100;   /* LB = LeftShoulder */
+  if (g_gp_log[11]) b |= 0x200;   /* RB = RightShoulder */
+  if (g_gp_log[14]) b |= 0x40;    /* L3 = LeftStick */
+  if (g_gp_log[15]) b |= 0x80;    /* R3 = RightStick */
   if (g_gp_log[0]) b |= 0x1;      /* DPadUp */
   if (g_gp_log[1]) b |= 0x2;      /* DPadDown */
   if (g_gp_log[2]) b |= 0x4;      /* DPadLeft */
   if (g_gp_log[3]) b |= 0x8;      /* DPadRight */
   s.Buttons = b;
+  /* gatilhos XNA: dirige pelo estado digital (inclui input virtual e threshold) OU analógico —
+     o seletor/dropdown do Settings lê [LT]/[RT] via GamePad.GetState p/ Previous/Next item */
+  s.TrigL = g_gp_log[12] ? 1.0f : g_lt_analog;
+  s.TrigR = g_gp_log[13] ? 1.0f : g_rt_analog;
   s.DPadUp = g_gp_log[0]?1:0; s.DPadDown = g_gp_log[1]?1:0;
   s.DPadLeft = g_gp_log[2]?1:0; s.DPadRight = g_gp_log[3]?1:0;
   /* thumbsticks: js0 axis cru (-32768..32767) → -1..1. XNA: Y p/ cima = +1 (js down=+1 → inverter). */
@@ -2319,6 +2387,36 @@ static int g_nav_idx;
 int g_cur_regions;   /* nº de itens navegáveis na tela atual (p/ auto-teste detectar troca de tela) */
 static void ter_menu_nav(void) {
   if (!getenv("TER_NAVMENU")) return;
+  /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
+     teste p/ dropdowns/sublistas que têm foco de controle próprio). */
+  if (access("/tmp/ternonav", F_OK) == 0) { g_girm_ovr = 0; return; }
+  extern float g_cursor_x, g_cursor_y;
+  /* 🖱️ MODO CURSOR LIVRE (stick DIREITO): dropdowns/sublistas (ex.: seleção de IDIOMA) NÃO estão
+     nas regiões do GIRM — só respondem à POSIÇÃO do cursor (Mouse) + clique (A). O stick direito
+     move um cursor livre no espaço da UI (~902×507) e A clica nele. DPad/stick-esq cima/baixo volta
+     pra navegação por LINHAS. Assim dá pra escolher qualquer item de dropdown com o controle. */
+  int rxa = getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3, rya = getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
+  float rx = g_gp_axis[rxa]/32768.0f, ry = g_gp_axis[rya]/32768.0f;
+  float arx = rx<0?-rx:rx, ary = ry<0?-ry:ry;
+  static int fcprev=0;
+  if (arx > 0.22f || ary > 0.22f) g_fcmode = 1;     /* stick direito -> entra no modo cursor */
+  if (g_gp_log[0] || g_gp_log[1]) g_fcmode = 0;     /* dpad/stick-esq cima/baixo -> nav por linhas */
+  if (g_fcmode && !fcprev) {                         /* ao entrar, começa na posição atual do hover */
+    g_fcx = g_girm_mx ? (float)g_girm_mx : g_cursor_x;
+    g_fcy = g_girm_my ? (float)g_girm_my : g_cursor_y;
+  }
+  fcprev = g_fcmode;
+  if (g_fcmode) {
+    float sp = getenv("TER_FCSPEED") ? atof(getenv("TER_FCSPEED")) : 8.0f;
+    if (arx > 0.18f) g_fcx += rx * sp;
+    if (ary > 0.18f) g_fcy += ry * sp;
+    if (g_fcx < 0) g_fcx = 0; if (g_fcx > 902) g_fcx = 902;
+    if (g_fcy < 0) g_fcy = 0; if (g_fcy > 507) g_fcy = 507;
+    g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;   /* hover (caso TER_GIRM) */
+    g_cursor_x = g_fcx; g_cursor_y = g_fcy;                          /* Mouse.GetState -> clique do A */
+    if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%30)==0){ fprintf(stderr,"[FCUR] (%.0f,%.0f) A=%d\n",g_fcx,g_fcy,g_gp_log[4]); fsync(2);} }
+    return;
+  }
   void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; return; }
   int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
   if(!arr||nr<=0||nr>32){ g_girm_ovr=0; return; }
@@ -2329,7 +2427,7 @@ static void ter_menu_nav(void) {
     cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
   for(int i=1;i<n;i++) for(int j=i;j>0&&(cy[order[j]]<cy[order[j-1]]||(cy[order[j]]==cy[order[j-1]]&&cx[order[j]]<cx[order[j-1]]));j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
   g_cur_regions = n;
-  if (getenv("TER_NAVDUMP")){ static int dn=0; if(n>8 && (dn++%120)==0){ fprintf(stderr,"[NAVDUMP] %d regioes ordenadas (y,x):\n",n);
+  if (getenv("TER_NAVDUMP")){ static int dn=0; if(n>0 && (dn++%120)==0){ fprintf(stderr,"[NAVDUMP] %d regioes ordenadas (y,x):\n",n);
     for(int i=0;i<n;i++) fprintf(stderr,"   [%d] (%d,%d)\n",i,cx[order[i]],cy[order[i]]); fsync(2);} }
   extern float g_cursor_x,g_cursor_y;
   /* dedupe regiões quase-coincidentes (ex: 446/447 no mesmo y viram uma) */
@@ -2382,14 +2480,21 @@ static void ter_ctrl_feed(void) {
   if (!getenv("TER_NOFORCEACTIVE")) ter_ctrl_force_active();
   memset(g_inj_btn,0,sizeof g_inj_btn);
   for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
-  g_inj_btn[0]=g_gp_log[4];   /* Action1 = A (confirma) */
-  g_inj_btn[1]=g_gp_log[5];   /* Action2 = B (volta) */
-  g_inj_btn[2]=g_gp_log[6];   /* Action3 = X */
-  g_inj_btn[3]=g_gp_log[7];   /* Action4 = Y */
-  g_inj_btn[4]=g_gp_log[10];  /* ShoulderLeft = L1 */
-  g_inj_btn[5]=g_gp_log[11];  /* ShoulderRight = R1 */
-  g_inj_btn[8]=g_gp_log[8];   /* Options = Start */
-  g_inj_btn[12]=g_gp_log[9];  /* Back = Select */
+  /* 🎮 mapeamento XBOX COMPLETO -> Controller.Buttons do InControl
+     {Action1=0,Action2=1,Action3=2,Action4=3,ShoulderL=4,ShoulderR=5,LTrig=6,RTrig=7,
+      Options=8,Switch=9,StickL=10,StickR=11,Back=12} */
+  g_inj_btn[0]=g_gp_log[4];   /* Action1     = A (confirma)   */
+  g_inj_btn[1]=g_gp_log[5];   /* Action2     = B (volta)      */
+  g_inj_btn[2]=g_gp_log[6];   /* Action3     = X             */
+  g_inj_btn[3]=g_gp_log[7];   /* Action4     = Y             */
+  g_inj_btn[4]=g_gp_log[10];  /* ShoulderL   = LB            */
+  g_inj_btn[5]=g_gp_log[11];  /* ShoulderR   = RB            */
+  g_inj_btn[6]=g_gp_log[12];  /* LTrig       = LT (>30%)     */
+  g_inj_btn[7]=g_gp_log[13];  /* RTrig       = RT (>30%)     */
+  g_inj_btn[8]=g_gp_log[8];   /* Options     = Start         */
+  g_inj_btn[10]=g_gp_log[14]; /* StickL      = L3            */
+  g_inj_btn[11]=g_gp_log[15]; /* StickR      = R3            */
+  g_inj_btn[12]=g_gp_log[9];  /* Back        = Select/Back   */
   float x=0,y=0; int invy = getenv("TER_CTRL_INVY")?1:0;
   if (g_gp_log[2]) x=-1.0f; else if (g_gp_log[3]) x=1.0f;
   if (g_gp_log[0]) y= (invy? 1.0f:-1.0f); else if (g_gp_log[1]) y=(invy?-1.0f:1.0f); /* up/down */
@@ -2405,6 +2510,12 @@ static void ter_ctrl_feed(void) {
   g_inj_axis[1] = (aly>0.12f||aly<-0.12f) ? aly*cs : y;   /* LeftY */
   g_inj_axis[2] = arx*cs; g_inj_axis[3] = ary*cs;          /* RightX/Y (cursor) escalado */
   g_inj_axis[4]=x; g_inj_axis[5]=y;                        /* DPadX/Y digital (navegação) */
+  /* LTrig/RTrig: dirige o EIXO analógico E o botão. Se o gatilho está digitalmente "pressionado"
+     (g_gp_log[12]/[13], inclui o input virtual e o threshold do gatilho real), força o eixo a 1.0;
+     senão usa o valor analógico cru. Cobre tanto o jogo lendo trigger-como-eixo (GetAxisRaw 6/7,
+     ex.: trocar de aba [LT]/[RT] no Settings) quanto trigger-como-botão (GetKeyRaw 6/7). */
+  g_inj_axis[6] = g_gp_log[12] ? 1.0f : g_lt_analog;
+  g_inj_axis[7] = g_gp_log[13] ? 1.0f : g_rt_analog;
   /* TER_CTRLTEST: auto-teste autônomo (sem js0) — pulsa Down/Up/Action1 em padrão p/ provar a
      navegação. Sobrescreve o estado injetado. Down 0-10 de cada 60; a cada 5º ciclo, Action1. */
   if (getenv("TER_CTRLTEST")) {
@@ -3899,12 +4010,22 @@ static void *fmod_audio_thread(void *arg) {
     }
     usleep(10000);
   }
-  if (rate < 8000 || rate > 192000) rate = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 44100;
+  /* RATE/CH p/ abrir o SDL: NÃO confiar na leitura por offset (o MIXSPY provou que a struct do
+     System não é a que assumimos — o mixer 0x805a94 nem é chamado). O sinal CONFIÁVEL é o
+     getProperty(OUTPUT_SAMPLE_RATE)=44100 que o FMOD consultou no init. Default 44100/2ch;
+     override só por env (TER_AUDIO_RATE/TER_AUDIO_CH) se algum device precisar. */
+  rate = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 44100;
+  ch   = getenv("TER_AUDIO_CH")   ? atoi(getenv("TER_AUDIO_CH"))   : 2;
+  if (rate < 8000 || rate > 192000) rate = 44100;
   if (ch != 1 && ch != 2) ch = 2;
   if (blk == 0 || blk > 8192) blk = 1024;
-  g_fmod_blk = blk; g_fmod_rate = rate; g_fmod_ch = ch;
-  unsigned bytes = blk * ch * 2;
-  if ((int)bytes > pcmcap) bytes = pcmcap;
+  g_fmod_rate = rate; g_fmod_ch = ch;
+  /* 🔑 ENFILEIRAR EXATAMENTE o que fmodProcess preencheu = a CAPACIDADE do DirectByteBuffer
+     (pcmcap = g_fmod_cap, reportada ao FMOD). Antes enfileirava blk*ch*2 que NÃO casava com a
+     capacidade -> FMOD avançava o clock mais rápido que o playback -> áudio acelerado. Agora
+     1:1 com o clock do mixer. blk é derivado p/ log. */
+  unsigned bytes = (unsigned)pcmcap;
+  g_fmod_blk = bytes / (ch * 2);
   SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
   want.freq = rate; want.format = AUDIO_S16SYS; want.channels = ch; want.samples = 1024;
   if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
@@ -3912,7 +4033,9 @@ static void *fmod_audio_thread(void *arg) {
   if (dev) SDL_PauseAudioDevice(dev, 0);
   fprintf(stderr, "[AUDIO] SDL dev=%d rate=%u ch=%u blk=%u bytes=%u (have f=%d c=%d) err=%s\n",
           dev, rate, ch, blk, bytes, have.freq, have.channels, dev ? "" : SDL_GetError());
-  Uint32 target = bytes * 6;           /* ~6 blocos de back-pressure */
+  unsigned bpblocks = getenv("TER_AUDIO_BP") ? (unsigned)atoi(getenv("TER_AUDIO_BP")) : 4;
+  if (bpblocks < 2) bpblocks = 2; if (bpblocks > 16) bpblocks = 16;
+  Uint32 target = bytes * bpblocks;    /* back-pressure (default ~4 blocos = baixa latência p/ SFX) */
   unsigned long n = 0, fed = 0;
   while (g_fmod_run) {
     if (dev && SDL_GetQueuedAudioSize(dev) > target) { usleep(2000); continue; }

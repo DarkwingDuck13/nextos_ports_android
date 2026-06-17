@@ -1199,14 +1199,21 @@ void jni_handlemessage(void *env) {
    p/ saber onde escrever o PCM. Damos um buffer real nosso. */
 static unsigned char g_fmod_pcm[32768];
 static int g_fmod_bb_sentinel;
+/* 🔑 CAPACIDADE do DirectByteBuffer = nº de bytes que fmodProcess PREENCHE por chamada
+   (FMOD enche o buffer inteiro e AVANÇA o clock do mixer nesse tanto de frames). ISSO PRECISA
+   CASAR com os bytes que o pump (fmod_audio_thread) enfileira no SDL. Antes reportávamos 32768
+   (8192 frames) mas o pump só enfileirava 4096 (1024 frames) -> o FMOD avançava 8x mais rápido
+   que o playback -> ÁUDIO ACELERADO. 4096 = bloco DSP padrão do FMOD mobile (1024 frames
+   stereo s16). Tunável por TER_AUDIO_BUF (bytes). O backing g_fmod_pcm[32768] é só folga. */
+int g_fmod_cap = 4096;
 void *jni_fmod_bytebuffer(void) { return &g_fmod_bb_sentinel; }
 void *jni_fmod_pcm(void) { return g_fmod_pcm; }
-int jni_fmod_pcm_size(void) { return (int)sizeof(g_fmod_pcm); }
+int jni_fmod_pcm_size(void) { return g_fmod_cap; }
 static void *jni_GetDirectBufferAddress(void *env, void *buf) {
   (void)env; if (buf == &g_fmod_bb_sentinel) return g_fmod_pcm; return NULL;
 }
 static long jni_GetDirectBufferCapacity(void *env, void *buf) {
-  (void)env; if (buf == &g_fmod_bb_sentinel) return (long)sizeof(g_fmod_pcm); return -1;
+  (void)env; if (buf == &g_fmod_bb_sentinel) return (long)g_fmod_cap; return -1;
 }
 /* org.fmod.FMODAudioDevice — FMOD faz NewObject(FMODAudioDevice) e chama start() p/ subir o
    AudioTrack. Sem isso (NewObject→NULL via jni_stub) o System::init do FMOD dá erro 60. Damos
@@ -1236,6 +1243,8 @@ static jint jni_GetJavaVM(void *env, void **vm) {
 void jni_install_indexed(uintptr_t *vt, int n);
 
 void jni_shim_init(void **out_vm, void **out_env) {
+  if (getenv("TER_AUDIO_BUF")) { int v = atoi(getenv("TER_AUDIO_BUF"));
+    if (v >= 512 && v <= 32768) g_fmod_cap = v & ~3; }   /* casa capacidade do BB com o que o pump enfileira */
   for (int i = 0; i < JNI_VTABLE_SIZE; i++) {
     jni_env_vtable[i] = (uintptr_t)jni_stub;
     java_vm_vtable[i] = (uintptr_t)jni_stub;

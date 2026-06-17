@@ -18,7 +18,10 @@ i=0; while [ -n "$(ter_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 # backend de vídeo: fbdev (Mali-450 Utgard) — EGL real do Mali via SDL2-mali
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
-# boot (destrava job-system + render) + CONTROLES (gamepad navega o menu: D-pad cima/baixo + A confirma)
+# boot (destrava job-system + render) + CONTROLES Xbox completos.
+# CONTROLES: D-pad/stick-esq cima/baixo navega itens; A=confirma; B=volta; LB/RB(L1/R1)=trocar de ABA
+# no Settings; LT/RT/L3/R3 mapeados. STICK DIREITO = cursor livre p/ DROPDOWNS (ex.: escolher Idioma:
+# segura o stick direito, mira a opção, A seleciona). DICA: ajuste a velocidade do cursor com TER_FCSPEED.
 # CUP_NOLOGFILE=1 é OBRIGATÓRIO: sem ele, o log em arquivo trava a inicialização (nem renderiza).
 export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 CUP_NOLOGFILE=1
 # CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
