@@ -647,6 +647,10 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       debugPrintf("jni_shim: %s(INTERNET) -> -1 (DENIED, analytics off)\n", nm);
       return -1;
     }
+    /* android.os.StatFs — variantes int (API antiga). ~50GB livres p/ não bloquear save. */
+    if (strcmp(nm, "getBlockSize") == 0) return 4096;
+    if (strcmp(nm, "getAvailableBlocks") == 0 || strcmp(nm, "getFreeBlocks") == 0) return 13107200; /* ×4096=50GB */
+    if (strcmp(nm, "getBlockCount") == 0) return 26214400; /* ×4096=100GB */
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     /* ---- InputDevice Xbox 360 virtual (getters int) ---- */
     if (obj == (void *)&g_gamepad_device) {
@@ -771,6 +775,9 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
       debugPrintf("jni_shim: getDeviceIds() -> int[%d]\n", ndev); }
     return iarr_new(ids, ndev);
   }
+  /* Environment.getExternalStorageState() -> "mounted" (senão o jogo acha o storage indisponível
+     e mostra "low on storage" ao entrar no Single Player). */
+  if (nm && !strcmp(nm, "getExternalStorageState")) return make_jstring("mounted");
   /* encode/decode (SaveManager): IDENTIDADE — devolve a própria string de entrada. */
   if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
     void *arg0 = va_arg(ap, void *);
@@ -987,6 +994,15 @@ static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap
     if (strcmp(nm, "getEventTime") == 0) return g_hk_inject.eventTime;
     if (strcmp(nm, "getDownTime") == 0) return g_hk_inject.downTime;
     if (strcmp(nm, "longValue") == 0) return g_doframe_nanos;
+    /* android.os.StatFs — checagem de espaço livre (Single Player checa antes de salvar).
+       Sem isso retorna 0 → "Your device is low on storage". Reportamos ~50GB livres. */
+    if (strcmp(nm, "getAvailableBytes") == 0 || strcmp(nm, "getFreeBytes") == 0) return 50LL*1024*1024*1024;
+    if (strcmp(nm, "getTotalBytes") == 0) return 100LL*1024*1024*1024;
+    /* java.io.File.getUsableSpace()/getFreeSpace()/getTotalSpace() — outra via de checagem */
+    if (strcmp(nm, "getUsableSpace") == 0 || strcmp(nm, "getFreeSpace") == 0) return 50LL*1024*1024*1024;
+    if (strcmp(nm, "getTotalSpace") == 0) return 100LL*1024*1024*1024;
+    if (strcmp(nm, "getBlockSizeLong") == 0) return 4096;
+    if (strcmp(nm, "getAvailableBlocksLong") == 0 || strcmp(nm, "getBlockCountLong") == 0 || strcmp(nm, "getFreeBlocksLong") == 0) return 13107200LL; /* ×4096 = 50GB */
   }
   return 0;
 }

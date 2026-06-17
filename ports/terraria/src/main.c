@@ -210,6 +210,46 @@ static void ter_nuke_methods(void) {
   if (patched) done = 1;
 }
 
+/* 🖤 TER_FIXSP: tela preta ao clicar Single Player. SelectSinglePlayer→Main.LoadPlayers→
+ * OldSaveSynchronise.CopyOldSaves→get_OldSaveRoot lança NullReferenceException (migração de
+ * saves antigos do Android: path/JNI nulo no so-loader) → a tela de seleção de player não
+ * carrega → preto. Neutralizamos CopyOldSaves (-> ret): não há saves antigos pra migrar. */
+static void ter_fix_singleplayer(void) {
+  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_FIXSP")) { if (!getenv("TER_FIXSP")) done = 1; return; }
+  static int tries = 0; if (tries++ > 400) { done = 1; return; }
+  long pgsz0 = sysconf(_SC_PAGESIZE);
+  /* 🖤 GUILowDiskSpacePopup.CheckDiskSpace mostra "low on storage" se DiskSpace()<=~50MB.
+     DiskSpace() (il2cpp+0xd158ac) usa statfs nativo que retorna pouco no so-loader (espaço real
+     = 93GB). Patchamos DiskSpace p/ retornar 1GB (movz x0,#0; movk x0,#0x4000,lsl16; ret). */
+  { static int dsdone=0; if(!dsdone){ uint32_t*c=(uint32_t*)(g_il2cpp_base+0xd158ac);
+      void*pa=(void*)((uintptr_t)c & ~((uintptr_t)pgsz0-1));
+      mprotect(pa,pgsz0*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+      c[0]=0xD2800000u; c[1]=0xF2A80000u; c[2]=0xD65F03C0u;   /* return 0x40000000 (1GB) */
+      mprotect(pa,pgsz0*2,PROT_READ|PROT_EXEC); __builtin___clear_cache((char*)pa,(char*)pa+12);
+      fprintf(stderr,"[FIXSP] GUILowDiskSpacePopup.DiskSpace -> 1GB\n"); fsync(2); dsdone=1; } }
+  void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    void *cls = cls_from_name(img, "Terraria.IO", "OldSaveSynchronise"); if (!cls) continue;
+    void *m = cls_method(cls, "CopyOldSaves", 0); if (!m) { continue; }
+    void *mp = *(void **)m; if (!mp) { done = 1; return; }
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pgsz - 1));
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)mp = 0xD65F03C0u;   /* ret */
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pa, (char *)pa + 8);
+    fprintf(stderr, "[FIXSP] OldSaveSynchronise.CopyOldSaves @%p -> ret (asm %zu)\n", mp, i); fsync(2);
+    done = 1; return;
+  }
+}
+
 /* TER_JOBWORKERS0: chama JobsUtility.JobWorkerCount=0 (e ActiveThreadCount=0) via il2cpp_runtime_invoke
    → Unity roda os jobs INLINE na própria thread (dispatch pros worker threads está quebrado no
    so-loader). Fix CORRETO (vs fingir com INLINETASK/SKIPJOBWAIT). Lazy do swap-hook até conseguir. */
@@ -1844,6 +1884,28 @@ static int ter_menu_resolve(void) {
     }
     fprintf(stderr,"[CLSFIND] %d hits\n", hits); fsync(2);
   }
+  const char *methfind = getenv("TER_METHFIND");  /* acha métodos cujo nome contém a substring */
+  if (methfind) {
+    char lf[64]; int li=0; for(const char*p=methfind;*p&&li<63;p++) lf[li++]=(*p>='A'&&*p<='Z')?(*p+32):*p; lf[li]=0;
+    size_t (*img_clscount)(void*) = (void*)(g_il2cpp_base + 0x73cea0);
+    void *(*img_class)(void*, size_t) = (void*)(g_il2cpp_base + 0x73ceb4);
+    const char *(*cls_name)(void*) = (void*)(g_il2cpp_base + 0x73c290);
+    const char *(*cls_ns)(void*) = (void*)(g_il2cpp_base + 0x73c294);
+    void *(*cls_methods)(void*, void**) = (void*)(g_il2cpp_base + 0x73c288);
+    const char *(*meth_name)(void*) = (void*)(g_il2cpp_base + 0x73cb9c);
+    fprintf(stderr,"[METHFIND] metodos contendo '%s':\n", methfind); int hits=0;
+    for (size_t i=0;i<na && hits<60;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+      size_t cc=img_clscount(img);
+      for (size_t k=0;k<cc && hits<60;k++){ void*c=img_class(img,k); if(!c)continue;
+        void*it=NULL,*mm; int n=0;
+        while((mm=cls_methods(c,&it))&&n++<600){ const char*mn=meth_name(mm); if(!mn)continue;
+          char lm[96]; int x=0; for(const char*p=mn;*p&&x<95;p++) lm[x++]=(*p>='A'&&*p<='Z')?(*p+32):*p; lm[x]=0;
+          if(strstr(lm,lf)){ void*mp=*(void**)mm; const char*ns=cls_ns(c),*cn=cls_name(c);
+            fprintf(stderr,"  %s%s%s . %s  @il2cpp+0x%lx\n", ns?ns:"",(ns&&*ns)?".":"",cn?cn:"?",mn, mp?(long)((uintptr_t)mp-g_il2cpp_base):-1); hits++; } }
+      }
+    }
+    fprintf(stderr,"[METHFIND] %d hits\n", hits); fsync(2);
+  }
   const char *findm = getenv("TER_FINDM");   /* acha método (e classe) cujo methodPointer = il2cpp+off */
   if (findm) {
     unsigned long want = strtoul(findm, NULL, 0);
@@ -2359,6 +2421,7 @@ static void ter_navspy_log(void) {
 
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
+  ter_fix_singleplayer(); /* TER_FIXSP: neutraliza OldSaveSynchronise.CopyOldSaves (tela preta SP) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
   ter_input_hook();     /* TER_GAMEPAD: sonda/hook do input FNA */
   ter_ctrl_patch();     /* TER_CTRL: substitui GetKeyRaw/GetAxisRaw do ControllerDevice */

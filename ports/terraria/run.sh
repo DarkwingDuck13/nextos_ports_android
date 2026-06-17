@@ -23,7 +23,7 @@ export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
 export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 CUP_NOLOGFILE=1
 # CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
 export CUP_FRAMES=999999999
-export TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1
+export TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1 TER_FIXSP=1
 echo "[run] Terraria — fbdev Mali-450 + controles (D-pad cima/baixo + A)"
 nohup ./terraria > run.out 2>&1 &
 echo "[run] PID $! — log: $GAMEDIR/run.out (+ debug.log)"
