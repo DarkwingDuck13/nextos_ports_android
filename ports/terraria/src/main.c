@@ -2206,11 +2206,16 @@ static void ter_menu_nav(void) {
     if(ccy<100) continue;   /* pula regiões da barra do topo (ex: ícone canto sup-dir 848,27) */
     cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
   for(int i=1;i<n;i++) for(int j=i;j>0&&cy[order[j]]<cy[order[j-1]];j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
-  static int prevU=0, prevD=0; static int lastn=0;
-  if (n!=lastn){ g_nav_idx=0; lastn=n; }   /* mudou de tela → reseta seleção */
+  static int lastn=0, cooldown=0;
+  if (n!=lastn){ g_nav_idx=0; lastn=n; cooldown=0; }   /* mudou de tela → reseta seleção */
   int U=g_gp_log[0], D=g_gp_log[1];
-  if (U&&!prevU){ g_nav_idx--; } if (D&&!prevD){ g_nav_idx++; }
-  prevU=U; prevD=D;
+  int dir = D ? 1 : (U ? -1 : 0);
+  /* cooldown: anda 1 casinha por vez (ritmo de caminhada) e fica IMUNE ao flutter do analógico —
+     um move a cada ~15 frames enquanto a direção é mantida. Sem isso, o jitter do analógico em
+     torno do limiar disparava várias bordas/segundo (pulava tudo). */
+  int rep = getenv("TER_NAVREP") ? atoi(getenv("TER_NAVREP")) : 15;
+  if (cooldown>0) cooldown--;
+  if (dir!=0 && cooldown==0) { g_nav_idx += dir; cooldown = rep; }
   if(g_nav_idx<0)g_nav_idx=n-1; if(g_nav_idx>=n)g_nav_idx=0;
   int sel=order[g_nav_idx];
   extern float g_cursor_x,g_cursor_y;
