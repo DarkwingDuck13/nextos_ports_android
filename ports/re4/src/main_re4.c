@@ -294,6 +294,7 @@ static unsigned g_snap_tex=0;   /* snapshot do composite (capturado quando FBO0 
 static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
+static int g_in_menu=0;  /* 1 = menu CODEX visivel; 0 = gameplay (reabilita injecao android_shim p/ mover Leon) */
 /* ESTUDO: registra vocabulario DISTINTO de input consultado pelo jogo (sem cap).
    Gated por RE4_INDUMP. Imprime [INDUMP] <chave> uma vez por chave nova. */
 static int re4_indump(const char *key){
@@ -507,8 +508,8 @@ static void re4_gp_poll(void){
   g_re4_gp_lx = g_re4_gp_ly = g_re4_gp_rx = g_re4_gp_ry = 0.0f;
   g_re4_gp_lt = g_re4_gp_rt = 0.0f;
 
-  re4_gp_open();
-  if(g_re4_gp_ctrl){
+  if(!getenv("RE4_GP_VIRTONLY")) re4_gp_open();
+  if(g_re4_gp_ctrl && !getenv("RE4_GP_VIRTONLY")){
     SDL_GameControllerUpdate();
     /* DIAG: loga eixos/botoes CRUS do joystick para descobrir o estado de REPOUSO
        real do adaptador (RE4_RAWAXLOG). Sem isso so vejo o valor ja processado. */
@@ -794,7 +795,7 @@ static int re4_gp_strict(void){
      (android_shim -> nativeInjectEvent -> estado de input do Unity -> GetAxis/
      GetButton ORIGINAL). Com o raw_ps2 desligado nao ha mais botao embaralhado,
      entao nao precisamos do estrito; deixamos o original fluir. RE4_GP_STRICT=1 liga. */
-  if(c<0) c = getenv("RE4_GP_STRICT") ? 1 : 0;
+  if(c<0) c = getenv("RE4_GP_NOSTRICT") ? 0 : 1;  /* default ON: mata o fantasma que cicla a selecao */
   return c;
 }
 /* Fallback ao original SO quando NAO estrito (debug). */
@@ -815,6 +816,10 @@ static float my_input_get_axis_common(void *mono_string, int raw){
   if(getenv("RE4_INDUMP")){ char k[80]; snprintf(k,sizeof k,"%s(\"%s\")", raw?"GetAxisRaw":"GetAxis", name?name:"(null)"); re4_indump(k); }
   int known = 0;
   float v = re4_gp_axis_from_name(name, &known);
+  if(getenv("RE4_AXMON") && known && name && (g_re4_frame%30)==0 &&
+     (!strcasecmp(name,"Vertical")||!strcasecmp(name,"Horizontal"))){
+    fprintf(stderr,"[AXMON] %s(\"%s\")=%.3f f=%d\n", raw?"GetAxisRaw":"GetAxis", name, v, g_re4_frame); fsync(2);
+  }
   if(getenv("RE4_GPTRACE")){
     static int tn = 0;
     if(tn++ < 240){
@@ -846,6 +851,16 @@ static int my_input_get_button_common(void *mono_string, int edge){
   char *name = re4_mono_string_to_utf8(mono_string);
   re4_gp_poll();
   if(getenv("RE4_INDUMP")){ char k[80]; snprintf(k,sizeof k,"%s(\"%s\")", edge==0?"GetButton":(edge>0?"GetButtonDown":"GetButtonUp"), name?name:"(null)"); re4_indump(k); }
+  /* CAMINHO UNICO (default): o nosso re4_menu_nav dirige o menu via Mono (move cursor,
+     invoca onClick). Entao SUPRIMIMOS a entrada de menu do StandaloneInputModule do jogo
+     (Submit/Cancel/Vertical/Horizontal) p/ NAO haver duplo-clique nem o auto-ciclo do
+     modulo. Sao nomes so de menu (o gameplay usa GetKey/GetAxis). RE4_MENU_NOSOLE reativa. */
+  if(g_in_menu && !getenv("RE4_MENU_NOSOLE") && name &&
+     (!strcasecmp(name,"Submit")||!strcasecmp(name,"Cancel")||
+      !strcasecmp(name,"Vertical")||!strcasecmp(name,"Horizontal"))){
+    re4_mono_free_utf8(name);
+    return 0;
+  }
   int axis_kind = re4_gp_axis_button_kind_from_name(name);
   if(axis_kind){
     int r = re4_gp_axis_button_state(axis_kind, edge);
@@ -2660,6 +2675,310 @@ static int re4_inject_motion_event(void *env, void *thiz, void *inject,
             ev->axes[AMOTION_EVENT_AXIS_Z], ev->axes[AMOTION_EVENT_AXIS_RZ], handled, frame);
   return handled;
 }
+/* ===== "gotokey": habilita Navigation=Automatic nos botoes do menu (uGUI) via Mono =====
+   O menu CODEX usa o StandaloneInputModule padrao (envia Move/Submit lendo GetAxisRaw+
+   GetButtonDown que ja hookamos), MAS os botoes tem Navigation=None (menu p/ touch) ->
+   a selecao nao anda. Setamos m_Navigation.mode=Automatic em runtime p/ o dpad/analogico
+   navegar START/OPTIONS/QUIT. Roda na thread do render (ja attachada ao Mono).
+   RE4_NO_MENUNAV desliga. */
+static void* re4_mono_sym(const char* nm){
+  if(!g_m_mono) return NULL;
+  so_module *cur=so_save(); so_use(g_m_mono);
+  void* p=(void*)so_find_addr_safe(nm);
+  so_use(cur); free(cur);
+  return p;
+}
+static struct {
+  int ready;
+  void* (*get_root_domain)(void);
+  void* (*image_loaded)(const char*);
+  void* (*class_from_name)(void*,const char*,const char*);
+  void* (*class_get_type)(void*);
+  void* (*type_get_object)(void*,void*);
+  void* (*class_get_method_from_name)(void*,const char*,int);
+  void* (*runtime_invoke)(void*,void*,void**,void**);
+  char* (*array_addr_with_size)(void*,int,uintptr_t);
+  void* (*class_get_field_from_name)(void*,const char*);
+  void  (*field_set_value)(void*,void*,void*);
+  void* (*object_unbox)(void*);
+} MN;
+static int re4_mono_nav_init(void){
+  if(MN.ready) return MN.ready>0;
+  MN.ready=-1;
+  MN.get_root_domain=re4_mono_sym("mono_get_root_domain");
+  MN.image_loaded=re4_mono_sym("mono_image_loaded");
+  MN.class_from_name=re4_mono_sym("mono_class_from_name");
+  MN.class_get_type=re4_mono_sym("mono_class_get_type");
+  MN.type_get_object=re4_mono_sym("mono_type_get_object");
+  MN.class_get_method_from_name=re4_mono_sym("mono_class_get_method_from_name");
+  MN.runtime_invoke=re4_mono_sym("mono_runtime_invoke");
+  MN.array_addr_with_size=re4_mono_sym("mono_array_addr_with_size");
+  MN.class_get_field_from_name=re4_mono_sym("mono_class_get_field_from_name");
+  MN.field_set_value=re4_mono_sym("mono_field_set_value");
+  MN.object_unbox=re4_mono_sym("mono_object_unbox");
+  if(MN.get_root_domain&&MN.image_loaded&&MN.class_from_name&&MN.class_get_type&&MN.type_get_object
+     &&MN.class_get_method_from_name&&MN.runtime_invoke&&MN.array_addr_with_size
+     &&MN.class_get_field_from_name&&MN.field_set_value&&MN.object_unbox) MN.ready=1;
+  fprintf(stderr,"[MENUNAV] mono init ready=%d\n",MN.ready); fsync(2);
+  return MN.ready>0;
+}
+static void re4_enable_menu_nav(int frame){
+  if(getenv("RE4_NO_MENUNAV")) return;
+  if(frame<60 || (frame % 30)!=0) return;     /* periodico, depois do boot */
+  if(!re4_mono_nav_init()) return;
+  void* domain=MN.get_root_domain(); if(!domain) return;
+  void* ui_img=MN.image_loaded("UnityEngine.UI");
+  void* core_img=MN.image_loaded("UnityEngine.CoreModule");
+  static int warned=0;
+  if(!ui_img||!core_img){ if(warned++<3){fprintf(stderr,"[MENUNAV] img ui=%p core=%p\n",ui_img,core_img);fsync(2);} return; }
+  void* sel_cls=MN.class_from_name(ui_img,"UnityEngine.UI","Selectable");
+  void* obj_cls=MN.class_from_name(core_img,"UnityEngine","Object");
+  if(!sel_cls||!obj_cls){ if(warned++<3){fprintf(stderr,"[MENUNAV] sel_cls=%p obj_cls=%p\n",sel_cls,obj_cls);fsync(2);} return; }
+  void* find=MN.class_get_method_from_name(obj_cls,"FindObjectsOfType",1);
+  void* navfld=MN.class_get_field_from_name(sel_cls,"m_Navigation");
+  if(!find||!navfld){ if(warned++<3){fprintf(stderr,"[MENUNAV] find=%p navfld=%p\n",find,navfld);fsync(2);} return; }
+  void* seltype=MN.type_get_object(domain, MN.class_get_type(sel_cls));
+  void* params[1]={seltype}; void* exc=NULL;
+  void* arr=MN.runtime_invoke(find,NULL,params,&exc);
+  if(exc||!arr) return;
+  int n=*(int*)((char*)arr+12);   /* MonoArray.max_length (ARM32: obj 8 + bounds 4) */
+  if(n<0||n>4096) return;
+  static int last_n=-1;
+  if(n==last_n) return;        /* mesmo conjunto -> ja aplicado */
+  last_n=n;
+  unsigned char nav[32]; memset(nav,0,sizeof(nav)); *(int*)nav=3; /* Navigation.Mode.Automatic */
+  int changed=0;
+  /* p/ logar nomes */
+  static void* m_getgo=0; void* comp_cls=MN.class_from_name(core_img,"UnityEngine","Component");
+  if(!m_getgo && comp_cls) m_getgo=MN.class_get_method_from_name(comp_cls,"get_gameObject",0);
+  static void* m_getname2=0; if(!m_getname2) m_getname2=MN.class_get_method_from_name(obj_cls,"get_name",0);
+  for(int i=0;i<n;i++){
+    void** slot=(void**)MN.array_addr_with_size(arr,(int)sizeof(void*),(uintptr_t)i);
+    void* sel=slot?*slot:NULL;
+    if(!sel) continue;
+    MN.field_set_value(sel,navfld,nav);
+    changed++;
+    if(getenv("RE4_SELLOG") && m_getgo && m_getname2 && g_mono_string_to_utf8_fn){
+      void* e1=0; void* go=MN.runtime_invoke(m_getgo,sel,NULL,&e1);
+      if(!e1 && go){ void* e2=0; void* s=MN.runtime_invoke(m_getname2,go,NULL,&e2);
+        if(!e2 && s){ char* u=g_mono_string_to_utf8_fn(s); if(u) fprintf(stderr,"[SELLIST] [%d] '%s'\n",i,u); } } }
+  }
+  fprintf(stderr,"[MENUNAV] Navigation=Automatic em %d selectables (f=%d)\n",changed,frame); fsync(2);
+}
+/* Loga o nome do GameObject selecionado no EventSystem -> ver se a navegacao MOVE. */
+static void re4_log_selected(int frame){
+  if(!getenv("RE4_SELLOG")) return;
+  if(frame<60 || (frame%12)!=0) return;
+  if(!re4_mono_nav_init()) return;
+  void* domain=MN.get_root_domain(); if(!domain) return;
+  void* ui_img=MN.image_loaded("UnityEngine.UI"); if(!ui_img) return;
+  void* core_img=MN.image_loaded("UnityEngine.CoreModule"); if(!core_img) return;
+  static void* es_cls=0; static void* es_inst=0; static void* m_getsel=0; static void* m_getname=0; static void* obj_cls=0;
+  if(!es_cls){ es_cls=MN.class_from_name(ui_img,"UnityEngine.EventSystems","EventSystem");
+    obj_cls=MN.class_from_name(core_img,"UnityEngine","Object");
+    if(es_cls){ m_getsel=MN.class_get_method_from_name(es_cls,"get_currentSelectedGameObject",0); }
+    if(obj_cls){ m_getname=MN.class_get_method_from_name(obj_cls,"get_name",0); } }
+  if(!es_cls||!m_getsel||!m_getname) return;
+  if(!es_inst){ /* acha a instancia do EventSystem */
+    void* find=MN.class_get_method_from_name(obj_cls,"FindObjectsOfType",1);
+    void* t=MN.type_get_object(domain,MN.class_get_type(es_cls));
+    void* p[1]={t}; void* e=0; void* arr=MN.runtime_invoke(find,NULL,p,&e);
+    if(arr && !e){ int n=*(int*)((char*)arr+12); if(n>0){ void**s=(void**)MN.array_addr_with_size(arr,(int)sizeof(void*),0); es_inst=s?*s:0; } } }
+  if(!es_inst) return;
+  void* e=0; void* go=MN.runtime_invoke(m_getsel,es_inst,NULL,&e);
+  if(e) return;
+  const char* nm="(null)";
+  if(go){ void* e2=0; void* s=MN.runtime_invoke(m_getname,go,NULL,&e2);
+    if(!e2 && s && g_mono_string_to_utf8_fn){ char* u=g_mono_string_to_utf8_fn(s); if(u){ nm=u; } } }
+  static char last[64]={0};
+  if(strncmp(last,nm,sizeof(last)-1)){ snprintf(last,sizeof last,"%s",nm);
+    fprintf(stderr,"[SELLOG] selecionado='%s' f=%d\n",nm,frame); fsync(2); }
+}
+/* gotokey DIRETO: forca a selecao de um botao por NOME via EventSystem.SetSelectedGameObject.
+   Escreve o nome em /tmp/re4sel (ex "Start","Options","Quit","Back","Game Options").
+   Bypassa Navigation/fantasma: eu controlo a selecao. Gated RE4_MENUDRIVE. */
+static void re4_menu_drive(int frame){
+  if(!getenv("RE4_MENUDRIVE")) return;
+  if(frame<60) return;
+  if(!re4_mono_nav_init()) return;
+  static char want[64]={0}; int invoke=0;
+  FILE* f=fopen("/tmp/re4sel","r");
+  if(f){ char b[64]={0}; if(fgets(b,sizeof b,f)){ char*nl=strchr(b,'\n'); if(nl)*nl=0; if(b[0]){ snprintf(want,sizeof want,"%s",b); invoke=0; } }
+    fclose(f); f=fopen("/tmp/re4sel","w"); if(f)fclose(f); }
+  f=fopen("/tmp/re4invoke","r");
+  if(f){ char b[64]={0}; if(fgets(b,sizeof b,f)){ char*nl=strchr(b,'\n'); if(nl)*nl=0; if(b[0]){ snprintf(want,sizeof want,"%s",b); invoke=1; } }
+    fclose(f); f=fopen("/tmp/re4invoke","w"); if(f)fclose(f); }
+  if(!want[0]) return;
+  void* domain=MN.get_root_domain(); if(!domain) return;
+  void* ui_img=MN.image_loaded("UnityEngine.UI"); void* core_img=MN.image_loaded("UnityEngine.CoreModule");
+  if(!ui_img||!core_img) return;
+  void* sel_cls=MN.class_from_name(ui_img,"UnityEngine.UI","Selectable");
+  void* obj_cls=MN.class_from_name(core_img,"UnityEngine","Object");
+  void* comp_cls=MN.class_from_name(core_img,"UnityEngine","Component");
+  void* es_cls=MN.class_from_name(ui_img,"UnityEngine.EventSystems","EventSystem");
+  if(!sel_cls||!obj_cls||!comp_cls||!es_cls) return;
+  void* m_find=MN.class_get_method_from_name(obj_cls,"FindObjectsOfType",1);
+  void* m_getgo=MN.class_get_method_from_name(comp_cls,"get_gameObject",0);
+  void* m_getname=MN.class_get_method_from_name(obj_cls,"get_name",0);
+  void* m_setsel=MN.class_get_method_from_name(es_cls,"SetSelectedGameObject",1);
+  if(!m_find||!m_getgo||!m_getname||!m_setsel) return;
+  /* instancia do EventSystem */
+  void* e=0; void* est=MN.type_get_object(domain,MN.class_get_type(es_cls));
+  void* ep[1]={est}; void* esarr=MN.runtime_invoke(m_find,NULL,ep,&e);
+  void* es_inst=0; if(esarr&&!e){ int en=*(int*)((char*)esarr+12); if(en>0){ void**s=(void**)MN.array_addr_with_size(esarr,(int)sizeof(void*),0); es_inst=s?*s:0; } }
+  if(!es_inst) return;
+  /* acha o Selectable pelo nome */
+  void* st=MN.type_get_object(domain,MN.class_get_type(sel_cls));
+  void* sp[1]={st}; e=0; void* arr=MN.runtime_invoke(m_find,NULL,sp,&e);
+  if(!arr||e) return;
+  int n=*(int*)((char*)arr+12); if(n<0||n>4096) return;
+  void* target_go=0; void* target_sel=0;
+  for(int i=0;i<n;i++){
+    void**slot=(void**)MN.array_addr_with_size(arr,(int)sizeof(void*),(uintptr_t)i);
+    void* sel=slot?*slot:0; if(!sel) continue;
+    void* e1=0; void* go=MN.runtime_invoke(m_getgo,sel,NULL,&e1); if(e1||!go) continue;
+    void* e2=0; void* s=MN.runtime_invoke(m_getname,go,NULL,&e2); if(e2||!s) continue;
+    char* u=g_mono_string_to_utf8_fn?g_mono_string_to_utf8_fn(s):0;
+    if(u && !strcasecmp(u,want)){ target_go=go; target_sel=sel; break; }
+  }
+  if(!target_go){ fprintf(stderr,"[MENUDRIVE] botao '%s' nao encontrado f=%d\n",want,frame); fsync(2); want[0]=0; return; }
+  if(!invoke){
+    void* pp[1]={target_go}; void* e3=0;
+    MN.runtime_invoke(m_setsel,es_inst,pp,&e3);
+    fprintf(stderr,"[MENUDRIVE] SetSelectedGameObject('%s') exc=%p f=%d\n",want,e3,frame); fsync(2);
+  } else {
+    /* invoca o onClick do Button diretamente (bypassa selecao/submit quebrados) */
+    static void* btn_cls=0; static void* m_onclick=0; static void* m_uinvoke=0;
+    if(!btn_cls){ btn_cls=MN.class_from_name(ui_img,"UnityEngine.UI","Button");
+      if(btn_cls) m_onclick=MN.class_get_method_from_name(btn_cls,"get_onClick",0);
+      void* ev_cls=MN.class_from_name(core_img,"UnityEngine.Events","UnityEvent");
+      if(ev_cls) m_uinvoke=MN.class_get_method_from_name(ev_cls,"Invoke",0); }
+    if(m_onclick && m_uinvoke){
+      void* e4=0; void* evt=MN.runtime_invoke(m_onclick,target_sel,NULL,&e4);
+      if(!e4 && evt){ void* e5=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e5);
+        fprintf(stderr,"[MENUDRIVE] INVOKE onClick('%s') exc=%p f=%d\n",want,e5,frame); fsync(2); }
+      else fprintf(stderr,"[MENUDRIVE] get_onClick('%s') exc=%p evt=%p f=%d\n",want,e4,evt,frame),fsync(2);
+    } else fprintf(stderr,"[MENUDRIVE] onclick=%p uinvoke=%p\n",m_onclick,m_uinvoke),fsync(2);
+  }
+  want[0]=0;
+}
+/* ===== NAVEGACAO COMPLETA DO MENU (gotokey de producao) =====
+   O StandaloneInputModule do jogo nao move a selecao (Navigation=None) e o Submit nao
+   aciona; um script ainda varre a selecao p/ o "Back". Entao IGNORAMOS isso e dirigimos
+   o menu nos mesmos via Mono: a cada frame achamos os botoes VISIVEIS+interativos,
+   ordenamos por Y (topo->baixo), o dpad/analogico move um cursor, A invoca o onClick do
+   botao (entra/abre submenu), B invoca o "Back". Le o gamepad de g_re4_gp_btn (fisico ou
+   virtual). RE4_NO_MENUNAV2 desliga. */
+static int re4_menu_edge(int idx){ return g_re4_gp_btn[idx] && !g_re4_gp_prev[idx]; }
+static void re4_menu_nav(int frame){
+  if(getenv("RE4_NO_MENUNAV2")) return;
+  if(frame<60) return;
+  /* PERF: o scan (FindObjectsOfType) e caro no Mali-450. No MENU escaneia todo frame
+     (responsivo); no GAMEPLAY so a cada 15 frames (so p/ detectar volta ao menu). */
+  if(!g_in_menu && (frame%15)!=0) return;
+  if(!re4_mono_nav_init()) return;
+  void* domain=MN.get_root_domain(); if(!domain) return;
+  static int res=0; static void* ui_img=0,*core_img=0,*sel_cls=0,*obj_cls=0,*comp_cls=0,*es_cls=0,*btn_cls=0,*ev_cls=0,*go_cls=0,*tr_cls=0;
+  static void* m_find=0,*m_getgo=0,*m_getname=0,*m_setsel=0,*m_onclick=0,*m_uinvoke=0,*m_active=0,*m_interact=0,*m_gettr=0,*m_getpos=0;
+  if(!res){
+    ui_img=MN.image_loaded("UnityEngine.UI"); core_img=MN.image_loaded("UnityEngine.CoreModule");
+    if(!ui_img||!core_img) return;
+    sel_cls=MN.class_from_name(ui_img,"UnityEngine.UI","Selectable");
+    btn_cls=MN.class_from_name(ui_img,"UnityEngine.UI","Button");
+    es_cls=MN.class_from_name(ui_img,"UnityEngine.EventSystems","EventSystem");
+    obj_cls=MN.class_from_name(core_img,"UnityEngine","Object");
+    comp_cls=MN.class_from_name(core_img,"UnityEngine","Component");
+    go_cls=MN.class_from_name(core_img,"UnityEngine","GameObject");
+    tr_cls=MN.class_from_name(core_img,"UnityEngine","Transform");
+    ev_cls=MN.class_from_name(core_img,"UnityEngine.Events","UnityEvent");
+    if(!sel_cls||!btn_cls||!es_cls||!obj_cls||!comp_cls||!go_cls||!tr_cls||!ev_cls) return;
+    m_find=MN.class_get_method_from_name(obj_cls,"FindObjectsOfType",1);
+    m_getgo=MN.class_get_method_from_name(comp_cls,"get_gameObject",0);
+    m_getname=MN.class_get_method_from_name(obj_cls,"get_name",0);
+    m_setsel=MN.class_get_method_from_name(es_cls,"SetSelectedGameObject",1);
+    m_onclick=MN.class_get_method_from_name(btn_cls,"get_onClick",0);
+    m_uinvoke=MN.class_get_method_from_name(ev_cls,"Invoke",0);
+    m_active=MN.class_get_method_from_name(go_cls,"get_activeInHierarchy",0);
+    m_interact=MN.class_get_method_from_name(sel_cls,"IsInteractable",0);
+    m_gettr=MN.class_get_method_from_name(comp_cls,"get_transform",0);
+    m_getpos=MN.class_get_method_from_name(tr_cls,"get_position",0);
+    if(!m_find||!m_getgo||!m_getname||!m_setsel||!m_onclick||!m_uinvoke||!m_active||!m_interact||!m_gettr||!m_getpos) return;
+    res=1; fprintf(stderr,"[MENUNAV2] pronto f=%d\n",frame); fsync(2);
+  }
+  /* es instance (cache) */
+  static void* es_inst=0;
+  if(!es_inst){ void* t=MN.type_get_object(domain,MN.class_get_type(es_cls)); void* p[1]={t}; void* e=0;
+    void* a=MN.runtime_invoke(m_find,NULL,p,&e); if(a&&!e){ int en=*(int*)((char*)a+12); if(en>0){ void**s=(void**)MN.array_addr_with_size(a,(int)sizeof(void*),0); es_inst=s?*s:0; } } }
+  if(!es_inst) return;
+  /* coleta botoes visiveis+interativos */
+  void* st=MN.type_get_object(domain,MN.class_get_type(sel_cls)); void* sp[1]={st}; void* e=0;
+  void* arr=MN.runtime_invoke(m_find,NULL,sp,&e); if(!arr||e) return;
+  int n=*(int*)((char*)arr+12); if(n<0||n>4096) return;
+  void* gos[40]; void* sels[40]; float xs[40]; float ys[40]; int cnt=0; int has_menu=0;
+  for(int i=0;i<n && cnt<40;i++){
+    void**slot=(void**)MN.array_addr_with_size(arr,(int)sizeof(void*),(uintptr_t)i);
+    void* sel=slot?*slot:0; if(!sel) continue;
+    void* e1=0; void* go=MN.runtime_invoke(m_getgo,sel,NULL,&e1); if(e1||!go) continue;
+    void* e2=0; void* ab=MN.runtime_invoke(m_active,go,NULL,&e2); if(e2||!ab) continue;
+    if(!*(unsigned char*)MN.object_unbox(ab)) continue;        /* ativo na hierarquia */
+    void* e3=0; void* ib=MN.runtime_invoke(m_interact,sel,NULL,&e3); if(e3||!ib) continue;
+    if(!*(unsigned char*)MN.object_unbox(ib)) continue;        /* interativo */
+    /* detecta menu: nome de botao tipico (Start/Options/Quit/Back/New/Continue) */
+    void* en=0; void* snm=MN.runtime_invoke(m_getname,go,NULL,&en);
+    if(!en&&snm&&g_mono_string_to_utf8_fn){ char* u=g_mono_string_to_utf8_fn(snm);
+      if(u && (!strcasecmp(u,"Start")||!strcasecmp(u,"Options")||!strcasecmp(u,"Quit")||
+               !strcasecmp(u,"Back")||!strcasecmp(u,"New")||!strcasecmp(u,"Continue"))) has_menu=1; }
+    float x=0.0f,y=0.0f;
+    void* e4=0; void* tr=MN.runtime_invoke(m_gettr,sel,NULL,&e4);
+    if(!e4 && tr){ void* e5=0; void* pv=MN.runtime_invoke(m_getpos,tr,NULL,&e5); if(!e5&&pv){ float* fp=(float*)MN.object_unbox(pv); if(fp){ x=fp[0]; y=fp[1]; } } }
+    gos[cnt]=go; sels[cnt]=sel; xs[cnt]=x; ys[cnt]=y; cnt++;
+  }
+  g_in_menu = has_menu;                 /* gameplay (sem botoes de menu) -> 0 */
+  if(cnt<=0 || !has_menu){ return; }    /* nao dirige fora do menu (deixa o gameplay) */
+  /* cursor RASTREADO POR IDENTIDADE (estavel apesar do auto-ciclo do jogo) */
+  static void* cur=0;
+  int ci=-1;
+  for(int i=0;i<cnt;i++) if(gos[i]==cur){ ci=i; break; }
+  if(ci<0){ /* cursor sumiu (mudou de painel) -> pega o mais ao TOPO */
+    ci=0; for(int i=1;i<cnt;i++) if(ys[i]>ys[ci]) ci=i; cur=gos[ci]; }
+  /* navegacao DIRECIONAL por posicao: acha o vizinho na direcao apertada */
+  int up=re4_menu_edge(RE4_BTN_DU), dn=re4_menu_edge(RE4_BTN_DD);
+  int lf=re4_menu_edge(RE4_BTN_DL), rt=re4_menu_edge(RE4_BTN_DR);
+  int dir_y = up?1:(dn?-1:0);   /* y maior = cima */
+  int dir_x = rt?1:(lf?-1:0);
+  if(dir_y||dir_x){
+    int best=-1; float bestcost=1e18f;
+    for(int i=0;i<cnt;i++){ if(i==ci) continue;
+      float dx=xs[i]-xs[ci], dy=ys[i]-ys[ci];
+      float along = dir_y? dir_y*dy : dir_x*dx;     /* avanco na direcao */
+      float perp  = dir_y? dx : dy;                 /* desvio lateral */
+      if(along<=1.0f) continue;                     /* tem que ir na direcao */
+      float cost = along + 3.0f*(perp<0?-perp:perp);
+      if(cost<bestcost){ bestcost=cost; best=i; }
+    }
+    if(best>=0){ ci=best; cur=gos[ci]; }
+  }
+  /* destaca (sobrepoe o auto-ciclo do jogo, todo frame) */
+  { void* pp[1]={gos[ci]}; void* ee=0; MN.runtime_invoke(m_setsel,es_inst,pp,&ee); }
+  /* A ou X = aceitar (invoca onClick); B = voltar (invoca Back) */
+  int doA=re4_menu_edge(RE4_BTN_A) || re4_menu_edge(RE4_BTN_X);
+  int doB=re4_menu_edge(RE4_BTN_B);
+  if(doA){
+    void* e6=0; void* evt=MN.runtime_invoke(m_onclick,sels[ci],NULL,&e6);
+    if(!e6&&evt){ void* e7=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e7); fprintf(stderr,"[MENUNAV2] A->onClick ci=%d exc=%p f=%d\n",ci,e7,frame); fsync(2); }
+    cur=0; /* forca reavaliacao do cursor no proximo frame (painel pode mudar) */
+  }
+  if(doB){
+    for(int i=0;i<cnt;i++){ void* eb=0; void* gg=MN.runtime_invoke(m_getgo,sels[i],NULL,&eb); if(eb||!gg) continue;
+      void* eb2=0; void* s=MN.runtime_invoke(m_getname,gg,NULL,&eb2);
+      char* u=(!eb2&&s&&g_mono_string_to_utf8_fn)?g_mono_string_to_utf8_fn(s):0;
+      if(u && !strcasecmp(u,"Back")){ void* ev2=0; void* evt=MN.runtime_invoke(m_onclick,sels[i],NULL,&ev2);
+        if(!ev2&&evt){ void* e9=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e9); fprintf(stderr,"[MENUNAV2] B->Back f=%d\n",frame); fsync(2);} cur=0; break; } }
+  }
+  if(getenv("RE4_GPLOG") && (doA||doB||up||dn||lf||rt)){
+    fprintf(stderr,"[MENUNAV2] ci=%d/%d up=%d dn=%d lf=%d rt=%d A=%d B=%d f=%d\n",ci,cnt,up,dn,lf,rt,doA,doB,frame); fsync(2);
+  }
+}
 /* Injeta um TOQUE (tap) na tela via nativeInjectEvent (MotionEvent TOUCHSCREEN).
    O menu CODEX do RE4 e TOUCH (jogo mobile): nem KeyEvent nem icall navegam.
    getX/getY sao servidos de axes[0]/axes[1]; getSource de g_hk_inject.source. */
@@ -2687,7 +3006,18 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   FakeInputEvent ev;
   android_shim_pump_sdl_events();
   re4_gp_poll();
+  /* CONFLITO RESOLVIDO 2026-06-17: havia DOIS caminhos de input competindo -> o
+     android_shim injetava uma TEMPESTADE de DPAD KeyEvents (nativeInjectEvent) ENQUANTO
+     nossos hooks de icall (GetAxisRaw/GetButton, alimentados por re4_gp_poll) tambem
+     entregavam o mesmo input. O menu (StandaloneInputModule) le pelo ICALL; a injecao do
+     android_shim era redundante e FLOODAVA a navegacao -> a selecao ciclava ate o "Back".
+     Por padrao DESLIGAMOS a injecao do android_shim (so drenamos a fila). RE4_SHIMINJECT=1
+     reativa (caminho legado p/ gameplay por KeyEvent). */
+  /* No MENU: injecao OFF (re4_menu_nav dirige). No GAMEPLAY (!g_in_menu): injecao ON ->
+     dpad/stick viram KeyEvent/MotionEvent Android e o Leon anda (RE4 classico). */
+  int shiminject = (!g_in_menu) || getenv("RE4_SHIMINJECT")!=NULL;
   while (android_shim_pop_input_event(&ev)) {
+    if(!shiminject) continue;   /* drena sem injetar */
     if (ev.type == AINPUT_EVENT_TYPE_KEY) {
       re4_inject_key_event(env, thiz, inject, ev.action, ev.keycode, 0, frame, "SDL");
       continue;
@@ -2753,6 +3083,27 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
     } else if(st==1){
       if(frame>=up_frame){ re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_UP,tx,ty,frame); st=0; }
       else re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_MOVE,tx,ty,frame);
+    }
+  }
+  /* MOVIMENTO NO GAMEPLAY (Leon anda): o gameplay e TOUCH (dpad na tela inf-esq). Traduzimos
+     a direcao do gamepad (dpad ou analogico esq) num ARRASTO de toque sobre esse dpad virtual.
+     So no gameplay (!g_in_menu). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
+  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE")){
+    static int touching=0; static float lx2=0,ly2=0;
+    float cx=(float)re4_int_env("RE4_DPAD_CX",170,0,1920);
+    float cy=(float)re4_int_env("RE4_DPAD_CY",560,0,1080);
+    float R =(float)re4_int_env("RE4_DPAD_R",70,10,400);
+    float dx = (g_re4_gp_btn[RE4_BTN_DR]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DL]?1.0f:0.0f) + g_re4_gp_lx;
+    float dy = (g_re4_gp_btn[RE4_BTN_DD]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DU]?1.0f:0.0f) + g_re4_gp_ly; /* tela: baixo=+ */
+    if(dx>1)dx=1; if(dx<-1)dx=-1; if(dy>1)dy=1; if(dy<-1)dy=-1;
+    float mag = dx*dx+dy*dy;
+    if(mag>0.09f){   /* direcao ativa */
+      float tx2=cx+dx*R, ty2=cy+dy*R;
+      if(!touching){ re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_DOWN,cx,cy,frame); touching=1; }
+      re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_MOVE,tx2,ty2,frame);
+      lx2=tx2; ly2=ty2;
+    } else if(touching){
+      re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_UP,lx2,ly2,frame); touching=0;
     }
   }
 }
@@ -3148,6 +3499,10 @@ int main(void){
     re4_autotap(env, &t, inject, f);
     re4_keyseq(env, &t, inject, f);
     ((unsigned char(*)(void*,void*))render)(env,&t);
+    re4_enable_menu_nav(f);   /* habilita Navigation nos botoes do menu (gotokey) */
+    re4_menu_drive(f);        /* gotokey: forca selecao por nome (/tmp/re4sel) - debug */
+    re4_menu_nav(f);          /* NAVEGACAO COMPLETA: dpad move cursor, A=onClick, B=Back */
+    re4_log_selected(f);      /* DIAG: nome do botao selecionado (apos nav = final) */
     re4_probe_frame_pixels(f);
     re4_dump_framebuffers_if_needed(f);
     re4_force_fbo1_blit_if_needed(f);
