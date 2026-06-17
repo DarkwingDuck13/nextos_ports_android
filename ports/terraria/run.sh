@@ -18,6 +18,9 @@ i=0; while [ -n "$(ter_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 # backend de vídeo: fbdev (Mali-450 Utgard) — EGL real do Mali via SDL2-mali
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
-echo "[run] Terraria — fbdev Mali-450 (SDL_VIDEODRIVER=$SDL_VIDEODRIVER)"
+# boot (destrava job-system + render) + CONTROLES (gamepad navega o menu: D-pad cima/baixo + A confirma)
+export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
+export TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1
+echo "[run] Terraria — fbdev Mali-450 + controles (D-pad cima/baixo + A)"
 nohup ./terraria > run.out 2>&1 &
 echo "[run] PID $! — log: $GAMEDIR/run.out (+ debug.log)"

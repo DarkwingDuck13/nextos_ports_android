@@ -2189,6 +2189,35 @@ static void ter_ctrl_force_active(void) {
     fprintf(stderr,"[CTRLDIAG] active=%d ctrl%s | dev.AxisVal[1]=%.2f [5]=%.2f KeyState[0]=%d | nav.DisableNav=%d DisAxis=%d curItem=%p\n",
       *(unsigned char*)((char*)inst+0x30),(ctrl==(void*)g_ctrl_device)?"=upd":"!=upd",av1,av5,ks0,disN,disAx,cur); fsync(2);} }
 }
+/* 🎮 TER_NAVMENU: navegação REAL do menu mobile via up/down + confirmar (A), usando o hover que
+ * funciona (GUIInputRegionManager._mouseX/_mouseY). Lê as regiões (retângulos dos itens), ordena
+ * por Y, e o up/down move o cursor entre os centros dos itens (item destaca amarelo). A → o
+ * Mouse.GetState.LeftButton (já alimentado por g_gp_log[4]) clica o item sob o cursor.
+ * Auto-adapta a qualquer tela (lê as regiões vivas). Não toca nos hooks de botão. */
+static int g_nav_idx;
+static void ter_menu_nav(void) {
+  if (!getenv("TER_NAVMENU")) return;
+  void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; return; }
+  int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
+  if(!arr||nr<=0||nr>32){ g_girm_ovr=0; return; }
+  int cx[32], cy[32], order[32], n=0;
+  for(int r=0;r<nr&&r<32;r++){ int*b=(int*)((char*)arr+0x20+r*16);
+    int ccx=(b[0]+b[1])/2, ccy=(b[2]+b[3])/2;
+    if(ccy<100) continue;   /* pula regiões da barra do topo (ex: ícone canto sup-dir 848,27) */
+    cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
+  for(int i=1;i<n;i++) for(int j=i;j>0&&cy[order[j]]<cy[order[j-1]];j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
+  static int prevU=0, prevD=0; static int lastn=0;
+  if (n!=lastn){ g_nav_idx=0; lastn=n; }   /* mudou de tela → reseta seleção */
+  int U=g_gp_log[0], D=g_gp_log[1];
+  if (U&&!prevU){ g_nav_idx--; } if (D&&!prevD){ g_nav_idx++; }
+  prevU=U; prevD=D;
+  if(g_nav_idx<0)g_nav_idx=n-1; if(g_nav_idx>=n)g_nav_idx=0;
+  int sel=order[g_nav_idx];
+  extern float g_cursor_x,g_cursor_y;
+  g_girm_mx=cx[sel]; g_girm_my=cy[sel]; g_girm_ovr=1;   /* hover (GUI _mouseX/_mouseY) */
+  g_cursor_x=(float)cx[sel]; g_cursor_y=(float)cy[sel]; /* Mouse.GetState pos p/ o clique do A */
+  if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] itens=%d idx=%d -> (%d,%d) U=%d D=%d A=%d\n",n,g_nav_idx,cx[sel],cy[sel],U,D,g_gp_log[4]); fsync(2);} }
+}
 static void ter_ctrl_feed(void) {
   if (!getenv("TER_CTRL")) return;
   if (getenv("TER_HOVERX")) { extern float g_cursor_x,g_cursor_y; g_cursor_x=atof(getenv("TER_HOVERX")); g_cursor_y=atof(getenv("TER_HOVERY")?getenv("TER_HOVERY"):"360"); }
@@ -2236,8 +2265,19 @@ static void ter_ctrl_feed(void) {
   }
   /* vetor de navegação do menu (lido por get_NavigationAxis substituído). y já honra TER_CTRL_INVY. */
   g_nav_x = x; g_nav_y = y;
-  /* TER_GIRMCLICK: injeta Action1 (confirm) pulsado p/ "clicar" o item sob o cursor (após o mapeamento) */
-  if (getenv("TER_GIRMCLICK")) { static int cf=0; int ph=(cf++)%90; if (ph>=40 && ph<50) g_inj_btn[0]=1; }
+  /* TER_NAVTEST: auto-teste autônomo (sem js0) — injeta em g_gp_log uma sequência DOWN×N + A p/
+     validar a navegação do menu. TER_NAVDOWN=N (quantos down), TER_TESTFROM=frame inicial. */
+  if (getenv("TER_NAVTEST")) {
+    static int tf=0; int f=tf++;
+    int from=getenv("TER_TESTFROM")?atoi(getenv("TER_TESTFROM")):1200;
+    int ndown=getenv("TER_NAVDOWN")?atoi(getenv("TER_NAVDOWN")):3;
+    g_gp_log[0]=g_gp_log[1]=g_gp_log[4]=0;
+    if (f>from){ int s=f-from, step=s/25, ph=s%25;
+      if (step<ndown){ if(ph<8) g_gp_log[1]=1; }          /* DOWN ×ndown (1 por step de 25 frames) */
+      else if (step==ndown+1){ if(ph<8) g_gp_log[4]=1; }  /* A (confirma) após uma pausa */
+    }
+  }
+  ter_menu_nav();   /* 🎮 navegação real: up/down move o cursor entre itens, A clica */
   if (getenv("TER_CTRLLOG")) { static int c=0; if((c++%30)==0){
     fprintf(stderr,"[CTRLLOG] getkeyraw=%lu navaxis=%lu | A=%d B=%d dpad(u%d d%d l%d r%d) nav=(%.0f,%.0f)\n",
       g_getkeyraw_calls,g_navaxis_calls,g_inj_btn[0],g_inj_btn[1],g_gp_log[0],g_gp_log[1],g_gp_log[2],g_gp_log[3],g_nav_x,g_nav_y); fsync(2);} }
