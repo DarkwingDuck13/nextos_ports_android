@@ -293,6 +293,7 @@ struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
 struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
+static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virtual) */
 
 /* classes distintas por nome (Unity compara KeyEvent.class vs MotionEvent.class) */
 static struct { const char *name; int tag; } g_classreg[128];
@@ -405,6 +406,17 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   if (nm) {
     if (strcmp(nm, "getPackageName") == 0)
       return make_jstring(g_package_name);
+    /* ---- Gamepad Xbox 360 virtual (TER_GAMEPAD): InputManager.getInputDevice(id) + getters ---- */
+    if (strcmp(nm, "getInputDevice") == 0) return &g_gamepad_device;
+    if (obj == (void *)&g_gamepad_device) {
+      if (strcmp(nm, "getName") == 0)          return make_jstring("Microsoft X-Box 360 pad");
+      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("xbox360pad-virtual");
+      if (strcmp(nm, "getMotionRanges") == 0)  return &g_empty_list;
+      if (strcmp(nm, "getMotionRange") == 0)   return NULL;       /* sem range específico */
+      if (strcmp(nm, "getVibrator") == 0)      return obj;        /* não-nulo */
+      if (strcmp(nm, "getKeyCharacterMap") == 0) return obj;      /* não-nulo */
+      return obj;   /* qualquer outro método do device -> não-nulo */
+    }
     /* Play Asset Delivery: getAssetPackPath(name) -> dir REAL onde estão os arquivos
        do pack. Nossos dados estão em ASSET_BASE/bin/Data; Unity lê <path>/bin/Data/...
        então o path do pack é o ASSET_BASE (sem barra final). */
@@ -636,6 +648,17 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       return -1;
     }
     /* ---- KeyEvent (nativeInjectEvent) ---- */
+    /* ---- InputDevice Xbox 360 virtual (getters int) ---- */
+    if (obj == (void *)&g_gamepad_device) {
+      if (strcmp(nm, "getVendorId") == 0)        return 1118;       /* 0x045E Microsoft */
+      if (strcmp(nm, "getProductId") == 0)       return 654;        /* 0x028E Xbox360 pad */
+      if (strcmp(nm, "getSources") == 0)         return 0x1000611;  /* GAMEPAD|JOYSTICK|DPAD */
+      if (strcmp(nm, "getId") == 0)              return 1;
+      if (strcmp(nm, "getControllerNumber") == 0) return 1;
+      if (strcmp(nm, "getKeyboardType") == 0)    return 0;
+      if (strcmp(nm, "supportsSource") == 0)     return 1;
+      return 0;
+    }
     if (strcmp(nm, "getAction") == 0) { debugPrintf("[KEYEV] getAction->%d\n", g_hk_inject.action); return g_hk_inject.action; }
     if (strcmp(nm, "getKeyCode") == 0) { debugPrintf("[KEYEV] getKeyCode->%d\n", g_hk_inject.keycode); return g_hk_inject.keycode; }
     if (strcmp(nm, "getSource") == 0) return g_hk_inject.source;
@@ -738,10 +761,12 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   (void)env;
   (void)clazz;
   const char *nm = mid_name(methodID);
-  /* InputDevice.getDeviceIds() -> int[] REAL (sem args). */
+  /* InputDevice.getDeviceIds() -> int[] REAL (sem args). TER_GAMEPAD: 1 device (id=1) =
+     o Xbox 360 virtual (o InControl tem profile pronto p/ Xbox → mapeamento correto). */
   if (nm && !strcmp(nm, "getDeviceIds")) {
     int ndev = getenv("CUP_NDEV") ? atoi(getenv("CUP_NDEV")) : 0;
     int ids[8]; for (int i = 0; i < ndev && i < 8; i++) ids[i] = 100 + i;
+    if (getenv("TER_GAMEPAD")) { int one[1] = {1}; static int o2=0; if(!o2){o2=1;debugPrintf("getDeviceIds()->[1] (Xbox virtual)\n");} return iarr_new(one, 1); }
     static int once = 0; if (!once) { once = 1;
       debugPrintf("jni_shim: getDeviceIds() -> int[%d]\n", ndev); }
     return iarr_new(ids, ndev);
@@ -750,6 +775,11 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
     void *arg0 = va_arg(ap, void *);
     return arg0;
+  }
+  /* InputDevice.getDevice(id) é ESTÁTICO → o device Xbox 360 virtual (TER_GAMEPAD). */
+  if (nm && !strcmp(nm, "getDevice")) {
+    debugPrintf("jni_shim: getDevice() -> Xbox virtual\n");
+    return &g_gamepad_device;
   }
   /* jnibridge: newInterfaceProxy(long handle, Class[] ifaces) -> proxy. Guarda o
      handle p/ rodar o Runnable depois (runOnUiThread). */

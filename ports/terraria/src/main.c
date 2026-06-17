@@ -1628,6 +1628,72 @@ static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
 /* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
 void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_screenshot_maybe(); }
+
+/* ===== TER_GAMEPAD: js0 -> nativeInjectEvent (KeyEvent) p/ navegar o menu do Terraria =====
+   O Terraria usa InControl, que lê o gamepad via Unity Input (alimentado pelo nativeInjectEvent
+   do engine). Lemos /dev/input/js0 direto e injetamos KeyEvents DPAD/A/B/Start/etc. Independe
+   do gamepad.c (que é p/ Rewired/Cuphead). Mapa configurável por env TER_GP_*. */
+struct ter_js_event { unsigned int time; short value; unsigned char type; unsigned char number; };
+extern struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
+                            scancode, flags, unicode; long eventTime, downTime; } g_hk_inject;
+extern void *hk_keyevent_object(void);
+static int g_gp_fd = -2;
+static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
+/* entradas lógicas -> keycode Android. ax: índice eixo (-1=botão), dir: sinal (>0 ou <0), bt: botão */
+static void ter_gamepad_inject(void *env, void *thiz, void *inject) {
+  if (!inject) return;
+  if (g_gp_fd == -2) {
+    const char *dev = getenv("TER_GP_DEV") ? getenv("TER_GP_DEV") : "/dev/input/js0";
+    g_gp_fd = open(dev, O_RDONLY | O_NONBLOCK);
+    fprintf(stderr, "[TGP] js0 fd=%d (%s)\n", g_gp_fd, dev); fsync(2);
+  }
+  if (g_gp_fd < 0) return;
+  struct ter_js_event e;
+  while (read(g_gp_fd, &e, 8) == 8) {
+    int t = e.type & 0x7f;
+    if (t == 1 && e.number < 24) g_gp_btn[e.number] = e.value ? 1 : 0;       /* botão */
+    else if (t == 2 && e.number < 24) g_gp_axis[e.number] = e.value;          /* eixo  */
+  }
+  int TH = 16000;
+  int axDX = getenv("TER_GP_AXDX") ? atoi(getenv("TER_GP_AXDX")) : 6;   /* dpad X (hat) */
+  int axDY = getenv("TER_GP_AXDY") ? atoi(getenv("TER_GP_AXDY")) : 7;   /* dpad Y (hat) */
+  /* estado lógico ATUAL (dpad via hat OU stick esq.) */
+  int up    = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH);
+  int down  = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH);
+  int left  = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH);
+  int right = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH);
+  /* botões (mapa default XInput; configurável) */
+  int bA = getenv("TER_GP_A") ? atoi(getenv("TER_GP_A")) : 0;
+  int bB = getenv("TER_GP_B") ? atoi(getenv("TER_GP_B")) : 1;
+  int bX = getenv("TER_GP_X") ? atoi(getenv("TER_GP_X")) : 2;
+  int bY = getenv("TER_GP_Y") ? atoi(getenv("TER_GP_Y")) : 3;
+  int bL1= getenv("TER_GP_L1")? atoi(getenv("TER_GP_L1")): 4;
+  int bR1= getenv("TER_GP_R1")? atoi(getenv("TER_GP_R1")): 5;
+  int bSel=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6;
+  int bSt= getenv("TER_GP_ST") ? atoi(getenv("TER_GP_ST")) : 7;
+  /* tabela (estado lógico, keycode Android) */
+  struct { int cur; int key; } in[] = {
+    { up,19 },{ down,20 },{ left,21 },{ right,22 },             /* DPAD_UP/DOWN/LEFT/RIGHT */
+    { g_gp_btn[bA],96 },{ g_gp_btn[bB],97 },                    /* BUTTON_A/B */
+    { g_gp_btn[bX],99 },{ g_gp_btn[bY],100 },                   /* BUTTON_X/Y */
+    { g_gp_btn[bL1],102 },{ g_gp_btn[bR1],103 },                /* BUTTON_L1/R1 */
+    { g_gp_btn[bSel],109 },{ g_gp_btn[bSt],108 },               /* SELECT/START */
+  };
+  static unsigned char prev[16];
+  for (unsigned i = 0; i < sizeof in/sizeof in[0]; i++) {
+    int c = in[i].cur ? 1 : 0;
+    if (c == prev[i]) continue;
+    prev[i] = c;
+    g_hk_inject.action = c ? 0 : 1;          /* 0=DOWN 1=UP */
+    g_hk_inject.keycode = in[i].key;
+    /* DPAD(19-22) = SOURCE_DPAD|GAMEPAD; botões = SOURCE_GAMEPAD */
+    g_hk_inject.source = (in[i].key >= 19 && in[i].key <= 22) ? 0x601 : 0x401;
+    g_hk_inject.deviceId = 1; g_hk_inject.repeat = 0; g_hk_inject.flags = 0;
+    g_hk_inject.metaState = 0; g_hk_inject.scancode = 0; g_hk_inject.unicode = 0;
+    ((int (*)(void *, void *, void *))inject)(env, thiz, hk_keyevent_object());
+    if (getenv("TER_GPLOG")) { fprintf(stderr, "[TGP] %s key=%d\n", c ? "DOWN" : "UP", in[i].key); fsync(2); }
+  }
+}
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
@@ -3933,10 +3999,13 @@ int main(int argc, char **argv) {
         g_hk_inject.source = 0x501;                  /* gamepad|keyboard */
         g_hk_inject.deviceId = 0; g_hk_inject.repeat = 0; g_hk_inject.flags = 0;
         g_hk_inject.metaState = 0; g_hk_inject.scancode = 0; g_hk_inject.unicode = 0;
-        ((int (*)(void *, void *, void *))inject)(env, &thiz, hk_keyevent_object());
-        if (f < 600) fprintf(stderr, "[AUTOTAP] %s key=%d (f=%d)\n", phase ? "UP" : "DOWN", tapkey, f);
+        int ir = ((int (*)(void *, void *, void *))inject)(env, &thiz, hk_keyevent_object());
+        if (f < 600) fprintf(stderr, "[AUTOTAP] %s key=%d (f=%d) ret=%d\n", phase ? "UP" : "DOWN", tapkey, f, ir);
       }
     }
+    /* TER_GAMEPAD: js0 -> KeyEvents (DPAD/A/B/Start) p/ navegar o menu */
+    if (getenv("TER_GAMEPAD") && inject) { extern void ter_gamepad_inject(void *, void *, void *);
+      ter_gamepad_inject(env, &thiz, inject); }
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
     { /* FPS médio por janela de 600 frames (mede lag do mapa/fases p/ tuning) */
