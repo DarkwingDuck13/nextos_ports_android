@@ -298,6 +298,7 @@ static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virt
 /* classes distintas por nome (Unity compara KeyEvent.class vs MotionEvent.class) */
 static struct { const char *name; int tag; } g_classreg[128];
 static int g_classreg_n = 0;
+int g_fmod_device_obj;   /* sentinela do org.fmod.FMODAudioDevice (NewObject/métodos do FMOD) */
 static void *class_for(const char *name) {
   if (!name) name = "?";
   for (int i = 0; i < g_classreg_n; i++)
@@ -636,6 +637,8 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
   const char *nm = mid_name(methodID);
   if (obj == (void *)&g_message_sentinel && nm && strcmp(nm, "getWhat") == 0)
     return g_message_what;
+  /* org.fmod.FMODAudioDevice — qualquer método int/bool (start/isRunning/init...) = sucesso */
+  if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%s -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
     /* checkPermission(INTERNET): armado pelo NewStringUTF → DENIED(-1) p/ desligar a
        Unity Analytics (pula advertising-id/session-start que travava o boot). */
@@ -1205,6 +1208,20 @@ static void *jni_GetDirectBufferAddress(void *env, void *buf) {
 static long jni_GetDirectBufferCapacity(void *env, void *buf) {
   (void)env; if (buf == &g_fmod_bb_sentinel) return (long)sizeof(g_fmod_pcm); return -1;
 }
+/* org.fmod.FMODAudioDevice — FMOD faz NewObject(FMODAudioDevice) e chama start() p/ subir o
+   AudioTrack. Sem isso (NewObject→NULL via jni_stub) o System::init do FMOD dá erro 60. Damos
+   um device fake não-nulo + métodos (start/etc.) OK; a thread C (fmod_audio_thread) bombeia
+   fmodProcess no lugar da thread Java. */
+void *jni_fmod_device(void) { return &g_fmod_device_obj; }
+static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
+  (void)env; (void)mid;
+  if (clazz == class_for("org/fmod/FMODAudioDevice")) {
+    debugPrintf("jni_shim: NewObject(FMODAudioDevice) -> device fake\n"); return &g_fmod_device_obj;
+  }
+  return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressão */
+}
+static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){ (void)ap; return jni_NewObject(env,clazz,mid); }
+static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args){ (void)args; return jni_NewObject(env,clazz,mid); }
 
 /* GetJavaVM (index 219) — initJni chama isso */
 static jint jni_GetJavaVM(void *env, void **vm) {
@@ -1279,6 +1296,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[23] = (uintptr_t)jni_DeleteLocalRef;
   jni_env_vtable[25] = (uintptr_t)jni_NewLocalRef;
   jni_env_vtable[24] = (uintptr_t)jni_IsSameObject;
+  jni_env_vtable[28] = (uintptr_t)jni_NewObject;    /* NewObject (varargs) — FMODAudioDevice */
+  jni_env_vtable[29] = (uintptr_t)jni_NewObjectV;   /* NewObjectV (va_list) */
+  jni_env_vtable[30] = (uintptr_t)jni_NewObjectA;   /* NewObjectA (jvalue*) */
   jni_env_vtable[31] = (uintptr_t)jni_GetObjectClass;
   jni_env_vtable[32] = (uintptr_t)jni_IsInstanceOf;
   jni_env_vtable[33] = (uintptr_t)jni_GetMethodID;

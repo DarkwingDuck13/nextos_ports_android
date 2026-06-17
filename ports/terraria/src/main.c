@@ -4492,7 +4492,7 @@ int main(int argc, char **argv) {
      render — destrava o boot que espera o mixer). CUP_NOAUDIOTHREAD=1 desliga.
      s14: a própria thread checa opensles_shim_engine_active() e se desliga
      quando o OpenSL (FORCESL) assumiu o mixer. */
-  if (0 /* Cuphead FMOD audio thread (fmodProcess) — N/A no Terraria; áudio fase posterior */) {
+  if (getenv("TER_AUDIO")) {  /* experimento de som — gated, OFF no run.sh (não quebra o build OK) */
     g_fmod_env = env;
     pthread_t at; pthread_create(&at, NULL, fmod_audio_thread, NULL);
     pthread_detach(at);
