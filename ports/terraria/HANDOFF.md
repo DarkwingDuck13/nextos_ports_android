@@ -5,19 +5,30 @@
 **🔑 PISTA DECISIVA: até um MOUSE USB REAL não funciona no menu (NextOS testou).** Logo o problema
 NÃO é a nossa injeção — é que **input nenhum (real OU injetado) chega ao menu do Terraria**.
 
-### Hipótese mais provável (investigar PRIMEIRO):
-**O UPDATE do Terraria não roda (ou não processa input) porque FINGIMOS/PULAMOS os jobs**
-(TER_INLINETASK + TER_SKIPJOBWAIT). O jogo RENDERIZA (nativeRender roda) mas o loop de UPDATE
-(`Main.Update`/`PlayerInput.UpdateInput`) que lê o input pode não estar rodando de verdade →
-menu aparece mas é "estático/não-interativo". **Teste decisivo:**
-1. Hookar `Terraria.Main.Update` (il2cpp+0xfb97d0, argc=1) e `Terraria.GameInput.PlayerInput.UpdateInput`
-   (il2cpp+0x837e9c, argc=0) com um patch que SÓ LOGA (não no-op) e ver se rodam por-frame.
-   - Se NÃO rodam → o update loop está quebrado pelos jobs fingidos. FIX REAL = fazer os jobs RODAREM
-     (consertar o dispatch nativo, não fingir) OU achar por que o Update não roda.
-   - Se rodam → o input. Vai pro passo 2.
-2. Adicionar log DENTRO de `ter_fna_mouse_getstate`/`ter_fna_keyboard_getstate` (já existem em main.c):
-   o Terraria CHAMA o `GetState/0`? Se não → ele usa o **GetState/1** (overload com PlayerIndex) —
-   hookar o /1 também (Keyboard.GetState/1 @0xe164d0, GamePad.GetState/1 @0xe114ac, Mouse.GetState/1).
+### ✅ JÁ DIAGNOSTICADO NESTA SESSÃO (não re-investigar):
+- O Terraria **CHAMA `Mouse.GetState/0` E `Keyboard.GetState/0` TODA FRAME** (confirmado com
+  contador [FNAMOUSE]/[FNAKB]). **Logo o UPDATE RODA e LÊ o input** — a hipótese "jobs quebram o
+  update" está REFUTADA.
+- O nosso hook do `Mouse.GetState` preenche o layout PADRÃO FNA (X=int[0], Y=int[1], LeftButton=int[3]
+  =offset12) e o cursor (`g_cursor_x/y`) move com o analógico — MAS o menu não reage.
+- ⚠️ O "mouse USB real não funciona" é PORQUE o nosso hook do Mouse.GetState SOBRESCREVE o mouse real
+  (esperado, NÃO é sinal de que o engine não lê input).
+
+### 🎯 HIPÓTESE PRINCIPAL p/ a próxima sessão: o Terraria MOBILE usa **TOUCH**, não mouse, pro menu.
+O menu do Terraria Android é touch (tocar nos botões), não point-and-click de mouse. Por isso o
+cursor de mouse não navega. **Próximo passo:**
+1. Achar e hookar a entrada de TOUCH da FNA/Terraria:
+   - `Microsoft.Xna.Framework.Input.Touch.TouchPanel.GetState()` → `TouchCollection` (lista de
+     TouchLocation: id, state, position). Injetar 1 TouchLocation na posição do cursor quando A
+     apertado (state: Pressed/Moved/Released).
+   - OU `Terraria.Main` campos de touch (`Main.lastNPCFocus`? não — procurar `touchState`/
+     `TouchPanelState`). Sondar com a mesma sonda GPPROBE (já em main.c, gated): namespaces
+     "Microsoft.Xna.Framework.Input.Touch" classe "TouchPanel"/"TouchPanelState", método "GetState".
+2. Alternativa: o Terraria tem suporte a gamepad NATIVO no menu via `PlayerInput`/`UILinkPointNavigator`.
+   Hookar `PlayerInput.UpdateInput` (0x837e9c) pode não bastar (lê de várias fontes). Investigar se
+   `PlayerInput.UsingGamepad`/`CurrentInputMode` precisa ser forçado p/ "Gamepad" — aí o menu usa
+   navegação por D-pad (e o Keyboard.GetState hook OU um GamePad.GetState hook alimentaria).
+   GamePad.GetState/1 @0xe114ac (struct GamePadState — desmontar p/ layout: Buttons/DPad/ThumbSticks).
 
 ### O que JÁ FOI FEITO (não repetir):
 - ❌ `nativeInjectEvent(KeyEvent)`: BECO. Retorna false, nunca lê o evento (Unity 2021 espera ponteiro

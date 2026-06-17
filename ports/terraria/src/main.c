@@ -1710,6 +1710,7 @@ int ter_unity_getkeyup(int kc)   { int l=ter_kc_to_log(kc); return (l>=0 && !g_g
    8 uints bitmask de teclas em [0..31] + 1 campo em [32]). Preenche do js0 (XNA Keys).
    Chamada via shim que faz mov x0,x8 (x8=ptr do resultado). g_gp_log vem do ter_gamepad_poll. */
 void ter_fna_keyboard_getstate(void *result) {
+  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAKB] chamado #%d\n", c); fsync(2);} }
   uint32_t *ks = (uint32_t *)result;
   memset(ks, 0, 36);
   int n = 0;
@@ -1730,6 +1731,7 @@ float g_cursor_x = 640.0f, g_cursor_y = 360.0f;
 /* 🔑 FNA Mouse.GetState() -> MouseState (36 bytes, 9 ints): [0]=X [4]=Y [8]=scroll
    [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll. A=clique esquerdo. */
 void ter_fna_mouse_getstate(void *result) {
+  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAMOUSE] chamado #%d cur=%d,%d A=%d\n", c,(int)g_cursor_x,(int)g_cursor_y,g_gp_log[4]); fsync(2);} }
   int *ms = (int *)result;
   memset(ms, 0, 36);
   ms[0] = (int)g_cursor_x;            /* X */
