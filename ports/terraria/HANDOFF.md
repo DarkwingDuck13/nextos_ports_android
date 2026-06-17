@@ -1,6 +1,55 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
-## 🔊🎮 SESSÃO 2026-06-17 (tarde) — SOM SAINDO + PRÓXIMAS 3 TAREFAS (LEIA PRIMEIRO)
+## ✅✅✅ SESSÃO 2026-06-17 (noite) — AS 3 TAREFAS RESOLVIDAS (LEIA PRIMEIRO)
+**Device `192.168.31.89` (ssh root/`nextos`), jogo em `/storage/roms/terraria/`. Lançar: `sh run.sh`.**
+**Commit `ebb55c3`. Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; scp terraria .89`.**
+
+### 1) 🔊 ÁUDIO ACELERADO — RESOLVIDO (causa-raiz, não era taxa)
+O `DirectByteBuffer` do FMOD reportava capacidade **32768B (8192 frames)** ao `fmodProcess`
+(`jni_GetDirectBufferCapacity`), mas o pump (`fmod_audio_thread`) só enfileirava **4096B (1024
+frames)** no SDL. fmodProcess **enche o buffer inteiro e avança o clock do mixer** nesse tanto →
+o FMOD andava **8× mais rápido** que o playback → áudio acelerado. **FIX:** `g_fmod_cap=4096`
+(bloco DSP padrão do FMOD mobile) reportado **E** enfileirado (1:1 com o clock). Taxa fixada em
+44100/2 (= `getProperty(OUTPUT_SAMPLE_RATE)` do init; **não** confiar no offset-read — o MIXSPY
+provou que o mixer 0x805a94 nem é chamado e a struct do System não é a assumida). Math: pump
+back-pressured a ~43 chamadas/s × 1024 = 44100 frames/s = real-time. ✅ Tunável: `TER_AUDIO_BUF`
+(bytes/chamada), `TER_AUDIO_BP` (blocos back-pressure, def 4). **Falta só o NextOS confirmar de ouvido.**
+
+### 2) 🎮 CONTROLE XBOX COMPLETO — FEITO
+`g_gp_log` agora tem 16 estados. Lê do js0 (layout xpad/SDL): A0 B1 X2 Y3, LB4 RB5, Back6 Start7,
+**LT=eixo2 RT=eixo5** (gatilhos), **L3=btn9 R3=btn10** (cliques), DPad=eixos6/7. `ter_ctrl_feed`
+mapeia p/ Controller.Buttons do InControl: Action1-4, ShoulderL/R, **LTrig=6/RTrig=7** (dirige
+EIXO+botão), Options=8, **StickL=10/StickR=11**, Back=12. Eixos InControl 0-7 (incl. LTrig/RTrig
+analógicos). `my_gamepad_getstate` (XNA, TER_GPAD) também completo. **TER_GPAD NÃO é necessário** em
+produção (tudo via TER_CTRL).
+
+### 3) ⚙️ SETTINGS 3ª ABA + IDIOMA — FEITO
+- **Abas**: trocam com **LB/RB (L1/R1)** — R1=próxima, L1=anterior (shoulder, ControllerDevice). ⚠️ A
+  legenda na tela diz `[LT]/[RT]` mas o que troca de verdade é o **shoulder**. 3ª aba (Video) OK.
+- **Up/down dentro da aba**: `ter_menu_nav` (já funcionava).
+- **🔑 DROPDOWN (Idioma/Autopause/etc.)**: os itens **NÃO estão nas regiões do GUIInputRegionManager**
+  (overlay à direita, x~556 no espaço UI 902×507) e **não respondem a up/down nem a LT/RT** (nem
+  ControllerDevice nem XNA). Só respondem à **POSIÇÃO DO CURSOR (Mouse) + clique**. SOLUÇÃO: **MODO
+  CURSOR LIVRE** no `ter_menu_nav` — empurrar o **stick DIREITO** entra no modo (suspende nav por
+  linhas), move um cursor livre (TER_FCSPEED, def 8) e **A clica** o item sob o cursor; DPad cima/baixo
+  volta pra nav por linhas. ✅ Validado: Settings → Idioma → Português brasileiro (UI inteira virou
+  PT-BR). **A língua já está em PT-BR no save.**
+
+### 🧪 Infra de teste nova (gated, NÃO afeta produção)
+- `TER_GPVIRT=1` + `/tmp/tergp`: tokens `up/down/left/right/a/b/x/y/start/select/l1/r1/lt/rt/l3/r3`,
+  `rs:DX:DY` (stick direito), `cur:X:Y` (fixa cursor livre). Dirige o menu por ssh.
+- `TER_SHOTLIVE=1` + `touch /tmp/tershot` → `shot.ppm` (1280×720) sob demanda (scp+PIL p/ ver).
+- `/tmp/ternonav` (runtime) suspende o override de hover. `navhelper.sh` no device: `goto <linha>`
+  (requer TER_CTRLLOG), `snap <arq>`. `val.sh`/`navtest.sh` = launchers de teste.
+- `TER_CTRLLOG` loga `[NAV]`/`[FCUR]`; `TER_NAVDUMP` dumpa regiões; `TER_AUDIOSPY` (cs_hook+mix_hook).
+
+### Offsets-chave: (libunity) fmodProcess 0x811378, mixer 0x805a94, createSound 0x806cb4, output
+*0xc7c2f0; capacidade BB em `g_fmod_cap` (jni_shim.c). (libil2cpp) GetKeyRaw 0xc5c51c, GetAxisRaw
+0xc5c2f0, GamePad.GetState 0xe114ac, SetMousePosition 0xcbf18c. Cursor livre = `g_fcmode/g_fcx/g_fcy`.
+
+---
+
+## 🔊🎮 SESSÃO 2026-06-17 (tarde) — SOM SAINDO (HISTÓRICO, resolvido acima)
 **Device: `192.168.31.89` (ssh root / senha `nextos`). Jogo em `/storage/roms/terraria/`.**
 **Lançar pra jogar: `ssh root@192.168.31.89 'cd /storage/roms/terraria; sh run.sh'`** (run.sh já tem som).
 Diário de build/test: `cd ~/nextos_ports_android/ports/terraria; ./build.sh` → `scp terraria` → `sh audiotest.sh 80`.
