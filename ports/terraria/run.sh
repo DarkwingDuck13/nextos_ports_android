@@ -18,6 +18,10 @@ i=0; while [ -n "$(ter_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 # backend de vídeo: fbdev (Mali-450 Utgard) — EGL real do Mali via SDL2-mali
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
+mkdir -p "$GAMEDIR/Players"
+if [ -d "$GAMEDIR/default_players" ] && ! ls "$GAMEDIR"/Players/*.plr >/dev/null 2>&1; then
+  cp "$GAMEDIR"/default_players/*.plr "$GAMEDIR/Players"/ 2>/dev/null || true
+fi
 # boot (destrava job-system + render) + controle Xbox real via SDL_GameController.
 # CONTROLES: SDL normaliza o pad para layout Xbox; Terraria recebe InControl + XNA.
 # Menu usa TER_NAVMENU para D-pad/A; TER_RSCURSOR e teclado virtual ficam fora.

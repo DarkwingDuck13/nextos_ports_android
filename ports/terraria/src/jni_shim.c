@@ -22,6 +22,18 @@
 #define JNI_VTABLE_SIZE 512
 
 typedef int jint;
+typedef unsigned char jboolean;
+typedef union {
+  jboolean z;
+  signed char b;
+  unsigned short c;
+  short s;
+  jint i;
+  long j;
+  float f;
+  double d;
+  void *l;
+} jvalue;
 
 static uintptr_t jni_env_vtable[JNI_VTABLE_SIZE];
 static void *jni_env_ptr;
@@ -208,6 +220,132 @@ static void *iarr_new(const int *vals, int n) {
   else if (n > 0) memset(g_barr[i].buf, 0, n * 4);
   return &g_barr[i];
 }
+static void *boolarr_new(int n) {
+  int i = g_barr_n++ % MAX_BARR;
+  if (g_barr[i].buf) free(g_barr[i].buf);
+  g_barr[i].buf = (unsigned char *)calloc(n > 0 ? n : 1, 1);
+  g_barr[i].len = n;
+  return &g_barr[i];
+}
+
+/* ---- Unity soft keyboard bridge ---- */
+static int g_softinput_class;         /* classe fake p/ callbacks nativos do soft keyboard */
+static int g_softinput_active, g_softinput_manual, g_softinput_limit = 32, g_softinput_suppress_empty;
+static char g_softinput_text[128];
+static char g_softinput_last_confirmed[128];
+
+static void softinput_copy(char *dst, size_t cap, const char *src, int limit) {
+  if (!dst || cap == 0) return;
+  if (!src) src = "";
+  if (limit <= 0 || limit >= (int)cap) limit = (int)cap - 1;
+  size_t n = strlen(src);
+  if (n > (size_t)limit) n = (size_t)limit;
+  memcpy(dst, src, n);
+  dst[n] = 0;
+}
+static void *softinput_env(void) { return &jni_env_ptr; }
+static void softinput_native_visible(int visible) {
+  void *fn = jni_find_native("nativeSetKeyboardIsVisible");
+  if (fn) ((void (*)(void *, void *, jboolean))fn)(softinput_env(), &g_softinput_class, visible ? 1 : 0);
+}
+static void softinput_native_text(const char *text) {
+  void *fn = jni_find_native("nativeSetInputString");
+  if (fn) ((void (*)(void *, void *, void *))fn)(softinput_env(), &g_softinput_class, make_jstring(text ? text : ""));
+}
+static void softinput_native_selection(int start, int end) {
+  void *fn = jni_find_native("nativeSetInputSelection");
+  if (fn) ((void (*)(void *, void *, jint, jint))fn)(softinput_env(), &g_softinput_class, start, end);
+}
+static void softinput_native_closed(void) {
+  void *fn = jni_find_native("nativeSoftInputClosed");
+  if (fn) ((void (*)(void *, void *))fn)(softinput_env(), &g_softinput_class);
+}
+static void softinput_native_canceled(void) {
+  void *fn = jni_find_native("nativeSoftInputCanceled");
+  if (fn) ((void (*)(void *, void *))fn)(softinput_env(), &g_softinput_class);
+  else softinput_native_closed();
+}
+static void softinput_apply_text(void) {
+  int len = (int)strlen(g_softinput_text);
+  softinput_native_text(g_softinput_text);
+  softinput_native_selection(len, len);
+}
+static void softinput_show(void *env, void *text_j, void *placeholder_j, int limit) {
+  (void)env;
+  const char *text = resolve_jstring(text_j);
+  const char *placeholder = resolve_jstring(placeholder_j);
+  if (limit <= 0 || limit > 120) limit = 32;
+  g_softinput_limit = limit;
+  if (getenv("TER_NOVKBD") && !getenv("TER_OSK")) {
+    debugPrintf("[SOFTINPUT] show ignorado por TER_NOVKBD text=\"%s\"\n", text ? text : "");
+    return;
+  }
+  g_softinput_manual = getenv("TER_OSK") ? 1 : 0;
+  if ((!text || !text[0]) && g_softinput_suppress_empty > 0 && g_softinput_last_confirmed[0]) {
+    g_softinput_suppress_empty--;
+    softinput_copy(g_softinput_text, sizeof g_softinput_text, g_softinput_last_confirmed, g_softinput_limit);
+    softinput_apply_text();
+    softinput_native_visible(0);
+    softinput_native_closed();
+    softinput_apply_text();
+    g_softinput_active = 0;
+    g_softinput_manual = 0;
+    debugPrintf("[SOFTINPUT] suppress empty reopen -> keep \"%s\" (%d left)\n",
+                g_softinput_text, g_softinput_suppress_empty);
+    return;
+  }
+  softinput_copy(g_softinput_text, sizeof g_softinput_text, text, g_softinput_limit);
+  g_softinput_active = 1;
+  softinput_native_visible(1);
+  softinput_apply_text();
+  debugPrintf("[SOFTINPUT] show text=\"%s\" placeholder=\"%s\" limit=%d\n",
+              g_softinput_text, placeholder ? placeholder : "", g_softinput_limit);
+}
+int jni_softinput_active(void) {
+  return g_softinput_active && (!getenv("TER_NOVKBD") || g_softinput_manual || getenv("TER_OSK"));
+}
+const char *jni_softinput_text(void) { return g_softinput_text; }
+int jni_softinput_limit(void) { return g_softinput_limit > 0 ? g_softinput_limit : 32; }
+void jni_softinput_open(const char *text, int limit) {
+  if (limit <= 0 || limit > 120) limit = 32;
+  g_softinput_manual = 1;
+  g_softinput_limit = limit;
+  softinput_copy(g_softinput_text, sizeof g_softinput_text, text, g_softinput_limit);
+  g_softinput_active = 1;
+  softinput_native_visible(1);
+  softinput_apply_text();
+  debugPrintf("[VKBD] open virtual text=\"%s\" limit=%d\n", g_softinput_text, g_softinput_limit);
+}
+void jni_softinput_set_text(const char *text) {
+  if (!jni_softinput_active()) return;
+  softinput_copy(g_softinput_text, sizeof g_softinput_text, text, jni_softinput_limit());
+  softinput_apply_text();
+}
+void jni_softinput_commit(const char *text) {
+  softinput_copy(g_softinput_text, sizeof g_softinput_text, text, jni_softinput_limit());
+  if (!g_softinput_text[0]) {
+    const char *def = getenv("TER_VK_DEFAULT") ? getenv("TER_VK_DEFAULT") : "PLAYER";
+    softinput_copy(g_softinput_text, sizeof g_softinput_text, def, jni_softinput_limit());
+  }
+  softinput_copy(g_softinput_last_confirmed, sizeof g_softinput_last_confirmed,
+                 g_softinput_text, sizeof g_softinput_last_confirmed - 1);
+  softinput_apply_text();
+  softinput_native_visible(0);
+  softinput_native_closed();
+  softinput_apply_text();
+  g_softinput_active = 0;
+  g_softinput_manual = 0;
+  g_softinput_suppress_empty = 5;
+  debugPrintf("[VKBD] OK text=\"%s\"\n", g_softinput_text);
+}
+void jni_softinput_cancel(void) {
+  softinput_native_visible(0);
+  softinput_native_canceled();
+  g_softinput_active = 0;
+  g_softinput_manual = 0;
+  g_softinput_suppress_empty = 0;
+  debugPrintf("[VKBD] teclado cancelado\n");
+}
 
 /* --- InputStream (FILE*) tracking --- */
 #define MAX_ASTREAMS 32
@@ -294,6 +432,11 @@ struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
 static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virtual) */
+static int g_current_activity;        /* UnityPlayer.currentActivity fake */
+static int g_current_activity_field_id;
+static int g_pressedstates_field_obj; /* java.lang.reflect.Field fake */
+static int g_pressedstates_field_id;  /* jfieldID fake */
+static int g_bool_array_class;        /* boolean[].class fake */
 
 /* classes distintas por nome (Unity compara KeyEvent.class vs MotionEvent.class) */
 static struct { const char *name; int tag; } g_classreg[128];
@@ -339,7 +482,32 @@ static void *jni_GetFieldID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetFieldID(%s, %s)\n", name, sig);
+  if (getenv("TER_KBFIX") && name && strcmp(name, "PressedStates") == 0) {
+    debugPrintf("[KBFIX] GetFieldID(PressedStates, %s) -> field fake\n", sig ? sig : "");
+    return &g_pressedstates_field_id;
+  }
   return reg_mid(name, sig);   /* registra por nome (DisplayMetrics fields) */
+}
+
+static void *jni_FromReflectedField(void *env, void *field) {
+  (void)env;
+  if (getenv("TER_KBFIX") && field == &g_pressedstates_field_obj) {
+    debugPrintf("[KBFIX] FromReflectedField -> PressedStates fieldID\n");
+    return &g_pressedstates_field_id;
+  }
+  return field;
+}
+
+static void *jni_GetObjectField(void *env, void *obj, void *fieldID) {
+  (void)env; (void)obj;
+  const char *nm = mid_name(fieldID);
+  if (getenv("TER_KBFIX") &&
+      (fieldID == &g_pressedstates_field_id || (nm && strcmp(nm, "PressedStates") == 0))) {
+    debugPrintf("[KBFIX] GetObjectField(PressedStates) -> boolean[512]\n");
+    return boolarr_new(512);
+  }
+  static int fake_obj_field;
+  return &fake_obj_field;
 }
 
 /* GetIntField (idx 100): DisplayMetrics widthPixels/heightPixels/densityDpi.
@@ -390,6 +558,10 @@ static void *jni_GetStaticFieldID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetStaticFieldID(%s, %s)\n", name, sig);
+  if (getenv("TER_KBFIX") && name && strcmp(name, "currentActivity") == 0) {
+    debugPrintf("[KBFIX] GetStaticFieldID(currentActivity) -> activity field fake\n");
+    return &g_current_activity_field_id;
+  }
   if (strcmp(name, "OBB_VERSIONCODE") == 0)
     return &g_method_tags[FID_OBB_VERSIONCODE];
   /* registra o nome p/ GetStaticObjectField devolver a chave certa
@@ -405,6 +577,33 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
   static int fake_obj;
   if (nm) {
+    if (getenv("TER_KBFIX")) {
+      if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
+        void *name_j = va_arg(ap, void *);
+        const char *fnm = resolve_jstring(name_j);
+        if (fnm && strcmp(fnm, "PressedStates") == 0) {
+          debugPrintf("[KBFIX] CallObjectMethodV(%s/PressedStates) -> field fake\n", nm);
+          return &g_pressedstates_field_obj;
+        }
+      }
+      if (obj == &g_pressedstates_field_obj) {
+        if (strcmp(nm, "getDeclaringClass") == 0) {
+          debugPrintf("[KBFIX] CallObjectMethodV(getDeclaringClass) -> activity class fake\n");
+          return class_for("com/unity3d/player/UnityPlayerActivity");
+        }
+        if (strcmp(nm, "getType") == 0) {
+          debugPrintf("[KBFIX] CallObjectMethodV(getType) -> boolean[] class fake\n");
+          return &g_bool_array_class;
+        }
+        if (strcmp(nm, "getName") == 0) return make_jstring("PressedStates");
+      }
+      if (obj == &g_bool_array_class &&
+          (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
+           strcmp(nm, "getTypeName") == 0)) {
+        debugPrintf("[KBFIX] CallObjectMethodV(%s) -> [Z\n", nm);
+        return make_jstring("[Z");
+      }
+    }
     if (strcmp(nm, "getPackageName") == 0)
       return make_jstring(g_package_name);
     /* ---- Gamepad Xbox 360 virtual (TER_GAMEPAD): InputManager.getInputDevice(id) + getters ---- */
@@ -577,6 +776,39 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   return r;
 }
 
+static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
+  (void)env;
+  const char *nm = mid_name(methodID);
+  if (nm && getenv("TER_KBFIX")) {
+    if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
+      const char *fnm = args ? resolve_jstring(args[0].l) : "";
+      if (fnm && strcmp(fnm, "PressedStates") == 0) {
+        debugPrintf("[KBFIX] CallObjectMethodA(%s/PressedStates) -> field fake\n", nm);
+        return &g_pressedstates_field_obj;
+      }
+    }
+    if (obj == &g_pressedstates_field_obj) {
+      if (strcmp(nm, "getDeclaringClass") == 0) {
+        debugPrintf("[KBFIX] CallObjectMethodA(getDeclaringClass) -> activity class fake\n");
+        return class_for("com/unity3d/player/UnityPlayerActivity");
+      }
+      if (strcmp(nm, "getType") == 0) {
+        debugPrintf("[KBFIX] CallObjectMethodA(getType) -> boolean[] class fake\n");
+        return &g_bool_array_class;
+      }
+      if (strcmp(nm, "getName") == 0) return make_jstring("PressedStates");
+    }
+    if (obj == &g_bool_array_class &&
+        (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
+         strcmp(nm, "getTypeName") == 0)) {
+      debugPrintf("[KBFIX] CallObjectMethodA(%s) -> [Z\n", nm);
+      return make_jstring("[Z");
+    }
+  }
+  static int fake_obj;
+  return &fake_obj;
+}
+
 /* Setado por NewStringUTF("gles-api-check") (logo antes do getBoolean da pref);
  * consumido pelo próximo getBoolean -> retorna true ("aviso já dispensado") e o
  * jogo PULA o AlertDialog "hardware requirements" (que travava o boot, stub JNI).
@@ -719,6 +951,30 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  if (nm && strcmp(nm, "showSoftInput") == 0) {
+    void *text_j = va_arg(ap, void *);
+    (void)va_arg(ap, int); /* keyboardType */
+    (void)va_arg(ap, int); /* autocorrection */
+    (void)va_arg(ap, int); /* multiline */
+    (void)va_arg(ap, int); /* secure */
+    (void)va_arg(ap, int); /* alert */
+    void *placeholder_j = va_arg(ap, void *);
+    int limit = va_arg(ap, int);
+    (void)va_arg(ap, int); /* selectionStart */
+    (void)va_arg(ap, int); /* selectionEnd */
+    softinput_show(env, text_j, placeholder_j, limit);
+    return;
+  }
+  if (nm && strcmp(nm, "hideSoftInput") == 0) {
+    if (g_softinput_manual && g_softinput_active) {
+      debugPrintf("[SOFTINPUT] hide ignorado: teclado virtual manual ativo\n");
+      return;
+    }
+    softinput_native_visible(0);
+    g_softinput_active = 0;
+    debugPrintf("[SOFTINPUT] hide\n");
+    return;
+  }
   /* Message.sendToTarget(): a main posta a Message no Looper (fake) e bloqueia num cond
      nativo esperando o handleMessage processá-la. Dirigimos handleMessage AQUI (síncrono no
      thread da main, ANTES dela bloquear → predicado já satisfeito). TER_NOHANDLEMSG desliga. */
@@ -762,6 +1018,28 @@ static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
   va_end(ap);
 }
 
+static void jni_CallVoidMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
+  (void)obj;
+  const char *nm = mid_name(methodID);
+  debugPrintf("jni_shim: CallVoidMethodA(%s)\n", nm ? nm : "?");
+  if (nm && strcmp(nm, "showSoftInput") == 0) {
+    void *text_j = args ? args[0].l : NULL;
+    void *placeholder_j = args ? args[6].l : NULL;
+    int limit = args ? args[7].i : 32;
+    softinput_show(env, text_j, placeholder_j, limit);
+    return;
+  }
+  if (nm && strcmp(nm, "hideSoftInput") == 0) {
+    if (g_softinput_manual && g_softinput_active) {
+      debugPrintf("[SOFTINPUT] hideA ignorado: teclado virtual manual ativo\n");
+      return;
+    }
+    softinput_native_visible(0);
+    g_softinput_active = 0;
+    debugPrintf("[SOFTINPUT] hide\n");
+  }
+}
+
 /* CallStaticObjectMethod (index 113) */
 static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
                                          void *methodID, va_list ap) {
@@ -785,6 +1063,26 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
     void *arg0 = va_arg(ap, void *);
     return arg0;
+  }
+  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
+    (void)va_arg(ap, void *);          /* Class */
+    void *name_j = va_arg(ap, void *);
+    void *sig_j = va_arg(ap, void *);
+    (void)va_arg(ap, int);             /* isStatic */
+    const char *fnm = resolve_jstring(name_j);
+    const char *sig = resolve_jstring(sig_j);
+    if (fnm && !strcmp(fnm, "PressedStates")) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
+                  sig ? sig : "");
+      return &g_pressedstates_field_obj;
+    }
+  }
+  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldSignature")) {
+    void *field = va_arg(ap, void *);
+    if (field == &g_pressedstates_field_obj) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldSignature(PressedStates) -> [Z\n");
+      return make_jstring("[Z");
+    }
   }
   /* InputDevice.getDevice(id) é ESTÁTICO → o device Xbox 360 virtual (TER_GAMEPAD). */
   if (nm && !strcmp(nm, "getDevice")) {
@@ -814,6 +1112,29 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, 
   void *r = jni_CallStaticObjectMethodV(env, clazz, methodID, ap);
   va_end(ap);
   return r;
+}
+
+static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
+  (void)env; (void)clazz;
+  const char *nm = mid_name(methodID);
+  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
+    const char *fnm = args ? resolve_jstring(args[1].l) : "";
+    const char *sig = args ? resolve_jstring(args[2].l) : "";
+    if (fnm && !strcmp(fnm, "PressedStates")) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
+                  sig ? sig : "");
+      return &g_pressedstates_field_obj;
+    }
+  }
+  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldSignature")) {
+    void *field = args ? args[0].l : NULL;
+    if (field == &g_pressedstates_field_obj) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldSignature(PressedStates) -> [Z\n");
+      return make_jstring("[Z");
+    }
+  }
+  static int fake_result;
+  return &fake_result;
 }
 
 /* CallStaticBooleanMethod (index 124) */
@@ -884,6 +1205,12 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
   (void)env;
   (void)clazz;
   const char *nm = mid_name(fieldID);
+  if (getenv("TER_KBFIX") &&
+      (fieldID == &g_current_activity_field_id ||
+       (nm && strcmp(nm, "currentActivity") == 0))) {
+    debugPrintf("[KBFIX] GetStaticObjectField(currentActivity) -> activity fake\n");
+    return &g_current_activity;
+  }
   /* constantes String do AudioManager: devolver o NOME como valor p/ getProperty
      distinguir SAMPLE_RATE x FRAMES_PER_BUFFER */
   if (nm && (strstr(nm, "PROPERTY_") || strstr(nm, "SERVICE"))) {
@@ -1056,6 +1383,24 @@ static void jni_GetIntArrayRegion(void *env, void *arr, int start, int len, void
     memcpy(buf, b->buf + start * 4, len * 4);
 }
 static void *jni_NewIntArray(void *env, int len) { (void)env; return iarr_new(NULL, len); }
+static void *jni_NewBooleanArray(void *env, int len) { (void)env; return boolarr_new(len); }
+static void *jni_GetBooleanArrayElements(void *env, void *arr, void *isCopy) {
+  (void)env; if (isCopy) *(unsigned char *)isCopy = 0;
+  struct barr *b = barr_find(arr); return b ? b->buf : NULL;
+}
+static void jni_ReleaseBooleanArrayElements(void *env, void *arr, void *el, int m) {
+  (void)env; (void)arr; (void)el; (void)m;
+}
+static void jni_GetBooleanArrayRegion(void *env, void *arr, int start, int len, void *buf) {
+  (void)env; struct barr *b = barr_find(arr);
+  if (b && buf && start >= 0 && len >= 0 && start + len <= b->len)
+    memcpy(buf, b->buf + start, len);
+}
+static void jni_SetBooleanArrayRegion(void *env, void *arr, int start, int len, const void *buf) {
+  (void)env; struct barr *b = barr_find(arr);
+  if (b && buf && start >= 0 && len >= 0 && start + len <= b->len)
+    memcpy(b->buf + start, buf, len);
+}
 
 /* ---- JavaVM functions ---- */
 
@@ -1260,6 +1605,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
    *   0-3:   reserved
    *   4:     GetVersion
    *   6:     FindClass
+   *   8:     FromReflectedField
    *  15:     ExceptionOccurred
    *  17:     ExceptionClear
    *  21:     NewGlobalRef
@@ -1268,13 +1614,13 @@ void jni_shim_init(void **out_vm, void **out_env) {
    *  25:     NewLocalRef
    *  31:     GetObjectClass
    *  33:     GetMethodID
-   *  34/35:  CallObjectMethod / V
+   *  34/35/36: CallObjectMethod / V / A
    *  37/38:  CallBooleanMethod / V
    *  49/50:  CallIntMethod / V
-   *  61/62:  CallVoidMethod / V
-   *  94:     GetFieldID
+   *  61/62/63: CallVoidMethod / V / A
+   *  94/95:  GetFieldID / GetObjectField
    * 113:     GetStaticMethodID
-   * 114/115: CallStaticObjectMethod / V
+   * 114/115/116: CallStaticObjectMethod / V / A
    * 117/118: CallStaticBooleanMethod / V
    * 129/130: CallStaticIntMethod / V
    * 141/142: CallStaticVoidMethod / V
@@ -1290,14 +1636,20 @@ void jni_shim_init(void **out_vm, void **out_env) {
    */
   jni_env_vtable[4] = (uintptr_t)jni_GetVersion;
   jni_env_vtable[6] = (uintptr_t)jni_FindClass;
+  jni_env_vtable[8] = (uintptr_t)jni_FromReflectedField;
   jni_env_vtable[215] = (uintptr_t)jni_RegisterNatives;  /* recon: Unity */
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;        /* recon: Unity initJni */
   /* AssetManager bridge: byte-array functions */
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength_real;
+  jni_env_vtable[175] = (uintptr_t)jni_NewBooleanArray;
   jni_env_vtable[176] = (uintptr_t)jni_NewByteArray;
+  jni_env_vtable[183] = (uintptr_t)jni_GetBooleanArrayElements;
   jni_env_vtable[184] = (uintptr_t)jni_GetByteArrayElements;
+  jni_env_vtable[191] = (uintptr_t)jni_ReleaseBooleanArrayElements;
   jni_env_vtable[192] = (uintptr_t)jni_ReleaseByteArrayElements;
+  jni_env_vtable[199] = (uintptr_t)jni_GetBooleanArrayRegion;
   jni_env_vtable[200] = (uintptr_t)jni_GetByteArrayRegion;
+  jni_env_vtable[207] = (uintptr_t)jni_SetBooleanArrayRegion;
   jni_env_vtable[208] = (uintptr_t)jni_SetByteArrayRegion;
   jni_env_vtable[15] = (uintptr_t)jni_ExceptionOccurred;
   jni_env_vtable[17] = (uintptr_t)jni_ExceptionClear;
@@ -1316,6 +1668,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[53] = (uintptr_t)jni_CallLongMethodV;
   jni_env_vtable[34] = (uintptr_t)jni_CallObjectMethod;
   jni_env_vtable[35] = (uintptr_t)jni_CallObjectMethodV;   /* V variant (va_list) */
+  jni_env_vtable[36] = (uintptr_t)jni_CallObjectMethodA;   /* A variant (jvalue*) */
   jni_env_vtable[37] = (uintptr_t)jni_CallBooleanMethod;
   jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethodV;  /* V (va_list) */
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
@@ -1326,10 +1679,13 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[102] = (uintptr_t)jni_GetFloatField;      /* DisplayMetrics float fields */
   jni_env_vtable[61] = (uintptr_t)jni_CallVoidMethod;
   jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethodV;     /* V (va_list) */
+  jni_env_vtable[63] = (uintptr_t)jni_CallVoidMethodA;     /* A (jvalue*) */
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;
+  jni_env_vtable[95] = (uintptr_t)jni_GetObjectField;
   jni_env_vtable[113] = (uintptr_t)jni_GetStaticMethodID;
   jni_env_vtable[114] = (uintptr_t)jni_CallStaticObjectMethod;
   jni_env_vtable[115] = (uintptr_t)jni_CallStaticObjectMethodV; /* V (va_list) */
+  jni_env_vtable[116] = (uintptr_t)jni_CallStaticObjectMethodA; /* A (jvalue*) */
   jni_env_vtable[117] = (uintptr_t)jni_CallStaticBooleanMethod;
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethod; /* V */
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;
@@ -1345,10 +1701,15 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[170] = (uintptr_t)jni_ReleaseStringUTFChars;
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength;
   jni_env_vtable[173] = (uintptr_t)jni_GetObjectArrayElement; /* doFrame args[0]=Long */
+  jni_env_vtable[175] = (uintptr_t)jni_NewBooleanArray;       /* NewBooleanArray */
   jni_env_vtable[179] = (uintptr_t)jni_NewIntArray;          /* NewIntArray */
+  jni_env_vtable[183] = (uintptr_t)jni_GetBooleanArrayElements;
   jni_env_vtable[187] = (uintptr_t)jni_GetIntArrayElements;  /* int[] elements */
+  jni_env_vtable[191] = (uintptr_t)jni_ReleaseBooleanArrayElements;
   jni_env_vtable[195] = (uintptr_t)jni_ReleaseIntArrayElements;
+  jni_env_vtable[199] = (uintptr_t)jni_GetBooleanArrayRegion;
   jni_env_vtable[203] = (uintptr_t)jni_GetIntArrayRegion;
+  jni_env_vtable[207] = (uintptr_t)jni_SetBooleanArrayRegion;
   jni_env_vtable[205] = (uintptr_t)jni_ExceptionCheck;
   jni_env_vtable[230] = (uintptr_t)jni_GetDirectBufferAddress;
   jni_env_vtable[231] = (uintptr_t)jni_GetDirectBufferCapacity;

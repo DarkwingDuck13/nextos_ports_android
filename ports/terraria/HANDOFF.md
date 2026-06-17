@@ -1,5 +1,22 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES + PLAYER SAVE FUNCIONANDO
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+Estado validado depois do problema do teclado:
+- A solução prática do nome/personagem é **não usar teclado**.
+- Existe um player pronto em `ports/terraria/default_players/Spedyleonik.plr`.
+- `run.sh` cria `Players/` e copia `default_players/*.plr` quando a pasta ainda não tem `.plr`.
+- No device, o save está instalado em `/storage/roms/terraria/Players/Spedyleonik.plr`.
+- NextOS confirmou em teste real: **"deu certo"**.
+- `run.sh` default fica sem `TER_OSK`; manter `TER_NOVKBD=1`.
+- A navegação horizontal no menu foi corrigida: em linhas com vários botões (`Voltar | Aleatório | Criar`), esquerda/direita agora troca coluna.
+
+Não reabrir como default:
+- Não ligar `TER_OSK` no launcher.
+- Não depender do mini teclado para criar personagem.
+- Não remover o player padrão sem outro `.plr` validado.
+
 ## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES FUNCIONANDO, TECLADO DESLIGADO
 **Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 

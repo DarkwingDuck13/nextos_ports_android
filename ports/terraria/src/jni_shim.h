@@ -13,6 +13,15 @@ void jni_shim_init(void **out_vm, void **out_env);
 // recon: acha o ponteiro de um metodo nativo registrado via RegisterNatives
 void *jni_find_native(const char *name);
 
+// Unity soft keyboard bridge (Terraria name/world text fields)
+int jni_softinput_active(void);
+const char *jni_softinput_text(void);
+int jni_softinput_limit(void);
+void jni_softinput_open(const char *text, int limit);
+void jni_softinput_set_text(const char *text);
+void jni_softinput_commit(const char *text);
+void jni_softinput_cancel(void);
+
 // FMOD AudioTrack: ByteBuffer sentinel + PCM buffer p/ a thread de audio
 void *jni_fmod_bytebuffer(void);
 void *jni_fmod_pcm(void);

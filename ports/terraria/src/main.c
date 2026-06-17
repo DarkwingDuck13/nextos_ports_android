@@ -1690,47 +1690,104 @@ static unsigned char g_gp_log[16], g_gp_log_prev[16];
 float g_lt_analog, g_rt_analog;   /* gatilhos analógicos 0..1 (LT/RT) */
 /* lê o js0 e recalcula o estado lógico (1×/frame); guarda o anterior p/ edge (GetKeyDown). */
 static void ter_gamepad_poll(void) {
-  if (g_gp_fd == -2) {
-    const char *dev = getenv("TER_GP_DEV") ? getenv("TER_GP_DEV") : "/dev/input/js0";
-    g_gp_fd = open(dev, O_RDONLY | O_NONBLOCK);
-    fprintf(stderr, "[TGP] js0 fd=%d (%s)\n", g_gp_fd, dev); fsync(2);
-  }
-  if (g_gp_fd < 0) return;
-  struct ter_js_event e;
-  while (read(g_gp_fd, &e, 8) == 8) {
-    int t = e.type & 0x7f;
-    if (t == 1 && e.number < 24) g_gp_btn[e.number] = e.value ? 1 : 0;
-    else if (t == 2 && e.number < 24) g_gp_axis[e.number] = e.value;
-  }
-  int TH = 16000;
-  int axDX = getenv("TER_GP_AXDX") ? atoi(getenv("TER_GP_AXDX")) : 6;
-  int axDY = getenv("TER_GP_AXDY") ? atoi(getenv("TER_GP_AXDY")) : 7;
-  int bA=getenv("TER_GP_A")?atoi(getenv("TER_GP_A")):0, bB=getenv("TER_GP_B")?atoi(getenv("TER_GP_B")):1;
-  int bX=getenv("TER_GP_X")?atoi(getenv("TER_GP_X")):2, bY=getenv("TER_GP_Y")?atoi(getenv("TER_GP_Y")):3;
-  int bL=getenv("TER_GP_L1")?atoi(getenv("TER_GP_L1")):4, bR=getenv("TER_GP_R1")?atoi(getenv("TER_GP_R1")):5;
-  int bSe=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6, bSt=getenv("TER_GP_ST")?atoi(getenv("TER_GP_ST")):7;
   memcpy(g_gp_log_prev, g_gp_log, sizeof g_gp_log);
-  g_gp_log[0] = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH) || g_gp_btn[12] ? 1:0; /* up (+ dpad-btn 12) */
-  g_gp_log[1] = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH) || g_gp_btn[13] ? 1:0;
-  g_gp_log[2] = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH) || g_gp_btn[14] ? 1:0;
-  g_gp_log[3] = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH) || g_gp_btn[15] ? 1:0;
-  g_gp_log[4] = g_gp_btn[bA]; g_gp_log[5] = g_gp_btn[bB];
-  g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
-  g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
-  g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
-  /* gatilhos/sticks-clique (LT/RT/L3/R3) DESLIGADOS por padrão: o layout de eixos/botões varia por
-     controle e estava disparando gatilho-fantasma (ex.: stick direito no eixo 2 virava LTrig). Só
-     liga sob env explícito (TER_GP_AXLT/AXRT/L3/R3) DEPOIS de confirmar o layout real do controle. */
-  if (getenv("TER_GP_AXLT") || getenv("TER_GP_AXRT")) {
-    int axLT = getenv("TER_GP_AXLT") ? atoi(getenv("TER_GP_AXLT")) : -1;
-    int axRT = getenv("TER_GP_AXRT") ? atoi(getenv("TER_GP_AXRT")) : -1;
-    g_lt_analog = (axLT>=0 && g_gp_axis[axLT] > 0) ? g_gp_axis[axLT] / 32767.0f : 0.0f;
-    g_rt_analog = (axRT>=0 && g_gp_axis[axRT] > 0) ? g_gp_axis[axRT] / 32767.0f : 0.0f;
-    g_gp_log[12] = g_lt_analog > 0.30f ? 1 : 0;
-    g_gp_log[13] = g_rt_analog > 0.30f ? 1 : 0;
-  } else { g_lt_analog = g_rt_analog = 0.0f; g_gp_log[12] = g_gp_log[13] = 0; }
-  if (getenv("TER_GP_L3")) g_gp_log[14] = g_gp_btn[atoi(getenv("TER_GP_L3"))&31]; else g_gp_log[14]=0;
-  if (getenv("TER_GP_R3")) g_gp_log[15] = g_gp_btn[atoi(getenv("TER_GP_R3"))&31]; else g_gp_log[15]=0;
+  memset(g_gp_log, 0, sizeof g_gp_log);
+
+  int used_sdl = 0;
+  static SDL_GameController *gc;
+  static int sdl_tried;
+  if (!getenv("TER_GP_RAWJS")) {
+    if (!sdl_tried) {
+      sdl_tried = 1;
+      SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS);
+      int n = SDL_NumJoysticks();
+      fprintf(stderr, "[TGP] SDL_NumJoysticks=%d\n", n); fsync(2);
+      for (int i = 0; i < n; i++) {
+        if (!SDL_IsGameController(i)) continue;
+        gc = SDL_GameControllerOpen(i);
+        if (gc) {
+          fprintf(stderr, "[TGP] Xbox layout via SDL_GameController js%d: %s\n",
+                  i, SDL_GameControllerName(gc) ? SDL_GameControllerName(gc) : "?");
+          fsync(2);
+          break;
+        }
+      }
+    }
+    if (gc) {
+      SDL_GameControllerUpdate();
+      g_gp_axis[0] = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
+      g_gp_axis[1] = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
+      g_gp_axis[3] = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX);
+      g_gp_axis[4] = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY);
+      short lt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+      short rt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+      g_lt_analog = lt > 0 ? lt / 32767.0f : 0.0f;
+      g_rt_analog = rt > 0 ? rt / 32767.0f : 0.0f;
+      int TH = 16000;
+      g_gp_log[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP) ||
+                    g_gp_axis[1] < -TH;
+      g_gp_log[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
+                    g_gp_axis[1] > TH;
+      g_gp_log[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
+                    g_gp_axis[0] < -TH;
+      g_gp_log[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
+                    g_gp_axis[0] > TH;
+      g_gp_log[4] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
+      g_gp_log[5] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B);
+      g_gp_log[6] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
+      g_gp_log[7] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
+      g_gp_log[8] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START);
+      g_gp_log[9] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK);
+      g_gp_log[10]= SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+      g_gp_log[11]= SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+      g_gp_log[12]= g_lt_analog > 0.30f;
+      g_gp_log[13]= g_rt_analog > 0.30f;
+      g_gp_log[14]= SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+      g_gp_log[15]= SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+      used_sdl = 1;
+    }
+  }
+
+  if (!used_sdl) {
+    if (g_gp_fd == -2) {
+      const char *dev = getenv("TER_GP_DEV") ? getenv("TER_GP_DEV") : "/dev/input/js0";
+      g_gp_fd = open(dev, O_RDONLY | O_NONBLOCK);
+      fprintf(stderr, "[TGP] js0 fd=%d (%s)\n", g_gp_fd, dev); fsync(2);
+    }
+    if (g_gp_fd >= 0) {
+      struct ter_js_event e;
+      while (read(g_gp_fd, &e, 8) == 8) {
+        int t = e.type & 0x7f;
+        if (t == 1 && e.number < 24) g_gp_btn[e.number] = e.value ? 1 : 0;
+        else if (t == 2 && e.number < 24) g_gp_axis[e.number] = e.value;
+      }
+      int TH = 16000;
+      int axDX = getenv("TER_GP_AXDX") ? atoi(getenv("TER_GP_AXDX")) : 6;
+      int axDY = getenv("TER_GP_AXDY") ? atoi(getenv("TER_GP_AXDY")) : 7;
+      int bA=getenv("TER_GP_A")?atoi(getenv("TER_GP_A")):0, bB=getenv("TER_GP_B")?atoi(getenv("TER_GP_B")):1;
+      int bX=getenv("TER_GP_X")?atoi(getenv("TER_GP_X")):2, bY=getenv("TER_GP_Y")?atoi(getenv("TER_GP_Y")):3;
+      int bL=getenv("TER_GP_L1")?atoi(getenv("TER_GP_L1")):4, bR=getenv("TER_GP_R1")?atoi(getenv("TER_GP_R1")):5;
+      int bSe=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6, bSt=getenv("TER_GP_ST")?atoi(getenv("TER_GP_ST")):7;
+      g_gp_log[0] = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH) || g_gp_btn[12] ? 1:0;
+      g_gp_log[1] = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH) || g_gp_btn[13] ? 1:0;
+      g_gp_log[2] = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH) || g_gp_btn[14] ? 1:0;
+      g_gp_log[3] = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH) || g_gp_btn[15] ? 1:0;
+      g_gp_log[4] = g_gp_btn[bA]; g_gp_log[5] = g_gp_btn[bB];
+      g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
+      g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
+      g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
+      if (getenv("TER_GP_AXLT") || getenv("TER_GP_AXRT")) {
+        int axLT = getenv("TER_GP_AXLT") ? atoi(getenv("TER_GP_AXLT")) : -1;
+        int axRT = getenv("TER_GP_AXRT") ? atoi(getenv("TER_GP_AXRT")) : -1;
+        g_lt_analog = (axLT>=0 && g_gp_axis[axLT] > 0) ? g_gp_axis[axLT] / 32767.0f : 0.0f;
+        g_rt_analog = (axRT>=0 && g_gp_axis[axRT] > 0) ? g_gp_axis[axRT] / 32767.0f : 0.0f;
+        g_gp_log[12] = g_lt_analog > 0.30f ? 1 : 0;
+        g_gp_log[13] = g_rt_analog > 0.30f ? 1 : 0;
+      } else { g_lt_analog = g_rt_analog = 0.0f; g_gp_log[12] = g_gp_log[13] = 0; }
+      if (getenv("TER_GP_L3")) g_gp_log[14] = g_gp_btn[atoi(getenv("TER_GP_L3"))&31]; else g_gp_log[14]=0;
+      if (getenv("TER_GP_R3")) g_gp_log[15] = g_gp_btn[atoi(getenv("TER_GP_R3"))&31]; else g_gp_log[15]=0;
+    }
+  }
   /* cursor do mouse: analógico direito (3,4 default) E esquerdo movem o cursor (point-and-click do menu) */
   extern float g_cursor_x, g_cursor_y;
   int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
@@ -1752,8 +1809,12 @@ static void ter_gamepad_poll(void) {
   if (g_cursor_x < 0) g_cursor_x = 0; if (g_cursor_x > 1280) g_cursor_x = 1280;
   if (g_cursor_y < 0) g_cursor_y = 0; if (g_cursor_y > 720) g_cursor_y = 720;
   if (getenv("TER_GPAXLOG")) { static int af=0; if ((af++%30)==0) {
-    fprintf(stderr,"[TGPAX] ax0=%d ax1=%d ax2=%d ax3=%d ax4=%d ax5=%d cur=%d,%d\n",
-      g_gp_axis[0],g_gp_axis[1],g_gp_axis[2],g_gp_axis[3],g_gp_axis[4],g_gp_axis[5],(int)g_cursor_x,(int)g_cursor_y); fsync(2);} }
+    if (used_sdl) fprintf(stderr,"[TGPAX] pad=sdl lx=%.2f ly=%.2f rx=%.2f ry=%.2f lt=%.2f rt=%.2f dpad=%d%d%d%d abxy=%d%d%d%d\n",
+      g_gp_axis[0]/32768.0f,g_gp_axis[1]/32768.0f,g_gp_axis[3]/32768.0f,g_gp_axis[4]/32768.0f,
+      g_lt_analog,g_rt_analog,g_gp_log[0],g_gp_log[1],g_gp_log[2],g_gp_log[3],g_gp_log[4],g_gp_log[5],g_gp_log[6],g_gp_log[7]);
+    else fprintf(stderr,"[TGPAX] ax0=%d ax1=%d ax2=%d ax3=%d ax4=%d ax5=%d cur=%d,%d\n",
+      g_gp_axis[0],g_gp_axis[1],g_gp_axis[2],g_gp_axis[3],g_gp_axis[4],g_gp_axis[5],(int)g_cursor_x,(int)g_cursor_y);
+    fsync(2);} }
   /* TER_GPAUTO: auto-press sintético (Down a cada 45 frames por 4 frames) p/ VERIFICAR o hook
      sem precisar apertar — se o menu navegar sozinho, o Keyboard.GetState hook funciona. */
   if (getenv("TER_GPAUTO")) { static int fc=0; int ph=(fc++)%45; if (ph<4) g_gp_log[1]=1; }
@@ -1808,10 +1869,24 @@ static int ter_kc_to_log(int kc) {
   }
   return -1;
 }
+static int g_vkbd_swallow, g_vkbd_sel, g_vkbd_force_frames;
+static char g_vkbd_force_text[128];
+static void ter_vkbd_update(void);
+static void ter_vkbd_draw(void);
+static void ter_vkbd_maybe_open(void);
+static void ter_name_hooks_install(void);
+static void ter_name_force_text(const char *text);
+static void ter_name_commit_text(const char *text);
+static void ter_force_main_player_name(const char *text);
+static void ter_player_name_menu_force_text(const char *text);
+static const char *ter_vkbd_effective_name(const char *fallback);
+static int ter_vkbd_blocking(void) {
+  return jni_softinput_active() || g_vkbd_swallow > 0;
+}
 /* substituem UnityEngine.Input.GetKeyInt/GetKeyDownInt/GetKeyUpInt (x0=keycode) */
-int ter_unity_getkey(int kc)     { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l]) ? 1:0; }
-int ter_unity_getkeydown(int kc) { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l] && !g_gp_log_prev[l]) ? 1:0; }
-int ter_unity_getkeyup(int kc)   { int l=ter_kc_to_log(kc); return (l>=0 && !g_gp_log[l] && g_gp_log_prev[l]) ? 1:0; }
+int ter_unity_getkey(int kc)     { if (ter_vkbd_blocking()) return 0; int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l]) ? 1:0; }
+int ter_unity_getkeydown(int kc) { if (ter_vkbd_blocking()) return 0; int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l] && !g_gp_log_prev[l]) ? 1:0; }
+int ter_unity_getkeyup(int kc)   { if (ter_vkbd_blocking()) return 0; int l=ter_kc_to_log(kc); return (l>=0 && !g_gp_log[l] && g_gp_log_prev[l]) ? 1:0; }
 /* 🔑 FNA Microsoft.Xna.Framework.Input.Keyboard.GetState() -> KeyboardState (36 bytes:
    8 uints bitmask de teclas em [0..31] + 1 campo em [32]). Preenche do js0 (XNA Keys).
    Chamada via shim que faz mov x0,x8 (x8=ptr do resultado). g_gp_log vem do ter_gamepad_poll. */
@@ -1819,6 +1894,7 @@ void ter_fna_keyboard_getstate(void *result) {
   { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAKB] chamado #%d\n", c); fsync(2);} }
   uint32_t *ks = (uint32_t *)result;
   memset(ks, 0, 36);
+  if (ter_vkbd_blocking()) return;
   int n = 0;
   #define TKSET(k) do { ks[(k)>>5] |= (1u << ((k)&31)); n++; } while(0)
   if (g_gp_log[0]) TKSET(38);                 /* Up */
@@ -1842,10 +1918,212 @@ void ter_fna_mouse_getstate(void *result) {
   { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAMOUSE] chamado #%d cur=%d,%d A=%d\n", c,(int)g_cursor_x,(int)g_cursor_y,g_gp_log[4]); fsync(2);} }
   int *ms = (int *)result;
   memset(ms, 0, 36);
+  if (ter_vkbd_blocking()) return;
   ms[0] = (int)g_cursor_x;            /* X */
   ms[1] = (int)g_cursor_y;            /* Y */
   ms[3] = g_gp_log[4] ? 1 : 0;        /* LeftButton  = A (confirma/clica) */
   ms[5] = g_gp_log[5] ? 1 : 0;        /* RightButton = B */
+}
+
+static const char *vk_keys[] = {
+  "A","B","C","D","E","F","G","H","I","J",
+  "K","L","M","N","O","P","Q","R","S","T",
+  "U","V","W","X","Y","Z","0","1","2","3",
+  "4","5","6","7","8","9","-","_","DEL","SP",
+  "OK","CXL"
+};
+#define VK_NKEYS ((int)(sizeof(vk_keys)/sizeof(vk_keys[0])))
+#define VK_COLS 10
+
+static int vk_glyph(char c, unsigned char r[7]) {
+  memset(r, 0, 7);
+  #define VG(a,b,c,d,e,f,g) do { unsigned char v[7]={a,b,c,d,e,f,g}; memcpy(r,v,7); return 1; } while(0)
+  switch (c) {
+    case 'A': VG(14,17,17,31,17,17,17); case 'B': VG(30,17,17,30,17,17,30);
+    case 'C': VG(14,17,16,16,16,17,14); case 'D': VG(30,17,17,17,17,17,30);
+    case 'E': VG(31,16,16,30,16,16,31); case 'F': VG(31,16,16,30,16,16,16);
+    case 'G': VG(14,17,16,23,17,17,14); case 'H': VG(17,17,17,31,17,17,17);
+    case 'I': VG(14,4,4,4,4,4,14);      case 'J': VG(7,2,2,2,18,18,12);
+    case 'K': VG(17,18,20,24,20,18,17); case 'L': VG(16,16,16,16,16,16,31);
+    case 'M': VG(17,27,21,21,17,17,17); case 'N': VG(17,25,21,19,17,17,17);
+    case 'O': VG(14,17,17,17,17,17,14); case 'P': VG(30,17,17,30,16,16,16);
+    case 'Q': VG(14,17,17,17,21,18,13); case 'R': VG(30,17,17,30,20,18,17);
+    case 'S': VG(15,16,16,14,1,1,30);   case 'T': VG(31,4,4,4,4,4,4);
+    case 'U': VG(17,17,17,17,17,17,14); case 'V': VG(17,17,17,17,17,10,4);
+    case 'W': VG(17,17,17,21,21,21,10); case 'X': VG(17,17,10,4,10,17,17);
+    case 'Y': VG(17,17,10,4,4,4,4);     case 'Z': VG(31,1,2,4,8,16,31);
+    case '0': VG(14,17,19,21,25,17,14); case '1': VG(4,12,4,4,4,4,14);
+    case '2': VG(14,17,1,2,4,8,31);     case '3': VG(30,1,1,14,1,1,30);
+    case '4': VG(2,6,10,18,31,2,2);     case '5': VG(31,16,16,30,1,1,30);
+    case '6': VG(14,16,16,30,17,17,14); case '7': VG(31,1,2,4,8,8,8);
+    case '8': VG(14,17,17,14,17,17,14); case '9': VG(14,17,17,15,1,1,14);
+    case '-': VG(0,0,0,31,0,0,0);       case '_': VG(0,0,0,0,0,0,31);
+    case ':': VG(0,4,4,0,4,4,0);        case ' ': return 1;
+  }
+  return 0;
+  #undef VG
+}
+
+static int vk_gl_begin(int *sw, int *sh, int old_scissor[4], float old_clear[4], int *old_enabled) {
+  static void (*p_en)(unsigned), (*p_dis)(unsigned), (*p_sc)(int,int,int,int);
+  static void (*p_cc)(float,float,float,float), (*p_cl)(unsigned);
+  static void (*p_gi)(unsigned,int*), (*p_gf)(unsigned,float*);
+  static unsigned char (*p_ie)(unsigned);
+  if (!p_en) {
+    p_en=dlsym(RTLD_DEFAULT,"glEnable"); p_dis=dlsym(RTLD_DEFAULT,"glDisable");
+    p_sc=dlsym(RTLD_DEFAULT,"glScissor"); p_cc=dlsym(RTLD_DEFAULT,"glClearColor");
+    p_cl=dlsym(RTLD_DEFAULT,"glClear"); p_gi=dlsym(RTLD_DEFAULT,"glGetIntegerv");
+    p_gf=dlsym(RTLD_DEFAULT,"glGetFloatv"); p_ie=dlsym(RTLD_DEFAULT,"glIsEnabled");
+  }
+  if (!p_en || !p_dis || !p_sc || !p_cc || !p_cl) return 0;
+  *sw = g_fbdev_win.w > 0 ? g_fbdev_win.w : 1280;
+  *sh = g_fbdev_win.h > 0 ? g_fbdev_win.h : 720;
+  if (p_gi) p_gi(0x0C10, old_scissor); else memset(old_scissor, 0, 4*sizeof(int));
+  if (p_gf) p_gf(0x0C22, old_clear); else old_clear[0]=old_clear[1]=old_clear[2]=old_clear[3]=0.0f;
+  *old_enabled = p_ie ? p_ie(0x0C11) : 0;
+  p_en(0x0C11);
+  return 1;
+}
+static void vk_rect(int sw, int sh, int x, int y, int w, int h, float r, float g, float b, float a) {
+  static void (*p_sc)(int,int,int,int), (*p_cc)(float,float,float,float), (*p_cl)(unsigned);
+  if (!p_sc) { p_sc=dlsym(RTLD_DEFAULT,"glScissor"); p_cc=dlsym(RTLD_DEFAULT,"glClearColor"); p_cl=dlsym(RTLD_DEFAULT,"glClear"); }
+  if (!p_sc || !p_cc || !p_cl) return;
+  if (w <= 0 || h <= 0 || x >= sw || y >= sh || x + w <= 0 || y + h <= 0) return;
+  if (x < 0) { w += x; x = 0; } if (y < 0) { h += y; y = 0; }
+  if (x + w > sw) w = sw - x; if (y + h > sh) h = sh - y;
+  p_sc(x, sh - y - h, w, h); p_cc(r,g,b,a); p_cl(0x00004000);
+}
+static void vk_gl_end(const int old_scissor[4], const float old_clear[4], int old_enabled) {
+  void (*p_sc)(int,int,int,int)=dlsym(RTLD_DEFAULT,"glScissor");
+  void (*p_cc)(float,float,float,float)=dlsym(RTLD_DEFAULT,"glClearColor");
+  void (*p_en)(unsigned)=dlsym(RTLD_DEFAULT,"glEnable");
+  void (*p_dis)(unsigned)=dlsym(RTLD_DEFAULT,"glDisable");
+  if (p_sc) p_sc(old_scissor[0], old_scissor[1], old_scissor[2], old_scissor[3]);
+  if (p_cc) p_cc(old_clear[0], old_clear[1], old_clear[2], old_clear[3]);
+  if (old_enabled) { if (p_en) p_en(0x0C11); } else { if (p_dis) p_dis(0x0C11); }
+}
+static void vk_text(int sw, int sh, int x, int y, const char *s, int scale, float r, float g, float b) {
+  for (int n=0; s && s[n]; n++) {
+    unsigned char rows[7]; char ch=s[n];
+    if (ch >= 'a' && ch <= 'z') ch -= 32;
+    vk_glyph(ch, rows);
+    for (int yy=0; yy<7; yy++) for (int xx=0; xx<5; xx++)
+      if (rows[yy] & (1 << (4-xx))) vk_rect(sw, sh, x+n*6*scale+xx*scale, y+yy*scale, scale, scale, r,g,b,1.0f);
+  }
+}
+static void vk_append_char(char c) {
+  char buf[128];
+  snprintf(buf, sizeof buf, "%s", jni_softinput_text());
+  size_t n = strlen(buf), lim = (size_t)jni_softinput_limit();
+  if (lim >= sizeof buf) lim = sizeof buf - 1;
+  if (n < lim) {
+    buf[n] = c; buf[n+1] = 0;
+    jni_softinput_set_text(buf);
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", buf);
+  }
+}
+static void vk_backspace(void) {
+  char buf[128]; snprintf(buf, sizeof buf, "%s", jni_softinput_text());
+  size_t n = strlen(buf); if (n > 0) {
+    buf[n-1] = 0;
+    jni_softinput_set_text(buf);
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", buf);
+  }
+}
+static void vk_commit_text(void) {
+  char text[128];
+  snprintf(text, sizeof text, "%s", jni_softinput_text());
+  snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", text);
+  g_vkbd_force_frames = 180;
+  jni_softinput_commit(text);
+  ter_name_commit_text(text);
+  g_vkbd_swallow = 24;
+}
+static void vk_accept_key(const char *k) {
+  if (!strcmp(k, "OK")) { vk_commit_text(); return; }
+  if (!strcmp(k, "CXL")) { jni_softinput_cancel(); g_vkbd_swallow = 18; return; }
+  if (!strcmp(k, "DEL")) { vk_backspace(); return; }
+  if (!strcmp(k, "SP")) { vk_append_char(' '); return; }
+  if (k[0] && !k[1]) vk_append_char(k[0]);
+}
+static void ter_vkbd_maybe_open(void) {
+  if (!getenv("TER_OSK") || jni_softinput_active()) return;
+  if (access("/tmp/tervkbd", F_OK) == 0) {
+    unlink("/tmp/tervkbd");
+    jni_softinput_open(getenv("TER_VK_TEXT") ? getenv("TER_VK_TEXT") : "", 32);
+    return;
+  }
+  if ((g_gp_log[7] && !g_gp_log_prev[7] && g_gp_log[15]) ||
+      (g_gp_log[15] && !g_gp_log_prev[15] && g_gp_log[7])) {
+    jni_softinput_open("", 32);
+  }
+}
+static void ter_vkbd_update(void) {
+  static int rep, was, auto_frames;
+  if (!jni_softinput_active()) { was = 0; return; }
+  if (!was) {
+    was = 1; g_vkbd_sel = 0; rep = 0; auto_frames = 0;
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", jni_softinput_text());
+    fprintf(stderr, "[VKBD] teclado ON (A=letra/OK X/B=apaga Y=espaco RB/RT/R3/Start=ok Select=cancela)\n"); fsync(2);
+  }
+  if (getenv("TER_VK_AUTOTEXT")) {
+    const char *t = getenv("TER_VK_AUTOTEXT");
+    if (auto_frames == 5) jni_softinput_set_text(t && *t ? t : "PLAYER");
+    if (auto_frames++ == 25) { vk_commit_text(); return; }
+  }
+  int dx = g_gp_log[3] ? 1 : (g_gp_log[2] ? -1 : 0);
+  int dy = g_gp_log[1] ? 1 : (g_gp_log[0] ? -1 : 0);
+  int edge_move = ((g_gp_log[0]&&!g_gp_log_prev[0]) || (g_gp_log[1]&&!g_gp_log_prev[1]) ||
+                   (g_gp_log[2]&&!g_gp_log_prev[2]) || (g_gp_log[3]&&!g_gp_log_prev[3]));
+  if ((dx || dy) && (edge_move || rep <= 0)) {
+    int row = g_vkbd_sel / VK_COLS, col = g_vkbd_sel % VK_COLS;
+    col += dx; row += dy;
+    if (col < 0) col = VK_COLS - 1; if (col >= VK_COLS) col = 0;
+    int rows = (VK_NKEYS + VK_COLS - 1) / VK_COLS;
+    if (row < 0) row = rows - 1; if (row >= rows) row = 0;
+    int ns = row * VK_COLS + col;
+    while (ns >= VK_NKEYS && ns > 0) ns--;
+    g_vkbd_sel = ns; rep = edge_move ? 14 : 8;
+  }
+  if (rep > 0) rep--;
+  if (g_gp_log[4] && !g_gp_log_prev[4]) vk_accept_key(vk_keys[g_vkbd_sel]);
+  if ((g_gp_log[5] && !g_gp_log_prev[5]) || (g_gp_log[6] && !g_gp_log_prev[6])) vk_backspace();
+  if (g_gp_log[7] && !g_gp_log_prev[7]) vk_append_char(' ');
+  if (g_gp_log[9] && !g_gp_log_prev[9]) { jni_softinput_cancel(); g_vkbd_swallow = 18; }
+  if ((g_gp_log[8] && !g_gp_log_prev[8]) || (g_gp_log[11] && !g_gp_log_prev[11]) ||
+      (g_gp_log[13] && !g_gp_log_prev[13]) || (g_gp_log[15] && !g_gp_log_prev[15])) {
+    vk_commit_text();
+  }
+}
+static void ter_vkbd_draw(void) {
+  if (!jni_softinput_active()) return;
+  int sw=0, sh=0, osc[4], oen=0; float occ[4];
+  if (!vk_gl_begin(&sw, &sh, osc, occ, &oen)) return;
+  int margin = sw < 800 ? 18 : 32, gap = sw < 800 ? 3 : 5;
+  int keyw = (sw - margin*2 - gap*(VK_COLS-1)) / VK_COLS;
+  if (keyw < 34) keyw = 34;
+  int keyh = sh < 600 ? 34 : 42;
+  int rows = (VK_NKEYS + VK_COLS - 1) / VK_COLS;
+  int panel_h = 46 + rows*keyh + (rows-1)*gap + 18;
+  int panel_y = sh - panel_h - 16; if (panel_y < 12) panel_y = 12;
+  vk_rect(sw, sh, margin-8, panel_y-8, sw-margin*2+16, panel_h+16, 0.02f,0.03f,0.04f,1.0f);
+  vk_rect(sw, sh, margin, panel_y, sw-margin*2, 36, 0.12f,0.13f,0.14f,1.0f);
+  char line[96]; snprintf(line, sizeof line, "%s", jni_softinput_text());
+  vk_text(sw, sh, margin+12, panel_y+10, line[0] ? line : "PLAYER", 3, 0.90f,0.92f,0.95f);
+  int selected = g_vkbd_sel;
+  for (int i=0; i<VK_NKEYS; i++) {
+    int row=i/VK_COLS, col=i%VK_COLS;
+    int x=margin+col*(keyw+gap), y=panel_y+46+row*(keyh+gap);
+    float br = 0.20f, bg = 0.22f, bb = 0.24f;
+    if (i == selected) { br = 0.86f; bg = 0.70f; bb = 0.18f; }
+    vk_rect(sw, sh, x, y, keyw, keyh, br,bg,bb,1.0f);
+    vk_rect(sw, sh, x+2, y+2, keyw-4, keyh-4, i==selected ? 0.18f : 0.08f, i==selected ? 0.16f : 0.09f, i==selected ? 0.04f : 0.10f, 1.0f);
+    int scale = (!strcmp(vk_keys[i],"DEL") || !strcmp(vk_keys[i],"CXL")) ? 2 : 3;
+    int tx = x + (keyw - (int)strlen(vk_keys[i])*6*scale) / 2;
+    int ty = y + (keyh - 7*scale) / 2;
+    vk_text(sw, sh, tx, ty, vk_keys[i], scale, 0.95f,0.96f,0.96f);
+  }
+  vk_gl_end(osc, occ, oen);
 }
 /* TER_GAMEPAD: patcha UnityEngine.Input.GetKey*Int -> nossas funções (js0 como teclado).
    O caminho de eventos Android (nativeInjectEvent) é beco no Unity 2021 (espera AInputEvent NDK);
@@ -2164,6 +2442,7 @@ TerGPS my_gamepad_getstate(int index, void *mi) {
   (void)index; (void)mi; g_gps_calls++;
   TerGPS s; memset(&s, 0, sizeof s);
   s.IsConnected = 1;
+  if (ter_vkbd_blocking()) return s;
   unsigned int b = 0;
   if (g_gp_log[4]) b |= 0x1000;   /* A */
   if (g_gp_log[5]) b |= 0x2000;   /* B */
@@ -2351,6 +2630,271 @@ void my_setmousepos(void* thiz, int x, int y, int flag, void* mi) {
   if (g_girm_ovr) { x=g_girm_mx; y=g_girm_my; flag|=1; }
   if (g_orig_setmp) g_orig_setmp(thiz,x,y,flag,mi);
 }
+static volatile void *g_player_create_menu_inst, *g_world_create_menu_inst, *g_player_name_menu_inst;
+static volatile void *g_menu_nameedit_inst;
+static volatile int g_player_create_menu_frame = -999999, g_world_create_menu_frame = -999999,
+                    g_player_name_menu_frame = -999999, g_menu_nameedit_frame = -999999;
+static void (*g_orig_player_create_draw)(void*, void*);
+static void (*g_orig_player_name_draw)(void*, void*);
+static void (*g_orig_world_create_draw)(void*, void*);
+static void (*g_orig_nameedit_enable)(void*, void*, void*);
+static void (*g_orig_player_create_save)(void*, void*);
+static void (*g_orig_player_create_player)(void*, void*);
+static void (*g_orig_world_create)(void*, void*);
+
+static void ter_player_create_draw_hook(void *self, void *mi) {
+  g_player_create_menu_inst = self;
+  g_player_create_menu_frame = g_render_frame;
+  if (g_orig_player_create_draw) g_orig_player_create_draw(self, mi);
+}
+static void ter_player_name_draw_hook(void *self, void *mi) {
+  g_player_name_menu_inst = self;
+  g_player_name_menu_frame = g_render_frame;
+  if (!g_vkbd_force_text[0])
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+  ter_player_name_menu_force_text(g_vkbd_force_text);
+  if (g_orig_player_name_draw) g_orig_player_name_draw(self, mi);
+  ter_player_name_menu_force_text(g_vkbd_force_text);
+}
+static void ter_world_create_draw_hook(void *self, void *mi) {
+  g_world_create_menu_inst = self;
+  g_world_create_menu_frame = g_render_frame;
+  if (g_orig_world_create_draw) g_orig_world_create_draw(self, mi);
+}
+static void ter_nameedit_enable_hook(void *self, void *arg, void *mi) {
+  g_menu_nameedit_inst = self;
+  g_menu_nameedit_frame = g_render_frame;
+  if (g_orig_nameedit_enable) g_orig_nameedit_enable(self, arg, mi);
+}
+static const char *ter_vkbd_effective_name(const char *fallback) {
+  if (g_vkbd_force_text[0]) return g_vkbd_force_text;
+  const char *env = getenv("TER_VK_DEFAULT");
+  return (env && *env) ? env : fallback;
+}
+static void ter_player_create_save_hook(void *self, void *mi) {
+  g_player_create_menu_inst = self;
+  g_player_create_menu_frame = g_render_frame;
+  if (!g_vkbd_force_text[0])
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+  ter_name_force_text(g_vkbd_force_text);
+  ter_force_main_player_name(g_vkbd_force_text);
+  fprintf(stderr, "[VKBD] CreateAndSave forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
+  if (g_orig_player_create_save) g_orig_player_create_save(self, mi);
+  ter_name_force_text(g_vkbd_force_text);
+  ter_force_main_player_name(g_vkbd_force_text);
+}
+static void ter_player_create_player_hook(void *self, void *mi) {
+  g_player_create_menu_inst = self;
+  g_player_create_menu_frame = g_render_frame;
+  if (!g_vkbd_force_text[0])
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+  ter_name_force_text(g_vkbd_force_text);
+  ter_force_main_player_name(g_vkbd_force_text);
+  fprintf(stderr, "[VKBD] CreatePlayer forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
+  if (g_orig_player_create_player) g_orig_player_create_player(self, mi);
+  ter_name_force_text(g_vkbd_force_text);
+  ter_force_main_player_name(g_vkbd_force_text);
+}
+static void ter_world_create_hook(void *self, void *mi) {
+  g_world_create_menu_inst = self;
+  g_world_create_menu_frame = g_render_frame;
+  if (!g_vkbd_force_text[0])
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("MUNDO"));
+  ter_name_force_text(g_vkbd_force_text);
+  fprintf(stderr, "[VKBD] CreateWorld forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
+  if (g_orig_world_create) g_orig_world_create(self, mi);
+}
+static unsigned long ter_method_off(const char *ns, const char *cn, const char *mn, int argc) {
+  if (!g_il2cpp_base) return 0;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void*, const char*, int) = (void*)(g_il2cpp_base + 0x73c28c);
+  void *domain = dom_get(); if (!domain) return 0;
+  size_t na=0; const void **as = dom_asms(domain, &na); if (!as) return 0;
+  for (size_t i=0; i<na; i++) {
+    void *img = asm_img(as[i]); if (!img) continue;
+    void *cls = cls_from_name(img, ns, cn); if (!cls) continue;
+    void *m = cls_method(cls, mn, argc); if (!m) return 0;
+    void *mp = *(void**)m; if (!mp) return 0;
+    return (unsigned long)((uintptr_t)mp - g_il2cpp_base);
+  }
+  return 0;
+}
+static void ter_name_hooks_install(void) {
+  static int done, tries;
+  if (done || !g_il2cpp_base || !getenv("TER_OSK")) return;
+  if (tries++ > 600) { done = 1; return; }
+  unsigned long po = ter_method_off("", "GUIPlayerCreateMenu", "Draw", 0);
+  unsigned long pno = ter_method_off("", "GUIPlayerNameMenu", "Draw", 0);
+  unsigned long wo = ter_method_off("", "GUIWorldCreateMenu", "Draw", 0);
+  unsigned long no = ter_method_off("", "GUIMenuNameEdit", "Enable", 1);
+  unsigned long ps = ter_method_off("", "GUIPlayerCreateMenu", "CreateAndSave", 0);
+  unsigned long pc = ter_method_off("", "GUIPlayerCreateMenu", "CreatePlayer", 0);
+  unsigned long wc = ter_method_off("", "GUIWorldCreateMenu", "CreateWorld", 0);
+  if (po && !g_orig_player_create_draw &&
+      ter_install_hook4(po, (void*)ter_player_create_draw_hook, (void**)&g_orig_player_create_draw))
+    fprintf(stderr, "[VKBD] GUIPlayerCreateMenu.Draw hookado @0x%lx\n", po);
+  if (pno && !g_orig_player_name_draw &&
+      ter_install_hook4(pno, (void*)ter_player_name_draw_hook, (void**)&g_orig_player_name_draw))
+    fprintf(stderr, "[VKBD] GUIPlayerNameMenu.Draw hookado @0x%lx\n", pno);
+  if (wo && !g_orig_world_create_draw &&
+      ter_install_hook4(wo, (void*)ter_world_create_draw_hook, (void**)&g_orig_world_create_draw))
+    fprintf(stderr, "[VKBD] GUIWorldCreateMenu.Draw hookado @0x%lx\n", wo);
+  if (no && !g_orig_nameedit_enable &&
+      ter_install_hook4(no, (void*)ter_nameedit_enable_hook, (void**)&g_orig_nameedit_enable))
+    fprintf(stderr, "[VKBD] GUIMenuNameEdit.Enable hookado @0x%lx\n", no);
+  if (ps && !g_orig_player_create_save &&
+      ter_install_hook4(ps, (void*)ter_player_create_save_hook, (void**)&g_orig_player_create_save))
+    fprintf(stderr, "[VKBD] GUIPlayerCreateMenu.CreateAndSave hookado @0x%lx\n", ps);
+  if (pc && !g_orig_player_create_player &&
+      ter_install_hook4(pc, (void*)ter_player_create_player_hook, (void**)&g_orig_player_create_player))
+    fprintf(stderr, "[VKBD] GUIPlayerCreateMenu.CreatePlayer hookado @0x%lx\n", pc);
+  if (wc && !g_orig_world_create &&
+      ter_install_hook4(wc, (void*)ter_world_create_hook, (void**)&g_orig_world_create))
+    fprintf(stderr, "[VKBD] GUIWorldCreateMenu.CreateWorld hookado @0x%lx\n", wc);
+  if (g_orig_player_create_draw && g_orig_player_name_draw && g_orig_world_create_draw && g_orig_nameedit_enable &&
+      g_orig_player_create_save && g_orig_player_create_player && g_orig_world_create) {
+    done = 1; fsync(2);
+  }
+}
+static void ter_il2cpp_set_string_field(void *obj, size_t off, void *s) {
+  if (!obj || !s) return;
+  void **slot = (void **)((char *)obj + off);
+  void (*wb)(void *, void **, void *) = (void *)(g_il2cpp_base + 0x73cb34);
+  wb(obj, slot, s);
+}
+static void ter_player_name_menu_force_text(const char *text) {
+  if (!g_il2cpp_base || !text || !text[0]) return;
+  int fnm = g_render_frame - g_player_name_menu_frame;
+  void *inst = (void *)g_player_name_menu_inst;
+  if (!inst || fnm < 0 || fnm >= 900) return;
+  void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+  void *s = isn(text);
+  ter_il2cpp_set_string_field(inst, 0x18, s);  /* GUIPlayerNameMenu.editPlayerName */
+  ter_force_main_player_name(text);
+  if (getenv("TER_VKBDLOG")) {
+    fprintf(stderr, "[VKBD] GUIPlayerNameMenu.editPlayerName=\"%s\" inst=%p\n", text, inst);
+    fsync(2);
+  }
+}
+static void *ter_static_obj(const char *ns, const char *cn, const char *fn) {
+  if (!g_il2cpp_base) return NULL;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void *(*getf)(void*, const char*) = (void*)(g_il2cpp_base + 0x73c284);
+  void (*sget)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44);
+  void *domain = dom_get(); if (!domain) return NULL;
+  size_t na=0; const void **as = dom_asms(domain, &na); if (!as) return NULL;
+  for (size_t i=0; i<na; i++) {
+    void *img = asm_img(as[i]); if (!img) continue;
+    void *cls = cls_from_name(img, ns, cn); if (!cls) continue;
+    void *fld = getf(cls, fn); if (!fld) return NULL;
+    void *obj = NULL; sget(fld, &obj); return obj;
+  }
+  return NULL;
+}
+static void ter_force_player_obj_name(void *player, void *s) {
+  if (!player || !s) return;
+  ter_il2cpp_set_string_field(player, 0xe0, s);  /* Terraria.Player.name */
+}
+static void ter_force_main_player_name(const char *text) {
+  if (!g_il2cpp_base || !text || !text[0]) return;
+  void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+  void *s = isn(text);
+  int hits = 0;
+  void *client = ter_static_obj("Terraria", "Main", "clientPlayer");
+  if (client) { ter_force_player_obj_name(client, s); hits++; }
+  void *arr = ter_static_obj("Terraria", "Main", "player");
+  if (arr) {
+    size_t len = *(size_t *)((char *)arr + 0x18);
+    if (len > 256) len = 256;
+    void **vec = (void **)((char *)arr + 0x20);
+    for (size_t i=0; i<len; i++) if (vec[i]) {
+      ter_force_player_obj_name(vec[i], s);
+      hits++;
+    }
+  }
+  if (getenv("TER_VKBDLOG")) {
+    fprintf(stderr, "[VKBD] Terraria.Player.name=\"%s\" aplicado em %d instancia(s)\n", text, hits);
+    fsync(2);
+  }
+}
+static void ter_name_force_text(const char *text) {
+  if (!g_il2cpp_base || !text || !text[0]) return;
+  void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+  void *s = isn(text);
+  int fp = g_render_frame - g_player_create_menu_frame;
+  int fw = g_render_frame - g_world_create_menu_frame;
+  int fn = g_render_frame - g_menu_nameedit_frame;
+  void *pinst = (void *)g_player_create_menu_inst;
+  void *winst = (void *)g_world_create_menu_inst;
+  void *ninst = (void *)g_menu_nameedit_inst;
+  if (ninst && fn >= 0 && fn < 900) ter_il2cpp_set_string_field(ninst, 0x10, s);
+  if (pinst && fp >= 0 && fp < 900) {
+    ter_il2cpp_set_string_field(pinst, 0x80, s);
+    ter_il2cpp_set_string_field(pinst, 0x88, s);
+    *(unsigned char *)((char *)pinst + 0x18) = 0;
+    *(unsigned char *)((char *)pinst + 0x19) = 0;
+  }
+  if (winst && fw >= 0 && fw < 900) ter_il2cpp_set_string_field(winst, 0x70, s);
+  ter_player_name_menu_force_text(text);
+  ter_force_main_player_name(text);
+}
+static void ter_invoke0(const char *ns, const char *cn, const char *mn, void *obj) {
+  if (!g_il2cpp_base || !obj) return;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void*, const char*, int) = (void*)(g_il2cpp_base + 0x73c28c);
+  void *(*rt_invoke)(void*, void*, void**, void**) = (void*)(g_il2cpp_base + 0x73cc7c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na=0; const void **as = dom_asms(domain, &na); if (!as) return;
+  for (size_t i=0; i<na; i++) {
+    void *img = asm_img(as[i]); if (!img) continue;
+    void *cls = cls_from_name(img, ns, cn); if (!cls) continue;
+    void *m = cls_method(cls, mn, 0); if (!m) return;
+    void *exc = NULL; rt_invoke(m, obj, NULL, &exc);
+    if (exc) fprintf(stderr, "[VKBD] %s.%s gerou excecao %p\n", cn, mn, exc);
+    return;
+  }
+}
+static void ter_name_commit_text(const char *text) {
+  if (!g_il2cpp_base) return;
+  if (!text || !text[0]) text = getenv("TER_VK_DEFAULT") ? getenv("TER_VK_DEFAULT") : "PLAYER";
+  void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+  void *s = isn(text);
+  int fp = g_render_frame - g_player_create_menu_frame;
+  int fw = g_render_frame - g_world_create_menu_frame;
+  int fn = g_render_frame - g_menu_nameedit_frame;
+  void *pinst = (void *)g_player_create_menu_inst;
+  void *winst = (void *)g_world_create_menu_inst;
+  void *ninst = (void *)g_menu_nameedit_inst;
+  if (ninst && fn >= 0 && fn < 600) {
+    ter_il2cpp_set_string_field(ninst, 0x10, s);  /* GUIMenuNameEdit._editedName */
+    fprintf(stderr, "[VKBD] name edit aplicado: \"%s\" inst=%p\n", text, ninst);
+  }
+  if (pinst && fp >= 0 && fp < 180 && (fp <= fw || fw < 0 || fw >= 180)) {
+    if (ninst && fn >= 0 && fn < 600) ter_il2cpp_set_string_field(ninst, 0x10, s);
+    ter_invoke0("", "GUIPlayerCreateMenu", "CloseNameEdit", pinst);
+    ter_il2cpp_set_string_field(pinst, 0x80, s);  /* _playerName */
+    ter_il2cpp_set_string_field(pinst, 0x88, s);  /* editPlayerName */
+    fprintf(stderr, "[VKBD] player name aplicado: \"%s\" inst=%p\n", text, pinst); fsync(2);
+    return;
+  }
+  if (winst && fw >= 0 && fw < 180) {
+    if (ninst && fn >= 0 && fn < 600) ter_il2cpp_set_string_field(ninst, 0x10, s);
+    ter_invoke0("", "GUIWorldCreateMenu", "CloseNameEdit", winst);
+    ter_il2cpp_set_string_field(winst, 0x70, s);  /* _worldName */
+    fprintf(stderr, "[VKBD] world name aplicado: \"%s\" inst=%p\n", text, winst); fsync(2);
+    return;
+  }
+  fprintf(stderr, "[VKBD] OK sem tela de nome ativa: \"%s\" fp=%d fw=%d fn=%d\n", text, fp, fw, fn); fsync(2);
+}
 /* 🔑 GUIInputRegionManager.Instance — singleton cujo _mouseX(0x14)/_mouseY(0x18) é a posição do
    ponteiro que o menu mobile usa p/ hit-test das regiões (botões). Escrever isso = mover o cursor. */
 static void *ter_girm_instance(void) {
@@ -2394,6 +2938,7 @@ static int g_nav_idx;
 int g_cur_regions;   /* nº de itens navegáveis na tela atual (p/ auto-teste detectar troca de tela) */
 static void ter_menu_nav(void) {
   if (!getenv("TER_NAVMENU")) return;
+  if (ter_vkbd_blocking()) { g_girm_ovr = 0; g_fcmode = 0; return; }
   /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
      teste p/ dropdowns/sublistas que têm foco de controle próprio). */
   if (access("/tmp/ternonav", F_OK) == 0) { g_girm_ovr = 0; return; }
@@ -2401,6 +2946,11 @@ static void ter_menu_nav(void) {
      — senão forçava o cursor pra um item do HUD (volta sempre pro mesmo lugar) e o D-pad movia o
      cursor. Assim no jogo o cursor fica 100% no stick direito (ter_gamepad_poll). */
   if (ter_menu_resolve() && MM.fgameMenu && !ter_getb(MM.fgameMenu)) { g_girm_ovr=0; g_fcmode=0; return; }
+  if (g_fcmode) {
+    g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;
+    g_cursor_x = g_fcx; g_cursor_y = g_fcy;
+    return;
+  }
   void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; g_fcmode=0; return; }
   int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
   if(!arr||nr<=0||nr>32){ g_girm_ovr=0; g_fcmode=0; return; }
@@ -2423,34 +2973,58 @@ static void ter_menu_nav(void) {
   /* agrupa em LINHAS por Y (≤22px = mesma linha). dcx/dcy já vêm ordenados por (y,x). */
   int rowStart[32], rowLen[32], nrows=0;
   for(int i=0;i<dn2;){ int j=i+1; while(j<dn2 && dcy[j]-dcy[i]<=22) j++; rowStart[nrows]=i; rowLen[nrows]=j-i; nrows++; i=j; }
-  /* 🔑 navegação SÓ ↑/↓ entre LINHAS (agrupadas por Y) — não pula pelas abas/duplicatas. O
-     horizontal (abas, valores) é o L1/R1 NATIVO do jogo, então não mexo em ←/→. Persistência por
-     POSIÇÃO (segue a linha pelo centro Y, imune à flutuação da contagem); troca real de tela
-     (linha some por ≥8 frames) → volta ao topo. Pousa no 1º item da linha (destaca a linha). */
-  static int sel_cy=-99999, cdV=0, farcnt=0, row=0;
+  /* Navegacao por grade: cima/baixo troca linha, esquerda/direita troca item na
+     mesma linha. Isso deixa a linha Voltar/Aleatorio/Criar acessivel sem depender
+     do cursor livre. L1/R1 continuam servindo as abas nativas. */
+  static int sel_cx=-99999, sel_cy=-99999, cdV=0, cdH=0, farcnt=0, row=0, col=0;
   long bestd=(long)1<<60; int brow=0;
   for(int r=0;r<nrows;r++){ long dy=dcy[rowStart[r]]-sel_cy; long d=dy*dy; if(d<bestd){bestd=d;brow=r;} }
   int near = (sel_cy!=-99999 && bestd <= 30L*30L);
   if (!near) {
-    if (sel_cy==-99999 || ++farcnt>=8) { row=0; farcnt=0; near=1; }
+    if (sel_cy==-99999 || ++farcnt>=8) { row=0; col=0; farcnt=0; near=1; }
     else {  /* flutuação transitória → segura a posição (g_girm_mx/my e g_cursor do frame anterior) */
       g_girm_ovr=1;
       if(getenv("TER_CTRLLOG")){static int q=0;if((q++%45)==0){fprintf(stderr,"[NAV] %d linhas (transitorio) far=%d\n",nrows,farcnt);fsync(2);}} return; }
   } else { farcnt=0; row=brow; }
   if(row<0)row=nrows-1; if(row>=nrows)row=0;
-  int U=g_gp_log[0],D=g_gp_log[1];
+  int U=g_gp_log[0],D=g_gp_log[1],L=g_gp_log[2],R=g_gp_log[3];
   int vdir=D?1:(U?-1:0);
+  int hdir=R?1:(L?-1:0);
   int rep = getenv("TER_NAVREP") ? atoi(getenv("TER_NAVREP")) : 15;
   if(cdV>0)cdV--;
+  if(cdH>0)cdH--;
   if(vdir!=0 && cdV==0){ row+=vdir; cdV=rep; if(row<0)row=nrows-1; if(row>=nrows)row=0; }
-  int bidx=rowStart[row];                 /* 1º item da linha (mais à esquerda) */
+  int start=rowStart[row], len=rowLen[row];
+  if(len<=0){ g_girm_ovr=0; return; }
+  if(sel_cx!=-99999){
+    int bestc=0, bestx=abs(dcx[start]-sel_cx);
+    for(int c=1;c<len;c++){ int d=abs(dcx[start+c]-sel_cx); if(d<bestx){bestx=d;bestc=c;} }
+    col=bestc;
+  }
+  if(col<0)col=0; if(col>=len)col=len-1;
+  if(hdir!=0 && cdH==0 && len>1){ col+=hdir; cdH=rep; if(col<0)col=len-1; if(col>=len)col=0; }
+  int bidx=start+col;
+  sel_cx=dcx[bidx];
   sel_cy=dcy[bidx];
   g_girm_mx=dcx[bidx]; g_girm_my=dcy[bidx]; g_girm_ovr=1;     /* hover (GUI _mouseX/_mouseY) */
   g_cursor_x=(float)dcx[bidx]; g_cursor_y=(float)dcy[bidx];   /* Mouse.GetState pos p/ o A */
-  if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] %d itens %d linhas | linha %d -> (%d,%d) U%d D%d A%d\n",dn2,nrows,row,dcx[bidx],dcy[bidx],U,D,g_gp_log[4]); fsync(2);} }
+  if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] %d itens %d linhas | linha %d col %d/%d -> (%d,%d) U%d D%d L%d R%d A%d\n",dn2,nrows,row,col+1,len,dcx[bidx],dcy[bidx],U,D,L,R,g_gp_log[4]); fsync(2);} }
 }
 static void ter_ctrl_feed(void) {
   if (!getenv("TER_CTRL")) return;
+  if (g_vkbd_force_frames > 0) {
+    ter_name_force_text(g_vkbd_force_text);
+    g_vkbd_force_frames--;
+  }
+  ter_vkbd_maybe_open();
+  if (jni_softinput_active()) ter_vkbd_update();
+  if (ter_vkbd_blocking()) {
+    if (!jni_softinput_active() && g_vkbd_swallow > 0) g_vkbd_swallow--;
+    g_girm_ovr = 0; g_fcmode = 0; g_nav_x = 0.0f; g_nav_y = 0.0f;
+    memset(g_inj_btn,0,sizeof g_inj_btn);
+    for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
+    return;
+  }
   if (getenv("TER_HOVERX")) { extern float g_cursor_x,g_cursor_y; g_cursor_x=atof(getenv("TER_HOVERX")); g_cursor_y=atof(getenv("TER_HOVERY")?getenv("TER_HOVERY"):"360"); }
   if (getenv("TER_SELMENU") && ter_menu_resolve()) { ter_seti(MM.fselectedMenu, atoi(getenv("TER_SELMENU"))); }
   if (getenv("TER_UMOUSE")) { const char*s=getenv("TER_UMOUSE"); g_umouse_x=atof(s); const char*c=strchr(s,','); if(c)g_umouse_y=atof(c+1); }
@@ -2591,12 +3165,14 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
   ter_input_hook();     /* TER_GAMEPAD: sonda/hook do input FNA */
   ter_ctrl_patch();     /* TER_CTRL: substitui GetKeyRaw/GetAxisRaw do ControllerDevice */
+  ter_name_hooks_install(); /* TER_OSK: captura telas de nome p/ gravar texto real */
   ter_navspy_install(); /* TER_NAVSPY: captura instância do navegador */
   ter_ctrl_feed();      /* TER_CTRL: alimenta o estado injetado do js0 */
   ter_navspy_log();     /* TER_NAVSPY: loga mudança de seleção (prova de navegação) */
   if (getenv("TER_MENU")) ter_menu_nuke_updateinput();  /* p/ não clobberar Main.mouse* */
   ter_menu_drive();     /* TER_MENU/TER_MENULOG: dirige/observa Main.mouseX/Y/Left/hasFocus */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
+  ter_vkbd_draw();
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return r_eglSwapBuffers ? r_eglSwapBuffers(dpy, surf) : 1;
