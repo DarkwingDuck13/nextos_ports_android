@@ -33,4 +33,11 @@ void jni_shim_set_package(const char *package_name, int obb_version);
 extern struct hk_inject_s g_hk_inject;
 void *hk_keyevent_object(void);
 
+/* FMOD AudioTrack output (org.fmod.FMODAudioDevice) — usado pela fmod_audio_thread */
+void *jni_fmod_device(void);
+void *jni_fmod_bytebuffer(void);
+void *jni_fmod_pcm(void);
+int jni_fmod_pcm_size(void);
+extern int g_fmod_cap;
+
 #endif

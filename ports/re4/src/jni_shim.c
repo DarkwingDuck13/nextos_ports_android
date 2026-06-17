@@ -228,6 +228,11 @@ struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
 
+/* sentinela do org.fmod.FMODAudioDevice (NewObject + métodos init/start do FMOD).
+   Sem isto NewObject->NULL -> System::init do FMOD da "Error initializing output device (60)". */
+int g_fmod_device_obj;
+void *jni_fmod_device(void) { return &g_fmod_device_obj; }
+
 /* classes distintas por nome (Unity compara KeyEvent.class vs MotionEvent.class) */
 static struct { const char *name; int tag; } g_classreg[128];
 static int g_classreg_n = 0;
@@ -344,6 +349,8 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   (void)env;
   (void)obj;
   const char *nm = mid_name(methodID);
+  /* FMODAudioDevice.init(...)/start()/etc. = sucesso (true) -> output do FMOD inicializa */
+  if (obj == &g_fmod_device_obj) return 1;
   if (nm) {
     if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
     if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
@@ -356,6 +363,8 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
                                va_list ap) {
   (void)env;
   const char *nm = mid_name(methodID);
+  /* FMODAudioDevice.* (init/getInfo/...) chamado pelo C do FMOD = sucesso (1) */
+  if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%s -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     if (strcmp(nm, "getAction") == 0) { debugPrintf("[KEYEV] getAction->%d\n", g_hk_inject.action); return g_hk_inject.action; }
@@ -643,6 +652,33 @@ static int jni_RegisterNatives(void *env, void *clazz, const void *methods, int 
   return 0;
 }
 
+/* ---- FMOD AudioTrack output: NewObject(FMODAudioDevice) + DirectByteBuffer ----
+   O FMOD (dentro da libunity) usa o output AUDIOTRACK: FindClass(org/fmod/FMODAudioDevice),
+   NewObject, e uma thread Java chamaria fmodProcess(ByteBuffer) p/ encher PCM. Aqui damos um
+   device fake + um DirectByteBuffer real; a thread C (fmod_audio_thread em main_re4) bombeia
+   fmodProcess no lugar da thread Java -> SOM + destrava o wait do menu (audio nunca sinalizava). */
+static unsigned char g_fmod_pcm[32768];
+static int g_fmod_bb_sentinel;
+int g_fmod_cap = 4096;   /* bytes que fmodProcess preenche/que o pump enfileira (casar = ritmo certo) */
+void *jni_fmod_bytebuffer(void) { return &g_fmod_bb_sentinel; }
+void *jni_fmod_pcm(void) { return g_fmod_pcm; }
+int jni_fmod_pcm_size(void) { return g_fmod_cap; }
+static void *jni_GetDirectBufferAddress(void *env, void *buf) {
+  (void)env; if (buf == &g_fmod_bb_sentinel) return g_fmod_pcm; return NULL;
+}
+static long jni_GetDirectBufferCapacity(void *env, void *buf) {
+  (void)env; if (buf == &g_fmod_bb_sentinel) return (long)g_fmod_cap; return -1;
+}
+static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
+  (void)env; (void)mid;
+  if (clazz == class_for("org/fmod/FMODAudioDevice")) {
+    debugPrintf("jni_shim: NewObject(FMODAudioDevice) -> device fake\n"); return &g_fmod_device_obj;
+  }
+  return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressao */
+}
+static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){ (void)ap; return jni_NewObject(env,clazz,mid); }
+static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args){ (void)args; return jni_NewObject(env,clazz,mid); }
+
 /* GetJavaVM (index 219) — initJni chama isso */
 static jint jni_GetJavaVM(void *env, void **vm) {
   (void)env;
@@ -716,6 +752,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[23] = (uintptr_t)jni_DeleteLocalRef;
   jni_env_vtable[25] = (uintptr_t)jni_NewLocalRef;
   jni_env_vtable[24] = (uintptr_t)jni_IsSameObject;
+  jni_env_vtable[28] = (uintptr_t)jni_NewObject;    /* NewObject (varargs) — FMODAudioDevice */
+  jni_env_vtable[29] = (uintptr_t)jni_NewObjectV;   /* NewObjectV (va_list) */
+  jni_env_vtable[30] = (uintptr_t)jni_NewObjectA;   /* NewObjectA (jvalue*) */
   jni_env_vtable[31] = (uintptr_t)jni_GetObjectClass;
   jni_env_vtable[32] = (uintptr_t)jni_IsInstanceOf;
   jni_env_vtable[33] = (uintptr_t)jni_GetMethodID;
@@ -748,6 +787,8 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[170] = (uintptr_t)jni_ReleaseStringUTFChars;
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength;
   jni_env_vtable[205] = (uintptr_t)jni_ExceptionCheck;
+  jni_env_vtable[230] = (uintptr_t)jni_GetDirectBufferAddress;  /* FMOD fmodProcess PCM */
+  jni_env_vtable[231] = (uintptr_t)jni_GetDirectBufferCapacity;
 
   jni_env_ptr = jni_env_vtable;
 

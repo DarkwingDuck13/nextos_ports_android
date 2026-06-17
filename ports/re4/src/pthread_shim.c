@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <time.h>
 #include <stdio.h>
 
 #define PMAP_SZ 32768
@@ -102,18 +104,63 @@ static int sh_cond_destroy(void *c) { (void)c; return 0; }
 
 /* ---- semaforo (job system do Unity: bionic sem_t=4B vs glibc=32B) ---- */
 static int sh_sem_init(void *s, int pshared, unsigned val) {
-  (void)pshared; (void)pmap_get(s, K_SEM, val);
-  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<60)fprintf(stderr,"[SEM] init  b=%p val=%u tid=%p\n",s,val,(void*)pthread_self());}
+  (void)pshared;
+  /* RE-INIT OBRIGATORIO: sh_sem_destroy e no-op -> a entrada do mapa SOBREVIVE. Quando o Unity
+     RECRIA um semaforo no MESMO endereco (reuso de pool ao abrir o menu), pmap_get devolve o sem
+     glibc VELHO (valor drenado=0) sem re-inicializar -> o novo sem fica com valor errado ->
+     sem_wait trava pra sempre (deadlock no menu). Aqui forcamos o valor correto sempre. */
+  sem_t *g = (sem_t *)pmap_get(s, K_SEM, val);
+  if (g) { sem_destroy(g); sem_init(g, 0, val); }
+  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<5000)fprintf(stderr,"[SEM] init  b=%p val=%u tid=%p\n",s,val,(void*)pthread_self());}
   return 0;
 }
 static int sh_sem_wait(void *s) {
-  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<400)fprintf(stderr,"[SEM] wait> b=%p tid=%p\n",s,(void*)pthread_self());}
-  int r=sem_wait((sem_t *)pmap_get(s, K_SEM, 0));
-  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<400)fprintf(stderr,"[SEM] <wake b=%p tid=%p\n",s,(void*)pthread_self());}
-  return r; }
+  sem_t *g=(sem_t *)pmap_get(s, K_SEM, 0);
+  /* QUEBRA-DEADLOCK (LIGADO POR PADRAO): ao abrir o menu o Unity trava num semaforo (global da
+     libunity) que e inicializado=0 e NUNCA postado no nosso ambiente stubado -> sem_wait eterno.
+     Aqui, se o wait travar >N segundos, retornamos como se postado -> o menu aparece. Desligar com
+     RE4_NO_SEMBREAK=1; ajustar o tempo com RE4_SEMBREAK=<segundos>. */
+  if(!getenv("RE4_NO_SEMBREAK")){
+    /* timeout total p/ forcar wake. RE4_SEMBREAK_MS (ms) tem prioridade; senao RE4_SEMBREAK (s).
+       Default = 150ms: o job-system do Unity (workers+main parados no mesmo wait, ninguem posta)
+       progride rapido sem os 3s que deixavam o menu lento. Espera em passos de 25ms p/ pegar
+       posts reais na hora. */
+    const char *bms=getenv("RE4_SEMBREAK_MS"); const char *bv=getenv("RE4_SEMBREAK");
+    long total_ms = (bms&&bms[0]) ? atol(bms) : (bv&&bv[0] ? atol(bv)*1000 : 150);
+    if(total_ms<1) total_ms=150;
+    const long step_ms=25; long waited_ms=0;
+    struct timespec ts;
+    for(;;){
+      clock_gettime(CLOCK_REALTIME,&ts);
+      ts.tv_nsec += step_ms*1000000L; if(ts.tv_nsec>=1000000000L){ ts.tv_sec++; ts.tv_nsec-=1000000000L; }
+      int r=sem_timedwait(g,&ts);
+      if(r==0) return 0;
+      if(errno==ETIMEDOUT){
+        waited_ms += step_ms;
+        if(waited_ms>=total_ms){ static int n=0; if(n++<10) fprintf(stderr,"[SEMBREAK] forcando wake b=%p apos %ldms\n",s,waited_ms); return 0; }
+        continue;
+      }
+      return r;
+    }
+  }
+  if(getenv("RE4_SEMDIAG")){
+    /* detecta a espera que NUNCA acorda (deadlock): timedwait em loop; loga addr+valor se travar */
+    struct timespec ts; int waited=0;
+    for(;;){
+      clock_gettime(CLOCK_REALTIME,&ts); ts.tv_sec+=1;
+      int r=sem_timedwait(g,&ts);
+      if(r==0) return 0;
+      if(errno==ETIMEDOUT){ waited++;
+        if(waited==3||waited==8||(waited%20==0)){ int v=-1; sem_getvalue(g,&v);
+          fprintf(stderr,"[SEMSTUCK] b=%p glibc=%p val=%d waited=%ds tid=%p\n",s,(void*)g,v,waited,(void*)pthread_self()); }
+        continue; }
+      return r; /* outro erro */
+    }
+  }
+  return sem_wait(g); }
 static int sh_sem_trywait(void *s) { return sem_trywait((sem_t *)pmap_get(s, K_SEM, 0)); }
 static int sh_sem_post(void *s) {
-  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<400)fprintf(stderr,"[SEM] post  b=%p tid=%p\n",s,(void*)pthread_self());}
+  if(getenv("RE4_SEMLOG")){static int n=0;if(n++<8000)fprintf(stderr,"[SEM] post  b=%p tid=%p\n",s,(void*)pthread_self());}
   return sem_post((sem_t *)pmap_get(s, K_SEM, 0)); }
 static int sh_sem_timedwait(void *s, const void *ts) {
   return sem_timedwait((sem_t *)pmap_get(s, K_SEM, 0), (const struct timespec *)ts);
