@@ -2044,6 +2044,10 @@ float my_ctrl_getaxisraw(void *thiz, int axis) { (void)thiz; g_getaxisraw_calls+
   float v = (axis>=0&&axis<8)?g_inj_axis[axis]:0.0f;
   if (v!=0.0f && getenv("TER_CTRLLOG")) { static int n=0; if(n++<40){ fprintf(stderr,"[AXRAW] axis=%d -> %.2f\n",axis,v); fsync(2);} }
   return v; }
+/* forward decls (definidos adiante, perto de ter_ctrl_feed) */
+static int ter_install_hook4(unsigned long off, void* fn, void** orig_out);
+void my_setmousepos(void* thiz, int x, int y, int flag, void* mi);
+extern void (*g_orig_setmp)(void*,int,int,int,void*);
 static void ter_ctrl_patch(void) {
   static int done=0; if(done||!g_il2cpp_base||!getenv("TER_CTRL")){ if(!getenv("TER_CTRL"))done=1; return; }
   long pgsz=sysconf(_SC_PAGESIZE);
@@ -2070,6 +2074,11 @@ static void ter_ctrl_patch(void) {
     mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
     __builtin___clear_cache((char*)pa,(char*)pa+16);
     fprintf(stderr,"[CTRL] UnityEngine.Input.get_mousePosition substituido\n"); fsync(2);
+  }
+  /* hook de SetMousePosition (cbf18c) p/ o cursor do menu seguir nossa posição (TER_GIRM) */
+  if (getenv("TER_GIRM")) {
+    if (ter_install_hook4(0xcbf18c, (void*)my_setmousepos, (void**)&g_orig_setmp))
+      fprintf(stderr,"[CTRL] SetMousePosition hookado\n"); fsync(2);
   }
   /* trampolim condicional p/ ControllerActionVector.GetValue (c59988) — navegação do menu */
   {
@@ -2110,6 +2119,60 @@ static void *ter_cam_instance(void) {
   void (*sget)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44);
   void *inst=NULL; sget(cam_inst_field,&inst); return inst;
 }
+/* relocador de ADRP p/ trampolins (corrige o page-relative ao copiar p/ outro endereço) */
+static uint32_t ter_reloc_insn(uint32_t insn, uintptr_t opc, uintptr_t npc) {
+  if ((insn & 0x9F000000u) == 0x90000000u) {   /* ADRP */
+    uint32_t immlo=(insn>>29)&3, immhi=(insn>>5)&0x7FFFF;
+    int64_t imm=(int64_t)((immhi<<2)|immlo); if(imm&(1<<20)) imm-=(1<<21);
+    uintptr_t target=(opc & ~0xFFFUL)+((uintptr_t)imm<<12);
+    int64_t nimm=((int64_t)(target & ~0xFFFUL)-(int64_t)(npc & ~0xFFFUL))>>12;
+    uint32_t nlo=nimm&3, nhi=(nimm>>2)&0x7FFFF;
+    return (insn & 0x9F00001Fu)|(nlo<<29)|(nhi<<5);
+  }
+  return insn;  /* (stp/sub/mov etc. são position-independent) */
+}
+/* hook inline genérico: copia 4 instrs (relocando adrp) p/ um trampolim que segue p/ target+16,
+   e patcha a entrada do alvo p/ saltar p/ fn. Retorna o trampolim (=original) em *orig_out. */
+static int ter_install_hook4(unsigned long off, void* fn, void** orig_out) {
+  uintptr_t target=g_il2cpp_base+off; uint32_t*o=(uint32_t*)target; long pgsz=sysconf(_SC_PAGESIZE);
+  uint32_t*tr=mmap(NULL,4096,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+  if(tr==MAP_FAILED) return 0;
+  for(int i=0;i<4;i++) tr[i]=ter_reloc_insn(o[i], target+i*4, (uintptr_t)tr+i*4);
+  tr[4]=0x58000050u; tr[5]=0xD61F0200u; *(uint64_t*)(tr+6)=(uint64_t)(target+16);
+  __builtin___clear_cache((char*)tr,(char*)tr+32);
+  *orig_out=(void*)tr;
+  void*pa=(void*)(target & ~((uintptr_t)pgsz-1));
+  mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+  o[0]=0x58000050u; o[1]=0xD61F0200u; *(uint64_t*)(o+2)=(uint64_t)(uintptr_t)fn;
+  mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC); __builtin___clear_cache((char*)pa,(char*)pa+16);
+  return 1;
+}
+/* GUIInputRegionManager.SetMousePosition(this,x,y,flag) — clobbera _mouseX/_mouseY toda frame.
+   Hookamos p/ substituir as coords pela NOSSA posição (flag|=1 = store raw em screen-coords). */
+void (*g_orig_setmp)(void*,int,int,int,void*);
+int g_girm_ovr; int g_girm_mx, g_girm_my;
+void my_setmousepos(void* thiz, int x, int y, int flag, void* mi) {
+  if (g_girm_ovr) { x=g_girm_mx; y=g_girm_my; flag|=1; }
+  if (g_orig_setmp) g_orig_setmp(thiz,x,y,flag,mi);
+}
+/* 🔑 GUIInputRegionManager.Instance — singleton cujo _mouseX(0x14)/_mouseY(0x18) é a posição do
+   ponteiro que o menu mobile usa p/ hit-test das regiões (botões). Escrever isso = mover o cursor. */
+static void *ter_girm_instance(void) {
+  static void *fld = NULL; static int tried=0;
+  if (!g_il2cpp_base) return NULL;
+  if (!fld && tried++ < 600) {
+    void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+    const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+    void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+    void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+    void *(*getf)(void*, const char*) = (void*)(g_il2cpp_base + 0x73c284);
+    void *dom=dom_get(); if(!dom) return NULL; size_t na=0; const void**as=dom_asms(dom,&na); if(!as) return NULL;
+    for(size_t i=0;i<na;i++){ void*img=asm_img(as[i]); if(!img)continue;
+      void*c=cls_from_name(img,"","GUIInputRegionManager"); if(!c)continue; fld=getf(c,"Instance"); break; }
+  }
+  if (!fld) return NULL;
+  void (*sget)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); void *inst=NULL; sget(fld,&inst); return inst;
+}
 /* 🔑 Força _controllerActive=1 (off 0x30) toda frame: a GUI mobile fica em modo touch/mouse e
    IGNORA a navegação por controle enquanto _controllerActive=0. Forçar ativa a navegação. */
 static void ter_ctrl_force_active(void) {
@@ -2131,6 +2194,13 @@ static void ter_ctrl_feed(void) {
   if (getenv("TER_HOVERX")) { extern float g_cursor_x,g_cursor_y; g_cursor_x=atof(getenv("TER_HOVERX")); g_cursor_y=atof(getenv("TER_HOVERY")?getenv("TER_HOVERY"):"360"); }
   if (getenv("TER_SELMENU") && ter_menu_resolve()) { ter_seti(MM.fselectedMenu, atoi(getenv("TER_SELMENU"))); }
   if (getenv("TER_UMOUSE")) { const char*s=getenv("TER_UMOUSE"); g_umouse_x=atof(s); const char*c=strchr(s,','); if(c)g_umouse_y=atof(c+1); }
+  if (getenv("TER_GIRM")) { const char*s=getenv("TER_GIRM"); g_girm_mx=atoi(s); const char*c=strchr(s,','); g_girm_my=c?atoi(c+1):0; g_girm_ovr=1;
+    if(getenv("TER_CTRLLOG")){ void*g=ter_girm_instance(); static int q=0; if(g&&(q++%90)==0){
+      int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
+      fprintf(stderr,"[GIRM] _mouseX=%d _mouseY=%d regions=%d (ovr->%d,%d) arr=%p\n",*(int*)((char*)g+0x14),*(int*)((char*)g+0x18),nr,g_girm_mx,g_girm_my,arr);
+      if(arr && nr>0 && nr<32) for(int r=0;r<nr&&r<8;r++){ int*b=(int*)((char*)arr+0x20+r*16);  /* struct inline: xMin,xMax,yMin,yMax */
+        fprintf(stderr,"   region[%d] x[%d..%d] y[%d..%d]\n",r,b[0],b[1],b[2],b[3]); }
+      fsync(2);}} }
   if (!getenv("TER_NOFORCEACTIVE")) ter_ctrl_force_active();
   memset(g_inj_btn,0,sizeof g_inj_btn);
   for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
@@ -2166,6 +2236,8 @@ static void ter_ctrl_feed(void) {
   }
   /* vetor de navegação do menu (lido por get_NavigationAxis substituído). y já honra TER_CTRL_INVY. */
   g_nav_x = x; g_nav_y = y;
+  /* TER_GIRMCLICK: injeta Action1 (confirm) pulsado p/ "clicar" o item sob o cursor (após o mapeamento) */
+  if (getenv("TER_GIRMCLICK")) { static int cf=0; int ph=(cf++)%90; if (ph>=40 && ph<50) g_inj_btn[0]=1; }
   if (getenv("TER_CTRLLOG")) { static int c=0; if((c++%30)==0){
     fprintf(stderr,"[CTRLLOG] getkeyraw=%lu navaxis=%lu | A=%d B=%d dpad(u%d d%d l%d r%d) nav=(%.0f,%.0f)\n",
       g_getkeyraw_calls,g_navaxis_calls,g_inj_btn[0],g_inj_btn[1],g_gp_log[0],g_gp_log[1],g_gp_log[2],g_gp_log[3],g_nav_x,g_nav_y); fsync(2);} }
