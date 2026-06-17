@@ -2076,6 +2076,51 @@ int my_ctrl_getkeyraw(void *thiz, int btn) { g_ctrl_device = thiz; g_getkeyraw_c
    struct{float,float} = HFA → retorna em s0,s1. */
 typedef struct { float x, y; } TerVec2;
 float g_nav_x, g_nav_y; unsigned long g_navaxis_calls;
+/* 🎮 Microsoft.Xna.Framework.Input.GamePad.GetState/1 @il2cpp+0xe114ac — a API GERENCIADA que o
+ * PlayerInput/GamePadInput/UILinkPointNavigator do Terraria leem (menu por D-pad + gameplay).
+ * Substituímos o corpo p/ devolver um GamePadState montado do js0. Retorno por VALOR (56 bytes)
+ * via SRET (x8) — uma C-struct retornada por valor casa com a ABI AArch64 (sret). Layout abaixo
+ * = layout IL2CPP do device (offsets boxed menos o header 0x10). É o padrão do cuphead. */
+typedef struct {
+  int   IsConnected;   /* 0x00 (bool no byte baixo; +pad) */
+  int   PacketNumber;  /* 0x04 */
+  unsigned int Buttons;/* 0x08 (flags XNA) */
+  int   DPadDown, DPadLeft, DPadRight, DPadUp;  /* 0x0c,0x10,0x14,0x18 (ButtonState Pressed=1) */
+  unsigned int ThumbVB;/* 0x1c (_virtualButtons) */
+  float LX, LY, RX, RY;/* 0x20,0x24,0x28,0x2c (left/right thumb) */
+  float TrigL, TrigR;  /* 0x30,0x34 */
+} TerGPS;  /* = 0x38 (56 bytes) */
+unsigned long g_gps_calls;
+TerGPS my_gamepad_getstate(int index, void *mi) {
+  (void)index; (void)mi; g_gps_calls++;
+  TerGPS s; memset(&s, 0, sizeof s);
+  s.IsConnected = 1;
+  unsigned int b = 0;
+  if (g_gp_log[4]) b |= 0x1000;   /* A */
+  if (g_gp_log[5]) b |= 0x2000;   /* B */
+  if (g_gp_log[6]) b |= 0x4000;   /* X */
+  if (g_gp_log[7]) b |= 0x8000;   /* Y */
+  if (g_gp_log[8]) b |= 0x10;     /* Start */
+  if (g_gp_log[9]) b |= 0x20;     /* Back (Select) */
+  if (g_gp_log[10]) b |= 0x100;   /* LB */
+  if (g_gp_log[11]) b |= 0x200;   /* RB */
+  if (g_gp_log[0]) b |= 0x1;      /* DPadUp */
+  if (g_gp_log[1]) b |= 0x2;      /* DPadDown */
+  if (g_gp_log[2]) b |= 0x4;      /* DPadLeft */
+  if (g_gp_log[3]) b |= 0x8;      /* DPadRight */
+  s.Buttons = b;
+  s.DPadUp = g_gp_log[0]?1:0; s.DPadDown = g_gp_log[1]?1:0;
+  s.DPadLeft = g_gp_log[2]?1:0; s.DPadRight = g_gp_log[3]?1:0;
+  /* thumbsticks: js0 axis cru (-32768..32767) → -1..1. XNA: Y p/ cima = +1 (js down=+1 → inverter). */
+  int lxa = getenv("TER_GP_LX")?atoi(getenv("TER_GP_LX")):0;
+  int lya = getenv("TER_GP_LY")?atoi(getenv("TER_GP_LY")):1;
+  int rxa = getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3;
+  int rya = getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
+  s.LX = g_gp_axis[lxa]/32768.0f;  s.LY = -g_gp_axis[lya]/32768.0f;
+  s.RX = g_gp_axis[rxa]/32768.0f;  s.RY = -g_gp_axis[rya]/32768.0f;
+  if (getenv("TER_GPADLOG")){ static int q=0; if((q++%60)==0){ fprintf(stderr,"[GPAD] getstate#%lu idx=%d btn=0x%x dpad(u%d d%d l%d r%d) LX=%.2f LY=%.2f\n",g_gps_calls,index,b,s.DPadUp,s.DPadDown,s.DPadLeft,s.DPadRight,s.LX,s.LY); fsync(2);} }
+  return s;
+}
 /* 🔑 Controller.ControllerActionVector.GetValue (c59988) retorna o Vector2 da direção. A navegação
  * do menu lê o vetor UINavigationAxis (campo 0x40 do GUIControllerNavigationController). Hookamos
  * GetValue: SE o vetor for o UINavigationAxis e houver direção injetada, devolvemos NOSSO vetor;
@@ -2111,8 +2156,11 @@ static int ter_install_hook4(unsigned long off, void* fn, void** orig_out);
 void my_setmousepos(void* thiz, int x, int y, int flag, void* mi);
 extern void (*g_orig_setmp)(void*,int,int,int,void*);
 static void ter_ctrl_patch(void) {
-  static int done=0; if(done||!g_il2cpp_base||!getenv("TER_CTRL")){ if(!getenv("TER_CTRL"))done=1; return; }
+  static int done=0;
+  int any = getenv("TER_CTRL")||getenv("TER_GPAD")||getenv("TER_UMOUSE")||getenv("TER_GIRM");
+  if(done||!g_il2cpp_base||!any){ if(!any)done=1; return; }
   long pgsz=sysconf(_SC_PAGESIZE);
+  if (getenv("TER_CTRL")) {   /* caminho InControl/ControllerDevice (menu mobile) */
   struct { unsigned long off; void* fn; } P[] = {
     { 0xc5c51c, (void*)my_ctrl_getkeyraw },     /* GetKeyRaw(this,btn) -> _KeyState (botões) */
     { 0xc5c2f0, (void*)my_ctrl_getaxisraw },    /* GetAxisRaw(this,axis) -> AxisValue */
@@ -2127,6 +2175,7 @@ static void ter_ctrl_patch(void) {
     mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
     __builtin___clear_cache((char*)pa,(char*)pa+16);
   }
+  }
   /* TER_UMOUSE: substitui UnityEngine.Input.get_mousePosition p/ o cursor seguir nosso ponto */
   if (getenv("TER_UMOUSE")) {
     uint32_t* c=(uint32_t*)(g_il2cpp_base + 0x26ad4c4);
@@ -2137,13 +2186,23 @@ static void ter_ctrl_patch(void) {
     __builtin___clear_cache((char*)pa,(char*)pa+16);
     fprintf(stderr,"[CTRL] UnityEngine.Input.get_mousePosition substituido\n"); fsync(2);
   }
+  /* 🎮 TER_GPAD: substitui GamePad.GetState/1 (0xe114ac) p/ devolver o estado do js0 — caminho
+     NATIVO de controle do Terraria (menu por D-pad + gameplay), sem cursor/gambiarra. */
+  if (getenv("TER_GPAD")) {
+    uint32_t*c=(uint32_t*)(g_il2cpp_base+0xe114ac);
+    void*pa=(void*)((uintptr_t)c & ~((uintptr_t)pgsz-1));
+    mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+    c[0]=0x58000050u; c[1]=0xD61F0200u; *(uint64_t*)(c+2)=(uint64_t)(uintptr_t)my_gamepad_getstate;
+    mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC); __builtin___clear_cache((char*)pa,(char*)pa+16);
+    fprintf(stderr,"[GPAD] GamePad.GetState @0xe114ac substituido (controle nativo)\n"); fsync(2);
+  }
   /* hook de SetMousePosition (cbf18c) p/ o cursor do menu seguir nossa posição (TER_GIRM) */
   if (getenv("TER_GIRM")) {
     if (ter_install_hook4(0xcbf18c, (void*)my_setmousepos, (void**)&g_orig_setmp))
       fprintf(stderr,"[CTRL] SetMousePosition hookado\n"); fsync(2);
   }
-  /* trampolim condicional p/ ControllerActionVector.GetValue (c59988) — navegação do menu */
-  {
+  /* trampolim condicional p/ ControllerActionVector.GetValue (c59988) — navegação do menu (InControl) */
+  if (getenv("TER_CTRL")) {
     uintptr_t target=g_il2cpp_base+0xc59988; uint32_t*orig=(uint32_t*)target;
     uint32_t*tr=mmap(NULL,4096,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
     if (tr!=MAP_FAILED){
