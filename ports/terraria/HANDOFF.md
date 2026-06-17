@@ -6,7 +6,8 @@
 Estado validado depois do problema do teclado:
 - A solução prática do nome/personagem é **não usar teclado**.
 - Existe um player pronto em `ports/terraria/default_players/Spedyleonik.plr`.
-- `run.sh` cria `Players/` e copia `default_players/*.plr` quando a pasta ainda não tem `.plr`.
+- `run.sh` cria `Players/` e garante que cada `.plr` de `default_players/` exista lá, sem sobrescrever save existente.
+- Para deixar 2 ou 3 opções prontas, basta adicionar mais `.plr` validado em `ports/terraria/default_players/`; o launcher copia todos.
 - No device, o save está instalado em `/storage/roms/terraria/Players/Spedyleonik.plr`.
 - NextOS confirmou em teste real: **"deu certo"**.
 - `run.sh` default fica sem `TER_OSK`; manter `TER_NOVKBD=1`.
