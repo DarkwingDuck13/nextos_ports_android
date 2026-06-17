@@ -2195,6 +2195,7 @@ static void ter_ctrl_force_active(void) {
  * Mouse.GetState.LeftButton (já alimentado por g_gp_log[4]) clica o item sob o cursor.
  * Auto-adapta a qualquer tela (lê as regiões vivas). Não toca nos hooks de botão. */
 static int g_nav_idx;
+int g_cur_regions;   /* nº de itens navegáveis na tela atual (p/ auto-teste detectar troca de tela) */
 static void ter_menu_nav(void) {
   if (!getenv("TER_NAVMENU")) return;
   void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; return; }
@@ -2206,36 +2207,44 @@ static void ter_menu_nav(void) {
     if(ccy<100) continue;   /* pula regiões da barra do topo (ex: ícone canto sup-dir 848,27) */
     cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
   for(int i=1;i<n;i++) for(int j=i;j>0&&(cy[order[j]]<cy[order[j-1]]||(cy[order[j]]==cy[order[j-1]]&&cx[order[j]]<cx[order[j-1]]));j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
-  /* 🔑 persistência por POSIÇÃO: a seleção segue o ITEM (centro x,y), não o índice. Telas como
-     Settings têm a contagem de regiões flutuando (17↔2) — resetar por contagem fazia a seleção
-     pular. Aqui: acha o item mais próximo do último selecionado; se sumiu por poucos frames
-     (flutuação), SEGURA a posição; se sumiu de vez (troca real de tela), volta ao topo. */
-  static int sel_cx=-99999, sel_cy=-99999, cooldown=0, farcnt=0;
+  g_cur_regions = n;
+  if (getenv("TER_NAVDUMP")){ static int dn=0; if(n>8 && (dn++%120)==0){ fprintf(stderr,"[NAVDUMP] %d regioes ordenadas (y,x):\n",n);
+    for(int i=0;i<n;i++) fprintf(stderr,"   [%d] (%d,%d)\n",i,cx[order[i]],cy[order[i]]); fsync(2);} }
   extern float g_cursor_x,g_cursor_y;
-  long bestd=(long)1<<60; int curidx=0;
-  for(int i=0;i<n;i++){ long dx=cx[order[i]]-sel_cx, dy=cy[order[i]]-sel_cy; long d=dx*dx+dy*dy; if(d<bestd){bestd=d;curidx=i;} }
-  int near = (sel_cx!=-99999 && bestd <= 70L*70L);
+  /* dedupe regiões quase-coincidentes (ex: 446/447 no mesmo y viram uma) */
+  int dcx[32], dcy[32], dn2=0;
+  for(int i=0;i<n;i++){ int X=cx[order[i]],Y=cy[order[i]],dup=0;
+    for(int k=0;k<dn2;k++) if(abs(dcx[k]-X)<=10 && abs(dcy[k]-Y)<=12){ dup=1; break; }
+    if(!dup){ dcx[dn2]=X; dcy[dn2]=Y; dn2++; } }
+  if(dn2<=0){ g_girm_ovr=0; return; }
+  /* agrupa em LINHAS por Y (≤22px = mesma linha). dcx/dcy já vêm ordenados por (y,x). */
+  int rowStart[32], rowLen[32], nrows=0;
+  for(int i=0;i<dn2;){ int j=i+1; while(j<dn2 && dcy[j]-dcy[i]<=22) j++; rowStart[nrows]=i; rowLen[nrows]=j-i; nrows++; i=j; }
+  /* 🔑 navegação SÓ ↑/↓ entre LINHAS (agrupadas por Y) — não pula pelas abas/duplicatas. O
+     horizontal (abas, valores) é o L1/R1 NATIVO do jogo, então não mexo em ←/→. Persistência por
+     POSIÇÃO (segue a linha pelo centro Y, imune à flutuação da contagem); troca real de tela
+     (linha some por ≥8 frames) → volta ao topo. Pousa no 1º item da linha (destaca a linha). */
+  static int sel_cy=-99999, cdV=0, farcnt=0, row=0;
+  long bestd=(long)1<<60; int brow=0;
+  for(int r=0;r<nrows;r++){ long dy=dcy[rowStart[r]]-sel_cy; long d=dy*dy; if(d<bestd){bestd=d;brow=r;} }
+  int near = (sel_cy!=-99999 && bestd <= 30L*30L);
   if (!near) {
-    if (sel_cx==-99999 || ++farcnt>=8) {        /* troca real de tela → topo */
-      g_nav_idx=0; farcnt=0; near=1; sel_cx=cx[order[0]]; sel_cy=cy[order[0]];
-    } else {                                     /* flutuação transitória → segura a posição */
-      g_girm_mx=sel_cx; g_girm_my=sel_cy; g_girm_ovr=1; g_cursor_x=(float)sel_cx; g_cursor_y=(float)sel_cy;
-      if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] itens=%d (transitorio, segurando %d,%d) far=%d\n",n,sel_cx,sel_cy,farcnt); fsync(2);} }
-      return;
-    }
-  } else { farcnt=0; g_nav_idx=curidx; }
-  int U=g_gp_log[0], D=g_gp_log[1];
-  int dir = D ? 1 : (U ? -1 : 0);
-  /* cooldown: anda 1 casinha por vez (ritmo de caminhada), imune ao flutter do analógico. */
+    if (sel_cy==-99999 || ++farcnt>=8) { row=0; farcnt=0; near=1; }
+    else {  /* flutuação transitória → segura a posição (g_girm_mx/my e g_cursor do frame anterior) */
+      g_girm_ovr=1;
+      if(getenv("TER_CTRLLOG")){static int q=0;if((q++%45)==0){fprintf(stderr,"[NAV] %d linhas (transitorio) far=%d\n",nrows,farcnt);fsync(2);}} return; }
+  } else { farcnt=0; row=brow; }
+  if(row<0)row=nrows-1; if(row>=nrows)row=0;
+  int U=g_gp_log[0],D=g_gp_log[1];
+  int vdir=D?1:(U?-1:0);
   int rep = getenv("TER_NAVREP") ? atoi(getenv("TER_NAVREP")) : 15;
-  if (cooldown>0) cooldown--;
-  if (dir!=0 && cooldown==0) { g_nav_idx += dir; cooldown = rep; }
-  if(g_nav_idx<0)g_nav_idx=n-1; if(g_nav_idx>=n)g_nav_idx=0;
-  int sel=order[g_nav_idx];
-  sel_cx=cx[sel]; sel_cy=cy[sel];                       /* lembra o item selecionado */
-  g_girm_mx=cx[sel]; g_girm_my=cy[sel]; g_girm_ovr=1;   /* hover (GUI _mouseX/_mouseY) */
-  g_cursor_x=(float)cx[sel]; g_cursor_y=(float)cy[sel]; /* Mouse.GetState pos p/ o clique do A */
-  if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] itens=%d idx=%d -> (%d,%d) U=%d D=%d A=%d\n",n,g_nav_idx,cx[sel],cy[sel],U,D,g_gp_log[4]); fsync(2);} }
+  if(cdV>0)cdV--;
+  if(vdir!=0 && cdV==0){ row+=vdir; cdV=rep; if(row<0)row=nrows-1; if(row>=nrows)row=0; }
+  int bidx=rowStart[row];                 /* 1º item da linha (mais à esquerda) */
+  sel_cy=dcy[bidx];
+  g_girm_mx=dcx[bidx]; g_girm_my=dcy[bidx]; g_girm_ovr=1;     /* hover (GUI _mouseX/_mouseY) */
+  g_cursor_x=(float)dcx[bidx]; g_cursor_y=(float)dcy[bidx];   /* Mouse.GetState pos p/ o A */
+  if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] %d itens %d linhas | linha %d -> (%d,%d) U%d D%d A%d\n",dn2,nrows,row,dcx[bidx],dcy[bidx],U,D,g_gp_log[4]); fsync(2);} }
 }
 static void ter_ctrl_feed(void) {
   if (!getenv("TER_CTRL")) return;
@@ -2291,9 +2300,15 @@ static void ter_ctrl_feed(void) {
     int from=getenv("TER_TESTFROM")?atoi(getenv("TER_TESTFROM")):1200;
     int ndown=getenv("TER_NAVDOWN")?atoi(getenv("TER_NAVDOWN")):3;
     g_gp_log[0]=g_gp_log[1]=g_gp_log[4]=0;
-    if (f>from){ int s=f-from, step=s/25, ph=s%25;
-      if (step<ndown){ if(ph<8) g_gp_log[1]=1; }          /* DOWN ×ndown (1 por step de 25 frames) */
-      else if (step==ndown+1){ if(ph<8) g_gp_log[4]=1; }  /* A (confirma) após uma pausa */
+    extern int g_cur_regions; static int entered=0, eframe=0;
+    if (g_cur_regions>8 && !entered){ entered=1; eframe=f; }
+    if (f>from){
+      if (entered){ int e=f-eframe;   /* já no Settings: assenta 40f, depois 3 DOWN p/ testar nav interna */
+        if (e>40){ int st=(e-40)/25, ph=(e-40)%25; if(st<3 && ph<8) g_gp_log[1]=1; } }
+      else { int s=f-from, step=s/25, ph=s%25;
+        if (step<ndown){ if(ph<8) g_gp_log[1]=1; }        /* DOWN ×ndown até Settings */
+        else { if(ph<10) g_gp_log[4]=1; }                 /* clica até a tela trocar */
+      }
     }
   }
   ter_menu_nav();   /* 🎮 navegação real: up/down move o cursor entre itens, A clica */
