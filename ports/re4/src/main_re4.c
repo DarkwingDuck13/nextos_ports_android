@@ -295,6 +295,7 @@ static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
 static int g_in_menu=0;  /* 1 = menu CODEX visivel; 0 = gameplay (reabilita injecao android_shim p/ mover Leon) */
+static int g_gameplay=0; /* 1 = entrou no gameplay (New/Continue) -> PARA toda poke-Mono (evita FREEZE) */
 /* ESTUDO: registra vocabulario DISTINTO de input consultado pelo jogo (sem cap).
    Gated por RE4_INDUMP. Imprime [INDUMP] <chave> uma vez por chave nova. */
 static int re4_indump(const char *key){
@@ -2724,6 +2725,7 @@ static int re4_mono_nav_init(void){
 }
 static void re4_enable_menu_nav(int frame){
   if(getenv("RE4_NO_MENUNAV")) return;
+  if(g_gameplay) return;                       /* gameplay -> nao mexe em Mono (anti-freeze) */
   if(frame<60 || (frame % 30)!=0) return;     /* periodico, depois do boot */
   if(!re4_mono_nav_init()) return;
   void* domain=MN.get_root_domain(); if(!domain) return;
@@ -2873,9 +2875,9 @@ static int re4_menu_edge(int idx){ return g_re4_gp_btn[idx] && !g_re4_gp_prev[id
 static void re4_menu_nav(int frame){
   if(getenv("RE4_NO_MENUNAV2")) return;
   if(frame<60) return;
-  /* PERF: o scan (FindObjectsOfType) e caro no Mali-450. No MENU escaneia todo frame
-     (responsivo); no GAMEPLAY so a cada 15 frames (so p/ detectar volta ao menu). */
-  if(!g_in_menu && (frame%15)!=0) return;
+  /* ANTI-FREEZE: assim que o gameplay comeca (New/Continue) PARAMOS de mexer no Mono.
+     Fazer runtime_invoke/FindObjectsOfType durante o load/gameplay pesado trava a tela. */
+  if(g_gameplay){ g_in_menu=0; return; }
   if(!re4_mono_nav_init()) return;
   void* domain=MN.get_root_domain(); if(!domain) return;
   static int res=0; static void* ui_img=0,*core_img=0,*sel_cls=0,*obj_cls=0,*comp_cls=0,*es_cls=0,*btn_cls=0,*ev_cls=0,*go_cls=0,*tr_cls=0;
@@ -2964,6 +2966,10 @@ static void re4_menu_nav(int frame){
   int doA=re4_menu_edge(RE4_BTN_A) || re4_menu_edge(RE4_BTN_X);
   int doB=re4_menu_edge(RE4_BTN_B);
   if(doA){
+    /* se o botao for New/Continue (entra no gameplay) -> marca g_gameplay p/ PARAR a poke-Mono */
+    void* en2=0; void* snm2=MN.runtime_invoke(m_getname,gos[ci],NULL,&en2);
+    if(!en2&&snm2&&g_mono_string_to_utf8_fn){ char* u=g_mono_string_to_utf8_fn(snm2);
+      if(u && (!strcasecmp(u,"New")||!strcasecmp(u,"Continue"))){ g_gameplay=1; fprintf(stderr,"[MENUNAV2] gameplay START (%s) -> para poke-Mono f=%d\n",u,frame); } }
     void* e6=0; void* evt=MN.runtime_invoke(m_onclick,sels[ci],NULL,&e6);
     if(!e6&&evt){ void* e7=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e7); fprintf(stderr,"[MENUNAV2] A->onClick ci=%d exc=%p f=%d\n",ci,e7,frame); fsync(2); }
     cur=0; /* forca reavaliacao do cursor no proximo frame (painel pode mudar) */
@@ -3088,7 +3094,7 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   /* MOVIMENTO NO GAMEPLAY (Leon anda): o gameplay e TOUCH (dpad na tela inf-esq). Traduzimos
      a direcao do gamepad (dpad ou analogico esq) num ARRASTO de toque sobre esse dpad virtual.
      So no gameplay (!g_in_menu). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
-  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE")){
+  if(!g_in_menu && getenv("RE4_TOUCHMOVE")){   /* opt-in (isola causa de freeze); liga p/ andar */
     static int touching=0; static float lx2=0,ly2=0;
     float cx=(float)re4_int_env("RE4_DPAD_CX",170,0,1920);
     float cy=(float)re4_int_env("RE4_DPAD_CY",560,0,1080);
