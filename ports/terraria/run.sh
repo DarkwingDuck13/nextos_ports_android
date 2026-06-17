@@ -19,7 +19,10 @@ i=0; while [ -n "$(ter_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
 # boot (destrava job-system + render) + CONTROLES (gamepad navega o menu: D-pad cima/baixo + A confirma)
-export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
+# CUP_NOLOGFILE=1 é OBRIGATÓRIO: sem ele, o log em arquivo trava a inicialização (nem renderiza).
+export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 CUP_NOLOGFILE=1
+# CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
+export CUP_FRAMES=999999999
 export TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1
 echo "[run] Terraria — fbdev Mali-450 + controles (D-pad cima/baixo + A)"
 nohup ./terraria > run.out 2>&1 &
