@@ -100,8 +100,12 @@ export RE4_NOSIGH="${RE4_NOSIGH:-1}"
 export RE4_NOGCCOLLECT="${RE4_NOGCCOLLECT:-1}"
 export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-268435456}"
 export GC_FREE_SPACE_DIVISOR="${GC_FREE_SPACE_DIVISOR:-1}"
-export RE4_WIDTH="${RE4_WIDTH:-1280}"
-export RE4_HEIGHT="${RE4_HEIGHT:-720}"
+# RESOLUCAO: 960x540 = estado JOGAVEL confirmado ("janela completa" na TV deste device).
+# ⚠️ ABERTO: fullscreen automático/portátil NÃO resolvido — ver RE4-FULLSCREEN-PENDENTE.md.
+#   1280x720 (FULLSCREEN ou FULLSCREEN_DESKTOP) = ZOOM GIGANTE (conteúdo ampliado ~3x, cortado).
+#   960x540 + SDL_WINDOW_FULLSCREEN = preenche certo. O zoom é proporcional à resolução.
+export RE4_WIDTH="${RE4_WIDTH:-960}"
+export RE4_HEIGHT="${RE4_HEIGHT:-540}"
 # audio FMOD (AudioTrack -> SDL callback -> PulseAudio) precisa do backend pulse
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
 
