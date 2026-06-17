@@ -1,5 +1,150 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES FUNCIONANDO, TECLADO DESLIGADO
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+Este é o estado que NextOS validou com `funciouuu` e que não pode ser perdido.
+
+Estado correto:
+- `run.sh` default usa `TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_NAVMENU=1 TER_FIXSP=1 TER_NOVKBD=1`.
+- `TER_NUKEKB=1` fica ligado no boot para tirar o caminho de teclado do Unity da jogada.
+- `TER_RSCURSOR` fica **fora** do default. Não reativar: causou cursor duplicado/quebra de gameplay.
+- O menu funciona por `TER_NAVMENU`: D-pad/stick esquerdo navega, `A` confirma.
+- O teclado virtual fica desligado (`TER_NOVKBD=1`). A tentativa de teclado quebrou o estado bom dos controles.
+- O teste que provou navegação usou temporariamente `TER_GPVIRT=1 TER_CTRLLOG=1 TER_NAVDUMP=1 TER_MENULOG=1`; depois foi relançado limpo.
+- Relançamento limpo feito com PID `145895`, sem flags de diagnóstico.
+
+Não mudar sem teste completo:
+- Não trocar `TER_NUKEKB` por `TER_KBFIX` no default.
+- Não remover `TER_NAVMENU` do default.
+- Não ligar `TER_RSCURSOR` no default.
+- Não voltar o mini teclado para o default.
+
+## ⚠️ TENTATIVA ANTERIOR COM MINI TECLADO — NÃO USAR COMO DEFAULT
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+Estado atual importante:
+- `run.sh` padrão mantém **cursor nativo do Terraria**. Não reativar `TER_RSCURSOR` por padrão.
+- Default atual: `TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_FIXSP=1`.
+- O caminho de cursor custom/overlay (`TER_RSCURSOR`) continua no código apenas como diagnóstico/opt-in; ele causou cursor duplicado no gameplay e não deve ser usado como base.
+- `TER_NUKEKB` continua fora do `run.sh`. O input real de teclado precisa de `KeyboardInput.Update` vivo.
+- Correção JNI nova: `TER_KBFIX=1` agora resolve `UnityPlayer.currentActivity.PressedStates` por reflection/JNI:
+  - `GetStaticFieldID(currentActivity)` retorna uma sentinela estável.
+  - `CallObjectMethodA(getDeclaringClass)` no fluxo armado devolve uma classe fake válida.
+  - `GetFieldID(PressedStates, "")` retorna o fieldID fake e `GetObjectField(PressedStates)` devolve `boolean[512]`.
+  - Log validado no device: `[KBFIX] GetObjectField(PressedStates) -> boolean[512]`.
+  - Depois disso, a exceção `Field PressedStates or type signature not found` parou no boot.
+
+Bug novo atacado:
+- Ao criar personagem novo, Terraria/Unity chama `showSoftInput(...)`, mas no so-loader não existe teclado Android real.
+- O log provou o caminho:
+  - `GetMethodID(showSoftInput, (Ljava/lang/String;IZZZZLjava/lang/String;IZZ)V)`
+  - `CallVoidMethod(showSoftInput)`
+  - Unity registra os nativos `nativeSetInputString`, `nativeSetInputSelection`, `nativeSetKeyboardIsVisible`, `nativeSoftInputClosed`.
+
+Correção implementada:
+- `jni_shim.c` agora intercepta `showSoftInput`/`hideSoftInput` e mantém um estado de soft keyboard ativo.
+- `main.c` desenha um mini teclado controlado pelo controle quando `showSoftInput` abre.
+- Controles do mini teclado:
+  - D-pad/stick esquerdo: escolher letra.
+  - `A`: inserir letra; se estiver na tecla `OK`, confirma.
+  - `X` ou `B`: apagar.
+  - `Y`: espaço.
+  - `Start`, `RB`, `RT` ou `R3`: finalizar; se vazio, usa `TER_VK_DEFAULT` ou `PLAYER`.
+  - `Select`: cancelar.
+- Ajuste posterior: NextOS validou que o teclado ficou bom, mas `Start` não confirmava no controle dele. A última tecla da última linha agora é `OK`, confirmável com `A`; `RB/RT/R3` também confirmam como alternativas ao `Start`.
+- Ajuste posterior 2: ao clicar `OK`, o Unity fechava e imediatamente chamava `showSoftInput` de novo com `text=""`; isso apagava o nome e reabria o teclado. Correção:
+  - `jni_shim.c` preserva o último texto confirmado e suprime até 3 reopens vazios imediatos (`[SOFTINPUT] suppress empty reopen -> keep ...`).
+  - `main.c` engole o gamepad por alguns frames depois do `OK`, para o `A` não clicar novamente no campo por trás.
+- Enquanto o teclado está ativo, `GamePad.GetState`/InControl são zerados para o jogo, evitando que A/D-pad mexam no menu por trás.
+- Opt-out: `TER_NOVKBD=1`.
+
+Build/deploy feito:
+- `./build.sh` OK.
+- Antes de copiar, processo antigo foi morto e não havia PID restante.
+- Copiado `terraria` e `run.sh` para `192.168.31.89:/storage/roms/terraria/`.
+- Lançado build inicial do teclado via `sh run.sh`, PID `123936`.
+- Depois do ajuste de confirmação (`OK` na grade + `RB/RT/R3`), build/deploy OK e novo PID `125132`.
+- Depois do ajuste de reopen vazio/pós-OK, build/deploy OK e novo PID `126308`.
+- Log do novo boot confirmou os nativos:
+  - `nativeSetKeyboardIsVisible`
+  - `nativeSetInputString`
+  - `nativeSetInputSelection`
+  - `nativeSoftInputClosed`
+- Build/deploy posterior do `TER_KBFIX` OK, PID `136646`; processo vivo, sem exceções novas no boot.
+
+Próximo teste:
+- No device, entrar em criar personagem e validar se o overlay `[VKBD]` aparece na TV.
+- Validar se, agora com `KeyboardInput.Update` sem exceção, o nome digitado aparece/grava na tela do Terraria.
+- Se letras aparecem no overlay mas o jogo não habilita o botão de continuar, revisar a ordem dos callbacks `nativeSetInputString`/`nativeSetInputSelection`/`nativeSoftInputClosed` ou alimentar diretamente o campo IL2CPP de nome.
+
+## 🟢 SESSÃO 2026-06-17 (continuação 2) — stick direito move cursor; bug real era cursor invisível + A sem clique
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+Atualização importante descoberta pelo NextOS:
+- Existem **dois cursores**.
+- No gameplay, o cursor nativo do Terraria aparece; desenhar nosso overlay ali duplica o cursor.
+- No menu inicial, o cursor nativo/principal fica **invisível**, e o overlay que desenhamos precisa seguir esse cursor interno.
+- Correção aplicada depois disso: `TER_RSCURSOR` agora alimenta também `UnityEngine.Input.mousePosition` e `GUIInputRegionManager.SetMousePosition`, convertendo da tela real `1280x720` para o espaço lógico do jogo (`screenWidth/screenHeight`, visto no log como `902x507`).
+- O overlay (`ter_rscursor_draw`) agora só desenha no menu (`Main.gameMenu=true`), salvo se `TER_RSCURSOR_DRAW_INGAME=1`.
+- Log esperado no build atual: `[RCURSINK] real=640,360 game=451,254/902x507 ... girm=451,254 ovr=1 menu=1`.
+- Ajuste posterior: `Main.gameMenu`/`Main.myPlayer` não resolvem neste build (`nil` no log). Para remover o cursor duplicado no gameplay, o gate agora usa `Main.player[]` + offset de `Terraria.Player.active` e desliga o overlay quando **qualquer Player ativo** existir. Log no menu ainda deve mostrar `playerActive=0`; no gameplay deve virar `playerActive=1`.
+
+Diagnóstico ao vivo do NextOS:
+- O analógico direito **funcionava**: por duas vezes ele conseguiu passar por cima de opções.
+- O problema real era que o cursor estava **invisível**.
+- Ao acertar uma opção "por sorte", o botão A também **não confirmava/iniciava**, porque o clique do mouse virtual estava desligado no caminho `TER_RSCURSOR`.
+
+Correção aplicada em `ports/terraria/src/main.c`:
+- `ter_rscursor_draw()` desenha uma mira visível no framebuffer real, depois de `rs_present()` e antes de `eglSwapBuffers`.
+- O desenho usa `glScissor + glClear`, sem shader, para ficar simples e independente do pipeline do Terraria.
+- `ter_fna_mouse_getstate()` agora faz A/B virarem botões de mouse por padrão quando `TER_RSCURSOR=1`.
+  - Opt-out: `TER_RSCURSOR_NOCLICK=1`.
+  - Compat antigo: `TER_RSCURSOR_CLICK=1` ainda funciona.
+
+Build/deploy/teste feito:
+- `./build.sh` OK.
+- Antes de copiar: `pkill -9 terraria` no device e `pgrep` confirmou que não havia processo vivo.
+- Copiado `terraria` novo para `192.168.31.89:/storage/roms/terraria/terraria`.
+- Lançado com `TER_GPAXLOG=1 TER_RSCURSORLOG=1 sh run.sh`, PID `118979`.
+- Log confirmou:
+  - `[TGP-HOOK] FNA Mouse.GetState ... hookado`
+  - `[RCURDRAW] cursor overlay ON size=14 thick=3 screen=1280x720`
+  - `[RCUR] 640,360 ... bounds=1280x720`
+
+Próximo passo: NextOS validar na TV se a mira aparece e se A confirma/inicia. Se hover aparecer mas A ainda não acionar, investigar se o menu em questão lê outro caminho além de FNA `Mouse.GetState`.
+
+## 🟢 SESSÃO 2026-06-17 (continuação) — CONTROLE agora usa SDL_GameController/Xbox, não js0 cru
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+O caminho de controle foi refeito para parar de chutar layout de `/dev/input/js0`.
+- `ter_gamepad_poll` agora usa **SDL_GameController** como fonte física única. O SDL normaliza para layout **Xbox**.
+- `run.sh` padrão agora liga `TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_RSCURSOR=1 TER_FIXSP=1`.
+- `TER_NAVMENU` saiu do `run.sh` padrão. Ou seja: sem hover/cursor artificial por regiões de menu no caminho normal.
+- `TER_GAMEPAD` agora só faz poll do estado Xbox. O antigo hook FNA Keyboard/Mouse ficou separado em `TER_FNAINPUT` apenas para diagnóstico.
+- `TER_CTRL` alimenta InControl (`Controller.ControllerDevice.GetKeyRaw/GetAxisRaw`).
+- `TER_GPAD` alimenta XNA `Microsoft.Xna.Framework.Input.GamePad.GetState`.
+
+Mapeamento entregue ao jogo:
+- D-pad: `SDL_CONTROLLER_BUTTON_DPAD_*` -> InControl DPadX/Y e XNA DPad.
+- A/B/X/Y: botões Xbox padrão -> Action1/2/3/4 e XNA flags.
+- LB/RB: shoulders.
+- LT/RT: eixos analógicos reais + botão quando > 0.30.
+- L3/R3: stick buttons.
+- Sticks: LeftX/LeftY/RightX/RightY reais, com deadzone `TER_GP_DEADZONE` default `0.18`.
+
+Build/deploy/teste feito:
+- `./build.sh` OK.
+- Copiado `terraria` e `run.sh` para `192.168.31.89:/storage/roms/terraria/`.
+- Lançado com `TER_GPAXLOG=1 sh run.sh`, PID visto: `117505`.
+- Log confirmou:
+  - `[TGP] SDL_NumJoysticks=1`
+  - `[TGP] js0: "USB Gamepad" isGameController=1`
+  - `[TGP] Xbox layout via SDL_GameController js0: Twin USB PS2 Adapter`
+  - `[TGPAX]` mostrou D-pad, A/B/X/Y, left stick e right stick variando.
+
+Próximo passo: NextOS validar no menu e gameplay se o controle agora se comporta como Xbox real. Se algo ainda não bater, ajustar a camada que o Terraria espera (InControl/XNA), não voltar para mapeamento manual de eixo cru.
+
 ## 🔴 SESSÃO 2026-06-17 (madrugada) — ÁUDIO RESOLVIDO, mas CONTROLE REGREDIU (LEIA PRIMEIRO)
 **Device `192.168.31.89` (ssh root/`nextos`), jogo `/storage/roms/terraria/`. `sh run.sh`. Commit atual `a0f1f99`.**
 **Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; ssh ...kill; scp terraria .89`.**
