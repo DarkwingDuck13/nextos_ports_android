@@ -493,6 +493,21 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       if (strcmp(nm, "getAxis") == 0) return g_motionrange_axis;
       if (strcmp(nm, "getSource") == 0) return 0x01000010; /* JOYSTICK */
     }
+    /* MotionEvent injetado (stick): o jogo pergunta getPointerCount ANTES de ler eixos;
+       0 -> ignora os eixos -> sem movimento. Retornamos 1 + metadados coerentes. LOG p/ ver
+       exatamente quais metodos o jogo chama no evento (descobrir o caminho real do analogico). */
+    if (obj == &g_obj_motionevent) {
+      static int ml=0; if(ml++<80) debugPrintf("[MOTIONM-int] %s\n", nm?nm:"?");
+      if (strcmp(nm, "getPointerCount") == 0) return 1;
+      if (strcmp(nm, "getPointerId") == 0) return 0;
+      if (strcmp(nm, "getHistorySize") == 0) return 0;
+      if (strcmp(nm, "getActionMasked") == 0) return g_hk_inject.action;
+      if (strcmp(nm, "getActionIndex") == 0) return 0;
+      if (strcmp(nm, "getButtonState") == 0) return 0;
+      if (strcmp(nm, "getEdgeFlags") == 0) return 0;
+      if (strcmp(nm, "findPointerIndex") == 0) return 0;
+      if (strcmp(nm, "getToolType") == 0) return 0;
+    }
     if (strcmp(nm, "size") == 0) return 0; /* List/Collection vazia */
   }
   struct astream *s = astream_find(obj);
@@ -717,6 +732,7 @@ static long jni_CallLongMethod(void *env, void *obj, void *methodID, ...) {
 static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list ap) {
   (void)env; (void)obj;
   const char *nm = mid_name(methodID);
+  if (obj == &g_obj_motionevent) { static int fl=0; if(fl++<80) debugPrintf("[MOTIONM-flt] %s\n", nm?nm:"?"); }
   if (nm) {
     if (strcmp(nm, "getAxisValue") == 0) {
       int axis = va_arg(ap, int);              /* getAxisValue(int axis [, int pointer]) */
