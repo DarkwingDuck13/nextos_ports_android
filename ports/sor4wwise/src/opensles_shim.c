@@ -421,6 +421,15 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     float av = fabsf(mix_buf[s]);
     if (av > mix_peak) mix_peak = av;
   }
+  /* pico de saida (out) p/ diagnostico silencio-vs-som */
+  { int16_t outpeak = 0;
+    for (int s = 0; s < out_samples; s++){ int16_t a = out[s]<0? -out[s]:out[s]; if(a>outpeak) outpeak=a; }
+    if (callback_count % 200 == 0) {
+      FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
+      if(lf){ fprintf(lf,"[opensles] PICO cb#%u mixpeak=%.0f OUTpeak=%d active=%d masterg=%.2f (>100=SOM, 0=silencio)\n",
+                      callback_count, mix_peak, (int)outpeak, num_active, master_gain); fclose(lf); }
+    }
+  }
   if (jump_l > 8000 || jump_r > 8000) {
     click_count++;
     debugPrintf("opensles_shim: CLICK #%u cb#%u jump L=%d R=%d prev=%d/%d new=%d/%d mixpeak=%.0f active=%d\n",
@@ -736,8 +745,10 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
         p->enqueue_counter++;
         p->ever_enqueued = 1;
         if (p->enqueue_counter == 1 || p->enqueue_counter % 300 == 0) {
+          const int16_t* sp=(const int16_t*)pBuffer; int16_t pk=0; uint32_t ns=size/2;
+          for(uint32_t k=0;k<ns;k++){ int16_t a=sp[k]<0?-sp[k]:sp[k]; if(a>pk)pk=a; }
           FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
-          if(lf){ fprintf(lf,"[opensles] ENQUEUE player %d size=%u counter=%u (Wwise ESCREVENDO audio!)\n",i,size,p->enqueue_counter); fclose(lf); }
+          if(lf){ fprintf(lf,"[opensles] ENQUEUE p%d size=%u cnt=%u RAWpeak=%d (Wwise: >100=audio real, 0=Wwise renderiza silencio)\n",i,size,p->enqueue_counter,(int)pk); fclose(lf); }
         }
         /* if (p->debug_enqueue_logs < 16 || p->enqueue_counter % 64 == 0) {
           debugPrintf("opensles_shim: player %d enqueue size=%u written=%u readable=%u counter=%u\n",

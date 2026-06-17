@@ -69,7 +69,44 @@ CAMINHO CUSTOM (FEITO, mas NextOS NÃO quer — fica de fallback/referência):
   wwise_real.c (libWwise.so glibc: dlopen OpenAL+opusfile, post_event toca o .opus). FUNCIONOU end-to-end:
   NextOS ouviu o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
 
-### 🔊🏆🏆 NATIVO RESOLVIDO 2026-06-16 cont.13: ÁUDIO WWISE ORIGINAL TOCANDO (HDMI sink RUNNING)
+## ⏭️🔊 PRÓXIMA SESSÃO (cont.14) — MURO: Wwise renderiza SILÊNCIO (RAWpeak=0). Pipeline 100% OK.
+**ONDE PAROU:** toda a cadeia de áudio nativo FUNCIONA (Wwise real carrega, init=1, bancos+613 wem
+presentes, pump thread, OpenSLES->SDL->PulseAudio->HDMI sink RUNNING, ENQUEUE contínuo). MAS o NextOS
+NÃO ESCUTA. Diagnóstico definitivo: log `[opensles] ENQUEUE ... RAWpeak=0` = a Wwise enfileira buffers
+de SILÊNCIO PURO (zeros), ANTES do meu volume. Logo a **própria Wwise renderiza silêncio** — não é
+roteamento/volume do shim (masterg=0.30 ok, sem CORRUPT vol). active=1 (1 voz ativa) mas dados=zeros.
+
+**HIPÓTESES p/ investigar (ordem de probabilidade):**
+- (A) **MUTE por FOCO/BACKGROUND**: jogos Android mutam áudio quando a Activity perde foco. Nossa
+  activity é FAKE (0x1000) -> o jogo pode achar que está em background e chamar AK::SoundEngine::Suspend
+  ou setar volume master=0. INVESTIGAR: o jogo chama algum suspend? A resposta JNI de "hasWindowFocus"/
+  "isFocused" precisa ser true? Ver AndroidGameActivity OnPause/OnResume no jogo.
+- (B) **VOLUME RTPC/config=0**: o jogo seta volume master/música via RTPC ou config. Com saves no-opados,
+  o default pode ser 0. INVESTIGAR: LOGAR native_wwise_set_rtpc_value (nome+valor) no wrapper -> ver se
+  o jogo seta um RTPC de volume p/ 0. Ver Configuration/MetaGameConfig defaults de musicVolume/sfxVolume/
+  masterVolume no IL (/tmp/sor4_il.txt). Talvez precise forçar esses RTPCs p/ valor audível.
+- (C) **voz VIRTUAL**: se o volume master=0, a Wwise virtualiza a voz (silêncio). Consequência de A/B.
+**PRÓXIMOS PASSOS:** 1) logar set_rtpc_value+set_state no wrapper (FWD atuais não logam). 2) grep IL por
+musicVolume/get_master_volume/set_volume/Suspend/WakeupFromSuspend. 3) testar forçar volume.
+**TODO NextOS:** áudio driver AUTOMÁTICO (não forçar SDL_AUDIODRIVER=pulse; deixar SDL escolher c/ fallback
+pulse->alsa) — funciona com pulse hoje mas deveria ser auto p/ qualquer SDL.
+
+**COMO CONTINUAR (infra pronta):**
+- Device: **192.168.31.127** root (ssh por chave, sem senha). Game dir: `/storage/roms/sor4-test`.
+- ⚠️ SEMPRE `pkill -9 sor4host` antes de lançar. Lançar: `cd /storage/roms/sor4-test && SOR4_TEXSCALE=3
+  SOR4_SHOT=300 nohup sh run_diag.sh >/dev/null 2>&1 &` (run_diag.sh já tem SDL_AUDIODRIVER=pulse +
+  SDL_NO_SIGNAL_HANDLERS + mapping do controle).
+- Wrapper: `~/nextos_ports_android/ports/sor4wwise/` -> `bash build.sh` gera libWwise.so (toolchain NextOS
+  Amlogic-old) -> `scp libWwise.so root@192.168.31.127:/storage/roms/sor4-test/host_pkg/libs/libWwise.so`.
+  Fontes: src/wwise_native.c (wrapper/trampolins/AAsset/JNI/pump/NOPs), src/opensles_shim.c (SDL audio +
+  logs PICO/ENQUEUE/RAWpeak). libWwise.real.so = a Wwise REAL do APK (já no device host_pkg/libs/).
+- VERIFICAÇÃO SEM OUVIR: `ssh root@192.168.31.127 'pactl list short sinks'` (RUNNING=tem stream) +
+  `grep -E "RAWpeak|PICO|real init" /storage/roms/sor4-test/wwise.log` (RAWpeak>100 = Wwise produz som).
+- ⚠️ LIMPAR no final: logs [opensles]/[wwise-native]/ENQUEUE/PICO/RAWpeak + os probes [PAD]/[HI]/[HB] do
+  MonoGame + titleprobe do SOR4.dll. NOPs hardcoded são da v1.4.5.
+- Estado git: COMMITADO (c552424 = áudio nativo toca/HDMI RUNNING; este handoff = a documentar).
+
+### 🔊🏆🏆 NATIVO cont.13: ÁUDIO WWISE ORIGINAL na TUBULAÇÃO (HDMI sink RUNNING) — falta só o silêncio interno
 A libWwise REAL do APK roda nativa via so-loader e PRODUZ SOM (motor Wwise original, música+SFX). Cadeia
 de fixes finais (depois do "carrega mas init=0"):
 1. **init=0 -> init=1**: native_wwise_init faz ~10 checks de subsistema em sequencia. Os 3 de PATH

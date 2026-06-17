@@ -1672,6 +1672,21 @@ static void ter_gamepad_poll(void) {
   g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
   g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
   g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
+  /* cursor do mouse: analógico direito (3,4 default) E esquerdo movem o cursor (point-and-click do menu) */
+  extern float g_cursor_x, g_cursor_y;
+  int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
+  int ry = getenv("TER_GP_RY") ? atoi(getenv("TER_GP_RY")) : 4;
+  float dx=0, dy=0, SP=1.0f/110.0f;
+  if (g_gp_axis[rx] > 6000 || g_gp_axis[rx] < -6000) dx += g_gp_axis[rx]*SP;
+  if (g_gp_axis[ry] > 6000 || g_gp_axis[ry] < -6000) dy += g_gp_axis[ry]*SP;
+  if (g_gp_axis[0] > 9000 || g_gp_axis[0] < -9000) dx += g_gp_axis[0]*SP;  /* stick esq tb (fallback) */
+  if (g_gp_axis[1] > 9000 || g_gp_axis[1] < -9000) dy += g_gp_axis[1]*SP;
+  g_cursor_x += dx; g_cursor_y += dy;
+  if (g_cursor_x < 0) g_cursor_x = 0; if (g_cursor_x > 1280) g_cursor_x = 1280;
+  if (g_cursor_y < 0) g_cursor_y = 0; if (g_cursor_y > 720) g_cursor_y = 720;
+  if (getenv("TER_GPAXLOG")) { static int af=0; if ((af++%30)==0) {
+    fprintf(stderr,"[TGPAX] ax0=%d ax1=%d ax2=%d ax3=%d ax4=%d ax5=%d cur=%d,%d\n",
+      g_gp_axis[0],g_gp_axis[1],g_gp_axis[2],g_gp_axis[3],g_gp_axis[4],g_gp_axis[5],(int)g_cursor_x,(int)g_cursor_y); fsync(2);} }
   /* TER_GPAUTO: auto-press sintético (Down a cada 45 frames por 4 frames) p/ VERIFICAR o hook
      sem precisar apertar — se o menu navegar sozinho, o Keyboard.GetState hook funciona. */
   if (getenv("TER_GPAUTO")) { static int fc=0; int ph=(fc++)%45; if (ph<4) g_gp_log[1]=1; }
@@ -1710,6 +1725,18 @@ void ter_fna_keyboard_getstate(void *result) {
   ks[8] = 0;   /* campo [32]: 0 (IsKeyDown usa o bitmask, não este) */
   (void)n;
 }
+/* cursor do mouse virtual (movido pelo analógico direito). Terraria é point-and-click. */
+float g_cursor_x = 640.0f, g_cursor_y = 360.0f;
+/* 🔑 FNA Mouse.GetState() -> MouseState (36 bytes, 9 ints): [0]=X [4]=Y [8]=scroll
+   [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll. A=clique esquerdo. */
+void ter_fna_mouse_getstate(void *result) {
+  int *ms = (int *)result;
+  memset(ms, 0, 36);
+  ms[0] = (int)g_cursor_x;            /* X */
+  ms[1] = (int)g_cursor_y;            /* Y */
+  ms[3] = g_gp_log[4] ? 1 : 0;        /* LeftButton  = A (confirma/clica) */
+  ms[5] = g_gp_log[5] ? 1 : 0;        /* RightButton = B */
+}
 /* TER_GAMEPAD: patcha UnityEngine.Input.GetKey*Int -> nossas funções (js0 como teclado).
    O caminho de eventos Android (nativeInjectEvent) é beco no Unity 2021 (espera AInputEvent NDK);
    hookar o Input direto faz o js0 virar setas/Enter que o Terraria lê (modo teclado). */
@@ -1725,28 +1752,36 @@ static void ter_input_hook(void) {
   void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
   void *domain = dom_get(); if (!domain) return;
   size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms||!na) return;
-  /* Patcha FNA Keyboard.GetState() -> shim que chama ter_fna_keyboard_getstate (js0 como teclado).
+  /* Patcha FNA Keyboard.GetState() E Mouse.GetState() -> shims (js0 como teclado + mouse).
      Shim inline (20 bytes): mov x0,x8 (x8=ptr resultado); ldr x16,[pc+8]; br x16; .quad fn. */
   extern void ter_fna_keyboard_getstate(void *);
+  extern void ter_fna_mouse_getstate(void *);
+  struct { const char *cls; void *fn; } H[] = {
+    { "Keyboard", (void*)ter_fna_keyboard_getstate },
+    { "Mouse",    (void*)ter_fna_mouse_getstate },
+  };
   long pgsz = sysconf(_SC_PAGESIZE); int patched = 0;
-  for (size_t i=0;i<na && !patched;i++) {
+  for (size_t i=0;i<na && patched<2;i++) {
     void *img = asm_img(asms[i]); if (!img) continue;
-    void *cls = cls_from_name(img, "Microsoft.Xna.Framework.Input", "Keyboard"); if (!cls) continue;
-    void *m = cls_method(cls, "GetState", 0); if (!m) continue;
-    void *mp = *(void**)m; if (!mp) continue;
-    void *pa = (void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
-    mprotect(pa, pgsz*2, PROT_READ|PROT_WRITE|PROT_EXEC);
-    uint32_t *c = (uint32_t*)mp;
-    c[0] = 0xAA0803E0u;                         /* mov x0, x8 (ptr do KeyboardState) */
-    c[1] = 0x58000050u;                         /* ldr x16, [pc+8] */
-    c[2] = 0xD61F0200u;                         /* br x16 */
-    *(uint64_t*)(c+3) = (uint64_t)(uintptr_t)ter_fna_keyboard_getstate;
-    mprotect(pa, pgsz*2, PROT_READ|PROT_EXEC);
-    __builtin___clear_cache((char*)pa, (char*)pa+20);
-    fprintf(stderr, "[TGP-HOOK] FNA Keyboard.GetState @%p -> ter_fna_keyboard_getstate\n", mp); fsync(2);
-    patched = 1;
+    for (unsigned h=0; h<2; h++) {
+      static int hdone[2]; if (hdone[h]) continue;
+      void *cls = cls_from_name(img, "Microsoft.Xna.Framework.Input", H[h].cls); if (!cls) continue;
+      void *m = cls_method(cls, "GetState", 0); if (!m) continue;
+      void *mp = *(void**)m; if (!mp) continue;
+      void *pa = (void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
+      mprotect(pa, pgsz*2, PROT_READ|PROT_WRITE|PROT_EXEC);
+      uint32_t *c = (uint32_t*)mp;
+      c[0] = 0xAA0803E0u;                         /* mov x0, x8 */
+      c[1] = 0x58000050u;                         /* ldr x16, [pc+8] */
+      c[2] = 0xD61F0200u;                         /* br x16 */
+      *(uint64_t*)(c+3) = (uint64_t)(uintptr_t)H[h].fn;
+      mprotect(pa, pgsz*2, PROT_READ|PROT_EXEC);
+      __builtin___clear_cache((char*)pa, (char*)pa+20);
+      fprintf(stderr, "[TGP-HOOK] FNA %s.GetState @%p hookado\n", H[h].cls, mp); fsync(2);
+      hdone[h] = 1; patched++;
+    }
   }
-  if (patched) done = 1;
+  if (patched >= 2) done = 1;
   (void)cls_method;
 }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {

@@ -1,5 +1,51 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🎮🎮 CONTROLES — PRÓXIMA SESSÃO (2026-06-16) — LEIA PRIMEIRO
+**Status: jogo RODA no menu (60fps, renderiza), mas NENHUM input funciona no menu.**
+**🔑 PISTA DECISIVA: até um MOUSE USB REAL não funciona no menu (NextOS testou).** Logo o problema
+NÃO é a nossa injeção — é que **input nenhum (real OU injetado) chega ao menu do Terraria**.
+
+### Hipótese mais provável (investigar PRIMEIRO):
+**O UPDATE do Terraria não roda (ou não processa input) porque FINGIMOS/PULAMOS os jobs**
+(TER_INLINETASK + TER_SKIPJOBWAIT). O jogo RENDERIZA (nativeRender roda) mas o loop de UPDATE
+(`Main.Update`/`PlayerInput.UpdateInput`) que lê o input pode não estar rodando de verdade →
+menu aparece mas é "estático/não-interativo". **Teste decisivo:**
+1. Hookar `Terraria.Main.Update` (il2cpp+0xfb97d0, argc=1) e `Terraria.GameInput.PlayerInput.UpdateInput`
+   (il2cpp+0x837e9c, argc=0) com um patch que SÓ LOGA (não no-op) e ver se rodam por-frame.
+   - Se NÃO rodam → o update loop está quebrado pelos jobs fingidos. FIX REAL = fazer os jobs RODAREM
+     (consertar o dispatch nativo, não fingir) OU achar por que o Update não roda.
+   - Se rodam → o input. Vai pro passo 2.
+2. Adicionar log DENTRO de `ter_fna_mouse_getstate`/`ter_fna_keyboard_getstate` (já existem em main.c):
+   o Terraria CHAMA o `GetState/0`? Se não → ele usa o **GetState/1** (overload com PlayerIndex) —
+   hookar o /1 também (Keyboard.GetState/1 @0xe164d0, GamePad.GetState/1 @0xe114ac, Mouse.GetState/1).
+
+### O que JÁ FOI FEITO (não repetir):
+- ❌ `nativeInjectEvent(KeyEvent)`: BECO. Retorna false, nunca lê o evento (Unity 2021 espera ponteiro
+  nativo AInputEvent do NDK, não um KeyEvent Java fake).
+- ✅ Capability de **patch de método il2cpp em runtime** (ter_nuke_methods/ter_input_hook em main.c):
+  acha classe.método por nome (il2cpp_class_from_name/get_method_from_name @ offsets no main.c) e
+  patcha o methodPointer. Struct-return (x8) resolvido com shim inline `mov x0,x8; ldr x16,[pc+8]; br x16`.
+- ✅ Leitor js0 self-contained (`ter_gamepad_poll`): g_gp_log[12] (estado lógico+edge) + g_cursor_x/y
+  (cursor movido pelo analógico). Funciona (eixos lidos, cursor move). TER_GAMEPAD=1.
+- ✅ **Device Xbox 360 virtual** reconhecido pelo InControl (jni_shim: getDeviceIds→[1], getDevice
+  estático→device, vendor 1118/produto 654/getSources 0x1000611).
+- ❌ Hook `Keyboard.GetState/0` (@0xe16030): retorna js0 como setas/Enter — **menu NÃO responde**.
+- ❌ Hook `Mouse.GetState/0` (@0xe18388): cursor move (cur chega nos cantos) — **menu NÃO responde**.
+- ⚠️ MouseState = 36 bytes (9 ints): [0]=X [4]=Y [8]=scroll [12]=LeftBtn [16]=Right... (confirmar
+  layout — o LeftButton pode estar em offset diferente). KeyboardState = 8 uints bitmask + 1 int.
+
+### Becos que NÃO vão ajudar:
+- gptokeyb/uinput: o mouse USB REAL já falha → o engine não lê input do OS; injetar via uinput usa
+  o MESMO caminho OS→engine que está quebrado. Não adianta.
+
+### Offsets úteis (libil2cpp, base = g_il2cpp_base):
+Keyboard.GetState/0=0xe16030 /1=0xe164d0 · GamePad.GetState/1=0xe114ac · Mouse.GetState/0=0xe18388
+/1=0xe17c84 · PlayerInput.UpdateInput/0=0x837e9c · Main.Update/1=0xfb97d0 · Main.DoUpdate/1=0xfb9a3c.
+Toda a infra de gamepad está em main.c (ter_gamepad_poll/ter_input_hook/ter_fna_*) + jni_shim.c (device).
+Env de teste: `CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_GAMEPAD=1 TER_GPLOG=1`.
+
+---
+
 ## 🏆🏆🏆 RODANDO + RENDERIZANDO + MENU A 60FPS (2026-06-16) 🏆🏆🏆
 **Terraria so-loader Unity 2021.3 IL2CPP RODA no Mali-450 Utgard: splash Re-Logic → MENU, 60 FPS,
 cores corretas (NextOS confirmou na TV).** Receita (env de lançamento):
