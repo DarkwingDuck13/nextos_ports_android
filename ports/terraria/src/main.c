@@ -1627,7 +1627,8 @@ static void ter_screenshot_maybe(void) {
 static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
 /* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
-void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_screenshot_maybe(); }
+static void ter_input_hook(void);
+void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_input_hook(); ter_screenshot_maybe(); }
 
 /* ===== TER_GAMEPAD: js0 -> nativeInjectEvent (KeyEvent) p/ navegar o menu do Terraria =====
    O Terraria usa InControl, que lê o gamepad via Unity Input (alimentado pelo nativeInjectEvent
@@ -1639,9 +1640,10 @@ extern struct hk_inject_s { int action, keycode, source, deviceId, metaState, re
 extern void *hk_keyevent_object(void);
 static int g_gp_fd = -2;
 static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
-/* entradas lógicas -> keycode Android. ax: índice eixo (-1=botão), dir: sinal (>0 ou <0), bt: botão */
-static void ter_gamepad_inject(void *env, void *thiz, void *inject) {
-  if (!inject) return;
+/* estado lógico: 0=up 1=down 2=left 3=right 4=A(confirm) 5=B(back) 6=X 7=Y 8=start 9=select 10=L1 11=R1 */
+static unsigned char g_gp_log[12], g_gp_log_prev[12];
+/* lê o js0 e recalcula o estado lógico (1×/frame); guarda o anterior p/ edge (GetKeyDown). */
+static void ter_gamepad_poll(void) {
   if (g_gp_fd == -2) {
     const char *dev = getenv("TER_GP_DEV") ? getenv("TER_GP_DEV") : "/dev/input/js0";
     g_gp_fd = open(dev, O_RDONLY | O_NONBLOCK);
@@ -1651,48 +1653,83 @@ static void ter_gamepad_inject(void *env, void *thiz, void *inject) {
   struct ter_js_event e;
   while (read(g_gp_fd, &e, 8) == 8) {
     int t = e.type & 0x7f;
-    if (t == 1 && e.number < 24) g_gp_btn[e.number] = e.value ? 1 : 0;       /* botão */
-    else if (t == 2 && e.number < 24) g_gp_axis[e.number] = e.value;          /* eixo  */
+    if (t == 1 && e.number < 24) g_gp_btn[e.number] = e.value ? 1 : 0;
+    else if (t == 2 && e.number < 24) g_gp_axis[e.number] = e.value;
   }
   int TH = 16000;
-  int axDX = getenv("TER_GP_AXDX") ? atoi(getenv("TER_GP_AXDX")) : 6;   /* dpad X (hat) */
-  int axDY = getenv("TER_GP_AXDY") ? atoi(getenv("TER_GP_AXDY")) : 7;   /* dpad Y (hat) */
-  /* estado lógico ATUAL (dpad via hat OU stick esq.) */
-  int up    = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH);
-  int down  = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH);
-  int left  = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH);
-  int right = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH);
-  /* botões (mapa default XInput; configurável) */
-  int bA = getenv("TER_GP_A") ? atoi(getenv("TER_GP_A")) : 0;
-  int bB = getenv("TER_GP_B") ? atoi(getenv("TER_GP_B")) : 1;
-  int bX = getenv("TER_GP_X") ? atoi(getenv("TER_GP_X")) : 2;
-  int bY = getenv("TER_GP_Y") ? atoi(getenv("TER_GP_Y")) : 3;
-  int bL1= getenv("TER_GP_L1")? atoi(getenv("TER_GP_L1")): 4;
-  int bR1= getenv("TER_GP_R1")? atoi(getenv("TER_GP_R1")): 5;
-  int bSel=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6;
-  int bSt= getenv("TER_GP_ST") ? atoi(getenv("TER_GP_ST")) : 7;
-  /* tabela (estado lógico, keycode Android) */
-  struct { int cur; int key; } in[] = {
-    { up,19 },{ down,20 },{ left,21 },{ right,22 },             /* DPAD_UP/DOWN/LEFT/RIGHT */
-    { g_gp_btn[bA],96 },{ g_gp_btn[bB],97 },                    /* BUTTON_A/B */
-    { g_gp_btn[bX],99 },{ g_gp_btn[bY],100 },                   /* BUTTON_X/Y */
-    { g_gp_btn[bL1],102 },{ g_gp_btn[bR1],103 },                /* BUTTON_L1/R1 */
-    { g_gp_btn[bSel],109 },{ g_gp_btn[bSt],108 },               /* SELECT/START */
-  };
-  static unsigned char prev[16];
-  for (unsigned i = 0; i < sizeof in/sizeof in[0]; i++) {
-    int c = in[i].cur ? 1 : 0;
-    if (c == prev[i]) continue;
-    prev[i] = c;
-    g_hk_inject.action = c ? 0 : 1;          /* 0=DOWN 1=UP */
-    g_hk_inject.keycode = in[i].key;
-    /* DPAD(19-22) = SOURCE_DPAD|GAMEPAD; botões = SOURCE_GAMEPAD */
-    g_hk_inject.source = (in[i].key >= 19 && in[i].key <= 22) ? 0x601 : 0x401;
-    g_hk_inject.deviceId = 1; g_hk_inject.repeat = 0; g_hk_inject.flags = 0;
-    g_hk_inject.metaState = 0; g_hk_inject.scancode = 0; g_hk_inject.unicode = 0;
-    ((int (*)(void *, void *, void *))inject)(env, thiz, hk_keyevent_object());
-    if (getenv("TER_GPLOG")) { fprintf(stderr, "[TGP] %s key=%d\n", c ? "DOWN" : "UP", in[i].key); fsync(2); }
+  int axDX = getenv("TER_GP_AXDX") ? atoi(getenv("TER_GP_AXDX")) : 6;
+  int axDY = getenv("TER_GP_AXDY") ? atoi(getenv("TER_GP_AXDY")) : 7;
+  int bA=getenv("TER_GP_A")?atoi(getenv("TER_GP_A")):0, bB=getenv("TER_GP_B")?atoi(getenv("TER_GP_B")):1;
+  int bX=getenv("TER_GP_X")?atoi(getenv("TER_GP_X")):2, bY=getenv("TER_GP_Y")?atoi(getenv("TER_GP_Y")):3;
+  int bL=getenv("TER_GP_L1")?atoi(getenv("TER_GP_L1")):4, bR=getenv("TER_GP_R1")?atoi(getenv("TER_GP_R1")):5;
+  int bSe=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6, bSt=getenv("TER_GP_ST")?atoi(getenv("TER_GP_ST")):7;
+  memcpy(g_gp_log_prev, g_gp_log, sizeof g_gp_log);
+  g_gp_log[0] = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH) || g_gp_btn[12] ? 1:0; /* up (+ dpad-btn 12) */
+  g_gp_log[1] = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH) || g_gp_btn[13] ? 1:0;
+  g_gp_log[2] = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH) || g_gp_btn[14] ? 1:0;
+  g_gp_log[3] = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH) || g_gp_btn[15] ? 1:0;
+  g_gp_log[4] = g_gp_btn[bA]; g_gp_log[5] = g_gp_btn[bB];
+  g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
+  g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
+  g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
+  if (getenv("TER_GPLOG")) for (int i=0;i<12;i++) if (g_gp_log[i] && !g_gp_log_prev[i]) { fprintf(stderr,"[TGP] logical[%d] DOWN\n", i); fsync(2); }
+}
+/* Unity KeyCode -> índice lógico (setas/WASD + Enter/Espaço=confirm + Esc=back) */
+static int ter_kc_to_log(int kc) {
+  switch (kc) {
+    case 273: case 119: return 0;   case 274: case 115: return 1;   /* Up/W ; Down/S */
+    case 276: case 97:  return 2;   case 275: case 100: return 3;   /* Left/A ; Right/D */
+    case 13: case 32: case 271: return 4;                            /* Return/Space/KpEnter -> confirm */
+    case 27: case 8: return 5;                                       /* Escape/Backspace -> back */
   }
+  return -1;
+}
+/* substituem UnityEngine.Input.GetKeyInt/GetKeyDownInt/GetKeyUpInt (x0=keycode) */
+int ter_unity_getkey(int kc)     { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l]) ? 1:0; }
+int ter_unity_getkeydown(int kc) { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l] && !g_gp_log_prev[l]) ? 1:0; }
+int ter_unity_getkeyup(int kc)   { int l=ter_kc_to_log(kc); return (l>=0 && !g_gp_log[l] && g_gp_log_prev[l]) ? 1:0; }
+/* TER_GAMEPAD: patcha UnityEngine.Input.GetKey*Int -> nossas funções (js0 como teclado).
+   O caminho de eventos Android (nativeInjectEvent) é beco no Unity 2021 (espera AInputEvent NDK);
+   hookar o Input direto faz o js0 virar setas/Enter que o Terraria lê (modo teclado). */
+static void ter_input_hook(void) {
+  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_GAMEPAD")) { if (!getenv("TER_GAMEPAD")) done=1; return; }
+  static int tries = 0; if (tries++ > 240) { done = 1; return; }
+  void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms||!na) return;
+  struct { const char *name; void *fn; } t[] = {
+    { "GetKeyInt", (void*)ter_unity_getkey }, { "GetKeyDownInt", (void*)ter_unity_getkeydown },
+    { "GetKeyUpInt", (void*)ter_unity_getkeyup },
+  };
+  long pgsz = sysconf(_SC_PAGESIZE); int patched = 0;
+  for (size_t i=0;i<na && patched<3;i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    void *cls = cls_from_name(img, "UnityEngine", "Input"); if (!cls) continue;
+    { static int once=0; if(!once++){ fprintf(stderr,"[TGP-HOOK] UnityEngine.Input achada (asm %zu)\n", i);
+      if (getenv("TER_GPENUM")) { void (*ci)(void*)=(void*)(g_il2cpp_base+0x73cc80); ci(cls);
+        void *(*cm)(void*,void**)=(void*)(g_il2cpp_base+0x73c288); const char*(*mn)(void*)=(void*)(g_il2cpp_base+0x73cb9c);
+        unsigned(*mp2)(void*)=(void*)(g_il2cpp_base+0x73cbac); void *it=NULL,*mm; int cc=0;
+        while((mm=cm(cls,&it))&&cc++<80) fprintf(stderr,"   %s/%u\n", mn(mm), mp2(mm)); fsync(2); } } }
+    for (unsigned k=0;k<3;k++) {
+      void *m = cls_method(cls, t[k].name, 1); if (!m) continue;
+      void *mp = *(void**)m; if (!mp) continue;
+      void *pa = (void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
+      mprotect(pa, pgsz*2, PROT_READ|PROT_WRITE|PROT_EXEC);
+      uint32_t *c = (uint32_t*)mp;
+      c[0] = 0x58000050u;                          /* ldr x16,[pc+8] */
+      c[1] = 0xD61F0200u;                          /* br x16 */
+      *(uint64_t*)(c+2) = (uint64_t)(uintptr_t)t[k].fn;
+      mprotect(pa, pgsz*2, PROT_READ|PROT_EXEC);
+      __builtin___clear_cache((char*)pa, (char*)pa+16);
+      fprintf(stderr, "[TGP-HOOK] UnityEngine.Input.%s @%p -> %p\n", t[k].name, mp, t[k].fn); fsync(2);
+      patched++;
+    }
+  }
+  if (patched) done = 1;
 }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
@@ -3973,6 +4010,7 @@ int main(int argc, char **argv) {
       wait_all(g_preload_mgr);
     }
     if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
+    if (getenv("TER_GAMEPAD")) ter_gamepad_poll();   /* js0 -> estado lógico (antes do Update); hook é no swap */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
       if (sigsetjmp(g_render_jmp, 1) == 0) {
@@ -4003,9 +4041,7 @@ int main(int argc, char **argv) {
         if (f < 600) fprintf(stderr, "[AUTOTAP] %s key=%d (f=%d) ret=%d\n", phase ? "UP" : "DOWN", tapkey, f, ir);
       }
     }
-    /* TER_GAMEPAD: js0 -> KeyEvents (DPAD/A/B/Start) p/ navegar o menu */
-    if (getenv("TER_GAMEPAD") && inject) { extern void ter_gamepad_inject(void *, void *, void *);
-      ter_gamepad_inject(env, &thiz, inject); }
+    /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
     { /* FPS médio por janela de 600 frames (mede lag do mapa/fases p/ tuning) */
