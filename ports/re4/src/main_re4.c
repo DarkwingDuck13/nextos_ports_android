@@ -1014,12 +1014,24 @@ static void my_glFramebufferRenderbuffer(unsigned target,unsigned attachment,uns
     r_glFramebufferRenderbuffer(target,attachment,renderbuffertarget,renderbuffer);
   }
 }
+static void (*r_glClearDepthf)(float);
+static void (*r_glDepthMask)(unsigned char);
 static void my_glClear(unsigned mask){
   if(!r_glClear) r_glClear=dlsym(RTLD_DEFAULT,"glClear");
   if(r_glClear){
     re4_count_fbo_bucket(g_gl_bound_fbo, 1);
     static int lg=0;
     if(lg++<48) fprintf(stderr,"[GLDRAW] clear fbo=%u mask=0x%x\n",g_gl_bound_fbo,mask);
+    /* FIX Mali-450 (cena 3D toda navy = geometria some): no Utgard o clear de DEPTH muitas vezes
+       NAO deixa o buffer em 1.0 (fica ~0) e/ou o depth-mask esta OFF -> depth-test (LESS) rejeita
+       TODA a geometria 3D -> so a cor de clear aparece. Forcamos clearDepth=1.0 + depthMask ON
+       antes de todo clear de profundidade (mesma raiz do NFS/Banjo). RE4_NO_DEPTHFIX desliga. */
+    if((mask & 0x100) && !getenv("RE4_NO_DEPTHFIX")){
+      if(!r_glClearDepthf) r_glClearDepthf=dlsym(RTLD_DEFAULT,"glClearDepthf");
+      if(!r_glDepthMask) r_glDepthMask=dlsym(RTLD_DEFAULT,"glDepthMask");
+      if(r_glDepthMask) r_glDepthMask(1);
+      if(r_glClearDepthf) r_glClearDepthf(1.0f);
+    }
     r_glClear(mask);
   }
 }
