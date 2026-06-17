@@ -112,6 +112,9 @@ if [ -n "$DISPLAY_WIDTH" ] && [ -n "$DISPLAY_HEIGHT" ]; then
 fi
 # audio FMOD (AudioTrack -> SDL callback -> PulseAudio) precisa do backend pulse
 export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
+# RENDER LOOP ILIMITADO: o default do binario e 1200 frames (~50s) p/ TESTE -> o jogo FECHAVA
+# sozinho ao bater o cap (parecia crash). 0 = ilimitado (joga normal ate o usuario sair).
+export RE4_MAXFRAMES="${RE4_MAXFRAMES:-0}"
 
 echo "[re4] gamedir=$GAMEDIR"
 echo "[re4] package=$RE4_PACKAGE_NAME obb=$RE4_OBB_VERSION"
