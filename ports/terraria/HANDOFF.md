@@ -1,6 +1,70 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
-## ✅✅✅ SESSÃO 2026-06-17 (noite) — AS 3 TAREFAS RESOLVIDAS (LEIA PRIMEIRO)
+## 🔴 SESSÃO 2026-06-17 (madrugada) — ÁUDIO RESOLVIDO, mas CONTROLE REGREDIU (LEIA PRIMEIRO)
+**Device `192.168.31.89` (ssh root/`nextos`), jogo `/storage/roms/terraria/`. `sh run.sh`. Commit atual `a0f1f99`.**
+**Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; ssh ...kill; scp terraria .89`.**
+
+### 🟢 ÁUDIO — RESOLVIDO DE VERDADE (NextOS confirmou de ouvido). NÃO MEXER, só manter.
+Eram DOIS problemas, ambos resolvidos:
+1. **Acelerado** (1.84×): o FMOD mixa a **24000 Hz** (não 44100). Causa achada por `fmodGetInfo(env,thiz,info)@libunity+0x8112b0` chamado direto: **info 0=samplerate(24000), 1=blockSize(1024 frames), 4=channels(2)**. O SDL abria a 44100 → 44100/24000=1.84×. FIX: abrir o SDL na taxa/canais REAIS do fmodGetInfo. Também medi empiricamente (sentinela 0xAB no buffer) que fmodProcess escreve 4096 B/chamada — bate com 1024 frames stereo. (A teoria velha de "capacidade do DirectByteBuffer" estava ERRADA.) ⚠️ o offset da struct do System `*0xc7c2f0`/`+0x60` é NÃO-CONFIÁVEL (fmod_read_format sempre falhava) — use `fmodGetInfo`.
+2. **Engasgando**: back-pressure curto. FIX: `bp=6` blocos default + pré-enche a fila antes de despausar. Tunável `TER_AUDIO_BP`/`TER_AUDIO_RATE`/`TER_AUDIO_CH`/`TER_AUDIO_FRAMES`.
+   **Código do áudio a MANTER:** `fmod_audio_thread` (main.c, ~3984) + `g_fmod_cap` (jni_shim.c, =32768 folga).
+
+### 🔴 CONTROLE — EU QUEBREI NESTA SESSÃO. RECUPERAÇÃO = RESTAURAR de `ff34d71`.
+**FATO: no commit `ff34d71` (início desta sessão) o controle FUNCIONAVA** (menu + gameplay + cursor;
+NextOS tinha validado no Tutorial na sessão anterior). **As minhas mudanças de controle desta sessão
+regrediram.** Sintoma final (gameplay): cursor **volta sempre pro mesmo ponto**, stick direito **só anda
+na horizontal (não sobe/desce)**, e o **D-pad move o cursor**. "Antes de dormir tudo funcionava."
+
+**🎯 PLANO DE RECUPERAÇÃO (fazer primeiro, é mecânico e seguro):**
+RESTAURAR o código de CONTROLE para a versão `ff34d71`, **mantendo** o áudio. As funções a restaurar
+(copiar de `ff34d71` por cima das atuais em `src/main.c`), SEM tocar em `fmod_audio_thread`:
+- `ter_gamepad_poll` (eu mexi: leitura de gatilhos/L3/R3, `SP` do cursor 1/110→1/240 tunável, gatei o
+  fallback do stick-ESQUERDO no cursor atrás de `TER_GP_CURLEFT`).
+- `ter_ctrl_feed` (eu adicionei `g_inj_btn[6,7,10,11]` LTrig/RTrig/StickL/R e `g_inj_axis[6,7]`).
+- `ter_menu_nav` (eu adicionei: cheque `/tmp/ternonav`, gate `gameMenu`, e um "MODO CURSOR LIVRE" no
+  stick direito que eu **removi** mas pode ter deixado resíduo; confira contra `ff34d71`).
+- Globais que adicionei: `g_gp_log[12]→[16]` + `g_lt_analog/g_rt_analog` + `g_fcmode/g_fcx/g_fcy` +
+  campo `MM.fgameMenu`. (Pode deixar declarados, só não devem ALTERAR o comportamento de `ff34d71`.)
+Comando p/ ver a versão boa: `git show ff34d71:ports/terraria/src/main.c`. Depois rebuild+deploy e o
+NextOS confirma que o controle voltou ao normal. SÓ DEPOIS pensar em adicionar Xbox-completo/idioma.
+
+**Por que provavelmente quebrou (hipóteses p/ a próxima sessão, NÃO confirmadas):**
+- O cursor "volta pro mesmo ponto" + "D-pad move o cursor" no GAMEPLAY = o `ter_menu_nav` está
+  rodando NO JOGO (não só no menu) e forçando `g_cursor` pra um item do HUD + movendo por D-pad. Tentei
+  gatear com `gameMenu` (`MM.fgameMenu && !ter_getb(...)`) mas NextOS disse "nada mudou" → provável que
+  **`gameMenu` NÃO resolveu** (campo NULL → gate vira no-op) OU o nome do campo está errado. Conferir se
+  `Terraria.Main.gameMenu` resolve (logar) OU usar outro sinal de "está no jogo" (ex.: `Main.menuMode`
+  == -1? netMode? a presença de um `Player` ativo?). No `ff34d71` o ter_menu_nav NÃO atrapalhava o
+  gameplay — descobrir POR QUÊ (talvez no ff34d71 o gameplay não tinha regiões GIRM navegáveis e algo
+  que mudei fez passar a ter; ou o cursor do gameplay no ff34d71 vinha de outro caminho).
+- "Stick direito só horizontal" = **layout de eixos do controle do NextOS ≠ do meu chute** (assumi
+  RX=eixo3, RY=eixo4; o Y dele deve estar noutro eixo). PRECISA logar os eixos reais: lançar com
+  `TER_GPAXLOG=1` (já existe; loga `[TGPAX] ax0..ax5 cur`), pedir o NextOS mexer o stick direito
+  cima/baixo/esq/dir, e LER o log p/ achar os eixos certos. (Há `axlog.sh` no device pra isso.)
+  Ajustar `TER_GP_RX`/`TER_GP_RY` (e LX/LY) ao controle dele. **NÃO chutar — medir.**
+
+### 🟡 IDIOMA / dropdowns do Settings (descoberto, NÃO entregue — fazer só depois do controle voltar)
+- Abas do Settings trocam com **LB/RB (shoulder)**. Up/down navega itens. ✅ (no ff34d71 já anda).
+- O **dropdown de Idioma** (e Autopause/etc.) NÃO está nas regiões do GUIInputRegionManager (fica num
+  overlay à direita, ~x556 no espaço UI 902×507) e **NÃO responde a up/down nem a LT/RT** (nem
+  ControllerDevice nem XNA GamePad). **SÓ responde à POSIÇÃO do cursor (Mouse) + clique (A).** PROVA:
+  posicionei o cursor em (556,284) e cliquei → selecionou "Português brasileiro" e a UI virou PT-BR.
+  → A solução precisa de um jeito de **mover o cursor livre no MENU** (sem quebrar o gameplay!).
+  Minha tentativa (free-cursor no stick direito) QUEBROU o gameplay (por isso foi removida). A próxima
+  tentativa tem que ser **só-no-menu** (gate de `gameMenu` FUNCIONANDO) ou via um botão dedicado.
+- ⚠️ A língua do save no device pode estar em **PT-BR** (mudei durante o teste). Se quiser EN, reabrir
+  Settings→Idioma (ou apagar o ajuste no PersistentUserData).
+
+### 🧪 Infra de teste criada (gated, só liga com env; não afeta produção)
+`TER_GPVIRT=1`+`/tmp/tergp` (tokens up/down/a/b/.../`rs:DX:DY`/`cur:X:Y`), `TER_SHOTLIVE=1`+`touch
+/tmp/tershot`→`shot.ppm` (1280×720, ver via `scp`+PIL), `TER_GPAXLOG=1` (eixos), `TER_CTRLLOG` ([NAV]/
+[FCUR]), `/tmp/ternonav`. Scripts no device: `navhelper.sh goto/snap`, `val.sh`, `navtest.sh`, `axlog.sh`,
+`shotlaunch.sh`. fmodGetInfo offset 0x8112b0; createSound 0x806cb4; GetKeyRaw 0xc5c51c; GetAxisRaw 0xc5c2f0.
+
+---
+
+## ✅✅✅ SESSÃO 2026-06-17 (noite) — (PARCIALMENTE SUPERADA: controle regrediu depois; ver acima)
 **Device `192.168.31.89` (ssh root/`nextos`), jogo em `/storage/roms/terraria/`. Lançar: `sh run.sh`.**
 **Commit `ebb55c3`. Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; scp terraria .89`.**
 
