@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 #include <math.h>
 #include <syslog.h>
 #include <sched.h>
@@ -19,6 +20,11 @@
 #include <pthread.h>
 #include "so_util.h"
 extern void opensles_shim_pump_callbacks(void);   // opensles_shim.c: dispara o BufferQueue cb da Wwise
+// audioout.c — saida de audio CUSTOM (hibrido): SFX via manifest, musica via wem streamed
+extern void ao_init(void);
+extern void ao_post_event(const char* name);
+extern void ao_music_request(const char* path);
+extern void ao_music_close(const char* path);
 
 extern DynLibFunction dynlib_functions[];
 extern size_t dynlib_numfunctions;
@@ -64,11 +70,16 @@ static int w_fileno(void* st){ return fileno(sf_map(st)); }
 // ---------------- liblog ----------------
 static void w_openlog(const char* a,int b,int c){(void)a;(void)b;(void)c;}
 static void w_closelog(void){}
-static void w_syslog(int pri,const char* fmt,...){ (void)pri;(void)fmt; }
+// Wwise loga seus erros/monitor via syslog (build importa openlog/syslog/closelog).
+// Roteamos p/ o wwise.log p/ ENXERGAR diagnosticos internos (codec/decode/init).
+static void w_syslog(int pri,const char* fmt,...){
+  (void)pri; char msg[1024]; va_list a; va_start(a,fmt); vsnprintf(msg,sizeof(msg),fmt,a); va_end(a);
+  char b[1100]; snprintf(b,sizeof(b),"[WWISE-SYSLOG] %s",msg); wlog(b);
+}
 
 // ---------------- AAssetManager (carrega os bancos de g_bankbase) ----------------
 static char g_bankbase[512]="/storage/roms/sor4-test/gameassets";
-typedef struct { FILE* f; long len; } AAsset;
+typedef struct { FILE* f; long len; int is_music; char path[1024]; } AAsset;
 static void* w_AAssetManager_fromJava(void* env,void* obj){ (void)env;(void)obj; wlog("[wwise] AAssetManager_fromJava"); return (void*)0x1; }
 static void* w_AAssetManager_open(void* mgr,const char* fn,int mode){
   (void)mgr;(void)mode;
@@ -77,14 +88,21 @@ static void* w_AAssetManager_open(void* mgr,const char* fn,int mode){
   else snprintf(path,sizeof(path),"%s%s",g_bankbase,fn?fn:"");        // relativo -> prefixa base
   FILE* f=fopen(path,"rb"); if(!f){ char b[1100]; snprintf(b,sizeof(b),"[wwise] AAsset open FALHOU %s",path); wlog(b); return NULL; }
   fseek(f,0,SEEK_END); long len=ftell(f); fseek(f,0,SEEK_SET);
-  AAsset* a=malloc(sizeof(AAsset)); a->f=f; a->len=len;
+  AAsset* a=malloc(sizeof(AAsset)); a->f=f; a->len=len; a->is_music=0; a->path[0]=0;
   char b[1100]; snprintf(b,sizeof(b),"[wwise] AAsset open %s (%ld)",path,len); wlog(b);
+  // HIBRIDO: a Wwise nativa decide qual MUSICA tocar e abre o .wem streamed certo
+  // (menu/fase/chefe). Echoamos esse wem p/ a saida de audio custom (OpenAL, em loop).
+  // No CLOSE paramos no momento certo -> segue o fluxo original (para/troca de musica).
+  { size_t pl=strlen(path); if(pl>4 && strcmp(path+pl-4,".wem")==0){ a->is_music=1; strncpy(a->path,path,sizeof(a->path)-1); ao_music_request(path); } }
   return a;
 }
-static int w_AAsset_read(void* as,void* buf,size_t cnt){ AAsset* a=as; if(!a||!a->f) return -1; return (int)fread(buf,1,cnt,a->f); }
+static unsigned long g_rd_calls=0, g_rd_bytes=0;
+static int w_AAsset_read(void* as,void* buf,size_t cnt){ AAsset* a=as; if(!a||!a->f) return -1; int r=(int)fread(buf,1,cnt,a->f);
+  if(getenv("WWISE_RDLOG")){ g_rd_calls++; if(r>0)g_rd_bytes+=r; if(g_rd_calls<=3||g_rd_calls%200==0){ char b[160]; snprintf(b,sizeof(b),"[wwise] AAsset_read #%lu cnt=%zu got=%d totbytes=%lu",g_rd_calls,cnt,r,g_rd_bytes); wlog(b);} }
+  return r; }
 static long w_AAsset_seek(void* as,long off,int whence){ AAsset* a=as; if(!a||!a->f) return -1; fseek(a->f,off,whence); return ftell(a->f); }
 static long w_AAsset_getLength(void* as){ AAsset* a=as; return a?a->len:0; }
-static void w_AAsset_close(void* as){ AAsset* a=as; if(a){ if(a->f)fclose(a->f); free(a);} }
+static void w_AAsset_close(void* as){ AAsset* a=as; if(a){ if(a->is_music) ao_music_close(a->path); if(a->f)fclose(a->f); free(a);} }
 static void* w_AAssetManager_openDir(void* m,const char* d){ (void)m;(void)d; return NULL; }
 static void w_AAssetDir_close(void* d){ (void)d; }
 
@@ -183,11 +201,30 @@ __attribute__((constructor)) static void ctor(void){ load_real(); }
 // ----- trampolins dos 21 native_wwise_* (+ preinit) -----
 long native_android_preinit(void* activity){ if(!g_loaded) load_real(); char b[80]; snprintf(b,sizeof(b),"[wwise-native] preinit activity=%p",activity); wlog(b); uintptr_t a=so_find_addr("native_android_preinit"); return a?((long(*)(void*))a)(activity):0; }
 
-static void* pump_thread_fn(void* a){ (void)a; for(;;){ opensles_shim_pump_callbacks(); usleep(4000); } return NULL; }
+static void force_volumes_now(void);   // fwd: forca RTPC MusicVolume/SfxVolume
+static pthread_mutex_t g_render_mtx = PTHREAD_MUTEX_INITIALIZER;
+static void render_audio_locked(void){
+  uintptr_t a=so_find_addr("native_wwise_update"); if(!a) return;
+  pthread_mutex_lock(&g_render_mtx);
+  ((void(*)(void))a)();                 // = AK::SoundEngine::RenderAudio(true)
+  pthread_mutex_unlock(&g_render_mtx);
+}
+// AUDIO THREAD UNICA acoplada: RenderAudio() (behavioral, prepara o frame) -> pump
+// (dispara o callback do BufferQueue, onde a Wwise RENDERIZA o frame com params frescos).
+// Acoplar elimina o desync entre behavioral e render que deixava o mix VAZIO.
+static void* pump_thread_fn(void* a){ (void)a;
+  { char b[64]; snprintf(b,sizeof(b),"[wwise-native] audio thread tid=%ld",syscall(SYS_gettid)); wlog(b);}
+  // A engine nativa serve so p/ SELECIONAR a musica (abre o .wem certo por contexto);
+  // o audio dela e' descartado. Tickamos devagar (~33Hz) p/ economizar CPU e nao
+  // roubar tempo da thread de streaming de musica (OpenAL) -> sem stutter.
+  unsigned us=20000; { const char* e=getenv("WWISE_TICK_US"); if(e&&*e) us=(unsigned)atoi(e); }
+  for(;;){ render_audio_locked(); opensles_shim_pump_callbacks(); usleep(us); }
+  return NULL;
+}
 static void start_pump_thread(void){
   static int started=0; if(started) return; started=1;
-  pthread_t th; if(pthread_create(&th,NULL,pump_thread_fn,NULL)==0){ pthread_detach(th); wlog("[wwise-native] pump thread iniciada (BufferQueue cb @250Hz)"); }
-  else wlog("[wwise-native] pump thread FALHOU");
+  pthread_t th; if(pthread_create(&th,NULL,pump_thread_fn,NULL)==0){ pthread_detach(th); wlog("[wwise-native] audio thread iniciada (RenderAudio+pump acoplados)"); }
+  else wlog("[wwise-native] audio thread FALHOU");
 }
 
 int native_wwise_init(const char* p){
@@ -201,7 +238,7 @@ int native_wwise_init(const char* p){
   uintptr_t a=so_find_addr("native_wwise_init"); if(!a){ wlog("[wwise-native] init addr=0"); return 0; }
   int r=((int(*)(const char*))a)(base);
   g_init_ok = (r!=0);
-  if(g_init_ok) start_pump_thread();
+  if(g_init_ok){ start_pump_thread(); force_volumes_now(); ao_init(); wlog("[wwise-native] volumes iniciais forcados pos-init + audioout custom"); }
   // diagnostico: le os globais que o 2o check (0x256b24) testa
   { unsigned char* fb=(unsigned char*)((char*)text_base + 0x2d0628);
     void** pl=(void**)((char*)text_base + 0x2d1dc0);
@@ -214,20 +251,43 @@ int native_wwise_init(const char* p){
 #define FWD_S(name) int name(const char* s){ if(!g_init_ok) return 0; uintptr_t a=so_find_addr(#name); return a?((int(*)(const char*))a)(s):0; }
 
 FWD_V(native_wwise_destroy)
-FWD_V(native_wwise_update)
 FWD_S(native_wwise_loadbank)
 FWD_S(native_wwise_unloadbank)
-int native_wwise_post_event(const char* e){ if(!g_init_ok)return 0; { char b[160]; snprintf(b,sizeof(b),"[wwise-native] POST_EVENT '%s'",e?e:"(null)"); wlog(b); } uintptr_t a=so_find_addr("native_wwise_post_event"); int r=a?((int(*)(const char*))a)(e):0; { char b[80]; snprintf(b,sizeof(b),"[wwise-native]   -> ret=%d",r); wlog(b); } return r; }
+int native_wwise_post_event(const char* e){ if(!g_init_ok)return 0; ao_post_event(e); uintptr_t a=so_find_addr("native_wwise_post_event"); return a?((int(*)(const char*))a)(e):0; }
 FWD_S(native_wwise_post_trigger)
-int native_wwise_post_event_with_id(const char* e,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_post_event_with_id"); return a?((int(*)(const char*,uint64_t))a)(e,o):0; }
+int native_wwise_post_event_with_id(const char* e,uint64_t o){ if(!g_init_ok)return 0; ao_post_event(e); uintptr_t a=so_find_addr("native_wwise_post_event_with_id"); return a?((int(*)(const char*,uint64_t))a)(e,o):0; }
 int native_wwise_post_trigger_with_id(const char* t,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_post_trigger_with_id"); return a?((int(*)(const char*,uint64_t))a)(t,o):0; }
 void native_wwise_register_gameobject_with_id(uint64_t id){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id"); if(a)((void(*)(uint64_t))a)(id); }
 void native_wwise_register_gameobject_with_id_and_name(uint64_t id,const char* n){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id_and_name"); if(a)((void(*)(uint64_t,const char*))a)(id,n); }
-void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
-void native_wwise_set_state(const char* g,const char* s){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
+void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_init_ok)return; { char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_switch grp='%s' sw='%s' obj=%llu",g?g:"",s?s:"",(unsigned long long)o); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
+void native_wwise_set_state(const char* g,const char* s){ if(!g_init_ok)return; { char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_state grp='%s' state='%s'",g?g:"",s?s:""); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
 int native_wwise_set_listener_position(void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_listener_position"); return a?((int(*)(void*))a)(v):0; }
 int native_wwise_set_gameobject_position(uint64_t o,void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_gameobject_position"); return a?((int(*)(uint64_t,void*))a)(o,v):0; }
-int native_wwise_set_rtpc_value(const char* n,float v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_rtpc_value"); return a?((int(*)(const char*,float))a)(n,v):0; }
+// ---- volume forcado (RTPC MusicVolume/SfxVolume) ----
+// O jogo zera esses RTPCs em Game_Deactivated (perda de foco); nossa janela SDL
+// fake nunca reporta foco -> RTPC=0 -> Wwise renderiza SILENCIO (RAWpeak=0).
+// Forcamos um piso audivel. WWISE_FORCEVOL=0 desliga; WWISE_VOLFLOOR=valor (default 1.0).
+static int real_set_rtpc(const char* n,float v){ uintptr_t a=so_find_addr("native_wwise_set_rtpc_value"); return a?((int(*)(const char*,float))a)(n,v):0; }
+static int forcevol(void){ const char* e=getenv("WWISE_FORCEVOL"); return (!e||!*e)?1:atoi(e); }
+static float volfloor(void){ const char* e=getenv("WWISE_VOLFLOOR"); return (e&&*e)?(float)atof(e):1.0f; }
+static int is_vol_rtpc(const char* n){ return n&&(strcmp(n,"MusicVolume")==0||strcmp(n,"SfxVolume")==0||strcmp(n,"Ambiance")==0); }
+static void force_volumes_now(void){ if(!forcevol())return; float fl=volfloor(); real_set_rtpc("MusicVolume",fl); real_set_rtpc("SfxVolume",fl); }
+
+void native_wwise_update(void){
+  if(!g_init_ok) return;
+  static unsigned uc=0;
+  force_volumes_now();                       // sobrepoe qualquer zeragem por foco, todo frame
+  render_audio_locked();                     // serializado com o render driver
+  if(uc==0||uc==600||uc==3000){ char b[80]; snprintf(b,sizeof(b),"[wwise-native] update() chamada #%u (RenderAudio do JOGO)",uc); wlog(b);} uc++;
+}
+
+int native_wwise_set_rtpc_value(const char* n,float v){
+  if(!g_init_ok)return 0;
+  float orig=v; int forced=0;
+  if(forcevol() && is_vol_rtpc(n)){ float fl=volfloor(); if(v<fl){ v=fl; forced=1; } }
+  if(forced){ char b[160]; snprintf(b,sizeof(b),"[wwise-native] set_rtpc '%s' val=%.3f -> FORCADO p/ %.3f",n?n:"(null)",orig,v); wlog(b); }
+  return real_set_rtpc(n,v);
+}
 int native_wwise_set_rtpc_value_with_id(const char* n,float v,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_rtpc_value_with_id"); return a?((int(*)(const char*,float,uint64_t))a)(n,v,o):0; }
 int native_wwise_get_music_event(void* ev){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_get_music_event"); return a?((int(*)(void*))a)(ev):0; }
 int native_wwise_get_total_memory(void){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_get_total_memory"); return a?((int(*)(void))a)():0; }

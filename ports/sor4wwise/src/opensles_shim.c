@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 #include "opensles_shim.h"
 #include "so_util.h"
@@ -747,8 +749,10 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
         if (p->enqueue_counter == 1 || p->enqueue_counter % 300 == 0) {
           const int16_t* sp=(const int16_t*)pBuffer; int16_t pk=0; uint32_t ns=size/2;
           for(uint32_t k=0;k<ns;k++){ int16_t a=sp[k]<0?-sp[k]:sp[k]; if(a>pk)pk=a; }
+          const unsigned char* bp=(const unsigned char*)pBuffer;
+          long tid=syscall(SYS_gettid);
           FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
-          if(lf){ fprintf(lf,"[opensles] ENQUEUE p%d size=%u cnt=%u RAWpeak=%d (Wwise: >100=audio real, 0=Wwise renderiza silencio)\n",i,size,p->enqueue_counter,(int)pk); fclose(lf); }
+          if(lf){ fprintf(lf,"[opensles] ENQUEUE p%d size=%u cnt=%u RAWpeak=%d tid=%ld bytes0-15=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x\n",i,size,p->enqueue_counter,(int)pk,tid,bp[0],bp[1],bp[2],bp[3],bp[4],bp[5],bp[6],bp[7],bp[8],bp[9],bp[10],bp[11],bp[12],bp[13],bp[14],bp[15]); fclose(lf); }
         }
         /* if (p->debug_enqueue_logs < 16 || p->enqueue_counter % 64 == 0) {
           debugPrintf("opensles_shim: player %d enqueue size=%u written=%u readable=%u counter=%u\n",
@@ -1005,6 +1009,9 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
     }
   }
 
+  { FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
+    if(lf){ fprintf(lf,"[opensles] CreateAudioPlayer FORMATO pedido: %u ch, %u kHz(raw=%u), %u bit, qbufs=%u\n",
+            p->num_channels,p->sample_rate, p->sample_rate*1000, p->bits_per_sample, p->queue_capacity); fclose(lf);} }
   if (p->sample_rate == 0) {
     p->num_channels = 2;
     p->sample_rate = 44100;
@@ -1083,32 +1090,36 @@ void opensles_shim_pump_callbacks(void) {
     uint32_t refill_threshold = callback_threshold * 2;
     if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
 
+    /* O sink da Wwise e' SAIDA CONTINUA (master mix): pre-renderiza N buffers e so
+     * enfileira no callback quando tem buffer pronto. A heuristica decoder_done
+     * (modelo FMOD/SFX-finito) PARAVA o player logo apos o priming (callback sem
+     * enqueue imediato -> "decoder done" -> HEADATEND -> STOPPED), causando loop de
+     * re-priming e SILENCIO. WWISE_SINK_FINITE=1 reativa o comportamento antigo. */
+    int sink_continuous = !getenv("WWISE_SINK_FINITE");
+
     /* Call callback multiple times to fill buffer ahead */
     int max_calls = 4;
     while (p->callback && readable <= refill_threshold && max_calls > 0) {
       uint32_t counter_before = p->enqueue_counter;
-      /* if (p->debug_callback_logs < 16 || counter_before % 64 == 0) {
-        debugPrintf("opensles_shim: player %d callback readable=%u threshold=%u counter=%u\n",
-                    i, readable, refill_threshold, counter_before);
-        p->debug_callback_logs++;
-      } */
       p->callback(&p->bq_ptr, p->callback_context);
 
-      if (p->ever_enqueued && !p->decoder_done &&
+      if (!sink_continuous && p->ever_enqueued && !p->decoder_done &&
           p->enqueue_counter == counter_before) {
         p->decoder_done = 1;
-        /* debugPrintf("opensles_shim: player %d decoder_done after callback readable=%u counter=%u\n",
-                    i, ring_readable(p), p->enqueue_counter); */
+        break;
+      }
+      if (sink_continuous && p->enqueue_counter == counter_before) {
+        /* nada novo enfileirado nesta passada: para de insistir, tenta no proximo pump */
+        readable = ring_readable(p);
         break;
       }
       readable = ring_readable(p);
       max_calls--;
     }
 
-    if (!p->callback && p->ever_enqueued && !p->decoder_done &&
+    if (!sink_continuous && !p->callback && p->ever_enqueued && !p->decoder_done &&
         p->queued_count == 0 && readable == 0) {
       p->decoder_done = 1;
-      /* debugPrintf("opensles_shim: player %d decoder_done after queue drain\n", i); */
     }
 
     // HEADATEND: fire play callback when decoder done and ring drained
