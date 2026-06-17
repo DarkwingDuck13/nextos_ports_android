@@ -100,8 +100,10 @@ export RE4_NOSIGH="${RE4_NOSIGH:-1}"
 export RE4_NOGCCOLLECT="${RE4_NOGCCOLLECT:-1}"
 export GC_INITIAL_HEAP_SIZE="${GC_INITIAL_HEAP_SIZE:-268435456}"
 export GC_FREE_SPACE_DIVISOR="${GC_FREE_SPACE_DIVISOR:-1}"
-export RE4_WIDTH="${RE4_WIDTH:-960}"
-export RE4_HEIGHT="${RE4_HEIGHT:-540}"
+export RE4_WIDTH="${RE4_WIDTH:-1280}"
+export RE4_HEIGHT="${RE4_HEIGHT:-720}"
+# audio FMOD (AudioTrack -> SDL callback -> PulseAudio) precisa do backend pulse
+export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
 
 echo "[re4] gamedir=$GAMEDIR"
 echo "[re4] package=$RE4_PACKAGE_NAME obb=$RE4_OBB_VERSION"
