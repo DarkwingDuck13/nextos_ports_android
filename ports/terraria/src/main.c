@@ -1718,30 +1718,36 @@ static void ter_gamepad_poll(void) {
   g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
   g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
   g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
-  /* 🎮 Xbox completo: gatilhos LT/RT (eixos analógicos 2/5 no layout xpad/SDL) + cliques L3/R3
-     (botões 9/10). Gatilho: rest pode ser -32768 (xpad clássico) ou 0 (não-inicializado/hid);
-     em AMBOS o press vai p/ POSITIVO -> normalizo só o lado positivo (v>0 ? v/32767 : 0) -> imune
-     a meio-gatilho-fantasma no boot. Digital = >30%. */
-  int axLT = getenv("TER_GP_AXLT") ? atoi(getenv("TER_GP_AXLT")) : 2;
-  int axRT = getenv("TER_GP_AXRT") ? atoi(getenv("TER_GP_AXRT")) : 5;
-  int bL3  = getenv("TER_GP_L3")   ? atoi(getenv("TER_GP_L3"))   : 9;
-  int bR3  = getenv("TER_GP_R3")   ? atoi(getenv("TER_GP_R3"))   : 10;
-  g_lt_analog = (g_gp_axis[axLT] > 0) ? g_gp_axis[axLT] / 32767.0f : 0.0f;
-  g_rt_analog = (g_gp_axis[axRT] > 0) ? g_gp_axis[axRT] / 32767.0f : 0.0f;
-  if (g_lt_analog > 1.0f) g_lt_analog = 1.0f; if (g_rt_analog > 1.0f) g_rt_analog = 1.0f;
-  g_gp_log[12] = g_lt_analog > 0.30f ? 1 : 0;
-  g_gp_log[13] = g_rt_analog > 0.30f ? 1 : 0;
-  g_gp_log[14] = (bL3 < 24) ? g_gp_btn[bL3] : 0;
-  g_gp_log[15] = (bR3 < 24) ? g_gp_btn[bR3] : 0;
+  /* gatilhos/sticks-clique (LT/RT/L3/R3) DESLIGADOS por padrão: o layout de eixos/botões varia por
+     controle e estava disparando gatilho-fantasma (ex.: stick direito no eixo 2 virava LTrig). Só
+     liga sob env explícito (TER_GP_AXLT/AXRT/L3/R3) DEPOIS de confirmar o layout real do controle. */
+  if (getenv("TER_GP_AXLT") || getenv("TER_GP_AXRT")) {
+    int axLT = getenv("TER_GP_AXLT") ? atoi(getenv("TER_GP_AXLT")) : -1;
+    int axRT = getenv("TER_GP_AXRT") ? atoi(getenv("TER_GP_AXRT")) : -1;
+    g_lt_analog = (axLT>=0 && g_gp_axis[axLT] > 0) ? g_gp_axis[axLT] / 32767.0f : 0.0f;
+    g_rt_analog = (axRT>=0 && g_gp_axis[axRT] > 0) ? g_gp_axis[axRT] / 32767.0f : 0.0f;
+    g_gp_log[12] = g_lt_analog > 0.30f ? 1 : 0;
+    g_gp_log[13] = g_rt_analog > 0.30f ? 1 : 0;
+  } else { g_lt_analog = g_rt_analog = 0.0f; g_gp_log[12] = g_gp_log[13] = 0; }
+  if (getenv("TER_GP_L3")) g_gp_log[14] = g_gp_btn[atoi(getenv("TER_GP_L3"))&31]; else g_gp_log[14]=0;
+  if (getenv("TER_GP_R3")) g_gp_log[15] = g_gp_btn[atoi(getenv("TER_GP_R3"))&31]; else g_gp_log[15]=0;
   /* cursor do mouse: analógico direito (3,4 default) E esquerdo movem o cursor (point-and-click do menu) */
   extern float g_cursor_x, g_cursor_y;
   int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
   int ry = getenv("TER_GP_RY") ? atoi(getenv("TER_GP_RY")) : 4;
-  float dx=0, dy=0, SP=1.0f/110.0f;
+  /* velocidade do cursor: SP menor = mais devagar. Default 1/240 (era 1/110 = rápido demais).
+     Tunável TER_GP_CURSP (px por unidade de eixo; ex.: 200 mais lento, 110 mais rápido). */
+  float SPdiv = getenv("TER_GP_CURSP") ? atof(getenv("TER_GP_CURSP")) : 240.0f;
+  if (SPdiv < 30.0f) SPdiv = 30.0f;
+  float dx=0, dy=0, SP=1.0f/SPdiv;
+  /* 🖱️ cursor SÓ no stick DIREITO (rx/ry). O stick ESQUERDO é movimento do personagem — NÃO move
+     o cursor (antes movia os dois = cursor "duplicado"/quebrado no jogo). TER_GP_CURLEFT religa. */
   if (g_gp_axis[rx] > 6000 || g_gp_axis[rx] < -6000) dx += g_gp_axis[rx]*SP;
   if (g_gp_axis[ry] > 6000 || g_gp_axis[ry] < -6000) dy += g_gp_axis[ry]*SP;
-  if (g_gp_axis[0] > 9000 || g_gp_axis[0] < -9000) dx += g_gp_axis[0]*SP;  /* stick esq tb (fallback) */
-  if (g_gp_axis[1] > 9000 || g_gp_axis[1] < -9000) dy += g_gp_axis[1]*SP;
+  if (getenv("TER_GP_CURLEFT")) {
+    if (g_gp_axis[0] > 9000 || g_gp_axis[0] < -9000) dx += g_gp_axis[0]*SP;
+    if (g_gp_axis[1] > 9000 || g_gp_axis[1] < -9000) dy += g_gp_axis[1]*SP;
+  }
   g_cursor_x += dx; g_cursor_y += dy;
   if (g_cursor_x < 0) g_cursor_x = 0; if (g_cursor_x > 1280) g_cursor_x = 1280;
   if (g_cursor_y < 0) g_cursor_y = 0; if (g_cursor_y > 720) g_cursor_y = 720;
@@ -1905,7 +1911,7 @@ static struct {
   int resolved, tried;
   void *fmenuMode, *fmouseX, *fmouseY, *fmouseLeft, *fmouseRight,
        *fmouseLeftRelease, *fmouseRightRelease, *fhasFocus,
-       *fscreenWidth, *fscreenHeight, *fnetMode, *fselectedMenu;
+       *fscreenWidth, *fscreenHeight, *fnetMode, *fselectedMenu, *fgameMenu;
 } MM;
 static int ter_geti(void *f){ if(!f)return -1; int v=0; void(*g)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); g(f,&v); return v; }
 static void ter_seti(void *f,int v){ if(!f)return; void(*s)(void*,void*)=(void*)(g_il2cpp_base+0x73ca48); s(f,&v); }
@@ -2044,6 +2050,7 @@ static int ter_menu_resolve(void) {
   MM.fmouseLeftRelease=getf(cls,"mouseLeftRelease"); MM.fmouseRightRelease=getf(cls,"mouseRightRelease");
   MM.fhasFocus=getf(cls,"hasFocus"); MM.fscreenWidth=getf(cls,"screenWidth"); MM.fscreenHeight=getf(cls,"screenHeight");
   MM.fnetMode=getf(cls,"netMode"); MM.fselectedMenu=getf(cls,"selectedMenu");
+  MM.fgameMenu=getf(cls,"gameMenu");   /* true = tela de menu/título; false = JOGANDO (gameplay) */
   fprintf(stderr,"[MENU] Terraria.Main resolvida: menuMode=%p mouseX=%p mouseY=%p mouseLeft=%p mLR=%p hasFocus=%p sw=%p sh=%p sel=%p\n",
     MM.fmenuMode,MM.fmouseX,MM.fmouseY,MM.fmouseLeft,MM.fmouseLeftRelease,MM.fhasFocus,MM.fscreenWidth,MM.fscreenHeight,MM.fselectedMenu); fsync(2);
   MM.resolved = 1; return 1;
@@ -2390,36 +2397,13 @@ static void ter_menu_nav(void) {
   /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
      teste p/ dropdowns/sublistas que têm foco de controle próprio). */
   if (access("/tmp/ternonav", F_OK) == 0) { g_girm_ovr = 0; return; }
-  extern float g_cursor_x, g_cursor_y;
-  /* 🖱️ MODO CURSOR LIVRE (stick DIREITO): dropdowns/sublistas (ex.: seleção de IDIOMA) NÃO estão
-     nas regiões do GIRM — só respondem à POSIÇÃO do cursor (Mouse) + clique (A). O stick direito
-     move um cursor livre no espaço da UI (~902×507) e A clica nele. DPad/stick-esq cima/baixo volta
-     pra navegação por LINHAS. Assim dá pra escolher qualquer item de dropdown com o controle. */
-  int rxa = getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3, rya = getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
-  float rx = g_gp_axis[rxa]/32768.0f, ry = g_gp_axis[rya]/32768.0f;
-  float arx = rx<0?-rx:rx, ary = ry<0?-ry:ry;
-  static int fcprev=0;
-  if (arx > 0.22f || ary > 0.22f) g_fcmode = 1;     /* stick direito -> entra no modo cursor */
-  if (g_gp_log[0] || g_gp_log[1]) g_fcmode = 0;     /* dpad/stick-esq cima/baixo -> nav por linhas */
-  if (g_fcmode && !fcprev) {                         /* ao entrar, começa na posição atual do hover */
-    g_fcx = g_girm_mx ? (float)g_girm_mx : g_cursor_x;
-    g_fcy = g_girm_my ? (float)g_girm_my : g_cursor_y;
-  }
-  fcprev = g_fcmode;
-  if (g_fcmode) {
-    float sp = getenv("TER_FCSPEED") ? atof(getenv("TER_FCSPEED")) : 8.0f;
-    if (arx > 0.18f) g_fcx += rx * sp;
-    if (ary > 0.18f) g_fcy += ry * sp;
-    if (g_fcx < 0) g_fcx = 0; if (g_fcx > 902) g_fcx = 902;
-    if (g_fcy < 0) g_fcy = 0; if (g_fcy > 507) g_fcy = 507;
-    g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;   /* hover (caso TER_GIRM) */
-    g_cursor_x = g_fcx; g_cursor_y = g_fcy;                          /* Mouse.GetState -> clique do A */
-    if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%30)==0){ fprintf(stderr,"[FCUR] (%.0f,%.0f) A=%d\n",g_fcx,g_fcy,g_gp_log[4]); fsync(2);} }
-    return;
-  }
-  void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; return; }
+  /* 🔑 SÓ navega em MENU (tela de título/Settings). No GAMEPLAY (gameMenu=false) NÃO mexe no cursor
+     — senão forçava o cursor pra um item do HUD (volta sempre pro mesmo lugar) e o D-pad movia o
+     cursor. Assim no jogo o cursor fica 100% no stick direito (ter_gamepad_poll). */
+  if (ter_menu_resolve() && MM.fgameMenu && !ter_getb(MM.fgameMenu)) { g_girm_ovr=0; g_fcmode=0; return; }
+  void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; g_fcmode=0; return; }
   int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
-  if(!arr||nr<=0||nr>32){ g_girm_ovr=0; return; }
+  if(!arr||nr<=0||nr>32){ g_girm_ovr=0; g_fcmode=0; return; }
   int cx[32], cy[32], order[32], n=0;
   for(int r=0;r<nr&&r<32;r++){ int*b=(int*)((char*)arr+0x20+r*16);
     int ccx=(b[0]+b[1])/2, ccy=(b[2]+b[3])/2;
@@ -4037,19 +4021,26 @@ static void *fmod_audio_thread(void *arg) {
   want.freq = rate; want.format = AUDIO_S16SYS; want.channels = ch; want.samples = 1024;
   if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
   SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-  if (dev) SDL_PauseAudioDevice(dev, 0);
-  fprintf(stderr, "[AUDIO] SDL dev=%d rate=%u ch=%u blk=%u bytes=%u (have f=%d c=%d) err=%s\n",
-          dev, rate, ch, blk, bytes, have.freq, have.channels, dev ? "" : SDL_GetError());
-  unsigned bpblocks = getenv("TER_AUDIO_BP") ? (unsigned)atoi(getenv("TER_AUDIO_BP")) : 4;
-  if (bpblocks < 2) bpblocks = 2; if (bpblocks > 16) bpblocks = 16;
-  Uint32 target = bytes * bpblocks;    /* back-pressure (default ~4 blocos = baixa latência p/ SFX) */
+  /* back-pressure: colchão p/ absorver jitter de scheduling (o jogo ocupa os 4 núcleos do Mali). 6
+     blocos default = continuidade SEM engasgo, latência ~256ms (NextOS validou ~perfeito). Tunável
+     TER_AUDIO_BP. PRÉ-ENCHE a fila antes de despausar (sem corte no arranque). */
+  unsigned bpblocks = getenv("TER_AUDIO_BP") ? (unsigned)atoi(getenv("TER_AUDIO_BP")) : 6;
+  if (bpblocks < 2) bpblocks = 2; if (bpblocks > 64) bpblocks = 64;
+  Uint32 target = bytes * bpblocks;
   unsigned long n = 0, fed = 0;
+  for (unsigned i = 0; dev && i < bpblocks && g_fmod_run; i++) {   /* pré-enche */
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    if (r == 0) { SDL_QueueAudio(dev, pcm, bytes); fed += bytes; } else { usleep(3000); }
+  }
+  if (dev) SDL_PauseAudioDevice(dev, 0);
+  fprintf(stderr, "[AUDIO] SDL dev=%d rate=%u ch=%u blk=%u bytes=%u bp=%u (have f=%d c=%d) err=%s\n",
+          dev, rate, ch, blk, bytes, bpblocks, have.freq, have.channels, dev ? "" : SDL_GetError());
   while (g_fmod_run) {
-    if (dev && SDL_GetQueuedAudioSize(dev) > target) { usleep(2000); continue; }
+    if (dev && SDL_GetQueuedAudioSize(dev) > target) { usleep(1000); continue; }
     int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
     if (r == 0 && dev) { SDL_QueueAudio(dev, pcm, bytes); fed += bytes; }
     else if (r < 0) usleep(5000);      /* output ainda não pronto */
-    if (n < 5 || n % 1000 == 0) {
+    if (n < 5 || n % 2000 == 0) {
       fprintf(stderr, "[AUDIO] fmodProcess #%lu -> %d (fed=%lu q=%u)\n",
               n, r, fed, dev ? SDL_GetQueuedAudioSize(dev) : 0); dbg_sync(); }
     n++;
