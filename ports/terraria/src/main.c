@@ -3990,42 +3990,49 @@ static void *fmod_audio_thread(void *arg) {
   void *bb = jni_fmod_bytebuffer();
   void *pcm = jni_fmod_pcm();
   int pcmcap = jni_fmod_pcm_size();
-  /* espera o FMOD output ficar pronto (*0xc7c2f0 != NULL) + lê o formato REAL */
-  unsigned rate = 0, ch = 0, blk = 0; void *sys = NULL;
-  for (int t = 0; g_fmod_run && t < 800; t++) {
-    if (fmod_read_format(&blk, &rate, &ch, &sys) && blk) {
-      fprintf(stderr, "[AUDIO] FMOD fmt: blk=%u rate(7d4)=%u ch(7c8)=%u outrate(7c4)=%u sys=%p\n",
-              blk, rate, ch, *(uint32_t *)((char *)sys + 0x7c4), sys);
-      /* DUMP cru p/ desfazer a confusão de offsets: acha o samplerate/channels/format reais */
-      for (unsigned o = 0x7c0; o <= 0x800; o += 0x10)
-        fprintf(stderr, "[AUDIO] sys+0x%x: %08x %08x %08x %08x\n", o,
-                *(uint32_t *)((char *)sys + o), *(uint32_t *)((char *)sys + o + 4),
-                *(uint32_t *)((char *)sys + o + 8), *(uint32_t *)((char *)sys + o + 0xc));
-      fprintf(stderr, "[AUDIO] sys+0x97e8=%08x  out+0x50..68: %p %p %p\n",
-              *(uint32_t *)((char *)sys + 0x97e8),
-              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x50),
-              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x58),
-              *(void **)((char *)(*(void **)(g_unity_base + 0xc7c2f0)) + 0x60));
-      break;
+  /* 🔑 MEDIR EMPIRICAMENTE quantos bytes o fmodProcess ESCREVE por chamada. O offset da struct do
+     System (0xc7c2f0) é não-confiável (fmod_read_format sempre falhava). Mas fmodProcess MIXA um
+     nº FIXO de bytes (blockSize*ch*2) no buffer, independente da capacidade. Medimos: pré-enchemos
+     o buffer com sentinela 0xAB, chamamos fmodProcess (silêncio = zeros ≠ 0xAB → detectável) e
+     achamos o último byte escrito. Enfileirar EXATAMENTE esse nº = clock do mixer casa com o
+     playback (senão acelera/atrasa). Tomamos o MÁX sobre várias chamadas (robusto a 0xAB no tail). */
+  unsigned rate = 44100, ch = 2, blk = 0, measured = 0;
+  unsigned char *pcmb = (unsigned char *)pcm;
+  int got = 0;
+  for (int t = 0; g_fmod_run && t < 4000; t++) {
+    memset(pcmb, 0xAB, pcmcap);
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    if (r == 0) {
+      int last = -1;
+      for (int i = pcmcap - 1; i >= 0; i--) if (pcmb[i] != 0xAB) { last = i; break; }
+      if (last >= 0) { unsigned wb = (unsigned)(last + 1); if (wb > measured) measured = wb; got++; }
+      if (got >= 60) break;   /* ~60 amostras p/ um máximo estável */
     }
-    usleep(10000);
+    usleep(2000);
   }
-  /* RATE/CH p/ abrir o SDL: NÃO confiar na leitura por offset (o MIXSPY provou que a struct do
-     System não é a que assumimos — o mixer 0x805a94 nem é chamado). O sinal CONFIÁVEL é o
-     getProperty(OUTPUT_SAMPLE_RATE)=44100 que o FMOD consultou no init. Default 44100/2ch;
-     override só por env (TER_AUDIO_RATE/TER_AUDIO_CH) se algum device precisar. */
-  rate = getenv("TER_AUDIO_RATE") ? atoi(getenv("TER_AUDIO_RATE")) : 44100;
-  ch   = getenv("TER_AUDIO_CH")   ? atoi(getenv("TER_AUDIO_CH"))   : 2;
+  fprintf(stderr, "[AUDIO] MEDIDO: fmodProcess escreve ~%u bytes/chamada (amostras=%d, cap=%d)\n", measured, got, pcmcap);
+  /* 🔑🔑 GROUND TRUTH do formato: fmodGetInfo(env,thiz,infoType) @libunity+0x8112b0 é a fn que o FMOD
+     expõe p/ o Java montar o AudioTrack. Tipos: 0=SAMPLERATE, 1=blockSize(frames), 4=CHANNELS.
+     RAIZ DO ÁUDIO RÁPIDO: o FMOD mixa a **24000 Hz** (mobile), mas o SDL estava a 44100 →
+     44100/24000 = 1.84× acelerado. FIX = abrir o SDL na taxa/canais REAIS do fmodGetInfo. */
+  { int (*fgi)(void*, void*, int) = (void *)(g_unity_base + 0x8112b0);
+    for (int it = 0; it < 5; it++)
+      fprintf(stderr, "[AUDIO] fmodGetInfo(%d) = %d\n", it, fgi(g_fmod_env, &fdev, it));
+    int r0 = fgi(g_fmod_env, &fdev, 0), c4 = fgi(g_fmod_env, &fdev, 4);
+    if (r0 >= 8000 && r0 <= 192000) rate = (unsigned)r0;     /* taxa real do mixer FMOD */
+    if (c4 == 1 || c4 == 2) ch = (unsigned)c4;               /* canais reais */
+  }
+  if (getenv("TER_AUDIO_RATE")) rate = atoi(getenv("TER_AUDIO_RATE"));
+  if (getenv("TER_AUDIO_CH"))   ch   = atoi(getenv("TER_AUDIO_CH"));
   if (rate < 8000 || rate > 192000) rate = 44100;
   if (ch != 1 && ch != 2) ch = 2;
-  if (blk == 0 || blk > 8192) blk = 1024;
-  g_fmod_rate = rate; g_fmod_ch = ch;
-  /* 🔑 ENFILEIRAR EXATAMENTE o que fmodProcess preencheu = a CAPACIDADE do DirectByteBuffer
-     (pcmcap = g_fmod_cap, reportada ao FMOD). Antes enfileirava blk*ch*2 que NÃO casava com a
-     capacidade -> FMOD avançava o clock mais rápido que o playback -> áudio acelerado. Agora
-     1:1 com o clock do mixer. blk é derivado p/ log. */
-  unsigned bytes = (unsigned)pcmcap;
-  g_fmod_blk = bytes / (ch * 2);
+  unsigned bytes;
+  if (getenv("TER_AUDIO_FRAMES")) bytes = (unsigned)atoi(getenv("TER_AUDIO_FRAMES")) * ch * 2;
+  else if (measured >= 256) bytes = (measured / (ch * 2)) * (ch * 2);   /* alinha ao frame */
+  else bytes = 4096;   /* fallback se a medição falhar */
+  if ((int)bytes > pcmcap) bytes = pcmcap;
+  blk = bytes / (ch * 2);
+  g_fmod_rate = rate; g_fmod_ch = ch; g_fmod_blk = blk;
   SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
   want.freq = rate; want.format = AUDIO_S16SYS; want.channels = ch; want.samples = 1024;
   if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);

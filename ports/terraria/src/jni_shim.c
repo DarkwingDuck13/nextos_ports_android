@@ -1205,7 +1205,8 @@ static int g_fmod_bb_sentinel;
    (8192 frames) mas o pump só enfileirava 4096 (1024 frames) -> o FMOD avançava 8x mais rápido
    que o playback -> ÁUDIO ACELERADO. 4096 = bloco DSP padrão do FMOD mobile (1024 frames
    stereo s16). Tunável por TER_AUDIO_BUF (bytes). O backing g_fmod_pcm[32768] é só folga. */
-int g_fmod_cap = 4096;
+int g_fmod_cap = 32768;   /* capacidade reportada = backing inteiro (fmodProcess mixa blockSize
+                             frames independente disto; só precisa de FOLGA p/ não estourar) */
 void *jni_fmod_bytebuffer(void) { return &g_fmod_bb_sentinel; }
 void *jni_fmod_pcm(void) { return g_fmod_pcm; }
 int jni_fmod_pcm_size(void) { return g_fmod_cap; }
