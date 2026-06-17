@@ -12,6 +12,27 @@ namespace Microsoft.Xna.Framework.Content
     {
         [System.Runtime.InteropServices.DllImport("sor4astc")]
         static extern int sor4_astc_decode(byte[] data, ulong len, int w, int h, int bx, int by, byte[] outRGBA);
+        [System.Runtime.InteropServices.DllImport("sor4astc")]
+        static extern int sor4_etc1_encode(byte[] rgba, int w, int h, byte[] outEtc1);
+        static readonly bool Sor4Etc1 = System.Environment.GetEnvironmentVariable("SOR4_ETC1")=="1";
+        // ASTC -> GPU: opaca -> ETC1 (Mali le nativo, 8x mais leve); com alpha -> RGBA8.
+        // Cacheia com header [1 byte fmt] (tag=2). fmt out: RgbEtc1 ou Color.
+        static byte[] Sor4AstcToGpu(byte[] data, int len, int w, int h, int scale, out SurfaceFormat fmt){
+            string ckey = Sor4CacheDir != null ? Sor4CacheKey(data, len, w, h, scale, 2) : null;
+            if (ckey != null){ var ch = Sor4CacheGet(ckey); if (ch != null && ch.Length>=1){ fmt = ch[0]==1?SurfaceFormat.RgbEtc1:SurfaceFormat.Color; var o=new byte[ch.Length-1]; System.Array.Copy(ch,1,o,0,o.Length); return o; } }
+            byte[] rgba = Sor4DecodeAstc(data, len, w, h, scale);   // RGBA8 (tw x th), com MASKFIX/scale/cache proprio
+            int tw = System.Math.Max(w/scale,1), th = System.Math.Max(h/scale,1);
+            bool opaque = true;
+            for (int p=3; p<rgba.Length; p+=4){ if (rgba[p] < 250){ opaque=false; break; } }
+            byte[] outData;
+            if (opaque){
+                int bw=(tw+3)&~3, bh=(th+3)&~3; byte[] etc1=new byte[(bw/4)*(bh/4)*8];
+                if (sor4_etc1_encode(rgba, tw, th, etc1)==0){ fmt=SurfaceFormat.RgbEtc1; outData=etc1; }
+                else { fmt=SurfaceFormat.Color; outData=rgba; opaque=false; }
+            } else { fmt=SurfaceFormat.Color; outData=rgba; }
+            if (ckey != null){ var store=new byte[outData.Length+1]; store[0]=(byte)(opaque?1:0); System.Array.Copy(outData,0,store,1,outData.Length); Sor4CachePut(ckey, store); }
+            return outData;
+        }
         static readonly int[,] AstcBlk = {{4,4},{5,4},{5,5},{6,5},{6,6},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
         static readonly string Sor4CacheDir = System.Environment.GetEnvironmentVariable("SOR4_TEXCACHE");
         static string Sor4CacheKey(byte[] data, int len, int w, int h, int scale, int tag){
@@ -133,6 +154,29 @@ namespace Microsoft.Xna.Framework.Content
             int sor4Scale = 1;
             if ((int)surfaceFormat >= 96) { convertedFormat = SurfaceFormat.Color; sor4Scale = Sor4TexScale; levelCountOutput = 1; } // SOR4: ASTC -> RGBA reduzido (memoria)
             if (surfaceFormat == SurfaceFormat.Bgra4444) { convertedFormat = SurfaceFormat.Color; levelCountOutput = 1; } // SOR4: 4444 -> RGBA8 (fonte/Mali)
+            // SOR4 ETC1 (gateado por SOR4_ETC1): ASTC -> opaca=ETC1 nativo (Mali, 8x mais leve) /
+            // com alpha=RGBA8. O formato so se sabe APOS decodificar (precisa do alpha), entao
+            // tratamos o ASTC inteiro aqui e retornamos cedo (consumindo todos os niveis do stream).
+            if (Sor4Etc1 && (int)surfaceFormat >= 96 && reader.GetGraphicsDevice().GraphicsCapabilities.SupportsEtc1) {
+                int etcScale = Sor4TexScale;
+                int etcW = System.Math.Max(width/etcScale,1), etcH = System.Math.Max(height/etcScale,1);
+                byte[] astc0 = null;
+                for (int lv=0; lv<levelCount; lv++){
+                    int sz = reader.ReadInt32();
+                    byte[] ld = new byte[sz];
+                    reader.Read(ld, 0, sz);
+                    if (lv==0) astc0 = ld;
+                }
+                SurfaceFormat etcFmt;
+                byte[] gpu = Sor4AstcToGpu(astc0, astc0.Length, width, height, etcScale, out etcFmt);
+                texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), etcW, etcH, false, etcFmt);
+#if OPENGL
+                Threading.BlockOnUIThread(() => { texture.SetData(0, null, gpu, 0, gpu.Length); });
+#else
+                texture.SetData(0, null, gpu, 0, gpu.Length);
+#endif
+                return texture;
+            }
             int sor4TexW = System.Math.Max(width/sor4Scale,1), sor4TexH = System.Math.Max(height/sor4Scale,1);
             texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), sor4TexW, sor4TexH, levelCountOutput > 1, convertedFormat);
 #if OPENGL
