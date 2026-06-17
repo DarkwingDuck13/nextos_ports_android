@@ -83,10 +83,13 @@ static struct { char *key; char *val; int isint; long ival; } g_prefs[PREFS_MAX]
 static int g_prefs_n = 0;
 static int g_prefs_editor;   /* sentinela do SharedPreferences.Editor (putString retorna isto) */
 static int prefs_find(const char *k){ if(!k)return -1; for(int i=0;i<g_prefs_n;i++) if(g_prefs[i].key&&strcmp(g_prefs[i].key,k)==0) return i; return -1; }
+extern void re4_signal_gameplay(int on);  /* main_re4: liga gameplay (anti-freeze + touch-move) */
 static void prefs_set_str(const char *k, const char *v){ if(!k)return; int i=prefs_find(k);
   if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
   if(g_prefs[i].val) free(g_prefs[i].val); g_prefs[i].val=strdup(v?v:""); g_prefs[i].isint=0;
-  debugPrintf("[PREFS] set str '%s'='%s'\n", k, v?v:""); }
+  debugPrintf("[PREFS] set str '%s'='%s'\n", k, v?v:"");
+  /* sceneToLoad com valor de nivel = entrou no gameplay; vazio/0 = voltou ao menu */
+  if(strcmp(k,"sceneToLoad")==0) re4_signal_gameplay(v && v[0] && strcmp(v,"0")!=0); }
 static void prefs_set_int(const char *k, long v){ if(!k)return; int i=prefs_find(k);
   if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
   g_prefs[i].ival=v; g_prefs[i].isint=1;

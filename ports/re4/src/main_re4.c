@@ -295,8 +295,14 @@ static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
 static int g_re4_frame=-1;
 static int g_in_menu=0;  /* 1 = menu CODEX visivel; 0 = gameplay (reabilita injecao android_shim p/ mover Leon) */
-static int g_gameplay=0; /* 1 = entrou no gameplay (New/Continue) -> PARA toda poke-Mono (evita FREEZE) */
-static int g_gameplay_frame=0; /* frame em que entrou no gameplay (p/ esperar a cena carregar antes do touch-move) */
+int g_gameplay=0; /* 1 = entrou no gameplay -> PARA toda poke-Mono (evita FREEZE no gameplay/pause) */
+int g_gameplay_frame=0; /* frame em que entrou no gameplay (p/ esperar a cena carregar antes do touch-move) */
+/* Chamado pelo jni_shim quando o jogo grava 'sceneToLoad' (carga de cena = entrou no gameplay).
+   Sinal CONFIAVEL (independe do nome do botao) -> liga touch-move e desliga poke-Mono. */
+void re4_signal_gameplay(int on){
+  if(on){ if(!g_gameplay){ g_gameplay=1; g_gameplay_frame=g_re4_frame; fprintf(stderr,"[GP] sceneToLoad -> GAMEPLAY START f=%d\n",g_re4_frame); fsync(2);} }
+  else { if(g_gameplay){ g_gameplay=0; fprintf(stderr,"[GP] volta ao MENU f=%d\n",g_re4_frame); fsync(2);} }
+}
 /* ESTUDO: registra vocabulario DISTINTO de input consultado pelo jogo (sem cap).
    Gated por RE4_INDUMP. Imprime [INDUMP] <chave> uma vez por chave nova. */
 static int re4_indump(const char *key){
