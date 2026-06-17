@@ -1786,10 +1786,441 @@ static void ter_input_hook(void) {
   if (patched >= 2) done = 1;
   (void)cls_method;
 }
+
+/* ===== TER_MENU: driver UNIVERSAL de input via campos estáticos de Terraria.Main =====
+ * O menu (e a UI) do Terraria LÊ o input por Main.mouseX/mouseY/mouseLeft (point-and-click) —
+ * não importa se a plataforma alimenta isso de mouse, touch ou gamepad. Em vez de adivinhar a
+ * FONTE de input (mouse vs touch vs gamepad, que varia por plataforma), nós escrevemos DIRETO
+ * os campos que a UI consome. Dois passos:
+ *   (1) TER_MENU neutraliza PlayerInput.UpdateInput (-> ret) p/ ele NÃO sobrescrever os campos;
+ *   (2) escrevemos Main.mouseX/Y/Left/hasFocus DIRETO toda frame (no swap → persiste p/ a
+ *       próxima frame, que o Main.Update lê).
+ * Tudo via a API REAL do il2cpp (exportada: il2cpp_class_get_field_from_name +
+ * il2cpp_field_static_get/set_value). TER_MENULOG só OBSERVA (não nuka nem dirige) — diagnóstico.
+ * TER_MENUTEST faz um auto-teste: varre o cursor na vertical e clica, detectando mudança de
+ * menuMode (prova autônoma de que o input chega, sem precisar de olhos na TV). */
+static struct {
+  int resolved, tried;
+  void *fmenuMode, *fmouseX, *fmouseY, *fmouseLeft, *fmouseRight,
+       *fmouseLeftRelease, *fmouseRightRelease, *fhasFocus,
+       *fscreenWidth, *fscreenHeight, *fnetMode, *fselectedMenu;
+} MM;
+static int ter_geti(void *f){ if(!f)return -1; int v=0; void(*g)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); g(f,&v); return v; }
+static void ter_seti(void *f,int v){ if(!f)return; void(*s)(void*,void*)=(void*)(g_il2cpp_base+0x73ca48); s(f,&v); }
+static int ter_getb(void *f){ if(!f)return -1; unsigned char v=0; void(*g)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); g(f,&v); return v; }
+static void ter_setb(void *f,int v){ if(!f)return; unsigned char b=v?1:0; void(*s)(void*,void*)=(void*)(g_il2cpp_base+0x73ca48); s(f,&b); }
+static int ter_menu_resolve(void) {
+  if (MM.resolved) return 1;
+  if (!g_il2cpp_base) return 0;
+  if (MM.tried++ > 600) return 0;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void (*cls_init)(void*) = (void*)(g_il2cpp_base + 0x73cc80);
+  void *(*getf)(void*, const char*) = (void*)(g_il2cpp_base + 0x73c284);
+  void *domain = dom_get(); if (!domain) return 0;
+  size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms||!na) return 0;
+  const char *clsfind = getenv("TER_CLSFIND");
+  if (clsfind) {
+    size_t (*img_clscount)(void*) = (void*)(g_il2cpp_base + 0x73cea0);
+    void *(*img_class)(void*, size_t) = (void*)(g_il2cpp_base + 0x73ceb4);
+    const char *(*cls_name)(void*) = (void*)(g_il2cpp_base + 0x73c290);
+    const char *(*cls_ns)(void*) = (void*)(g_il2cpp_base + 0x73c294);
+    char lf[64]; int li=0; for(const char*p=clsfind; *p&&li<63; p++) lf[li++]=(*p>='A'&&*p<='Z')?(*p+32):*p; lf[li]=0;
+    fprintf(stderr,"[CLSFIND] procurando classes que casam '%s'\n", clsfind);
+    int hits=0;
+    for (size_t i=0;i<na;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+      size_t cc=img_clscount(img);
+      for (size_t k=0;k<cc;k++){ void*c=img_class(img,k); if(!c)continue;
+        const char*nm=cls_name(c); const char*ns=cls_ns(c); if(!nm)continue;
+        char buf[256]; int bi=0;
+        for(const char*p=ns; p&&*p&&bi<200; p++) buf[bi++]=*p; if(ns&&*ns&&bi<200)buf[bi++]='.';
+        for(const char*p=nm; *p&&bi<200; p++) buf[bi++]=*p; buf[bi]=0;
+        char lb[256]; for(int x=0;x<=bi;x++) lb[x]=(buf[x]>='A'&&buf[x]<='Z')?(buf[x]+32):buf[x];
+        if (strstr(lb, lf)) { fprintf(stderr,"  [%zu] %s\n", i, buf); if(++hits>200){fprintf(stderr,"  ...(corte 200)\n");break;} }
+      }
+      if (hits>200) break;
+    }
+    fprintf(stderr,"[CLSFIND] %d hits\n", hits); fsync(2);
+  }
+  const char *findm = getenv("TER_FINDM");   /* acha método (e classe) cujo methodPointer = il2cpp+off */
+  if (findm) {
+    unsigned long want = strtoul(findm, NULL, 0);
+    size_t (*img_clscount)(void*) = (void*)(g_il2cpp_base + 0x73cea0);
+    void *(*img_class)(void*, size_t) = (void*)(g_il2cpp_base + 0x73ceb4);
+    const char *(*cls_name)(void*) = (void*)(g_il2cpp_base + 0x73c290);
+    const char *(*cls_ns)(void*) = (void*)(g_il2cpp_base + 0x73c294);
+    void *(*cls_methods)(void*, void**) = (void*)(g_il2cpp_base + 0x73c288);
+    const char *(*meth_name)(void*) = (void*)(g_il2cpp_base + 0x73cb9c);
+    void (*cls_init)(void*) = (void*)(g_il2cpp_base + 0x73cc80);
+    fprintf(stderr,"[FINDM] procurando methodPointer = il2cpp+0x%lx\n", want);
+    int hits=0;
+    for (size_t i=0;i<na && hits<8;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+      size_t cc=img_clscount(img);
+      for (size_t k=0;k<cc && hits<8;k++){ void*c=img_class(img,k); if(!c)continue;
+        void*it=NULL,*mm; int n=0;
+        while((mm=cls_methods(c,&it))&&n++<400){ void*mp=*(void**)mm; if(!mp)continue;
+          if ((unsigned long)((uintptr_t)mp - g_il2cpp_base) == want){
+            const char*nm=cls_name(c),*ns=cls_ns(c);
+            fprintf(stderr,"  [FINDM] %s%s%s . %s\n", ns?ns:"", (ns&&*ns)?".":"", nm?nm:"?", meth_name(mm)); hits++; }
+        }
+      }
+    }
+    (void)cls_init; fprintf(stderr,"[FINDM] %d hits\n", hits); fsync(2);
+  }
+  const char *dumpcls = getenv("TER_DUMPCLS");   /* formato "Namespace:ClassName" (ns vazio = "") */
+  if (dumpcls) {
+    char ns[128]={0}, cn[128]={0}; const char*colon=strchr(dumpcls,':');
+    if (colon){ int l=colon-dumpcls; if(l>127)l=127; memcpy(ns,dumpcls,l); ns[l]=0; strncpy(cn,colon+1,127);}
+    else strncpy(cn,dumpcls,127);
+    void *(*cls_fields)(void*, void**) = (void*)(g_il2cpp_base + 0x73c270);
+    const char *(*fld_name)(void*) = (void*)(g_il2cpp_base + 0x73ca1c);
+    size_t (*fld_off)(void*) = (void*)(g_il2cpp_base + 0x73ca28);
+    void *(*fld_type)(void*) = (void*)(g_il2cpp_base + 0x73ca2c);
+    char *(*type_name)(void*) = (void*)(g_il2cpp_base + 0x73cd18);
+    void *(*cls_methods)(void*, void**) = (void*)(g_il2cpp_base + 0x73c288);
+    const char *(*meth_name)(void*) = (void*)(g_il2cpp_base + 0x73cb9c);
+    unsigned (*meth_pc)(void*) = (void*)(g_il2cpp_base + 0x73cbac);
+    for (size_t i=0;i<na;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+      void*c=cls_from_name(img,ns,cn); if(!c) continue;
+      cls_init(c);
+      fprintf(stderr,"[DUMPCLS] %s:%s (asm %zu)\n=== CAMPOS ===\n", ns, cn, i);
+      void *it=NULL,*fi; int n=0;
+      while((fi=cls_fields(c,&it))&&n++<800){ const char*fn=fld_name(fi); void*ty=fld_type(fi); char*tn=ty?type_name(ty):0;
+        fprintf(stderr,"  F %-30s off=0x%zx %s\n", fn?fn:"?", fld_off(fi), tn?tn:"?"); }
+      fprintf(stderr,"=== METODOS ===\n"); it=NULL; void*mm; n=0;
+      while((mm=cls_methods(c,&it))&&n++<800){ void*mp=*(void**)mm;
+        long off = mp ? (long)((uintptr_t)mp - g_il2cpp_base) : -1;
+        fprintf(stderr,"  M %s pc=%u code=il2cpp+0x%lx\n", meth_name(mm), meth_pc(mm), off); }
+      fsync(2); break;
+    }
+  }
+  void *cls = NULL;
+  for (size_t i=0;i<na;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+    cls = cls_from_name(img,"Terraria","Main"); if(cls) break; }
+  if (!cls) return 0;
+  cls_init(cls);
+  if (getenv("TER_MENUDUMP")) {
+    void *(*cls_fields)(void*, void**) = (void*)(g_il2cpp_base + 0x73c270);
+    const char *(*fld_name)(void*) = (void*)(g_il2cpp_base + 0x73ca1c);
+    size_t (*fld_off)(void*) = (void*)(g_il2cpp_base + 0x73ca28);
+    void *(*fld_type)(void*) = (void*)(g_il2cpp_base + 0x73ca2c);
+    char *(*type_name)(void*) = (void*)(g_il2cpp_base + 0x73cd18);
+    void *it=NULL, *fi; int n=0;
+    fprintf(stderr,"[MENUDUMP] campos de Terraria.Main:\n");
+    while ((fi=cls_fields(cls,&it)) && n++<2000) {
+      const char *nm=fld_name(fi); void *ty=fld_type(fi); char *tn=ty?type_name(ty):0;
+      fprintf(stderr,"  %-32s off=0x%zx type=%s\n", nm?nm:"?", fld_off(fi), tn?tn:"?");
+    }
+    fsync(2);
+  }
+  MM.fmenuMode=getf(cls,"menuMode"); MM.fmouseX=getf(cls,"mouseX"); MM.fmouseY=getf(cls,"mouseY");
+  MM.fmouseLeft=getf(cls,"mouseLeft"); MM.fmouseRight=getf(cls,"mouseRight");
+  MM.fmouseLeftRelease=getf(cls,"mouseLeftRelease"); MM.fmouseRightRelease=getf(cls,"mouseRightRelease");
+  MM.fhasFocus=getf(cls,"hasFocus"); MM.fscreenWidth=getf(cls,"screenWidth"); MM.fscreenHeight=getf(cls,"screenHeight");
+  MM.fnetMode=getf(cls,"netMode"); MM.fselectedMenu=getf(cls,"selectedMenu");
+  fprintf(stderr,"[MENU] Terraria.Main resolvida: menuMode=%p mouseX=%p mouseY=%p mouseLeft=%p mLR=%p hasFocus=%p sw=%p sh=%p sel=%p\n",
+    MM.fmenuMode,MM.fmouseX,MM.fmouseY,MM.fmouseLeft,MM.fmouseLeftRelease,MM.fhasFocus,MM.fscreenWidth,MM.fscreenHeight,MM.fselectedMenu); fsync(2);
+  MM.resolved = 1; return 1;
+}
+/* neutraliza PlayerInput.UpdateInput (-> ret) p/ não clobberar Main.mouse* que dirigimos */
+static void ter_menu_nuke_updateinput(void) {
+  static int done=0; if(done) return;
+  if(!g_il2cpp_base) return;
+  static int tries=0; if(tries++>600){done=1;return;}
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void *(*cls_method)(void*, const char*, int) = (void*)(g_il2cpp_base + 0x73c28c);
+  void *domain = dom_get(); if (!domain) return;
+  size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms||!na) return;
+  for (size_t i=0;i<na;i++){ void*img=asm_img(asms[i]); if(!img)continue;
+    void *cls = cls_from_name(img,"Terraria.GameInput","PlayerInput"); if(!cls) continue;
+    void *m = cls_method(cls,"UpdateInput",0); if(!m){ done=1; return; }
+    void *mp=*(void**)m; if(!mp){done=1;return;}
+    long pgsz=sysconf(_SC_PAGESIZE);
+    void *pa=(void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
+    mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+    *(uint32_t*)mp=0xD65F03C0u; /* ret */
+    mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
+    __builtin___clear_cache((char*)pa,(char*)pa+8);
+    fprintf(stderr,"[MENU] PlayerInput.UpdateInput @%p -> ret (asm %zu)\n",mp,i); fsync(2);
+    done=1; return;
+  }
+}
+static void ter_menu_drive(void) {
+  if (!getenv("TER_MENU") && !getenv("TER_MENULOG")) return;
+  if (!ter_menu_resolve()) return;
+  extern float g_cursor_x, g_cursor_y;
+  static int aprev=0, bprev=0;
+  int A = g_gp_log[4], B = g_gp_log[5];
+  /* auto-teste: varre o cursor na vertical (centro-x) e clica cada alvo; detecta mudança de
+     menuMode → prova que o input chega sem precisar de olhos na TV. */
+  if (getenv("TER_MENUTEST")) {
+    static const float ys[] = {200,240,280,320,360,400,440,480,520,300,340,380};
+    static const int nT = (int)(sizeof ys/sizeof ys[0]);
+    static int tf=0, ti=0, baseMM=-999;
+    int phase = (tf++) % 50;
+    g_cursor_x = 640.0f; g_cursor_y = ys[ti % nT];
+    if (phase>=12 && phase<22) A = 1;   /* segura o "clique" por ~10 frames */
+    if (phase==0) {
+      int mm = ter_geti(MM.fmenuMode), sel = ter_geti(MM.fselectedMenu);
+      if (baseMM!=-999 && mm!=baseMM)
+        fprintf(stderr,"[MENUTEST] *** menuMode %d -> %d apos clicar y=%.0f — INPUT FUNCIONA! ***\n",
+          baseMM, mm, ys[(ti-1+nT)%nT]);
+      baseMM = mm; ti++;
+      fprintf(stderr,"[MENUTEST] alvo#%d y=%.0f menuMode=%d sel=%d\n", ti, ys[ti%nT], mm, sel); fsync(2);
+    }
+  }
+  if (getenv("TER_MENULOG")) { static int c=0; if((c++%30)==0){
+    fprintf(stderr,"[MENULOG] menuMode=%d hasFocus=%d mouseX=%d mouseY=%d mL=%d mLR=%d sw=%d sh=%d net=%d sel=%d cur=%.0f,%.0f A=%d\n",
+      ter_geti(MM.fmenuMode), ter_getb(MM.fhasFocus), ter_geti(MM.fmouseX), ter_geti(MM.fmouseY),
+      ter_getb(MM.fmouseLeft), ter_getb(MM.fmouseLeftRelease), ter_geti(MM.fscreenWidth), ter_geti(MM.fscreenHeight),
+      ter_geti(MM.fnetMode), ter_geti(MM.fselectedMenu), g_cursor_x, g_cursor_y, A); fsync(2);} }
+  if (!getenv("TER_MENU")) { aprev=A; bprev=B; return; }
+  /* DIRIGE: escreve os campos que a UI lê. Escala o cursor (espaço 1280x720) p/ a resolução real. */
+  int sw = ter_geti(MM.fscreenWidth), sh = ter_geti(MM.fscreenHeight);
+  if (sw<=0) sw=1280; if (sh<=0) sh=720;
+  int mx = (int)(g_cursor_x * (float)sw / 1280.0f);
+  int my = (int)(g_cursor_y * (float)sh / 720.0f);
+  if (mx<0)mx=0; if(mx>sw-1)mx=sw-1; if(my<0)my=0; if(my>sh-1)my=sh-1;
+  ter_setb(MM.fhasFocus, 1);
+  ter_seti(MM.fmouseX, mx); ter_seti(MM.fmouseY, my);
+  ter_setb(MM.fmouseLeft, A); ter_setb(MM.fmouseRight, B);
+  ter_setb(MM.fmouseLeftRelease, (A && !aprev) ? 1 : 0);
+  ter_setb(MM.fmouseRightRelease, (B && !bprev) ? 1 : 0);
+  aprev=A; bprev=B;
+}
+
+/* ===== TER_CTRL: input UNIVERSAL via Controller.ControllerDevice (o menu mobile é UI Unity
+ * própria — GUIMainMenu etc. — navegada por InControl através de Controller.ControllerDevice).
+ * O ControllerDevice.Update lê o estado FÍSICO por GetKeyRaw(this,btn)->_KeyState[btn] e
+ * GetAxisRaw(this,axis)->AxisValue[axis]. Substituímos o CORPO dessas duas funções por funções
+ * nossas que devolvem o estado do js0 — então o Update calcula _KeyState + edges (Down/Up) +
+ * AxisValue com semântica NATURAL (held/edge), e toda a navegação da GUI passa a responder.
+ * Índices: Controller.Buttons {Action1=0,Action2=1,Action3=2,Action4=3,ShoulderL=4,ShoulderR=5,
+ * LTrig=6,RTrig=7,Options=8,Switch=9,StickL=10,StickR=11,Back=12}; Controller.Axis {LeftX=0,
+ * LeftY=1,RightX=2,RightY=3,DPadX=4,DPadY=5,LTrig=6,RTrig=7}. Offsets do método em libil2cpp. */
+unsigned char g_inj_btn[16];
+float g_inj_axis[8];
+unsigned long g_getkeyraw_calls, g_getaxisraw_calls;
+volatile void *g_ctrl_device;   /* última ControllerDevice que chamou GetKeyRaw (a que dá Update) */
+extern volatile void *g_nav_instance;   /* instância do GUIControllerNavigationController (def. adiante) */
+int my_ctrl_getkeyraw(void *thiz, int btn) { g_ctrl_device = thiz; g_getkeyraw_calls++; return (btn>=0&&btn<16)?g_inj_btn[btn]:0; }
+/* get_NavigationAxis() retorna um Vector2 (x,y) construído de estados DISCRETOS up/down/left/right
+   — não do AxisValue analógico. Substituímos p/ devolver direto nosso vetor de direção. AArch64:
+   struct{float,float} = HFA → retorna em s0,s1. */
+typedef struct { float x, y; } TerVec2;
+float g_nav_x, g_nav_y; unsigned long g_navaxis_calls;
+/* 🔑 Controller.ControllerActionVector.GetValue (c59988) retorna o Vector2 da direção. A navegação
+ * do menu lê o vetor UINavigationAxis (campo 0x40 do GUIControllerNavigationController). Hookamos
+ * GetValue: SE o vetor for o UINavigationAxis e houver direção injetada, devolvemos NOSSO vetor;
+ * senão chamamos o original (não afeta gameplay/outros vetores). Retorno Vector2 em s0,s1 (HFA). */
+/* UnityEngine.Input.get_mousePosition (il2cpp+0x26ad4c4) retorna Vector3 (s0,s1,s2). Substituímos
+ * p/ devolver nossa posição de cursor (origem Unity = canto INFERIOR-esquerdo, y p/ cima). Teste:
+ * TER_UMOUSE="x,y" fixa; depois ligamos ao analógico. */
+typedef struct { float x, y, z; } TerVec3;
+float g_umouse_x=640.0f, g_umouse_y=360.0f; int g_umouse_active;
+TerVec3 my_unity_mousepos(void *mi) { (void)mi; TerVec3 v; v.x=g_umouse_x; v.y=g_umouse_y; v.z=0.0f; return v; }
+static TerVec2 (*g_orig_av_getvalue)(void*,void*,void*);
+unsigned long g_av_match;
+TerVec2 my_av_getvalue(void *thiz, void *a1, void *a2) {
+  g_navaxis_calls++;
+  void *nav = (void*)g_nav_instance;
+  void *uinav = nav ? *(void**)((char*)nav + 0x40) : NULL;   /* UINavigationAxis (discreto) */
+  void *uiscroll = nav ? *(void**)((char*)nav + 0x48) : NULL;/* UIScrollAxis (cursor analógico) */
+  int match = (thiz && (thiz==uinav || (thiz==uiscroll && getenv("TER_SCROLLAXIS"))));
+  if (match) g_av_match++;
+  if (getenv("TER_CTRLLOG")) { static int c=0; if((c++%97)==0)
+    fprintf(stderr,"[AVGET] thiz=%p uinav=%p nav=%p match=%d navxy=(%.1f,%.1f) calls=%lu match=%lu\n",
+      thiz,uinav,nav,match,g_nav_x,g_nav_y,g_navaxis_calls,g_av_match); }
+  if (match && (g_nav_x!=0.0f || g_nav_y!=0.0f)) { TerVec2 v; v.x=g_nav_x; v.y=g_nav_y; return v; }
+  if (g_orig_av_getvalue) return g_orig_av_getvalue(thiz,a1,a2);
+  TerVec2 z={0,0}; return z;
+}
+float my_ctrl_getaxisraw(void *thiz, int axis) { (void)thiz; g_getaxisraw_calls++;
+  float v = (axis>=0&&axis<8)?g_inj_axis[axis]:0.0f;
+  if (v!=0.0f && getenv("TER_CTRLLOG")) { static int n=0; if(n++<40){ fprintf(stderr,"[AXRAW] axis=%d -> %.2f\n",axis,v); fsync(2);} }
+  return v; }
+static void ter_ctrl_patch(void) {
+  static int done=0; if(done||!g_il2cpp_base||!getenv("TER_CTRL")){ if(!getenv("TER_CTRL"))done=1; return; }
+  long pgsz=sysconf(_SC_PAGESIZE);
+  struct { unsigned long off; void* fn; } P[] = {
+    { 0xc5c51c, (void*)my_ctrl_getkeyraw },     /* GetKeyRaw(this,btn) -> _KeyState (botões) */
+    { 0xc5c2f0, (void*)my_ctrl_getaxisraw },    /* GetAxisRaw(this,axis) -> AxisValue */
+  };
+  for (int i=0;i<2;i++){
+    uint32_t* c=(uint32_t*)(g_il2cpp_base + P[i].off);
+    void* pa=(void*)((uintptr_t)c & ~((uintptr_t)pgsz-1));
+    mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+    c[0]=0x58000050u;                  /* ldr x16,[pc+8] */
+    c[1]=0xD61F0200u;                  /* br x16 */
+    *(uint64_t*)(c+2)=(uint64_t)(uintptr_t)P[i].fn;
+    mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
+    __builtin___clear_cache((char*)pa,(char*)pa+16);
+  }
+  /* TER_UMOUSE: substitui UnityEngine.Input.get_mousePosition p/ o cursor seguir nosso ponto */
+  if (getenv("TER_UMOUSE")) {
+    uint32_t* c=(uint32_t*)(g_il2cpp_base + 0x26ad4c4);
+    void* pa=(void*)((uintptr_t)c & ~((uintptr_t)pgsz-1));
+    mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+    c[0]=0x58000050u; c[1]=0xD61F0200u; *(uint64_t*)(c+2)=(uint64_t)(uintptr_t)my_unity_mousepos;
+    mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
+    __builtin___clear_cache((char*)pa,(char*)pa+16);
+    fprintf(stderr,"[CTRL] UnityEngine.Input.get_mousePosition substituido\n"); fsync(2);
+  }
+  /* trampolim condicional p/ ControllerActionVector.GetValue (c59988) — navegação do menu */
+  {
+    uintptr_t target=g_il2cpp_base+0xc59988; uint32_t*orig=(uint32_t*)target;
+    uint32_t*tr=mmap(NULL,4096,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    if (tr!=MAP_FAILED){
+      tr[0]=orig[0];tr[1]=orig[1];tr[2]=orig[2];tr[3]=orig[3];
+      tr[4]=0x58000050u;tr[5]=0xD61F0200u;*(uint64_t*)(tr+6)=(uint64_t)(target+16);
+      __builtin___clear_cache((char*)tr,(char*)tr+32);
+      g_orig_av_getvalue=(void*)tr;
+      void*pa=(void*)(target & ~((uintptr_t)pgsz-1));
+      mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+      orig[0]=0x58000050u;orig[1]=0xD61F0200u;*(uint64_t*)(orig+2)=(uint64_t)(uintptr_t)my_av_getvalue;
+      mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
+      __builtin___clear_cache((char*)pa,(char*)pa+16);
+      fprintf(stderr,"[CTRL] ControllerActionVector.GetValue hookado (orig tramp=%p)\n",(void*)tr); fsync(2);
+    }
+  }
+  fprintf(stderr,"[CTRL] GetKeyRaw@0xc5c51c / GetAxisRaw@0xc5c2f0 substituidos\n"); fsync(2);
+  done=1;
+}
+/* Resolve ControllerActionManager.Instance (campo estático) — cacheado. Retorna a instância viva. */
+static void *ter_cam_instance(void) {
+  static void *cam_inst_field = NULL; static int tried=0;
+  if (!g_il2cpp_base) return NULL;
+  if (!cam_inst_field && tried++ < 600) {
+    void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+    const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+    void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+    void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+    void *(*getf)(void*, const char*) = (void*)(g_il2cpp_base + 0x73c284);
+    void *dom=dom_get(); if(!dom) return NULL; size_t na=0; const void**as=dom_asms(dom,&na); if(!as) return NULL;
+    for(size_t i=0;i<na;i++){ void*img=asm_img(as[i]); if(!img)continue;
+      void*c=cls_from_name(img,"Controller","ControllerActionManager"); if(!c)continue;
+      cam_inst_field=getf(c,"Instance"); break; }
+  }
+  if (!cam_inst_field) return NULL;
+  void (*sget)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44);
+  void *inst=NULL; sget(cam_inst_field,&inst); return inst;
+}
+/* 🔑 Força _controllerActive=1 (off 0x30) toda frame: a GUI mobile fica em modo touch/mouse e
+   IGNORA a navegação por controle enquanto _controllerActive=0. Forçar ativa a navegação. */
+static void ter_ctrl_force_active(void) {
+  void *inst = ter_cam_instance(); if (!inst) return;
+  *(unsigned char*)((char*)inst+0x30) = 1;   /* _controllerActive */
+  if (getenv("TER_CTRLDIAG")) { static int c=0; if((c++%45)==0){
+    void *ctrl=*(void**)((char*)inst+0x28);
+    /* lê AxisValue[1],[5] e _KeyState[0] do device p/ confirmar que a injeção chega */
+    float av1=-9,av5=-9; int ks0=-9;
+    if (g_ctrl_device){ void*ax=*(void**)((char*)g_ctrl_device+0x28); void*ks=*(void**)((char*)g_ctrl_device+0x60);
+      if(ax){av1=*(float*)((char*)ax+0x20+1*4); av5=*(float*)((char*)ax+0x20+5*4);} if(ks)ks0=*(unsigned char*)((char*)ks+0x20); }
+    int disN=-9,disAx=-9; void*cur=NULL;
+    if (g_nav_instance){ disN=*(unsigned char*)((char*)g_nav_instance+0x30); disAx=*(int*)((char*)g_nav_instance+0x34); cur=*(void**)((char*)g_nav_instance+0xd0); }
+    fprintf(stderr,"[CTRLDIAG] active=%d ctrl%s | dev.AxisVal[1]=%.2f [5]=%.2f KeyState[0]=%d | nav.DisableNav=%d DisAxis=%d curItem=%p\n",
+      *(unsigned char*)((char*)inst+0x30),(ctrl==(void*)g_ctrl_device)?"=upd":"!=upd",av1,av5,ks0,disN,disAx,cur); fsync(2);} }
+}
+static void ter_ctrl_feed(void) {
+  if (!getenv("TER_CTRL")) return;
+  if (getenv("TER_HOVERX")) { extern float g_cursor_x,g_cursor_y; g_cursor_x=atof(getenv("TER_HOVERX")); g_cursor_y=atof(getenv("TER_HOVERY")?getenv("TER_HOVERY"):"360"); }
+  if (getenv("TER_SELMENU") && ter_menu_resolve()) { ter_seti(MM.fselectedMenu, atoi(getenv("TER_SELMENU"))); }
+  if (getenv("TER_UMOUSE")) { const char*s=getenv("TER_UMOUSE"); g_umouse_x=atof(s); const char*c=strchr(s,','); if(c)g_umouse_y=atof(c+1); }
+  if (!getenv("TER_NOFORCEACTIVE")) ter_ctrl_force_active();
+  memset(g_inj_btn,0,sizeof g_inj_btn);
+  for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
+  g_inj_btn[0]=g_gp_log[4];   /* Action1 = A (confirma) */
+  g_inj_btn[1]=g_gp_log[5];   /* Action2 = B (volta) */
+  g_inj_btn[2]=g_gp_log[6];   /* Action3 = X */
+  g_inj_btn[3]=g_gp_log[7];   /* Action4 = Y */
+  g_inj_btn[4]=g_gp_log[10];  /* ShoulderLeft = L1 */
+  g_inj_btn[5]=g_gp_log[11];  /* ShoulderRight = R1 */
+  g_inj_btn[8]=g_gp_log[8];   /* Options = Start */
+  g_inj_btn[12]=g_gp_log[9];  /* Back = Select */
+  float x=0,y=0; int invy = getenv("TER_CTRL_INVY")?1:0;
+  if (g_gp_log[2]) x=-1.0f; else if (g_gp_log[3]) x=1.0f;
+  if (g_gp_log[0]) y= (invy? 1.0f:-1.0f); else if (g_gp_log[1]) y=(invy?-1.0f:1.0f); /* up/down */
+  g_inj_axis[0]=x; g_inj_axis[1]=y;   /* LeftX, LeftY */
+  g_inj_axis[2]=x; g_inj_axis[3]=y;   /* RightX, RightY (alguns menus usam o stick direito) */
+  g_inj_axis[4]=x; g_inj_axis[5]=y;   /* DPadX, DPadY */
+  /* TER_CTRLTEST: auto-teste autônomo (sem js0) — pulsa Down/Up/Action1 em padrão p/ provar a
+     navegação. Sobrescreve o estado injetado. Down 0-10 de cada 60; a cada 5º ciclo, Action1. */
+  if (getenv("TER_CTRLTEST")) {
+    static int tf=0; int f=tf++;
+    int from = getenv("TER_TESTFROM")?atoi(getenv("TER_TESTFROM")):240;  /* esperar o menu (~1100) */
+    memset(g_inj_btn,0,sizeof g_inj_btn); for(int i=0;i<8;i++) g_inj_axis[i]=0.0f;
+    if (f > from) {
+      if (getenv("TER_CTRLHOLD")) {           /* segura TODOS os eixos Y = +1 (down) */
+        g_inj_axis[1]=1.0f; g_inj_axis[3]=1.0f; g_inj_axis[5]=1.0f; x=0; y=1.0f;
+      } else {
+        int cyc=(f-from)/45, ph=(f-from)%45;  /* pulsa Down a cada 45 frames */
+        if (ph<8) { g_inj_axis[1]=1.0f; g_inj_axis[3]=1.0f; g_inj_axis[5]=1.0f; x=0; y=1.0f; }
+        else if (ph>=20 && ph<28 && (cyc%4)==3) { g_inj_btn[0]=1; }   /* Action1 (confirma) a cada 4 ciclos */
+      }
+    }
+  }
+  /* vetor de navegação do menu (lido por get_NavigationAxis substituído). y já honra TER_CTRL_INVY. */
+  g_nav_x = x; g_nav_y = y;
+  if (getenv("TER_CTRLLOG")) { static int c=0; if((c++%30)==0){
+    fprintf(stderr,"[CTRLLOG] getkeyraw=%lu navaxis=%lu | A=%d B=%d dpad(u%d d%d l%d r%d) nav=(%.0f,%.0f)\n",
+      g_getkeyraw_calls,g_navaxis_calls,g_inj_btn[0],g_inj_btn[1],g_gp_log[0],g_gp_log[1],g_gp_log[2],g_gp_log[3],g_nav_x,g_nav_y); fsync(2);} }
+}
+
+/* TER_NAVSPY: trampolim inline em GUIControllerNavigationController.UpdateUINavigation p/ capturar
+ * a instância (this=x0) e ler _currentNavigationItem (off 0xd0). Sinal de sucesso autônomo: se o
+ * item selecionado muda quando injetamos direção, a navegação responde ao input. O stub preserva
+ * TODOS os regs de argumento (usa só x16), roda os 4 instrs originais e segue p/ target+16. */
+volatile void *g_nav_instance;
+static void ter_navspy_install(void) {
+  static int done=0;
+  if(done||!g_il2cpp_base||(!getenv("TER_NAVSPY")&&!getenv("TER_CTRL"))){ if(!getenv("TER_NAVSPY")&&!getenv("TER_CTRL"))done=1; return; }
+  done=1;
+  uintptr_t target = g_il2cpp_base + 0xd8a0b4;
+  uint32_t *orig = (uint32_t*)target;
+  uint32_t *stub = mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (stub==MAP_FAILED){ fprintf(stderr,"[NAVSPY] mmap falhou\n"); fsync(2); return; }
+  uintptr_t a = (uintptr_t)&g_nav_instance; int j=0;
+  stub[j++] = 0xD2800010u | (uint32_t)((a & 0xffff)<<5);          /* movz x16,#a0 */
+  stub[j++] = 0xF2A00010u | (uint32_t)(((a>>16)&0xffff)<<5);      /* movk x16,#a1,lsl16 */
+  stub[j++] = 0xF2C00010u | (uint32_t)(((a>>32)&0xffff)<<5);      /* movk x16,#a2,lsl32 */
+  stub[j++] = 0xF2E00010u | (uint32_t)(((a>>48)&0xffff)<<5);      /* movk x16,#a3,lsl48 */
+  stub[j++] = 0xF9000200u;                                        /* str x0,[x16] */
+  stub[j++] = orig[0]; stub[j++] = orig[1]; stub[j++] = orig[2]; stub[j++] = orig[3];
+  stub[j++] = 0x58000050u;                                        /* ldr x16,[pc+8] */
+  stub[j++] = 0xD61F0200u;                                        /* br x16 */
+  *(uint64_t*)(&stub[j]) = (uint64_t)(target+16); j+=2;
+  __builtin___clear_cache((char*)stub,(char*)stub + j*4 + 8);
+  long pgsz=sysconf(_SC_PAGESIZE);
+  void* pa=(void*)(target & ~((uintptr_t)pgsz-1));
+  mprotect(pa,pgsz*2,PROT_READ|PROT_WRITE|PROT_EXEC);
+  orig[0]=0x58000050u; orig[1]=0xD61F0200u; *(uint64_t*)(orig+2)=(uint64_t)(uintptr_t)stub;
+  mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC);
+  __builtin___clear_cache((char*)pa,(char*)pa+16);
+  fprintf(stderr,"[NAVSPY] UpdateUINavigation @il2cpp+0xd8a0b4 hookado (stub=%p)\n", (void*)stub); fsync(2);
+}
+static void ter_navspy_log(void) {
+  if (!getenv("TER_NAVSPY") || !g_nav_instance) return;
+  void *cur = *(void**)((char*)g_nav_instance + 0xd0);
+  static void *last = (void*)-1; static int c=0;
+  if (cur != last) { fprintf(stderr,"[NAVSPY] *** _currentNavigationItem %p -> %p (NAVEGOU!) ***\n", last, cur); fsync(2); last=cur; }
+  if ((c++%120)==0) { fprintf(stderr,"[NAVSPY] navInst=%p curItem=%p getkeyraw=%lu\n", (void*)g_nav_instance, cur, g_getkeyraw_calls); fsync(2); }
+}
+
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
   ter_input_hook();     /* TER_GAMEPAD: sonda/hook do input FNA */
+  ter_ctrl_patch();     /* TER_CTRL: substitui GetKeyRaw/GetAxisRaw do ControllerDevice */
+  ter_navspy_install(); /* TER_NAVSPY: captura instância do navegador */
+  ter_ctrl_feed();      /* TER_CTRL: alimenta o estado injetado do js0 */
+  ter_navspy_log();     /* TER_NAVSPY: loga mudança de seleção (prova de navegação) */
+  if (getenv("TER_MENU")) ter_menu_nuke_updateinput();  /* p/ não clobberar Main.mouse* */
+  ter_menu_drive();     /* TER_MENU/TER_MENULOG: dirige/observa Main.mouseX/Y/Left/hasFocus */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
