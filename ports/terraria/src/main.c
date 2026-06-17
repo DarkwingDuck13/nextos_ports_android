@@ -2205,20 +2205,34 @@ static void ter_menu_nav(void) {
     int ccx=(b[0]+b[1])/2, ccy=(b[2]+b[3])/2;
     if(ccy<100) continue;   /* pula regiões da barra do topo (ex: ícone canto sup-dir 848,27) */
     cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
-  for(int i=1;i<n;i++) for(int j=i;j>0&&cy[order[j]]<cy[order[j-1]];j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
-  static int lastn=0, cooldown=0;
-  if (n!=lastn){ g_nav_idx=0; lastn=n; cooldown=0; }   /* mudou de tela → reseta seleção */
+  for(int i=1;i<n;i++) for(int j=i;j>0&&(cy[order[j]]<cy[order[j-1]]||(cy[order[j]]==cy[order[j-1]]&&cx[order[j]]<cx[order[j-1]]));j--){ int t=order[j];order[j]=order[j-1];order[j-1]=t; }
+  /* 🔑 persistência por POSIÇÃO: a seleção segue o ITEM (centro x,y), não o índice. Telas como
+     Settings têm a contagem de regiões flutuando (17↔2) — resetar por contagem fazia a seleção
+     pular. Aqui: acha o item mais próximo do último selecionado; se sumiu por poucos frames
+     (flutuação), SEGURA a posição; se sumiu de vez (troca real de tela), volta ao topo. */
+  static int sel_cx=-99999, sel_cy=-99999, cooldown=0, farcnt=0;
+  extern float g_cursor_x,g_cursor_y;
+  long bestd=(long)1<<60; int curidx=0;
+  for(int i=0;i<n;i++){ long dx=cx[order[i]]-sel_cx, dy=cy[order[i]]-sel_cy; long d=dx*dx+dy*dy; if(d<bestd){bestd=d;curidx=i;} }
+  int near = (sel_cx!=-99999 && bestd <= 70L*70L);
+  if (!near) {
+    if (sel_cx==-99999 || ++farcnt>=8) {        /* troca real de tela → topo */
+      g_nav_idx=0; farcnt=0; near=1; sel_cx=cx[order[0]]; sel_cy=cy[order[0]];
+    } else {                                     /* flutuação transitória → segura a posição */
+      g_girm_mx=sel_cx; g_girm_my=sel_cy; g_girm_ovr=1; g_cursor_x=(float)sel_cx; g_cursor_y=(float)sel_cy;
+      if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] itens=%d (transitorio, segurando %d,%d) far=%d\n",n,sel_cx,sel_cy,farcnt); fsync(2);} }
+      return;
+    }
+  } else { farcnt=0; g_nav_idx=curidx; }
   int U=g_gp_log[0], D=g_gp_log[1];
   int dir = D ? 1 : (U ? -1 : 0);
-  /* cooldown: anda 1 casinha por vez (ritmo de caminhada) e fica IMUNE ao flutter do analógico —
-     um move a cada ~15 frames enquanto a direção é mantida. Sem isso, o jitter do analógico em
-     torno do limiar disparava várias bordas/segundo (pulava tudo). */
+  /* cooldown: anda 1 casinha por vez (ritmo de caminhada), imune ao flutter do analógico. */
   int rep = getenv("TER_NAVREP") ? atoi(getenv("TER_NAVREP")) : 15;
   if (cooldown>0) cooldown--;
   if (dir!=0 && cooldown==0) { g_nav_idx += dir; cooldown = rep; }
   if(g_nav_idx<0)g_nav_idx=n-1; if(g_nav_idx>=n)g_nav_idx=0;
   int sel=order[g_nav_idx];
-  extern float g_cursor_x,g_cursor_y;
+  sel_cx=cx[sel]; sel_cy=cy[sel];                       /* lembra o item selecionado */
   g_girm_mx=cx[sel]; g_girm_my=cy[sel]; g_girm_ovr=1;   /* hover (GUI _mouseX/_mouseY) */
   g_cursor_x=(float)cx[sel]; g_cursor_y=(float)cy[sel]; /* Mouse.GetState pos p/ o clique do A */
   if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] itens=%d idx=%d -> (%d,%d) U=%d D=%d A=%d\n",n,g_nav_idx,cx[sel],cy[sel],U,D,g_gp_log[4]); fsync(2);} }
