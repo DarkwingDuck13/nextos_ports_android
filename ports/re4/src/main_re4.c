@@ -1592,7 +1592,7 @@ static void re4_prepare_injected_key(int action, int keycode, int repeat){
   g_hk_inject.action = action;
   g_hk_inject.keycode = keycode;
   g_hk_inject.source = 0x501; /* SOURCE_GAMEPAD | SOURCE_KEYBOARD */
-  g_hk_inject.deviceId = 0;
+  g_hk_inject.deviceId = 1;   /* = RE4_PAD_DEVICE_ID (mesmo device do MotionEvent) */
   g_hk_inject.metaState = 0;
   g_hk_inject.repeat = repeat;
   g_hk_inject.scancode = keycode;
@@ -1618,6 +1618,31 @@ static int re4_inject_key_event(void *env, void *thiz, void *inject,
   }
   return handled;
 }
+/* Injeta um MotionEvent de gamepad (stick analogico + dpad HAT) via nativeInjectEvent.
+   O jogo le os eixos por MotionEvent.getAxisValue (jni_CallFloatMethodV) -> Leon anda. */
+static int re4_inject_motion_event(void *env, void *thiz, void *inject,
+                                   const FakeInputEvent *ev, int frame){
+  if(!inject || !ev) return 0;
+  long now = re4_now_ms();
+  g_hk_inject.action   = AMOTION_EVENT_ACTION_MOVE;
+  g_hk_inject.keycode  = 0;
+  g_hk_inject.source   = AINPUT_SOURCE_JOYSTICK;   /* 0x1000010 */
+  g_hk_inject.deviceId = 1;                        /* = RE4_PAD_DEVICE_ID (device registrado) */
+  g_hk_inject.metaState= 0;
+  g_hk_inject.repeat   = 0;
+  g_hk_inject.flags    = 0;
+  g_hk_inject.eventTime= now;
+  g_hk_inject.downTime = now;
+  for(int i=0;i<64;i++) g_hk_inject.axes[i] = ev->axes[i];
+  int handled = ((int (*)(void *, void *, void *))inject)(env, thiz, hk_motionevent_object());
+  static int lg=0;
+  if(lg++ < 40)
+    fprintf(stderr,"[PAD] MOTION inject hat=(%.2f,%.2f) Lstick=(%.2f,%.2f) Rstick=(%.2f,%.2f) handled=%d f=%d\n",
+            ev->axes[AMOTION_EVENT_AXIS_HAT_X], ev->axes[AMOTION_EVENT_AXIS_HAT_Y],
+            ev->axes[AMOTION_EVENT_AXIS_X], ev->axes[AMOTION_EVENT_AXIS_Y],
+            ev->axes[AMOTION_EVENT_AXIS_Z], ev->axes[AMOTION_EVENT_AXIS_RZ], handled, frame);
+  return handled;
+}
 static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   FakeInputEvent ev;
   android_shim_pump_sdl_events();
@@ -1626,14 +1651,31 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
       re4_inject_key_event(env, thiz, inject, ev.action, ev.keycode, 0, frame, "SDL");
       continue;
     }
-    static int motionlog = 0;
-    if (motionlog++ < 16) {
-      fprintf(stderr,
-              "[PAD] motion src=0x%x act=%d hat=(%.2f,%.2f) stick=(%.2f,%.2f,%.2f,%.2f) f=%d\n",
-              ev.source, ev.action,
-              ev.axes[AMOTION_EVENT_AXIS_HAT_X], ev.axes[AMOTION_EVENT_AXIS_HAT_Y],
-              ev.axes[AMOTION_EVENT_AXIS_X], ev.axes[AMOTION_EVENT_AXIS_Y],
-              ev.axes[AMOTION_EVENT_AXIS_Z], ev.axes[AMOTION_EVENT_AXIS_RZ], frame);
+    if (ev.type == AINPUT_EVENT_TYPE_MOTION && ev.source == AINPUT_SOURCE_JOYSTICK) {
+      re4_inject_motion_event(env, thiz, inject, &ev, frame);  /* stick/dpad -> getAxisValue */
+      continue;
+    }
+  }
+  /* TESTE auto-contido (sem controle fisico): RE4_TESTMOVE injeta stick esq pra frente
+     em ciclos -> valida o caminho de movimento via fb0 (Leon/camera mudam). */
+  if (getenv("RE4_TESTMOVE") && frame > 120) {
+    int per = re4_int_env("RE4_TESTMOVE_PERIOD", 240, 30, 2000);
+    int ph = frame % per;
+    FakeInputEvent m; memset(&m, 0, sizeof(m));
+    m.type = AINPUT_EVENT_TYPE_MOTION; m.source = AINPUT_SOURCE_JOYSTICK;
+    m.action = AMOTION_EVENT_ACTION_MOVE;
+    if (ph < per/2) { m.axes[AMOTION_EVENT_AXIS_Y] = -1.0f; m.axes[AMOTION_EVENT_AXIS_HAT_Y] = -1.0f; } /* frente */
+    re4_inject_motion_event(env, thiz, inject, &m, frame);
+  }
+  /* TESTE de TECLA: RE4_TESTKEY=<keycode> segura a tecla em ciclos (DOWN metade, UP metade)
+     -> descobre se o jogo move/age por KeyEvent (ex: 19=DPAD_UP) via fb0. */
+  { const char *tk=getenv("RE4_TESTKEY");
+    if(tk&&tk[0]&&frame>120){ int key=atoi(tk);
+      int per=re4_int_env("RE4_TESTKEY_PERIOD",180,30,2000); int ph=frame%per;
+      static int held=-1;
+      if(ph==0 && held!=key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,key,0,frame,"TESTKEY"); held=key; }
+      else if(ph==per/2 && held==key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_UP,key,0,frame,"TESTKEY"); held=-1; }
+      else if(held==key){ re4_inject_key_event(env,thiz,inject,AKEY_EVENT_ACTION_DOWN,key,1,frame,"TESTKEY"); } /* repeat=hold */
     }
   }
 }

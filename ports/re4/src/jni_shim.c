@@ -234,6 +234,43 @@ static void jni_SetByteArrayRegion(void *env, void *arr, int start, int len,
     memcpy(b->buf + start, buf, len);
 }
 
+/* --- int-array (InputManager.getDeviceIds() -> int[]) --- */
+#define MAX_IARR 8
+struct iarr { int *buf; int len; };
+static struct iarr g_iarr[MAX_IARR];
+static int g_iarr_n = 0;
+static void *iarr_new(const int *data, int len) {
+  int i = g_iarr_n++ % MAX_IARR;
+  if (g_iarr[i].buf) free(g_iarr[i].buf);
+  g_iarr[i].buf = (int *)malloc((len > 0 ? len : 1) * sizeof(int));
+  g_iarr[i].len = len;
+  if (data && len > 0 && g_iarr[i].buf) memcpy(g_iarr[i].buf, data, (size_t)len * sizeof(int));
+  return &g_iarr[i];
+}
+static struct iarr *iarr_find(void *h) {
+  if ((char *)h >= (char *)g_iarr && (char *)h < (char *)(g_iarr + MAX_IARR))
+    return (struct iarr *)h;
+  return NULL;
+}
+static void *jni_GetIntArrayElements(void *env, void *arr, void *isCopy) {
+  (void)env; if (isCopy) *(unsigned char *)isCopy = 0;
+  struct iarr *ia = iarr_find(arr); return ia ? ia->buf : NULL;
+}
+static void jni_ReleaseIntArrayElements(void *env, void *arr, void *elems, int mode) {
+  (void)env; (void)arr; (void)elems; (void)mode;
+}
+static void jni_GetIntArrayRegion(void *env, void *arr, int start, int len, void *buf) {
+  (void)env; struct iarr *ia = iarr_find(arr);
+  if (ia && start >= 0 && len >= 0 && start + len <= ia->len)
+    memcpy(buf, ia->buf + start, (size_t)len * sizeof(int));
+}
+
+/* sentinelas do gamepad (InputDevice / MotionRange) p/ o jogo registrar o controle */
+static int g_obj_inputdevice;
+static int g_obj_motionrange;
+static int g_motionrange_axis = 0;  /* eixo do ultimo getMotionRange(axis) */
+#define RE4_PAD_DEVICE_ID 1   /* id do gamepad virtual; bate com o deviceId do MotionEvent injetado */
+
 /* ---- Generic stub ---- */
 static intptr_t jni_stub(void) { return 0; }
 
@@ -250,6 +287,8 @@ static jint jni_GetVersion(void *env) {
 struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
+static int g_obj_motionevent;         /* sentinela do objeto MotionEvent (stick analogico) */
+void *hk_motionevent_object(void) { return &g_obj_motionevent; }
 
 /* sentinela do org.fmod.FMODAudioDevice (NewObject + métodos init/start do FMOD).
    Sem isto NewObject->NULL -> System::init do FMOD da "Error initializing output device (60)". */
@@ -382,6 +421,14 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "clear") == 0) { g_prefs_n = 0; return &g_prefs_editor; }
     if (strcmp(nm, "toString") == 0)
       return make_jstring("");
+    /* GAMEPAD: InputDevice.* — caracteriza o controle p/ o jogo habilitar os eixos */
+    if (obj == &g_obj_inputdevice) {
+      if (strcmp(nm, "getName") == 0) return make_jstring("Xbox Controller");
+      if (strcmp(nm, "getDescriptor") == 0) return make_jstring("re4pad0");
+      if (strcmp(nm, "getMotionRange") == 0) { g_motionrange_axis = va_arg(ap, int); return &g_obj_motionrange; }
+      if (strcmp(nm, "getMotionRanges") == 0) return &g_empty_list; /* lista (size=0); eixos vem por getAxisValue */
+      if (strcmp(nm, "getVibrator") == 0) return &fake_obj;
+    }
   }
   return &fake_obj;
 }
@@ -431,6 +478,21 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       debugPrintf("[PREFS] getInt key='%s' def=%d\n", resolve_jstring(k), d); return d; }
     if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
     if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
+    /* GAMEPAD: InputDevice.* int methods — fonte JOYSTICK|GAMEPAD|DPAD faz o jogo tratar
+       como controle e ler os eixos. getId casa com o deviceId do MotionEvent injetado. */
+    if (obj == &g_obj_inputdevice) {
+      if (strcmp(nm, "getSources") == 0) return 0x01000010 | 0x00000401 | 0x00000201; /* JOYSTICK|GAMEPAD|DPAD */
+      if (strcmp(nm, "getId") == 0) return RE4_PAD_DEVICE_ID;
+      if (strcmp(nm, "getControllerNumber") == 0) return 1;
+      if (strcmp(nm, "getVendorId") == 0) return 0x045e;  /* Microsoft */
+      if (strcmp(nm, "getProductId") == 0) return 0x028e; /* Xbox 360 pad */
+      if (strcmp(nm, "getKeyboardType") == 0) return 0;
+      if (strcmp(nm, "supportsSource") == 0) return 1;
+    }
+    if (obj == &g_obj_motionrange) {
+      if (strcmp(nm, "getAxis") == 0) return g_motionrange_axis;
+      if (strcmp(nm, "getSource") == 0) return 0x01000010; /* JOYSTICK */
+    }
     if (strcmp(nm, "size") == 0) return 0; /* List/Collection vazia */
   }
   struct astream *s = astream_find(obj);
@@ -484,6 +546,15 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   if (nm && (strcmp(nm, "encode") == 0 || strcmp(nm, "decode") == 0)) {
     void *arg = va_arg(ap, void *);
     return arg ? arg : make_jstring("");
+  }
+  /* GAMEPAD: InputDevice.getDeviceIds() -> int[]{id} (o jogo faz polling disto p/ achar
+     controles; sem um int[] valido ele conclui "sem gamepad" e nunca le getAxisValue). */
+  if (nm && strcmp(nm, "getDeviceIds") == 0) {
+    static const int ids[1] = { RE4_PAD_DEVICE_ID };
+    return iarr_new(ids, 1);
+  }
+  if (nm && strcmp(nm, "getDevice") == 0) {
+    return &g_obj_inputdevice;  /* InputDevice nao-nulo */
   }
   static int fake_result;
   return &fake_result;  /* fake Class/objeto nao-nulo (forName etc.) */
@@ -600,6 +671,7 @@ static void jni_DeleteLocalRef(void *env, void *obj) {
 static void *jni_GetObjectClass(void *env, void *obj) {
   (void)env;
   if (obj == &g_obj_keyevent) return class_for("android/view/KeyEvent");
+  if (obj == &g_obj_motionevent) return class_for("android/view/MotionEvent");
   static int fake_obj_class;
   return &fake_obj_class;
 }
@@ -607,6 +679,13 @@ static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
   (void)env;
   if (obj == &g_obj_keyevent) {
     return clazz == class_for("android/view/KeyEvent") ||
+           clazz == class_for("android/view/InputEvent") ||
+           clazz == class_for("java/lang/Object");
+  }
+  if (obj == &g_obj_motionevent) {
+    /* MotionEvent NAO e KeyEvent: o nativeInjectEvent ramifica por instanceof -> precisa
+       distinguir, senao o motion seria lido como tecla (keycode lixo). */
+    return clazz == class_for("android/view/MotionEvent") ||
            clazz == class_for("android/view/InputEvent") ||
            clazz == class_for("java/lang/Object");
   }
@@ -632,6 +711,36 @@ static long jni_CallLongMethod(void *env, void *obj, void *methodID, ...) {
   return r;
 }
 
+/* CallFloatMethod V — MotionEvent.getAxisValue(axis) do gamepad analogico.
+   nativeInjectEvent recebe nosso MotionEvent e le os eixos por getAxisValue -> Leon anda
+   (stick esq) + camera/mira (stick dir). Sem isto o slot caia no jni_stub (lixo no s0). */
+static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list ap) {
+  (void)env; (void)obj;
+  const char *nm = mid_name(methodID);
+  if (nm) {
+    if (strcmp(nm, "getAxisValue") == 0) {
+      int axis = va_arg(ap, int);              /* getAxisValue(int axis [, int pointer]) */
+      float v = (axis >= 0 && axis < 64) ? g_hk_inject.axes[axis] : 0.0f;
+      static int lg = 0; if (lg++ < 40) debugPrintf("[MOTION] getAxisValue(%d)->%.3f\n", axis, v);
+      return v;
+    }
+    if (strcmp(nm, "getX") == 0) return g_hk_inject.axes[0];   /* AXIS_X */
+    if (strcmp(nm, "getY") == 0) return g_hk_inject.axes[1];   /* AXIS_Y */
+    /* MotionRange.getMin/getMax/getFlat/getFuzz: eixo normalizado [-1,1] */
+    if (strcmp(nm, "getMin") == 0) return -1.0f;
+    if (strcmp(nm, "getMax") == 0) return 1.0f;
+    if (strcmp(nm, "getRange") == 0) return 2.0f;
+    if (strcmp(nm, "getFlat") == 0 || strcmp(nm, "getFuzz") == 0) return 0.0f;
+  }
+  return 0.0f;
+}
+static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap; va_start(ap, methodID);
+  float r = jni_CallFloatMethodV(env, obj, methodID, ap);
+  va_end(ap);
+  return r;
+}
+
 /* Exception handling */
 static unsigned char jni_ExceptionCheck(void *env) {
   (void)env;
@@ -646,7 +755,8 @@ static void *jni_ExceptionOccurred(void *env) {
 /* Array */
 static jint jni_GetArrayLength(void *env, void *array) {
   (void)env;
-  (void)array;
+  struct iarr *ia = iarr_find(array); if (ia) return ia->len;   /* getDeviceIds int[] */
+  struct barr *b = barr_find(array);  if (b) return b->len;     /* byte[] (AssetManager) */
   return 0;
 }
 
@@ -826,6 +936,8 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[33] = (uintptr_t)jni_GetMethodID;
   jni_env_vtable[52] = (uintptr_t)jni_CallLongMethod;
   jni_env_vtable[53] = (uintptr_t)jni_CallLongMethodV;
+  jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;     /* getAxisValue (gamepad analogico) */
+  jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethodV;    /* V (va_list) */
   jni_env_vtable[34] = (uintptr_t)jni_CallObjectMethod;
   jni_env_vtable[35] = (uintptr_t)jni_CallObjectMethodV;   /* V variant (va_list) */
   jni_env_vtable[37] = (uintptr_t)jni_CallBooleanMethod;
@@ -852,6 +964,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;
   jni_env_vtable[170] = (uintptr_t)jni_ReleaseStringUTFChars;
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength;
+  jni_env_vtable[187] = (uintptr_t)jni_GetIntArrayElements;   /* getDeviceIds int[] */
+  jni_env_vtable[195] = (uintptr_t)jni_ReleaseIntArrayElements;
+  jni_env_vtable[203] = (uintptr_t)jni_GetIntArrayRegion;
   jni_env_vtable[205] = (uintptr_t)jni_ExceptionCheck;
   jni_env_vtable[230] = (uintptr_t)jni_GetDirectBufferAddress;  /* FMOD fmodProcess PCM */
   jni_env_vtable[231] = (uintptr_t)jni_GetDirectBufferCapacity;

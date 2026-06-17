@@ -131,10 +131,13 @@ static void push_joystick_event(float lx, float ly, float rx, float ry) {
 
 static int sdl_button_to_keycode(int sdl_button) {
   switch (sdl_button) {
+  /* PADRAO XBOX (universal nestes APKs): SDL_BUTTON_A (botao de baixo = Xbox A) -> BUTTON_A
+     (confirma/acao), B (direita) -> BUTTON_B (cancela). SDL ja normaliza qualquer pad p/ o
+     layout Xbox, entao isto vale p/ todo controle. RE4_AB_SWAP=1 inverte (layout Nintendo). */
   case SDL_CONTROLLER_BUTTON_A:
-    return AKEYCODE_BUTTON_B; // Trimui: A/B swapped (Nintendo layout)
+    return getenv("RE4_AB_SWAP") ? AKEYCODE_BUTTON_B : AKEYCODE_BUTTON_A;
   case SDL_CONTROLLER_BUTTON_B:
-    return AKEYCODE_BUTTON_A;
+    return getenv("RE4_AB_SWAP") ? AKEYCODE_BUTTON_A : AKEYCODE_BUTTON_B;
   case SDL_CONTROLLER_BUTTON_X:
     return AKEYCODE_BUTTON_X;
   case SDL_CONTROLLER_BUTTON_Y:
@@ -340,6 +343,31 @@ static void process_sdl_events(void) {
       g_last_ly = ly;
       g_last_rx = rx;
       g_last_ry = ry;
+    }
+
+    /* STICK ESQ -> teclas DPAD (digital). RE4 le MOVIMENTO por KeyEvent (dpad), NAO por eixo
+       analogico (getAxisValue nunca e chamado). Convertendo o stick em DPAD_UP/DOWN/LEFT/RIGHT
+       com histerese, o analogico passa a andar com o Leon. RE4_NO_STICKDPAD desliga. */
+    if (!getenv("RE4_NO_STICKDPAD")) {
+      static int dx = 0, dy = 0;   /* direcao digital atual (-1/0/1) */
+      const float ON = 0.5f, OFF = 0.35f;  /* histerese */
+      int nx = dx, ny = dy;
+      if (lx >  ON) nx = 1; else if (lx < -ON) nx = -1; else if (lx > -OFF && lx < OFF) nx = 0;
+      if (ly >  ON) ny = 1; else if (ly < -ON) ny = -1; else if (ly > -OFF && ly < OFF) ny = 0;
+      if (nx != dx) {
+        if (dx ==  1) push_key_event(AKEY_EVENT_ACTION_UP,   AKEYCODE_DPAD_RIGHT);
+        if (dx == -1) push_key_event(AKEY_EVENT_ACTION_UP,   AKEYCODE_DPAD_LEFT);
+        if (nx ==  1) push_key_event(AKEY_EVENT_ACTION_DOWN, AKEYCODE_DPAD_RIGHT);
+        if (nx == -1) push_key_event(AKEY_EVENT_ACTION_DOWN, AKEYCODE_DPAD_LEFT);
+        dx = nx;
+      }
+      if (ny != dy) {
+        if (dy ==  1) push_key_event(AKEY_EVENT_ACTION_UP,   AKEYCODE_DPAD_DOWN);
+        if (dy == -1) push_key_event(AKEY_EVENT_ACTION_UP,   AKEYCODE_DPAD_UP);
+        if (ny ==  1) push_key_event(AKEY_EVENT_ACTION_DOWN, AKEYCODE_DPAD_DOWN);
+        if (ny == -1) push_key_event(AKEY_EVENT_ACTION_DOWN, AKEYCODE_DPAD_UP);
+        dy = ny;
+      }
     }
 
     // Also update virtual cursor for touch simulation

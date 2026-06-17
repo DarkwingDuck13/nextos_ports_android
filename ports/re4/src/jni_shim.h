@@ -20,6 +20,7 @@ struct hk_inject_s {
   int unicode;
   long eventTime;
   long downTime;
+  float axes[64];   /* MotionEvent: eixos analogicos (getAxisValue), indexados por AXIS_* */
 };
 
 void jni_shim_init(void **out_vm, void **out_env);
@@ -32,6 +33,7 @@ void jni_shim_set_package(const char *package_name, int obb_version);
 
 extern struct hk_inject_s g_hk_inject;
 void *hk_keyevent_object(void);
+void *hk_motionevent_object(void);  /* sentinela do MotionEvent injetado (stick analogico) */
 
 /* FMOD AudioTrack output (org.fmod.FMODAudioDevice) — usado pela fmod_audio_thread */
 void *jni_fmod_device(void);
