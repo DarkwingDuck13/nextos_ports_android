@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 // ---------------- OpenAL ----------------
 typedef void ALCdevice; typedef void ALCcontext;
@@ -87,7 +88,7 @@ static float sfx_gain(void){ const char* e=getenv("SOR4_SFXGAIN"); return (e&&*e
 static float music_gain(void){ const char* e=getenv("SOR4_MUSICGAIN"); return (e&&*e)?(float)atof(e):0.7f; }
 
 // =================== SFX (manifest -> .opus) ===================
-typedef struct { uint32_t id; int ids[8]; int nids; } Entry;
+typedef struct { uint32_t id; int ids[8]; int nids; int cur; } Entry;
 static Entry* g_ent=NULL; static int g_nent=0, g_cap=0;
 typedef struct { int id; ALuint buf; int valid; } BufC;
 static BufC* g_buf=NULL; static int g_nbuf=0, g_cbuf=0;
@@ -107,7 +108,7 @@ static void load_manifest(void){
     char* tab=strchr(line,'\t'); if(!tab) continue; *tab=0;
     uint32_t eid=(uint32_t)strtoul(line,NULL,10); char* ids=tab+1;
     if(g_nent>=g_cap){ g_cap=g_cap?g_cap*2:1024; g_ent=realloc(g_ent,g_cap*sizeof(Entry)); }
-    Entry* e=&g_ent[g_nent]; e->id=eid; e->nids=0;
+    Entry* e=&g_ent[g_nent]; e->id=eid; e->nids=0; e->cur=0;
     char* p=ids; while(*p && e->nids<8){ int v=atoi(p); if(v>0) e->ids[e->nids++]=v; char* c=strchr(p,','); if(!c)break; p=c+1; }
     if(e->nids>0) g_nent++;
   }
@@ -154,21 +155,29 @@ static ALuint sfx_free_source(void){
 }
 void ao_post_event(const char* name){
   if(!g_ok||!name) return;
+  int trace=getenv("WWISE_TRACE")!=NULL;
   uint32_t eid=fnv1_32(name);
   for(int i=0;i<g_nent;i++){
     if(g_ent[i].id==eid){
       Entry* e=&g_ent[i];
-      for(int k=0;k<e->nids;k++){
+      // Varia a variante a cada disparo (round-robin): golpes/quedas soam diferentes
+      // a cada vez; eventos de 1 wem (UI/voz) sempre tocam o mesmo. Comeca no cursor e
+      // avanca; se a variante nao decodificar, tenta a proxima.
+      int start=e->cur; e->cur=(e->cur+1)%(e->nids>0?e->nids:1);
+      for(int j=0;j<e->nids;j++){
+        int k=(start+j)%e->nids;
         ALuint buf=sfx_buffer(e->ids[k]);
         if(buf){ ALuint src=sfx_free_source();
           p_alSourceStop(src); p_alSourcei(src,AL_BUFFER,(ALint)buf);
           p_alSourcef(src,AL_GAIN,sfx_gain()); p_alSourcei(src,AL_LOOPING,0); p_alSourcePlay(src);
-          if(getenv("WWISE_TRACE")){ char b[160]; snprintf(b,sizeof(b),"[audioout] SFX '%s' wem=%d",name,e->ids[k]); aolog(b); }
+          if(trace){ char b[160]; snprintf(b,sizeof(b),"[audioout] SFX OK '%s' wem=%d (var %d/%d)",name,e->ids[k],k+1,e->nids); aolog(b); }
           return; }
       }
+      if(trace){ char b[200]; snprintf(b,sizeof(b),"[audioout] SFX '%s' achado no manifest (%d wem) mas NENHUM .opus decodificou",name,e->nids); aolog(b); }
       return;
     }
   }
+  if(trace){ char b[160]; snprintf(b,sizeof(b),"[audioout] SFX '%s' NAO no manifest (eid=%u)",name,eid); aolog(b); }
 }
 
 // =================== MUSICA (wem streamed -> loop) ===================
@@ -188,13 +197,65 @@ static int wem_find_data(const unsigned char* buf, long sz, long* off, long* len
 static pthread_mutex_t g_mus_mtx = PTHREAD_MUTEX_INITIALIZER;
 static char g_mus_pending[1024] = "";   // path pedido (ou "" p/ parar)
 static char g_mus_current[1024] = "";   // path tocando agora
+static double g_mus_stop_at = 0;        // monotonic s: parar SE chegar aqui sem nova musica (0=nunca)
 static int  g_mus_run = 0;
 static ALuint g_mus_src = 0;
 
 // MUSICA por STREAMING (buffer-queue OpenAL) com FOLGA GRANDE p/ aguentar picos de
-// CPU dos loads sem stutter. A musica faz loop re-abrindo/seekando o Opus no fim.
-#define MUS_NBUF 16        // ~5.5s bufferizado (16 x 16384/48000) -> cobre loads pesados
+// CPU do combate sem stutter. A musica faz loop re-abrindo/seekando o Opus no fim.
+#define MUS_NBUF 24        // ~8s bufferizado (24 x 16384/48000) -> cobre picos de combate
 #define MUS_FRAMES 16384   // samples/canal por buffer
+
+static double now_s(void){ struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts); return ts.tv_sec + ts.tv_nsec/1e9; }
+static double music_grace(void){ const char* e=getenv("SOR4_MUSIC_GRACE"); return (e&&*e)?atof(e):8.0; }
+
+// ---- SFX STREAMED (one-shot): .wem PEQUENO que a Wwise abre = efeito (hit/voz/stinger),
+// NAO musica. Decodifica inteiro (curto), cacheia por path, toca uma vez. Assim sons
+// streamed de combate TOCAM e nao SEQUESTRAM a musica de fundo. ----
+static int decode_wem_to_albuf(const char* path, ALuint outbuf, int* out_ch){
+  FILE* f=fopen(path,"rb"); if(!f) return 0;
+  fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+  int total=0, ch=2;
+  if(sz>0){
+    unsigned char* fil=malloc(sz);
+    if(fil && fread(fil,1,sz,f)==(size_t)sz){
+      long off=0,len=0;
+      if(wem_find_data(fil,sz,&off,&len)){
+        int err=0; OggOpusFile* of=p_op_open_memory(fil+off,len,&err);
+        if(of){ ch=p_op_channel_count(of,-1); if(ch<1)ch=1; if(ch>2)ch=2;
+          const int MAXN=48000*ch*30; int cap=48000*ch*2, n=0; int16_t* pcm=malloc(cap*sizeof(int16_t));
+          for(;;){ if(n+11520*ch>cap){ cap*=2; int16_t* np=realloc(pcm,cap*sizeof(int16_t)); if(!np)break; pcm=np; }
+            int li=0; int r=p_op_read(of,pcm+n,cap-n,&li); if(r<=0)break; n+=r*ch; if(n>=MAXN)break; }
+          p_op_free(of);
+          if(n>0){ p_alBufferData(outbuf, ch==1?AL_FORMAT_MONO16:AL_FORMAT_STEREO16, pcm, n*(int)sizeof(int16_t), 48000); total=n; }
+          free(pcm);
+        }
+      }
+    }
+    free(fil);
+  }
+  fclose(f);
+  if(out_ch)*out_ch=ch;
+  return total;
+}
+typedef struct { char path[1024]; ALuint buf; int valid; } StrSfx;
+static StrSfx* g_ssfx=NULL; static int g_nssfx=0,g_cssfx=0;
+void ao_play_streamed_sfx(const char* path){
+  if(!g_ok||!path) return;
+  ALuint buf=0; int found=0;
+  for(int i=0;i<g_nssfx;i++) if(strcmp(g_ssfx[i].path,path)==0){ buf=g_ssfx[i].valid?g_ssfx[i].buf:0; found=1; break; }
+  if(!found){
+    ALuint nb=0; p_alGenBuffers(1,&nb); int ch=2; int n=decode_wem_to_albuf(path,nb,&ch); int valid=n>0;
+    if(!valid){ p_alDeleteBuffers(1,&nb); nb=0; }
+    if(g_nssfx>=g_cssfx){ g_cssfx=g_cssfx?g_cssfx*2:128; g_ssfx=realloc(g_ssfx,g_cssfx*sizeof(StrSfx)); }
+    strncpy(g_ssfx[g_nssfx].path,path,sizeof(g_ssfx[g_nssfx].path)-1); g_ssfx[g_nssfx].path[sizeof(g_ssfx[g_nssfx].path)-1]=0;
+    g_ssfx[g_nssfx].buf=nb; g_ssfx[g_nssfx].valid=valid; g_nssfx++;
+    buf=valid?nb:0;
+    if(getenv("WWISE_TRACE")){ char b[1100]; snprintf(b,sizeof(b),"[audioout] STREAMED-SFX %s -> %s",path,valid?"OK":"FALHOU"); aolog(b); }
+  }
+  if(buf){ ALuint src=sfx_free_source(); p_alSourceStop(src); p_alSourcei(src,AL_BUFFER,(ALint)buf);
+    p_alSourcef(src,AL_GAIN,sfx_gain()); p_alSourcei(src,AL_LOOPING,0); p_alSourcePlay(src); }
+}
 
 // le ate MUS_FRAMES frames; no EOF, loopa (op_pcm_seek 0). retorna frames lidos.
 static int mus_fill(OggOpusFile* of, int16_t* tmp, int ch, unsigned char* filbuf, long off, long len, OggOpusFile** pof){
@@ -214,7 +275,12 @@ static void* music_thread(void* a){ (void)a;
   char playing[1024]="";
   for(;;){
     char want[1024];
-    pthread_mutex_lock(&g_mus_mtx); strncpy(want,g_mus_pending,sizeof(want)-1); want[sizeof(want)-1]=0; pthread_mutex_unlock(&g_mus_mtx);
+    pthread_mutex_lock(&g_mus_mtx);
+    // periodo de graca: a Wwise fechou o wem mas nao abriu outro -> so paramos de
+    // verdade se passou a graca SEM nova musica (cobre gaps de musica interativa).
+    if(g_mus_stop_at>0 && now_s()>=g_mus_stop_at && g_mus_pending[0] && strcmp(g_mus_pending,g_mus_current)==0){ g_mus_pending[0]=0; g_mus_stop_at=0; }
+    strncpy(want,g_mus_pending,sizeof(want)-1); want[sizeof(want)-1]=0;
+    pthread_mutex_unlock(&g_mus_mtx);
     if(strcmp(want,playing)!=0){
       if(g_mus_src){ p_alSourceStop(g_mus_src); p_alSourcei(g_mus_src,AL_BUFFER,0); }
       if(of){ p_op_free(of); of=NULL; }
@@ -261,7 +327,7 @@ static void* music_thread(void* a){ (void)a;
       ALint q=0; p_alGetSourcei(g_mus_src,AL_BUFFERS_QUEUED,&q);
       if(st!=AL_PLAYING && q>0) p_alSourcePlay(g_mus_src);
     }
-    usleep(12000);   // ~80Hz: refila bem antes de esvaziar (5.5s de folga)
+    usleep(25000);   // ~40Hz: leve; com 8s de folga sobra tempo de refil
   }
   free(tmp); return NULL;
 }
@@ -271,17 +337,19 @@ void ao_music_request(const char* path){
   if(!g_ok) return;
   pthread_mutex_lock(&g_mus_mtx);
   strncpy(g_mus_pending, path?path:"", sizeof(g_mus_pending)-1); g_mus_pending[sizeof(g_mus_pending)-1]=0;
+  g_mus_stop_at=0;   // nova musica pedida -> cancela qualquer parada agendada
   pthread_mutex_unlock(&g_mus_mtx);
 }
-// a Wwise FECHOU este .wem -> a musica acabou/trocou no fluxo original. Para SE for a
-// que esta pedida agora (se ja foi pedida outra, e' troca em andamento: nao mexe).
+// a Wwise FECHOU este .wem. Em musica INTERATIVA ela fecha/reabre segmentos toda hora;
+// parar na hora dava SILENCIO no meio da fase. Entao AGENDAMOS a parada p/ daqui a uns
+// segundos: se outra musica abrir antes (transicao normal), a parada e' cancelada e a
+// musica nunca cai; se ninguem abrir (musica realmente acabou), paramos apos a graca.
 void ao_music_close(const char* path){
   if(!g_ok||!path) return;
   pthread_mutex_lock(&g_mus_mtx);
-  // so para se o que fechou e' EXATAMENTE o que esta tocando agora E ainda e' o pedido
-  // (se ja pediram outra musica, e' troca em andamento: nao mexe). Um probe open/close
-  // no boot (antes de tocar, current vazio) nao para nada.
-  if(g_mus_current[0] && strcmp(path,g_mus_current)==0 && strcmp(path,g_mus_pending)==0){ g_mus_pending[0]=0; }
+  if(g_mus_current[0] && strcmp(path,g_mus_current)==0 && strcmp(path,g_mus_pending)==0 && g_mus_stop_at==0){
+    g_mus_stop_at = now_s() + music_grace();
+  }
   pthread_mutex_unlock(&g_mus_mtx);
 }
 
