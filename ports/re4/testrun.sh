@@ -11,6 +11,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 PREVDIR="$LOGROOT/pre-$STAMP"
 RUNLOGDIR="$LOGROOT/$STAMP"
 EXTRA_SWAP_IMG="${RE4_SWAP_IMG:-/storage/.update/re4swap2g.img}"
+FB_DUMP="${RE4_FB_DUMP:-1}"
 
 mkdir -p "$GAMEDIR"
 mkdir -p "$LOGROOT" "$RUNLOGDIR"
@@ -28,7 +29,7 @@ persist_run() {
   cp -f "$GAMEDIR/$base" "$RUNLOGDIR/$base"
 }
 
-for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5 fb0-15.md5 fb0-35.md5 fb0-15.raw fb0-35.raw; do
   archive_old "$base"
 done
 
@@ -73,16 +74,30 @@ GAMEPID=$SHELLPID
 
 (
   while kill -0 "$SHELLPID" 2>/dev/null; do
-    for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+    for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5 fb0-15.md5 fb0-35.md5 fb0-15.raw fb0-35.raw; do
       persist_run "$base"
     done
     sleep 5
   done
-  for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+  for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5 fb0-15.md5 fb0-35.md5 fb0-15.raw fb0-35.raw; do
     persist_run "$base"
   done
 ) &
 SYNCPID=$!
+
+if [ "$FB_DUMP" = "1" ]; then
+  (
+    sleep 15
+    dd if=/dev/fb0 of="$RUNLOGDIR/fb0-15.raw" bs=4096 count=1800 2>/dev/null || true
+    md5sum /dev/fb0 > "$RUNLOGDIR/fb0-15.md5" 2>/dev/null || true
+    sleep 20
+    dd if=/dev/fb0 of="$RUNLOGDIR/fb0-35.raw" bs=4096 count=1800 2>/dev/null || true
+    md5sum /dev/fb0 > "$RUNLOGDIR/fb0-35.md5" 2>/dev/null || true
+  ) &
+  FBDUMPPID=$!
+else
+  FBDUMPPID=
+fi
 
 i=0
 while [ "$i" -lt 20 ]; do
@@ -127,9 +142,9 @@ WDPID=$!
 
 wait "$SHELLPID"
 RC=$?
-kill "$MONPID" "$WDPID" "$SYNCPID" 2>/dev/null
+kill "$MONPID" "$WDPID" "$SYNCPID" "$FBDUMPPID" 2>/dev/null
 echo "[exit] rc=$RC" >> "$LOGFILE"
-for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5; do
+for base in log.txt debug.log re4.err re4.threads fb0-baseline.md5 fb0-25.md5 fb0-45.md5 fb0-15.md5 fb0-35.md5 fb0-15.raw fb0-35.raw; do
   persist_run "$base"
 done
 exit "$RC"

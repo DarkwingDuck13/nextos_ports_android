@@ -16,7 +16,9 @@
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <link.h>
+#include <pthread.h>
 #include "so_util.h"
+extern void opensles_shim_pump_callbacks(void);   // opensles_shim.c: dispara o BufferQueue cb da Wwise
 
 extern DynLibFunction dynlib_functions[];
 extern size_t dynlib_numfunctions;
@@ -70,7 +72,9 @@ typedef struct { FILE* f; long len; } AAsset;
 static void* w_AAssetManager_fromJava(void* env,void* obj){ (void)env;(void)obj; wlog("[wwise] AAssetManager_fromJava"); return (void*)0x1; }
 static void* w_AAssetManager_open(void* mgr,const char* fn,int mode){
   (void)mgr;(void)mode;
-  char path[1024]; snprintf(path,sizeof(path),"%s/%s",g_bankbase,fn);
+  char path[1024];
+  if(fn && fn[0]=='/') snprintf(path,sizeof(path),"%s",fn);           // ja absoluto (base+bank)
+  else snprintf(path,sizeof(path),"%s%s",g_bankbase,fn?fn:"");        // relativo -> prefixa base
   FILE* f=fopen(path,"rb"); if(!f){ char b[1100]; snprintf(b,sizeof(b),"[wwise] AAsset open FALHOU %s",path); wlog(b); return NULL; }
   fseek(f,0,SEEK_END); long len=ftell(f); fseek(f,0,SEEK_SET);
   AAsset* a=malloc(sizeof(AAsset)); a->f=f; a->len=len;
@@ -121,6 +125,7 @@ static DynLibFunction extra[] = {
 #define WWISE_REAL "/storage/roms/sor4-test/host_pkg/libs/libWwise.real.so"
 #define HEAP_MB 64
 static int g_loaded=0;
+static int g_init_ok=0;   // so encaminha aos trampolins se a init REAL deu certo (senao crasha)
 typedef int  (*fn_init_t)(const char*);
 typedef void (*fn_void_t)(void);
 
@@ -141,9 +146,24 @@ static void load_real(void){
   for(size_t i=0;i<dynlib_numfunctions;i++) comb[n++]=dynlib_functions[i];
   if(so_resolve(comb,n,1)<0){ wlog("[wwise-native] so_resolve FALHOU"); free(comb); return; }
   free(comb);
+  // Os 3 checks de PATH (AddBasePath/2o-check/SetBasePath) FALHAM no ambiente Android-fake
+  // (validam path asset-relativo) mas NAO sao necessarios: nosso AAssetManager_open le os
+  // bancos por path absoluto. NOPamos os b.ne deles p/ a init suceder. (offsets da v1.4.5)
+  { const char* nz=getenv("WWISE_NOP");
+    char defnop[]="0x12242c,0x122438,0x122510";
+    if(!nz||!*nz) nz=defnop;
+    if(nz&&*nz){ so_make_text_writable();
+      char buf[256]; strncpy(buf,nz,sizeof(buf)-1); buf[sizeof(buf)-1]=0;
+      char* p=buf; while(*p){ unsigned long off=strtoul(p,NULL,0);
+        if(off){ *(uint32_t*)((char*)text_base+off)=0xd503201fu; char b[80]; snprintf(b,sizeof(b),"[wwise-native] NOP @0x%lx",off); wlog(b); }
+        char* c=strchr(p,','); if(!c)break; p=c+1; }
+      so_flush_caches();
+    } }
   so_flush_caches();
   so_execute_init_array();
   g_loaded=1;
+  { char b[160]; uintptr_t ni=so_find_addr("native_wwise_init");
+    snprintf(b,sizeof(b),"[wwise-native] text_base=%p native_wwise_init=0x%lx (off 0x122350)",text_base,(unsigned long)ni); wlog(b); }
   wlog("[wwise-native] libWwise REAL carregada OK");
   // Wwise precisa de uma JavaVM (capturada via JNI_OnLoad pelo runtime Android, que nao temos).
   // Damos a JavaVM/JNIEnv FAKE do jni_shim e chamamos JNI_OnLoad + native_android_preinit nos.
@@ -152,6 +172,7 @@ static void load_real(void){
   if(jol){ int v=((int(*)(void*,void*))jol)(g_fake_vm,NULL); char b[64]; snprintf(b,sizeof(b),"[wwise-native] JNI_OnLoad=%d",v); wlog(b); }
   uintptr_t pre=so_find_addr("native_android_preinit");
   if(pre){ ((long(*)(void*))pre)((void*)0x1000); wlog("[wwise-native] native_android_preinit(fake activity) chamado"); }
+  { const char* gp=getenv("WWISE_GDB"); if(gp&&*gp){ int s=atoi(gp); if(s<=0)s=40; so_make_text_writable(); char b[120]; snprintf(b,sizeof(b),"[wwise-native] PAUSANDO %ds p/ gdb (pid=%d text_base=%p)...",s,(int)getpid(),text_base); wlog(b); sleep(s); wlog("[wwise-native] resumindo"); } }
 }
 
 __attribute__((constructor)) static void ctor(void){ load_real(); }
@@ -161,6 +182,13 @@ __attribute__((constructor)) static void ctor(void){ load_real(); }
 
 // ----- trampolins dos 21 native_wwise_* (+ preinit) -----
 long native_android_preinit(void* activity){ if(!g_loaded) load_real(); char b[80]; snprintf(b,sizeof(b),"[wwise-native] preinit activity=%p",activity); wlog(b); uintptr_t a=so_find_addr("native_android_preinit"); return a?((long(*)(void*))a)(activity):0; }
+
+static void* pump_thread_fn(void* a){ (void)a; for(;;){ opensles_shim_pump_callbacks(); usleep(4000); } return NULL; }
+static void start_pump_thread(void){
+  static int started=0; if(started) return; started=1;
+  pthread_t th; if(pthread_create(&th,NULL,pump_thread_fn,NULL)==0){ pthread_detach(th); wlog("[wwise-native] pump thread iniciada (BufferQueue cb @250Hz)"); }
+  else wlog("[wwise-native] pump thread FALHOU");
+}
 
 int native_wwise_init(const char* p){
   if(!g_loaded) load_real();
@@ -172,32 +200,38 @@ int native_wwise_init(const char* p){
   char b[600]; snprintf(b,sizeof(b),"[wwise-native] init path='%s'",base); wlog(b);
   uintptr_t a=so_find_addr("native_wwise_init"); if(!a){ wlog("[wwise-native] init addr=0"); return 0; }
   int r=((int(*)(const char*))a)(base);
+  g_init_ok = (r!=0);
+  if(g_init_ok) start_pump_thread();
+  // diagnostico: le os globais que o 2o check (0x256b24) testa
+  { unsigned char* fb=(unsigned char*)((char*)text_base + 0x2d0628);
+    void** pl=(void**)((char*)text_base + 0x2d1dc0);
+    char b3[160]; snprintf(b3,sizeof(b3),"[wwise-native] DIAG flag@2d0628=%d plist@2d1dc0=%p",(int)*fb,*pl); wlog(b3); }
   char b2[64]; snprintf(b2,sizeof(b2),"[wwise-native] real init=%d",r); wlog(b2);
   return r;
 }
-#define FWD_V(name) void name(void){ if(!g_loaded) load_real(); uintptr_t a=so_find_addr(#name); if(a)((void(*)(void))a)(); }
-#define FWD_I0(name) int name(void){ if(!g_loaded) load_real(); uintptr_t a=so_find_addr(#name); return a?((int(*)(void))a)():0; }
-#define FWD_S(name) int name(const char* s){ if(!g_loaded) load_real(); uintptr_t a=so_find_addr(#name); return a?((int(*)(const char*))a)(s):0; }
+#define FWD_V(name) void name(void){ if(!g_init_ok) return; uintptr_t a=so_find_addr(#name); if(a)((void(*)(void))a)(); }
+#define FWD_I0(name) int name(void){ if(!g_init_ok) return 0; uintptr_t a=so_find_addr(#name); return a?((int(*)(void))a)():0; }
+#define FWD_S(name) int name(const char* s){ if(!g_init_ok) return 0; uintptr_t a=so_find_addr(#name); return a?((int(*)(const char*))a)(s):0; }
 
 FWD_V(native_wwise_destroy)
 FWD_V(native_wwise_update)
 FWD_S(native_wwise_loadbank)
 FWD_S(native_wwise_unloadbank)
-FWD_S(native_wwise_post_event)
+int native_wwise_post_event(const char* e){ if(!g_init_ok)return 0; { char b[160]; snprintf(b,sizeof(b),"[wwise-native] POST_EVENT '%s'",e?e:"(null)"); wlog(b); } uintptr_t a=so_find_addr("native_wwise_post_event"); int r=a?((int(*)(const char*))a)(e):0; { char b[80]; snprintf(b,sizeof(b),"[wwise-native]   -> ret=%d",r); wlog(b); } return r; }
 FWD_S(native_wwise_post_trigger)
-int native_wwise_post_event_with_id(const char* e,uint64_t o){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_post_event_with_id"); return a?((int(*)(const char*,uint64_t))a)(e,o):0; }
-int native_wwise_post_trigger_with_id(const char* t,uint64_t o){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_post_trigger_with_id"); return a?((int(*)(const char*,uint64_t))a)(t,o):0; }
-void native_wwise_register_gameobject_with_id(uint64_t id){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id"); if(a)((void(*)(uint64_t))a)(id); }
-void native_wwise_register_gameobject_with_id_and_name(uint64_t id,const char* n){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id_and_name"); if(a)((void(*)(uint64_t,const char*))a)(id,n); }
-void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
-void native_wwise_set_state(const char* g,const char* s){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
-int native_wwise_set_listener_position(void* v){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_listener_position"); return a?((int(*)(void*))a)(v):0; }
-int native_wwise_set_gameobject_position(uint64_t o,void* v){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_gameobject_position"); return a?((int(*)(uint64_t,void*))a)(o,v):0; }
-int native_wwise_set_rtpc_value(const char* n,float v){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_rtpc_value"); return a?((int(*)(const char*,float))a)(n,v):0; }
-int native_wwise_set_rtpc_value_with_id(const char* n,float v,uint64_t o){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_set_rtpc_value_with_id"); return a?((int(*)(const char*,float,uint64_t))a)(n,v,o):0; }
-int native_wwise_get_music_event(void* ev){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_get_music_event"); return a?((int(*)(void*))a)(ev):0; }
-int native_wwise_get_total_memory(void){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_get_total_memory"); return a?((int(*)(void))a)():0; }
-int native_wwise_is_game_object_active(uint64_t o){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_is_game_object_active"); return a?((int(*)(uint64_t))a)(o):0; }
-void native_wwise_unregister_inactive_game_objects(void){ if(!g_loaded)load_real(); uintptr_t a=so_find_addr("native_wwise_unregister_inactive_game_objects"); if(a)((void(*)(void))a)(); }
+int native_wwise_post_event_with_id(const char* e,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_post_event_with_id"); return a?((int(*)(const char*,uint64_t))a)(e,o):0; }
+int native_wwise_post_trigger_with_id(const char* t,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_post_trigger_with_id"); return a?((int(*)(const char*,uint64_t))a)(t,o):0; }
+void native_wwise_register_gameobject_with_id(uint64_t id){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id"); if(a)((void(*)(uint64_t))a)(id); }
+void native_wwise_register_gameobject_with_id_and_name(uint64_t id,const char* n){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id_and_name"); if(a)((void(*)(uint64_t,const char*))a)(id,n); }
+void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
+void native_wwise_set_state(const char* g,const char* s){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
+int native_wwise_set_listener_position(void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_listener_position"); return a?((int(*)(void*))a)(v):0; }
+int native_wwise_set_gameobject_position(uint64_t o,void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_gameobject_position"); return a?((int(*)(uint64_t,void*))a)(o,v):0; }
+int native_wwise_set_rtpc_value(const char* n,float v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_rtpc_value"); return a?((int(*)(const char*,float))a)(n,v):0; }
+int native_wwise_set_rtpc_value_with_id(const char* n,float v,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_rtpc_value_with_id"); return a?((int(*)(const char*,float,uint64_t))a)(n,v,o):0; }
+int native_wwise_get_music_event(void* ev){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_get_music_event"); return a?((int(*)(void*))a)(ev):0; }
+int native_wwise_get_total_memory(void){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_get_total_memory"); return a?((int(*)(void))a)():0; }
+int native_wwise_is_game_object_active(uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_is_game_object_active"); return a?((int(*)(uint64_t))a)(o):0; }
+void native_wwise_unregister_inactive_game_objects(void){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_unregister_inactive_game_objects"); if(a)((void(*)(void))a)(); }
 long get_total_memory_stub(void){ return 0; }
 long sor4_gl_noop(void){ return 0; }

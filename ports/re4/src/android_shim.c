@@ -164,6 +164,38 @@ static int sdl_button_to_keycode(int sdl_button) {
   }
 }
 
+static int sdl_key_to_keycode(SDL_Scancode scancode) {
+  switch (scancode) {
+  case SDL_SCANCODE_X:
+    return AKEYCODE_BUTTON_A;
+  case SDL_SCANCODE_C:
+    return AKEYCODE_BUTTON_B;
+  case SDL_SCANCODE_Q:
+    return AKEYCODE_BUTTON_X;
+  case SDL_SCANCODE_T:
+    return AKEYCODE_BUTTON_Y;
+  case SDL_SCANCODE_RETURN:
+  case SDL_SCANCODE_KP_ENTER:
+    return AKEYCODE_BUTTON_START;
+  case SDL_SCANCODE_ESCAPE:
+    return AKEYCODE_BUTTON_SELECT;
+  case SDL_SCANCODE_H:
+    return AKEYCODE_BUTTON_L1;
+  case SDL_SCANCODE_J:
+    return AKEYCODE_BUTTON_R1;
+  case SDL_SCANCODE_UP:
+    return AKEYCODE_DPAD_UP;
+  case SDL_SCANCODE_DOWN:
+    return AKEYCODE_DPAD_DOWN;
+  case SDL_SCANCODE_LEFT:
+    return AKEYCODE_DPAD_LEFT;
+  case SDL_SCANCODE_RIGHT:
+    return AKEYCODE_DPAD_RIGHT;
+  default:
+    return -1;
+  }
+}
+
 /* ---- Initialize gamepad ---- */
 
 static void init_gamecontroller(void) {
@@ -198,6 +230,21 @@ static void process_sdl_events(void) {
     case SDL_QUIT:
       g_app.destroyRequested = 1;
       break;
+
+    case SDL_KEYDOWN:
+    case SDL_KEYUP: {
+      if (e.key.repeat)
+        break;
+      int kc = sdl_key_to_keycode(e.key.keysym.scancode);
+      if (kc >= 0) {
+        push_key_event(e.type == SDL_KEYDOWN ? AKEY_EVENT_ACTION_DOWN
+                                             : AKEY_EVENT_ACTION_UP, kc);
+        debugPrintf("android_shim: key %s keycode=%d scancode=%d\n",
+                    e.type == SDL_KEYDOWN ? "DOWN" : "UP",
+                    kc, e.key.keysym.scancode);
+      }
+      break;
+    }
 
     case SDL_CONTROLLERBUTTONDOWN: {
       int kc = sdl_button_to_keycode(e.cbutton.button);
@@ -491,6 +538,16 @@ int AInputEvent_getSource(void *event) {
   return ev->source;
 }
 
+int AInputEvent_getDeviceId(void *event) {
+  (void)event;
+  return 0;
+}
+
+int AKeyEvent_getMetaState(void *event) {
+  (void)event;
+  return 0;
+}
+
 /* ---- AConfiguration stubs ---- */
 
 static int g_fake_config = 0;
@@ -703,6 +760,19 @@ void android_shim_send_cmd(struct android_app *app, int8_t cmd) {
 
 ANativeWindow *android_shim_get_window(void) {
   return (ANativeWindow *)&g_fake_native_window;
+}
+
+void android_shim_pump_sdl_events(void) {
+  process_sdl_events();
+}
+
+int android_shim_pop_input_event(FakeInputEvent *out_event) {
+  FakeInputEvent *ev = input_queue_pop();
+  if (!ev)
+    return 0;
+  if (out_event)
+    *out_event = *ev;
+  return 1;
 }
 
 void android_shim_cleanup(void) {

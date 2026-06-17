@@ -69,7 +69,35 @@ CAMINHO CUSTOM (FEITO, mas NextOS NÃO quer — fica de fallback/referência):
   wwise_real.c (libWwise.so glibc: dlopen OpenAL+opusfile, post_event toca o .opus). FUNCIONOU end-to-end:
   NextOS ouviu o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
 
-### 🔊🟢 NATIVO — GRANDE AVANÇO 2026-06-16 cont.12: Wwise REAL CARREGA via so-loader (init=0 falta)
+### 🔊🏆🏆 NATIVO RESOLVIDO 2026-06-16 cont.13: ÁUDIO WWISE ORIGINAL TOCANDO (HDMI sink RUNNING)
+A libWwise REAL do APK roda nativa via so-loader e PRODUZ SOM (motor Wwise original, música+SFX). Cadeia
+de fixes finais (depois do "carrega mas init=0"):
+1. **init=0 -> init=1**: native_wwise_init faz ~10 checks de subsistema em sequencia. Os 3 de PATH
+   (AddBasePath@b.ne 0x12242c, 2o-check cbz 0x122438, SetBasePath@b.ne 0x122510) FALHAM no ambiente
+   Android-fake (validam path asset-relativo) mas NAO sao necessarios (nosso AAssetManager_open le por
+   path absoluto). FIX: NOPar esses 3 b.ne (default embutido no wrapper; achei via bisecao com WWISE_NOP).
+   IO hook (CAkDefaultIOHookBlocking::Init) + InitAndroidIO (JNI) RODAM REAIS e sucedem.
+2. **AAssetManager_open path duplicado**: a Wwise passa path absoluto (base+bank); meu shim prefixava
+   g_bankbase de novo. FIX: se fn[0]=='/' usa direto.
+3. **SDL audio nao inicializado**: opensles_shim chamava SDL_OpenAudioDevice mas o jogo (MonoGame) so
+   inicia SDL de VIDEO. FIX: SDL_InitSubSystem(SDL_INIT_AUDIO) no ensure_audio_initialized + launcher
+   seta SDL_AUDIODRIVER=pulse. -> SDL audio abre no PulseAudio (dev=2 OK).
+4. **🔑 RETRY infinito do sink (slCreateEngine repetia, counter sempre=1)**: o callback do BufferQueue
+   (avisa "buffer consumido, manda mais") so e disparado por opensles_shim_pump_callbacks(); no Android
+   quem chama e a thread do OpenSLES, AQUI ninguem chamava -> Wwise mandava 1 buffer, esperava o cb que
+   nunca vinha, timeout, resetava o sink (retry!). FIX: **thread de pump no wrapper** (pump_thread_fn,
+   chama opensles_shim_pump_callbacks() @250Hz). -> sink ESTAVEL, ENQUEUE counter cresce continuo.
+5. **🔑 SILENCIO (NextOS nao ouvia)**: faltavam os **613 arquivos .wem** (musica+SFX STREAMED) que NAO
+   foram extraidos do APK (so os bancos+xnb). A Wwise pedia ex 353312695.wem (5.4MB=tema do menu) ->
+   AAsset FALHOU -> renderizava silencio. FIX: extrair `assets/*.wem` do APK (635MB) -> device gameassets/.
+VERIFICACAO SEM OUVIR (means do NextOS): `pactl list short sinks` = hdmi_real RUNNING (PulseAudio suspende
+em silencio; RUNNING=som real) + ENQUEUE counter CRESCE (Wwise renderizando) + wem abre sem FALHOU.
+ARQUIVOS: ports/sor4wwise/ (wrapper libWwise.so + src/wwise_native.c + opensles_shim.c modificado +
+build.sh). libWwise.real.so (2.9MB do APK) no device host_pkg/libs/. Launcher run_diag.sh: SDL_AUDIODRIVER
+=pulse. FALTA polir: as offsets de NOP sao da v1.4.5 (hardcoded); remover logs [opensles]/[wwise-native]/
+ENQUEUE no final; confirmar SFX de gameplay no ouvido; load lento da fase (NextOS notou).
+
+### 🔊🟢 NATIVO — avanco cont.12: Wwise REAL CARREGA via so-loader (init=0 falta) [RESOLVIDO acima]
 ports/sor4wwise/ = wrapper glibc libWwise.so (PLUGIN do .NET) que so-carrega a Wwise REAL do APK.
 - Construtor: so_load(libWwise.real.so) + relocate + resolve(tabela combinada extra+gen) + init_array.
   **FUNCIONA**: "[wwise-native] libWwise REAL carregada OK" (so-loader OK p/ a Wwise C++ 2.9MB!).

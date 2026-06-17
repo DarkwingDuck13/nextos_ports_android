@@ -447,6 +447,13 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 static void ensure_audio_initialized(void) {
   if (g_audio_initialized) return;
 
+  // O jogo (MonoGame) so inicia SDL de VIDEO; precisamos do subsistema de AUDIO.
+  if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+    int ir = SDL_InitSubSystem(SDL_INIT_AUDIO);
+    FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
+    if(lf){ fprintf(lf,"[opensles] SDL_InitSubSystem(AUDIO)=%d drv=%s err=%s\n",ir,SDL_GetCurrentAudioDriver()?SDL_GetCurrentAudioDriver():"(none)",SDL_GetError()); fclose(lf); }
+  }
+
   SDL_AudioSpec want, have;
   memset(&want, 0, sizeof(want));
   want.freq = 44100;
@@ -457,6 +464,8 @@ static void ensure_audio_initialized(void) {
   want.userdata = NULL;
 
   g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+  { FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
+    if(lf){ fprintf(lf,"[opensles] SDL_OpenAudioDevice dev=%u %s\n",(unsigned)g_audio_dev, g_audio_dev?"OK":SDL_GetError()); fclose(lf); } }
   if (g_audio_dev == 0) {
     debugPrintf("opensles_shim: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
     g_audio_initialized = 1;
@@ -726,6 +735,10 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
         p->last_enqueue_size = written;
         p->enqueue_counter++;
         p->ever_enqueued = 1;
+        if (p->enqueue_counter == 1 || p->enqueue_counter % 300 == 0) {
+          FILE* lf=fopen("/storage/roms/sor4-test/wwise.log","a");
+          if(lf){ fprintf(lf,"[opensles] ENQUEUE player %d size=%u counter=%u (Wwise ESCREVENDO audio!)\n",i,size,p->enqueue_counter); fclose(lf); }
+        }
         /* if (p->debug_enqueue_logs < 16 || p->enqueue_counter % 64 == 0) {
           debugPrintf("opensles_shim: player %d enqueue size=%u written=%u readable=%u counter=%u\n",
                       i, size, written, ring_readable(p), p->enqueue_counter);

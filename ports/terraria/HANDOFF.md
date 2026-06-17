@@ -1,5 +1,43 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🏆🏆🏆 RODANDO + RENDERIZANDO + MENU A 60FPS (2026-06-16) 🏆🏆🏆
+**Terraria so-loader Unity 2021.3 IL2CPP RODA no Mali-450 Utgard: splash Re-Logic → MENU, 60 FPS,
+cores corretas (NextOS confirmou na TV).** Receita (env de lançamento):
+```
+CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
+SDL_VIDEODRIVER=mali LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
+```
+**Os 5 fixes que destravaram (em ordem):**
+1. **TER_INLINETASK** — trampolim em libunity+0x2f37a4 que FINGE a conclusão do per-object
+   future-task (seta node + incrementa contador c10360). O dispatch nativo pros worker threads
+   está quebrado no so-loader (workers ociosos, nunca alimentados); fingir destrava sem precisar
+   consertar o dispatch. (ter_inline_task + trampolim, main.c)
+2. **TER_SKIPJOBWAIT** — pula o WaitForJobGroup (0x2f1d48); os job-groups gerais também não
+   completam (mesmo dispatch quebrado). Com (4) embaixo, o abort que isso causava vira warning.
+3. **dl_iterate_phdr REAL** wirado (era stub) — o unwinder C++ acha o eh_frame de libunity/libil2cpp;
+   exceções C++ (shader/currentActivity) viram CAPTURADAS em vez de std::terminate→abort.
+4. **TER_NUKEKB** — usa a API il2cpp REAL (exportada: il2cpp_class_from_name/get_method_from_name)
+   p/ patchar o methodPointer de `KeyboardInput.Update` → `ret`. Eliminou a exceção `Field
+   PressedStates not found` (reflection Java fake) que rodava 5×/frame. (ter_nuke_methods, main.c)
+5. **🔑 FIX DA TELA PRETA — my_eglGetProcAddress roteando egl* via egl_route**: o engine pegava o
+   `eglChooseConfig` REAL do Mali via eglGetProcAddress (o ds_route só roteava GL, não egl*). O Mali
+   Utgard rejeitava os configAttribs (GLES3) com EGL_BAD_ATTRIBUTE → GfxDevice virava NULL-renderer
+   → ZERO chamadas GL → tela preta. Roteando egl* → egl_shim_ChooseConfig (ignora attribs, devolve
+   a config válida da window SDL) → o render funciona. (main.c my_eglGetProcAddress)
+
+**Capability nova poderosa: patching de método il2cpp em runtime** (ter_nuke_methods) — acha
+qualquer classe.método por nome e patcha o code. Reusável p/ neutralizar qualquer método managed
+problemático.
+
+**FALTA (polish):** (a) controles (input — gamepad.c existe, wirar ao Terraria); (b) áudio (FMOD
+falha a init do output device — "Error initializing output device"); (c) my capture (glReadPixels lê
+black por double-buffer/FBO — ler front buffer ou o FBO do worker; NextOS vê na TV, é só diagnóstico);
+(d) jobs rodam FINGIDOS (INLINETASK/SKIPJOBWAIT) — o jogo roda, mas se algo depender de job real,
+revisitar; (e) empacotar PortMaster. Device .89. Commits: 482b2a6 (IMAGEM) + anteriores.
+
+---
+
+
 > Para a próxima sessão: o usuário vai dizer **"continuar terraria"**. Leia este arquivo
 > inteiro primeiro. Projeto iniciado DO ZERO em 2026-06-16. Device `.89` (Amlogic-old,
 > Mali-450 Utgard, fbdev, EmuELEC 3.14.79 aarch64, senha ssh `nextos`/root).

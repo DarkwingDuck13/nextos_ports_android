@@ -224,8 +224,6 @@ static jint jni_GetVersion(void *env) {
 /* ===== Injeção de input p/ nativeInjectEvent (KeyEvent) =====
    nativeInjectEvent lê o evento via JNI (getAction/getKeyCode/...). Setamos
    g_hk_inject ANTES de chamar nativeInjectEvent e os métodos retornam daqui. */
-struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
-                     scancode, flags, unicode; long eventTime, downTime; };
 struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
@@ -532,7 +530,11 @@ static void *jni_GetObjectClass(void *env, void *obj) {
 }
 static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
   (void)env;
-  if (obj == &g_obj_keyevent) return clazz == class_for("android/view/KeyEvent");
+  if (obj == &g_obj_keyevent) {
+    return clazz == class_for("android/view/KeyEvent") ||
+           clazz == class_for("android/view/InputEvent") ||
+           clazz == class_for("java/lang/Object");
+  }
   return 1; /* permissivo p/ outros casts */
 }
 static unsigned char jni_IsSameObject(void *env, void *a, void *b) {

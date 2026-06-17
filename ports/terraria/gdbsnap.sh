@@ -4,10 +4,10 @@ set -u
 cd /storage/roms/terraria || exit 1
 killall -9 terraria 2>/dev/null; sleep 1
 export SDL_VIDEODRIVER=mali LD_LIBRARY_PATH=/usr/lib:/storage/roms/terraria
-export CUP_GCOFF=1 TER_INLINETASK=1
+export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
 export CUP_NOLOGFILE=1 CUP_FRAMES=400
 timeout -s KILL 90 ./terraria > gdb_eng.log 2>&1 &
-sleep 24
+sleep 14
 PID=$(pidof terraria | tr ' ' '\n' | head -1)
 UB=$(grep -aoE 'libunity: text=0x[0-9a-f]+' gdb_eng.log | head -1 | grep -oE '0x[0-9a-f]+')
 IB=$(grep -aoE 'libil2cpp: text=0x[0-9a-f]+' gdb_eng.log | head -1 | grep -oE '0x[0-9a-f]+')

@@ -1672,6 +1672,9 @@ static void ter_gamepad_poll(void) {
   g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
   g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
   g_gp_log[10]= g_gp_btn[bL]; g_gp_log[11]= g_gp_btn[bR];
+  /* TER_GPAUTO: auto-press sintético (Down a cada 45 frames por 4 frames) p/ VERIFICAR o hook
+     sem precisar apertar — se o menu navegar sozinho, o Keyboard.GetState hook funciona. */
+  if (getenv("TER_GPAUTO")) { static int fc=0; int ph=(fc++)%45; if (ph<4) g_gp_log[1]=1; }
   if (getenv("TER_GPLOG")) for (int i=0;i<12;i++) if (g_gp_log[i] && !g_gp_log_prev[i]) { fprintf(stderr,"[TGP] logical[%d] DOWN\n", i); fsync(2); }
 }
 /* Unity KeyCode -> índice lógico (setas/WASD + Enter/Espaço=confirm + Esc=back) */
@@ -1688,11 +1691,32 @@ static int ter_kc_to_log(int kc) {
 int ter_unity_getkey(int kc)     { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l]) ? 1:0; }
 int ter_unity_getkeydown(int kc) { int l=ter_kc_to_log(kc); return (l>=0 && g_gp_log[l] && !g_gp_log_prev[l]) ? 1:0; }
 int ter_unity_getkeyup(int kc)   { int l=ter_kc_to_log(kc); return (l>=0 && !g_gp_log[l] && g_gp_log_prev[l]) ? 1:0; }
+/* 🔑 FNA Microsoft.Xna.Framework.Input.Keyboard.GetState() -> KeyboardState (36 bytes:
+   8 uints bitmask de teclas em [0..31] + 1 campo em [32]). Preenche do js0 (XNA Keys).
+   Chamada via shim que faz mov x0,x8 (x8=ptr do resultado). g_gp_log vem do ter_gamepad_poll. */
+void ter_fna_keyboard_getstate(void *result) {
+  uint32_t *ks = (uint32_t *)result;
+  memset(ks, 0, 36);
+  int n = 0;
+  #define TKSET(k) do { ks[(k)>>5] |= (1u << ((k)&31)); n++; } while(0)
+  if (g_gp_log[0]) TKSET(38);                 /* Up */
+  if (g_gp_log[1]) TKSET(40);                 /* Down */
+  if (g_gp_log[2]) TKSET(37);                 /* Left */
+  if (g_gp_log[3]) TKSET(39);                 /* Right */
+  if (g_gp_log[4]) { TKSET(13); TKSET(32); }  /* A -> Enter + Space (confirma) */
+  if (g_gp_log[5]) TKSET(27);                 /* B -> Escape (volta) */
+  if (g_gp_log[6]) TKSET(90);                 /* X -> Z */
+  if (g_gp_log[7]) TKSET(88);                 /* Y -> X */
+  ks[8] = 0;   /* campo [32]: 0 (IsKeyDown usa o bitmask, não este) */
+  (void)n;
+}
 /* TER_GAMEPAD: patcha UnityEngine.Input.GetKey*Int -> nossas funções (js0 como teclado).
    O caminho de eventos Android (nativeInjectEvent) é beco no Unity 2021 (espera AInputEvent NDK);
    hookar o Input direto faz o js0 virar setas/Enter que o Terraria lê (modo teclado). */
 static void ter_input_hook(void) {
-  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_GAMEPAD")) { if (!getenv("TER_GAMEPAD")) done=1; return; }
+  static int done = 0;
+  { static int o=0; if(o++<3) { fprintf(stderr,"[GPPROBE] entrada #%d done=%d base=%p\n", o, done, (void*)g_il2cpp_base); fsync(2);} }
+  if (done || !g_il2cpp_base || !getenv("TER_GAMEPAD")) { if (!getenv("TER_GAMEPAD")) done=1; return; }
   static int tries = 0; if (tries++ > 240) { done = 1; return; }
   void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
   const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
@@ -1701,39 +1725,34 @@ static void ter_input_hook(void) {
   void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
   void *domain = dom_get(); if (!domain) return;
   size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms||!na) return;
-  struct { const char *name; void *fn; } t[] = {
-    { "GetKeyInt", (void*)ter_unity_getkey }, { "GetKeyDownInt", (void*)ter_unity_getkeydown },
-    { "GetKeyUpInt", (void*)ter_unity_getkeyup },
-  };
+  /* Patcha FNA Keyboard.GetState() -> shim que chama ter_fna_keyboard_getstate (js0 como teclado).
+     Shim inline (20 bytes): mov x0,x8 (x8=ptr resultado); ldr x16,[pc+8]; br x16; .quad fn. */
+  extern void ter_fna_keyboard_getstate(void *);
   long pgsz = sysconf(_SC_PAGESIZE); int patched = 0;
-  for (size_t i=0;i<na && patched<3;i++) {
+  for (size_t i=0;i<na && !patched;i++) {
     void *img = asm_img(asms[i]); if (!img) continue;
-    void *cls = cls_from_name(img, "UnityEngine", "Input"); if (!cls) continue;
-    { static int once=0; if(!once++){ fprintf(stderr,"[TGP-HOOK] UnityEngine.Input achada (asm %zu)\n", i);
-      if (getenv("TER_GPENUM")) { void (*ci)(void*)=(void*)(g_il2cpp_base+0x73cc80); ci(cls);
-        void *(*cm)(void*,void**)=(void*)(g_il2cpp_base+0x73c288); const char*(*mn)(void*)=(void*)(g_il2cpp_base+0x73cb9c);
-        unsigned(*mp2)(void*)=(void*)(g_il2cpp_base+0x73cbac); void *it=NULL,*mm; int cc=0;
-        while((mm=cm(cls,&it))&&cc++<80) fprintf(stderr,"   %s/%u\n", mn(mm), mp2(mm)); fsync(2); } } }
-    for (unsigned k=0;k<3;k++) {
-      void *m = cls_method(cls, t[k].name, 1); if (!m) continue;
-      void *mp = *(void**)m; if (!mp) continue;
-      void *pa = (void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
-      mprotect(pa, pgsz*2, PROT_READ|PROT_WRITE|PROT_EXEC);
-      uint32_t *c = (uint32_t*)mp;
-      c[0] = 0x58000050u;                          /* ldr x16,[pc+8] */
-      c[1] = 0xD61F0200u;                          /* br x16 */
-      *(uint64_t*)(c+2) = (uint64_t)(uintptr_t)t[k].fn;
-      mprotect(pa, pgsz*2, PROT_READ|PROT_EXEC);
-      __builtin___clear_cache((char*)pa, (char*)pa+16);
-      fprintf(stderr, "[TGP-HOOK] UnityEngine.Input.%s @%p -> %p\n", t[k].name, mp, t[k].fn); fsync(2);
-      patched++;
-    }
+    void *cls = cls_from_name(img, "Microsoft.Xna.Framework.Input", "Keyboard"); if (!cls) continue;
+    void *m = cls_method(cls, "GetState", 0); if (!m) continue;
+    void *mp = *(void**)m; if (!mp) continue;
+    void *pa = (void*)((uintptr_t)mp & ~((uintptr_t)pgsz-1));
+    mprotect(pa, pgsz*2, PROT_READ|PROT_WRITE|PROT_EXEC);
+    uint32_t *c = (uint32_t*)mp;
+    c[0] = 0xAA0803E0u;                         /* mov x0, x8 (ptr do KeyboardState) */
+    c[1] = 0x58000050u;                         /* ldr x16, [pc+8] */
+    c[2] = 0xD61F0200u;                         /* br x16 */
+    *(uint64_t*)(c+3) = (uint64_t)(uintptr_t)ter_fna_keyboard_getstate;
+    mprotect(pa, pgsz*2, PROT_READ|PROT_EXEC);
+    __builtin___clear_cache((char*)pa, (char*)pa+20);
+    fprintf(stderr, "[TGP-HOOK] FNA Keyboard.GetState @%p -> ter_fna_keyboard_getstate\n", mp); fsync(2);
+    patched = 1;
   }
   if (patched) done = 1;
+  (void)cls_method;
 }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
+  ter_input_hook();     /* TER_GAMEPAD: sonda/hook do input FNA */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");

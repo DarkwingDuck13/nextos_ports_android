@@ -17,6 +17,7 @@
 #include <sys/syscall.h>
 #include "so_util.h"
 #include "imports.h"
+#include "android_shim.h"
 #include "jni_shim.h"
 #include "opensles_shim.h"
 /* RAIZ do "invalid CIL": glibc fstatat64 preenche struct stat64 layout GLIBC, mas Unity
@@ -30,6 +31,9 @@ static uintptr_t g_mono_base=0, g_unity_base=0;
 static void getmem_trace(const char*tag);
 static const char *re4_gamedir(void);
 void egl_shim_force_present(const char *reason);
+static void (*g_orig_mono_add_internal_call)(const char*, const void*) = 0;
+static char *(*g_mono_string_to_utf8_fn)(void*) = 0;
+static void (*g_mono_free_fn)(void*) = 0;
 static long my_read(int fd,void*b,unsigned long n){ long r=read(fd,b,n);
   if(n==32768||n>50000){ static int rn=0; if(rn++<24){ void*ra=__builtin_return_address(0); uintptr_t a=(uintptr_t)ra; const char*m="?"; uintptr_t o=a;
     if(g_mono_base&&a>=g_mono_base&&a<g_mono_base+0x600000){m="libmono";o=a-g_mono_base;} else if(g_unity_base&&a>=g_unity_base&&a<g_unity_base+0x2000000){m="libunity";o=a-g_unity_base;}
@@ -64,6 +68,40 @@ static void *my_dlopen(const char *nm,int flag){
     fprintf(stderr,"[DLOPEN] \"%s\" -> SELF\n",nm?nm:"(null)"); return &g_dl_self; }
   void *h=dlopen(nm,flag); fprintf(stderr,"[DLOPEN] \"%s\" -> %p\n",nm,h); return h?h:&g_dl_self; }
 static int noop_ret0(void){ return 0; }
+static int re4_skip_fullscreen_movie_enabled(void){
+  static int cached = -1;
+  if(cached < 0){
+    const char *env = getenv("RE4_SKIPMOVIE");
+    cached = (!env || !env[0] || strcmp(env, "0") != 0) ? 1 : 0;
+  }
+  return cached;
+}
+static int my_icall_PlayFullScreenMovie(void *mono_string, const void *bg_color, int control_mode, int scaling_mode){
+  (void)bg_color;
+  char *utf8 = NULL;
+  if(g_mono_string_to_utf8_fn && mono_string)
+    utf8 = g_mono_string_to_utf8_fn(mono_string);
+  fprintf(stderr,
+          "[MOVIE] skip PlayFullScreenMovie path=%s control=%d scaling=%d\n",
+          utf8 ? utf8 : "(null)", control_mode, scaling_mode);
+  if(utf8 && g_mono_free_fn)
+    g_mono_free_fn(utf8);
+  return 1;
+}
+static void my_mono_add_internal_call(const char *name, const void *method){
+  const void *resolved = method;
+  if(name){
+    if((strstr(name, "Handheld") || strstr(name, "Movie") || strstr(name, "Video")) && method)
+      fprintf(stderr, "[ICALL] %s -> %p\n", name, method);
+    if(re4_skip_fullscreen_movie_enabled() &&
+       (strstr(name, "PlayFullScreenMovie") || strstr(name, "INTERNAL_CALL_PlayFullScreenMovie"))){
+      resolved = (const void*)my_icall_PlayFullScreenMovie;
+      fprintf(stderr, "[ICALL] override %s -> %p\n", name, resolved);
+    }
+  }
+  if(g_orig_mono_add_internal_call)
+    g_orig_mono_add_internal_call(name, resolved);
+}
 /* DIAG GL: versao/GLSL + se os shaders sao ES3 (#version 300 es) e compilam (Mali=ES2) */
 static const unsigned char* (*r_glGetString)(unsigned);
 static void (*r_glShaderSource)(unsigned,int,const char*const*,const int*);
@@ -76,10 +114,297 @@ static void (*r_glBindFramebuffer)(unsigned,unsigned);
 static unsigned (*r_glCheckFramebufferStatus)(unsigned);
 static void (*r_glFramebufferTexture2D)(unsigned,unsigned,unsigned,unsigned,int);
 static void (*r_glFramebufferRenderbuffer)(unsigned,unsigned,unsigned,unsigned);
+static void (*r_glReadPixels)(int,int,int,int,unsigned,unsigned,void*);
 static void (*r_glClear)(unsigned);
 static void (*r_glDrawArrays)(unsigned,int,int);
 static void (*r_glDrawElements)(unsigned,int,unsigned,const void*);
+static void (*r_glUseProgram)(unsigned);
+static void (*r_glActiveTexture)(unsigned);
+static void (*r_glBindTexture)(unsigned,unsigned);
+static void (*r_glViewport)(int,int,int,int);
+static void (*r_glEnable)(unsigned);
+static void (*r_glDisable)(unsigned);
+static void (*r_glBlendFunc)(unsigned,unsigned);
+static void (*r_glBlendFuncSeparate)(unsigned,unsigned,unsigned,unsigned);
+static void (*r_glColorMask)(unsigned char,unsigned char,unsigned char,unsigned char);
+static unsigned (*r_glCreateShader)(unsigned);
+static unsigned (*r_glCreateProgram)(void);
+static void (*r_glAttachShader)(unsigned,unsigned);
+static void (*r_glLinkProgram)(unsigned);
+static void (*r_glGetProgramiv)(unsigned,unsigned,int*);
+static void (*r_glGetProgramInfoLog)(unsigned,int,int*,char*);
+static int (*r_glGetUniformLocation)(unsigned,const char*);
+static int (*r_glGetAttribLocation)(unsigned,const char*);
+static void (*r_glUniform1i)(int,int);
+static void (*r_glEnableVertexAttribArray)(unsigned);
+static void (*r_glDisableVertexAttribArray)(unsigned);
+static void (*r_glVertexAttribPointer)(unsigned,int,unsigned,unsigned char,int,const void*);
+static void (*r_glDeleteShader)(unsigned);
 static unsigned g_gl_bound_fbo=0;
+static int g_re4_frame=-1;
+static unsigned g_gl_current_program=0;
+static unsigned g_gl_active_texture=0x84c0; /* GL_TEXTURE0 */
+static unsigned g_gl_bound_tex2d[4]={0,0,0,0};
+static unsigned g_gl_bound_texext[4]={0,0,0,0};
+static int g_gl_viewport[4]={0,0,0,0};
+static int g_gl_blend_enabled=0;
+static unsigned g_gl_blend_src_rgb=1, g_gl_blend_dst_rgb=0, g_gl_blend_src_alpha=1, g_gl_blend_dst_alpha=0;
+static unsigned char g_gl_color_mask[4]={1,1,1,1};
+static unsigned g_fbo_color_tex[8]={0};
+static int g_last_composite_log_frame=-1;
+static unsigned g_re4_blit_program=0;
+static int g_re4_blit_a_pos=-1, g_re4_blit_a_uv=-1, g_re4_blit_u_tex=-1;
+static int re4_screen_width(void);
+static int re4_screen_height(void);
+static unsigned g_frame_draws_fbo0=0, g_frame_draws_fbo1=0, g_frame_draws_fbo2=0, g_frame_draws_other=0;
+static unsigned g_frame_clears_fbo0=0, g_frame_clears_fbo1=0, g_frame_clears_fbo2=0, g_frame_clears_other=0;
+static int re4_texunit_index(unsigned unit){
+  int idx=(int)(unit-0x84c0); /* GL_TEXTURE0 */
+  return (idx>=0 && idx<(int)(sizeof(g_gl_bound_tex2d)/sizeof(g_gl_bound_tex2d[0]))) ? idx : -1;
+}
+static int re4_interesting_composite_frame(int frame){
+  return frame>=420 && frame<=720;
+}
+static void re4_log_composite_state(const char *kind, unsigned mode, int count){
+  int idx=re4_texunit_index(g_gl_active_texture);
+  if(g_gl_bound_fbo!=0 || !re4_interesting_composite_frame(g_re4_frame) || g_last_composite_log_frame==g_re4_frame)
+    return;
+  g_last_composite_log_frame=g_re4_frame;
+  fprintf(stderr,
+          "[COMPOSITE] f=%d via=%s mode=0x%x count=%d prog=%u vp=%d,%d %dx%d blend=%d func=%u/%u/%u/%u mask=%u%u%u%u act=%u tex2d={%u,%u,%u,%u} texext={%u,%u,%u,%u} act2d=%u actext=%u fbo1tex=%u fbo2tex=%u\n",
+          g_re4_frame, kind?kind:"?", mode, count, g_gl_current_program,
+          g_gl_viewport[0], g_gl_viewport[1], g_gl_viewport[2], g_gl_viewport[3],
+          g_gl_blend_enabled,
+          g_gl_blend_src_rgb, g_gl_blend_dst_rgb, g_gl_blend_src_alpha, g_gl_blend_dst_alpha,
+          g_gl_color_mask[0], g_gl_color_mask[1], g_gl_color_mask[2], g_gl_color_mask[3],
+          g_gl_active_texture,
+          g_gl_bound_tex2d[0], g_gl_bound_tex2d[1], g_gl_bound_tex2d[2], g_gl_bound_tex2d[3],
+          g_gl_bound_texext[0], g_gl_bound_texext[1], g_gl_bound_texext[2], g_gl_bound_texext[3],
+          idx>=0?g_gl_bound_tex2d[idx]:0, idx>=0?g_gl_bound_texext[idx]:0,
+          g_fbo_color_tex[1], g_fbo_color_tex[2]);
+}
+static void re4_count_fbo_bucket(unsigned fbo, int is_clear){
+  unsigned *slot = NULL;
+  if (is_clear) {
+    if (fbo == 0) slot = &g_frame_clears_fbo0;
+    else if (fbo == 1) slot = &g_frame_clears_fbo1;
+    else if (fbo == 2) slot = &g_frame_clears_fbo2;
+    else slot = &g_frame_clears_other;
+  } else {
+    if (fbo == 0) slot = &g_frame_draws_fbo0;
+    else if (fbo == 1) slot = &g_frame_draws_fbo1;
+    else if (fbo == 2) slot = &g_frame_draws_fbo2;
+    else slot = &g_frame_draws_other;
+  }
+  if (slot)
+    (*slot)++;
+}
+static void re4_log_and_reset_fbo_stats(int frame){
+  int interesting = (frame < 8) || (frame % 60 == 0) ||
+                    (frame >= 430 && frame <= 560 && g_frame_draws_fbo0 == 0);
+  if (interesting) {
+    fprintf(stderr,
+            "[FBOSTAT] f=%d cur=%u draw0=%u draw1=%u draw2=%u drawX=%u clear0=%u clear1=%u clear2=%u clearX=%u\n",
+            frame, g_gl_bound_fbo,
+            g_frame_draws_fbo0, g_frame_draws_fbo1, g_frame_draws_fbo2, g_frame_draws_other,
+            g_frame_clears_fbo0, g_frame_clears_fbo1, g_frame_clears_fbo2, g_frame_clears_other);
+  }
+  g_frame_draws_fbo0 = g_frame_draws_fbo1 = g_frame_draws_fbo2 = g_frame_draws_other = 0;
+  g_frame_clears_fbo0 = g_frame_clears_fbo1 = g_frame_clears_fbo2 = g_frame_clears_other = 0;
+}
+static void re4_probe_frame_pixels(int frame){
+  unsigned char cur_px[4] = {0, 0, 0, 0};
+  unsigned char def_px[4] = {0, 0, 0, 0};
+  unsigned saved_fbo = g_gl_bound_fbo;
+  int probe = (frame == 120 || frame == 240 || frame == 480 || frame == 540);
+  if (!probe)
+    return;
+  if (!r_glReadPixels)
+    r_glReadPixels = dlsym(RTLD_DEFAULT, "glReadPixels");
+  if (!r_glReadPixels || !r_glBindFramebuffer)
+    return;
+  int cx = re4_screen_width() / 2;
+  int cy = re4_screen_height() / 2;
+  r_glReadPixels(cx, cy, 1, 1, 0x1908, 0x1401, cur_px); /* GL_RGBA / GL_UNSIGNED_BYTE */
+  if (saved_fbo != 0)
+    r_glBindFramebuffer(0x8d40, 0);
+  r_glReadPixels(cx, cy, 1, 1, 0x1908, 0x1401, def_px);
+  if (saved_fbo != 0)
+    r_glBindFramebuffer(0x8d40, saved_fbo);
+  fprintf(stderr,
+          "[FBPROBE] f=%d curfbo=%u cur=%u,%u,%u,%u def=%u,%u,%u,%u\n",
+          frame, saved_fbo,
+          cur_px[0], cur_px[1], cur_px[2], cur_px[3],
+          def_px[0], def_px[1], def_px[2], def_px[3]);
+}
+static int re4_ensure_blit_program(void){
+  static const char *vs_src =
+      "attribute vec2 a_pos;\n"
+      "attribute vec2 a_uv;\n"
+      "varying vec2 v_uv;\n"
+      "void main(void){\n"
+      "  v_uv = a_uv;\n"
+      "  gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+      "}\n";
+  static const char *fs_src =
+      "precision mediump float;\n"
+      "varying vec2 v_uv;\n"
+      "uniform sampler2D u_tex;\n"
+      "void main(void){\n"
+      "  gl_FragColor = texture2D(u_tex, v_uv);\n"
+      "}\n";
+  int ok=0;
+  unsigned vs=0, fs=0, prog=0;
+  char logbuf[256];
+  if(g_re4_blit_program)
+    return 1;
+  if(!r_glCreateShader) r_glCreateShader=dlsym(RTLD_DEFAULT,"glCreateShader");
+  if(!r_glCreateProgram) r_glCreateProgram=dlsym(RTLD_DEFAULT,"glCreateProgram");
+  if(!r_glAttachShader) r_glAttachShader=dlsym(RTLD_DEFAULT,"glAttachShader");
+  if(!r_glLinkProgram) r_glLinkProgram=dlsym(RTLD_DEFAULT,"glLinkProgram");
+  if(!r_glGetProgramiv) r_glGetProgramiv=dlsym(RTLD_DEFAULT,"glGetProgramiv");
+  if(!r_glGetProgramInfoLog) r_glGetProgramInfoLog=dlsym(RTLD_DEFAULT,"glGetProgramInfoLog");
+  if(!r_glGetUniformLocation) r_glGetUniformLocation=dlsym(RTLD_DEFAULT,"glGetUniformLocation");
+  if(!r_glGetAttribLocation) r_glGetAttribLocation=dlsym(RTLD_DEFAULT,"glGetAttribLocation");
+  if(!r_glUniform1i) r_glUniform1i=dlsym(RTLD_DEFAULT,"glUniform1i");
+  if(!r_glEnableVertexAttribArray) r_glEnableVertexAttribArray=dlsym(RTLD_DEFAULT,"glEnableVertexAttribArray");
+  if(!r_glDisableVertexAttribArray) r_glDisableVertexAttribArray=dlsym(RTLD_DEFAULT,"glDisableVertexAttribArray");
+  if(!r_glVertexAttribPointer) r_glVertexAttribPointer=dlsym(RTLD_DEFAULT,"glVertexAttribPointer");
+  if(!r_glDeleteShader) r_glDeleteShader=dlsym(RTLD_DEFAULT,"glDeleteShader");
+  if(!r_glShaderSource) r_glShaderSource=dlsym(RTLD_DEFAULT,"glShaderSource");
+  if(!r_glCompileShader) r_glCompileShader=dlsym(RTLD_DEFAULT,"glCompileShader");
+  if(!r_glGetShaderiv) r_glGetShaderiv=dlsym(RTLD_DEFAULT,"glGetShaderiv");
+  if(!r_glGetShaderInfoLog) r_glGetShaderInfoLog=dlsym(RTLD_DEFAULT,"glGetShaderInfoLog");
+  if(!r_glCreateShader || !r_glCreateProgram || !r_glAttachShader || !r_glLinkProgram ||
+     !r_glGetProgramiv || !r_glGetUniformLocation || !r_glGetAttribLocation ||
+     !r_glUniform1i || !r_glEnableVertexAttribArray || !r_glVertexAttribPointer ||
+     !r_glShaderSource || !r_glCompileShader || !r_glGetShaderiv){
+    fprintf(stderr,"[FORCEBLIT] missing GL symbols\n");
+    return 0;
+  }
+  vs=r_glCreateShader(0x8b31); /* GL_VERTEX_SHADER */
+  fs=r_glCreateShader(0x8b30); /* GL_FRAGMENT_SHADER */
+  r_glShaderSource(vs,1,&vs_src,NULL);
+  r_glCompileShader(vs);
+  r_glGetShaderiv(vs,0x8b81,&ok); /* GL_COMPILE_STATUS */
+  if(!ok){
+    logbuf[0]=0;
+    if(r_glGetShaderInfoLog) r_glGetShaderInfoLog(vs,sizeof(logbuf)-1,NULL,logbuf);
+    fprintf(stderr,"[FORCEBLIT] vertex compile fail: %s\n",logbuf);
+    return 0;
+  }
+  r_glShaderSource(fs,1,&fs_src,NULL);
+  r_glCompileShader(fs);
+  r_glGetShaderiv(fs,0x8b81,&ok);
+  if(!ok){
+    logbuf[0]=0;
+    if(r_glGetShaderInfoLog) r_glGetShaderInfoLog(fs,sizeof(logbuf)-1,NULL,logbuf);
+    fprintf(stderr,"[FORCEBLIT] fragment compile fail: %s\n",logbuf);
+    return 0;
+  }
+  prog=r_glCreateProgram();
+  r_glAttachShader(prog,vs);
+  r_glAttachShader(prog,fs);
+  r_glLinkProgram(prog);
+  r_glGetProgramiv(prog,0x8b82,&ok); /* GL_LINK_STATUS */
+  if(!ok){
+    logbuf[0]=0;
+    if(r_glGetProgramInfoLog) r_glGetProgramInfoLog(prog,sizeof(logbuf)-1,NULL,logbuf);
+    fprintf(stderr,"[FORCEBLIT] link fail: %s\n",logbuf);
+    return 0;
+  }
+  if(r_glDeleteShader){ r_glDeleteShader(vs); r_glDeleteShader(fs); }
+  g_re4_blit_program=prog;
+  g_re4_blit_a_pos=r_glGetAttribLocation(prog,"a_pos");
+  g_re4_blit_a_uv=r_glGetAttribLocation(prog,"a_uv");
+  g_re4_blit_u_tex=r_glGetUniformLocation(prog,"u_tex");
+  fprintf(stderr,"[FORCEBLIT] ready prog=%u a_pos=%d a_uv=%d u_tex=%d\n",
+          g_re4_blit_program,g_re4_blit_a_pos,g_re4_blit_a_uv,g_re4_blit_u_tex);
+  return 1;
+}
+static void re4_force_fbo1_blit_if_needed(int frame){
+  static int enabled=-1;
+  static const float verts[] = {
+    -1.0f, -1.0f, 0.0f, 0.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+     1.0f,  1.0f, 1.0f, 1.0f,
+    -1.0f, -1.0f, 0.0f, 0.0f,
+     1.0f,  1.0f, 1.0f, 1.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+  };
+  unsigned saved_fbo=g_gl_bound_fbo;
+  unsigned saved_program=g_gl_current_program;
+  unsigned saved_active=g_gl_active_texture;
+  int saved_idx=re4_texunit_index(saved_active);
+  unsigned saved_tex2d=(saved_idx>=0)?g_gl_bound_tex2d[saved_idx]:0;
+  int saved_vp[4]={g_gl_viewport[0],g_gl_viewport[1],g_gl_viewport[2],g_gl_viewport[3]};
+  if(enabled==-1) enabled=getenv("RE4_FORCE_FBO1_BLIT")?1:0;
+  if(!enabled || !g_fbo_color_tex[1])
+    return;
+  if(!re4_ensure_blit_program())
+    return;
+  if(!r_glBindFramebuffer) r_glBindFramebuffer=dlsym(RTLD_DEFAULT,"glBindFramebuffer");
+  if(!r_glDrawArrays) r_glDrawArrays=dlsym(RTLD_DEFAULT,"glDrawArrays");
+  if(!r_glUseProgram) r_glUseProgram=dlsym(RTLD_DEFAULT,"glUseProgram");
+  if(!r_glActiveTexture) r_glActiveTexture=dlsym(RTLD_DEFAULT,"glActiveTexture");
+  if(!r_glBindTexture) r_glBindTexture=dlsym(RTLD_DEFAULT,"glBindTexture");
+  if(!r_glViewport) r_glViewport=dlsym(RTLD_DEFAULT,"glViewport");
+  if(!r_glDisable) r_glDisable=dlsym(RTLD_DEFAULT,"glDisable");
+  if(!r_glColorMask) r_glColorMask=dlsym(RTLD_DEFAULT,"glColorMask");
+  if(!r_glUniform1i || !r_glEnableVertexAttribArray || !r_glVertexAttribPointer || !r_glDrawArrays)
+    return;
+  r_glBindFramebuffer(0x8d40,0);
+  g_gl_bound_fbo=0;
+  r_glViewport(0,0,re4_screen_width(),re4_screen_height());
+  g_gl_viewport[0]=0; g_gl_viewport[1]=0; g_gl_viewport[2]=re4_screen_width(); g_gl_viewport[3]=re4_screen_height();
+  r_glDisable(0x0be2); /* GL_BLEND */
+  r_glDisable(0x0b44); /* GL_CULL_FACE */
+  r_glDisable(0x0b71); /* GL_DEPTH_TEST */
+  r_glDisable(0x0c11); /* GL_SCISSOR_TEST */
+  g_gl_blend_enabled=0;
+  r_glColorMask(1,1,1,1);
+  g_gl_color_mask[0]=g_gl_color_mask[1]=g_gl_color_mask[2]=g_gl_color_mask[3]=1;
+  r_glUseProgram(g_re4_blit_program);
+  g_gl_current_program=g_re4_blit_program;
+  r_glActiveTexture(0x84c0);
+  g_gl_active_texture=0x84c0;
+  r_glBindTexture(0x0de1,g_fbo_color_tex[1]);
+  g_gl_bound_tex2d[0]=g_fbo_color_tex[1];
+  r_glUniform1i(g_re4_blit_u_tex,0);
+  r_glEnableVertexAttribArray((unsigned)g_re4_blit_a_pos);
+  r_glEnableVertexAttribArray((unsigned)g_re4_blit_a_uv);
+  r_glVertexAttribPointer((unsigned)g_re4_blit_a_pos,2,0x1406,0,4*sizeof(float),verts);
+  r_glVertexAttribPointer((unsigned)g_re4_blit_a_uv,2,0x1406,0,4*sizeof(float),verts+2);
+  r_glDrawArrays(0x0004,0,6); /* GL_TRIANGLES */
+  if(frame<8 || frame%60==0 || frame>=420)
+    fprintf(stderr,"[FORCEBLIT] f=%d tex=%u screen=%dx%d\n",
+            frame,g_fbo_color_tex[1],re4_screen_width(),re4_screen_height());
+  if(r_glDisableVertexAttribArray){
+    r_glDisableVertexAttribArray((unsigned)g_re4_blit_a_pos);
+    r_glDisableVertexAttribArray((unsigned)g_re4_blit_a_uv);
+  }
+  if(saved_fbo!=0 && r_glBindFramebuffer){
+    r_glBindFramebuffer(0x8d40,saved_fbo);
+    g_gl_bound_fbo=saved_fbo;
+  }
+  if(r_glUseProgram){
+    r_glUseProgram(saved_program);
+    g_gl_current_program=saved_program;
+  }
+  if(r_glActiveTexture){
+    r_glActiveTexture(saved_active);
+    g_gl_active_texture=saved_active;
+  }
+  if(saved_idx>=0 && r_glBindTexture){
+    r_glBindTexture(0x0de1,saved_tex2d);
+    g_gl_bound_tex2d[saved_idx]=saved_tex2d;
+  }
+  if(r_glViewport){
+    r_glViewport(saved_vp[0],saved_vp[1],saved_vp[2],saved_vp[3]);
+    g_gl_viewport[0]=saved_vp[0]; g_gl_viewport[1]=saved_vp[1];
+    g_gl_viewport[2]=saved_vp[2]; g_gl_viewport[3]=saved_vp[3];
+  }
+}
 /* CACHE de glGetString: o preprocessador de shader do Unity chama glGetString(RENDERER/EXTENSIONS)
    numa WORKER thread que pode NAO ter contexto GL current -> real retorna NULL -> o parse char-a-char
    de NULL crasha. Cacheamos os valores (de quando havia contexto) e devolvemos no lugar de NULL. */
@@ -149,6 +474,8 @@ static unsigned my_glCheckFramebufferStatus(unsigned target){
 }
 static void my_glFramebufferTexture2D(unsigned target,unsigned attachment,unsigned textarget,unsigned texture,int level){
   if(!r_glFramebufferTexture2D) r_glFramebufferTexture2D=dlsym(RTLD_DEFAULT,"glFramebufferTexture2D");
+  if(attachment==0x8ce0 && g_gl_bound_fbo < (sizeof(g_fbo_color_tex)/sizeof(g_fbo_color_tex[0])))
+    g_fbo_color_tex[g_gl_bound_fbo]=texture;
   if(r_glFramebufferTexture2D){
     static int lg=0;
     if(lg++<32) fprintf(stderr,"[GLFB] tex2d fbo=%u att=0x%x tex=%u tgt=0x%x level=%d\n",g_gl_bound_fbo,attachment,texture,textarget,level);
@@ -166,6 +493,7 @@ static void my_glFramebufferRenderbuffer(unsigned target,unsigned attachment,uns
 static void my_glClear(unsigned mask){
   if(!r_glClear) r_glClear=dlsym(RTLD_DEFAULT,"glClear");
   if(r_glClear){
+    re4_count_fbo_bucket(g_gl_bound_fbo, 1);
     static int lg=0;
     if(lg++<48) fprintf(stderr,"[GLDRAW] clear fbo=%u mask=0x%x\n",g_gl_bound_fbo,mask);
     r_glClear(mask);
@@ -174,6 +502,8 @@ static void my_glClear(unsigned mask){
 static void my_glDrawArrays(unsigned mode,int first,int count){
   if(!r_glDrawArrays) r_glDrawArrays=dlsym(RTLD_DEFAULT,"glDrawArrays");
   if(r_glDrawArrays){
+    re4_count_fbo_bucket(g_gl_bound_fbo, 0);
+    re4_log_composite_state("arrays", mode, count);
     static int lg=0;
     if(lg++<64) fprintf(stderr,"[GLDRAW] arrays fbo=%u mode=0x%x first=%d count=%d\n",g_gl_bound_fbo,mode,first,count);
     r_glDrawArrays(mode,first,count);
@@ -183,11 +513,64 @@ static void my_glDrawArrays(unsigned mode,int first,int count){
 static void my_glDrawElements(unsigned mode,int count,unsigned type,const void *indices){
   if(!r_glDrawElements) r_glDrawElements=dlsym(RTLD_DEFAULT,"glDrawElements");
   if(r_glDrawElements){
+    re4_count_fbo_bucket(g_gl_bound_fbo, 0);
+    re4_log_composite_state("elems", mode, count);
     static int lg=0;
     if(lg++<64) fprintf(stderr,"[GLDRAW] elems fbo=%u mode=0x%x count=%d type=0x%x idx=%p\n",g_gl_bound_fbo,mode,count,type,indices);
     r_glDrawElements(mode,count,type,indices);
     if(!g_gl_bound_fbo) egl_shim_force_present("glDrawElements");
   }
+}
+static void my_glUseProgram(unsigned program){
+  if(!r_glUseProgram) r_glUseProgram=dlsym(RTLD_DEFAULT,"glUseProgram");
+  g_gl_current_program=program;
+  if(r_glUseProgram) r_glUseProgram(program);
+}
+static void my_glActiveTexture(unsigned texture){
+  if(!r_glActiveTexture) r_glActiveTexture=dlsym(RTLD_DEFAULT,"glActiveTexture");
+  g_gl_active_texture=texture;
+  if(r_glActiveTexture) r_glActiveTexture(texture);
+}
+static void my_glBindTexture(unsigned target,unsigned texture){
+  if(!r_glBindTexture) r_glBindTexture=dlsym(RTLD_DEFAULT,"glBindTexture");
+  int idx=re4_texunit_index(g_gl_active_texture);
+  if(idx>=0){
+    if(target==0x0de1) g_gl_bound_tex2d[idx]=texture;      /* GL_TEXTURE_2D */
+    else if(target==0x8d65) g_gl_bound_texext[idx]=texture; /* GL_TEXTURE_EXTERNAL_OES */
+  }
+  if(r_glBindTexture) r_glBindTexture(target,texture);
+}
+static void my_glViewport(int x,int y,int width,int height){
+  if(!r_glViewport) r_glViewport=dlsym(RTLD_DEFAULT,"glViewport");
+  g_gl_viewport[0]=x; g_gl_viewport[1]=y; g_gl_viewport[2]=width; g_gl_viewport[3]=height;
+  if(r_glViewport) r_glViewport(x,y,width,height);
+}
+static void my_glEnable(unsigned cap){
+  if(!r_glEnable) r_glEnable=dlsym(RTLD_DEFAULT,"glEnable");
+  if(cap==0x0be2) g_gl_blend_enabled=1; /* GL_BLEND */
+  if(r_glEnable) r_glEnable(cap);
+}
+static void my_glDisable(unsigned cap){
+  if(!r_glDisable) r_glDisable=dlsym(RTLD_DEFAULT,"glDisable");
+  if(cap==0x0be2) g_gl_blend_enabled=0; /* GL_BLEND */
+  if(r_glDisable) r_glDisable(cap);
+}
+static void my_glBlendFunc(unsigned sfactor,unsigned dfactor){
+  if(!r_glBlendFunc) r_glBlendFunc=dlsym(RTLD_DEFAULT,"glBlendFunc");
+  g_gl_blend_src_rgb=sfactor; g_gl_blend_dst_rgb=dfactor;
+  g_gl_blend_src_alpha=sfactor; g_gl_blend_dst_alpha=dfactor;
+  if(r_glBlendFunc) r_glBlendFunc(sfactor,dfactor);
+}
+static void my_glBlendFuncSeparate(unsigned srcRGB,unsigned dstRGB,unsigned srcAlpha,unsigned dstAlpha){
+  if(!r_glBlendFuncSeparate) r_glBlendFuncSeparate=dlsym(RTLD_DEFAULT,"glBlendFuncSeparate");
+  g_gl_blend_src_rgb=srcRGB; g_gl_blend_dst_rgb=dstRGB;
+  g_gl_blend_src_alpha=srcAlpha; g_gl_blend_dst_alpha=dstAlpha;
+  if(r_glBlendFuncSeparate) r_glBlendFuncSeparate(srcRGB,dstRGB,srcAlpha,dstAlpha);
+}
+static void my_glColorMask(unsigned char red,unsigned char green,unsigned char blue,unsigned char alpha){
+  if(!r_glColorMask) r_glColorMask=dlsym(RTLD_DEFAULT,"glColorMask");
+  g_gl_color_mask[0]=red; g_gl_color_mask[1]=green; g_gl_color_mask[2]=blue; g_gl_color_mask[3]=alpha;
+  if(r_glColorMask) r_glColorMask(red,green,blue,alpha);
 }
 static void my_glShaderSource(unsigned sh,int c,const char*const*str,const int*len){
   if(!r_glShaderSource) r_glShaderSource=dlsym(RTLD_DEFAULT,"glShaderSource");
@@ -210,6 +593,15 @@ void *re4_gl_override(const char *nm){
   if(!strcmp(nm,"glClear")) return (void*)my_glClear;
   if(!strcmp(nm,"glDrawArrays")) return (void*)my_glDrawArrays;
   if(!strcmp(nm,"glDrawElements")) return (void*)my_glDrawElements;
+  if(!strcmp(nm,"glUseProgram")) return (void*)my_glUseProgram;
+  if(!strcmp(nm,"glActiveTexture")) return (void*)my_glActiveTexture;
+  if(!strcmp(nm,"glBindTexture")) return (void*)my_glBindTexture;
+  if(!strcmp(nm,"glViewport")) return (void*)my_glViewport;
+  if(!strcmp(nm,"glEnable")) return (void*)my_glEnable;
+  if(!strcmp(nm,"glDisable")) return (void*)my_glDisable;
+  if(!strcmp(nm,"glBlendFunc")) return (void*)my_glBlendFunc;
+  if(!strcmp(nm,"glBlendFuncSeparate")) return (void*)my_glBlendFuncSeparate;
+  if(!strcmp(nm,"glColorMask")) return (void*)my_glColorMask;
   if(!strcmp(nm,"glTexImage2D")) return (void*)my_glTexImage2D;
   if(!strcmp(nm,"glRenderbufferStorage")) return (void*)my_glRenderbufferStorage;
   if(getenv("RE4_GLDIAG")){
@@ -417,6 +809,88 @@ static void re4_set_import(const char *name, void *fn){
     if(!strcmp(dynlib_functions[i].symbol,name)){ dynlib_functions[i].func=(uintptr_t)fn; return; }
 }
 static void *N(const char*n){ void*p=jni_find_native(n); fprintf(stderr,"  native %s = %p\n",n,p); return p; }
+static long g_re4_key_down_time[256];
+static long re4_now_ms(void){
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long)(ts.tv_sec * 1000L + ts.tv_nsec / 1000000L);
+}
+static void re4_prepare_injected_key(int action, int keycode, int repeat){
+  long now = re4_now_ms();
+  long down = now;
+  if (keycode >= 0 && keycode < (int)(sizeof(g_re4_key_down_time) / sizeof(g_re4_key_down_time[0]))) {
+    if (action == AKEY_EVENT_ACTION_DOWN || g_re4_key_down_time[keycode] <= 0)
+      g_re4_key_down_time[keycode] = now;
+    down = g_re4_key_down_time[keycode];
+    if (action == AKEY_EVENT_ACTION_UP)
+      g_re4_key_down_time[keycode] = 0;
+  }
+  g_hk_inject.action = action;
+  g_hk_inject.keycode = keycode;
+  g_hk_inject.source = 0x501; /* SOURCE_GAMEPAD | SOURCE_KEYBOARD */
+  g_hk_inject.deviceId = 0;
+  g_hk_inject.metaState = 0;
+  g_hk_inject.repeat = repeat;
+  g_hk_inject.scancode = keycode;
+  g_hk_inject.flags = 0;
+  g_hk_inject.unicode = 0;
+  g_hk_inject.eventTime = now;
+  g_hk_inject.downTime = down;
+}
+static int re4_inject_key_event(void *env, void *thiz, void *inject,
+                                int action, int keycode, int repeat,
+                                int frame, const char *origin){
+  int handled;
+  if (!inject || keycode < 0)
+    return 0;
+  re4_prepare_injected_key(action, keycode, repeat);
+  handled = ((int (*)(void *, void *, void *))inject)(env, thiz, hk_keyevent_object());
+  static int padlog = 0;
+  if (padlog < 160 || !handled) {
+    fprintf(stderr, "[PAD] %s action=%d key=%d handled=%d f=%d\n",
+            origin ? origin : "inject", action, keycode, handled, frame);
+    if (padlog < 160)
+      padlog++;
+  }
+  return handled;
+}
+static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
+  FakeInputEvent ev;
+  android_shim_pump_sdl_events();
+  while (android_shim_pop_input_event(&ev)) {
+    if (ev.type == AINPUT_EVENT_TYPE_KEY) {
+      re4_inject_key_event(env, thiz, inject, ev.action, ev.keycode, 0, frame, "SDL");
+      continue;
+    }
+    static int motionlog = 0;
+    if (motionlog++ < 16) {
+      fprintf(stderr,
+              "[PAD] motion src=0x%x act=%d hat=(%.2f,%.2f) stick=(%.2f,%.2f,%.2f,%.2f) f=%d\n",
+              ev.source, ev.action,
+              ev.axes[AMOTION_EVENT_AXIS_HAT_X], ev.axes[AMOTION_EVENT_AXIS_HAT_Y],
+              ev.axes[AMOTION_EVENT_AXIS_X], ev.axes[AMOTION_EVENT_AXIS_Y],
+              ev.axes[AMOTION_EVENT_AXIS_Z], ev.axes[AMOTION_EVENT_AXIS_RZ], frame);
+    }
+  }
+}
+static void re4_autotap(void *env, void *thiz, void *inject, int frame){
+  static int tapkey = -2;
+  if (tapkey == -2) {
+    const char *value = getenv("RE4_AUTOTAP");
+    tapkey = (value && value[0]) ? atoi(value) : -1;
+    if (tapkey > 0 && inject)
+      fprintf(stderr, "[AUTOTAP] keycode=%d via nativeInjectEvent=%p\n", tapkey, inject);
+  }
+  if (tapkey <= 0 || !inject || frame <= 120)
+    return;
+  int period = re4_int_env("RE4_AUTOTAP_PERIOD", 90, 10, 600);
+  int hold = re4_int_env("RE4_AUTOTAP_HOLD", 3, 1, 60);
+  int phase = frame % period;
+  if (phase == 0)
+    re4_inject_key_event(env, thiz, inject, AKEY_EVENT_ACTION_DOWN, tapkey, 0, frame, "AUTOTAP");
+  else if (phase == hold)
+    re4_inject_key_event(env, thiz, inject, AKEY_EVENT_ACTION_UP, tapkey, 0, frame, "AUTOTAP");
+}
 /* BRIDGE de TLS bionic auto-contido: as keys do engine viram SLOTS minhas (1 glibc key so
    guarda o array por-thread). O engine nunca toca o pthread_key do glibc -> sem corrupcao. */
 #define NSLOT 1024
@@ -599,6 +1073,21 @@ int main(void){
         if(getenv("RE4_NOGCCOLLECT")){ a=so_find_addr_safe("mono_gc_collect"); if(a){hook_arm64(a,(uintptr_t)jobwait_stub); fprintf(stderr,"[HOOK] mono_gc_collect -> no-op\n");}
           a=so_find_addr_safe("mono_gc_collect_a_little"); if(a)hook_arm64(a,(uintptr_t)jobwait_stub); }
         a=so_find_addr_safe("mono_pagesize"); if(a){hook_arm64(a,(uintptr_t)my_mono_pagesize); fprintf(stderr,"[HOOK] mono_pagesize -> 4096\n");}
+        g_mono_string_to_utf8_fn=(void*)so_find_addr_safe("mono_string_to_utf8");
+        g_mono_free_fn=(void*)so_find_addr_safe("mono_free");
+        a=so_find_addr_safe("mono_add_internal_call");
+        if(a){
+          unsigned char*t4=(unsigned char*)mmap(0,32,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+          if(t4!=MAP_FAILED){
+            memcpy(t4,(void*)a,8);
+            *(uint32_t*)(t4+8)=0xe51ff004u;
+            *(uint32_t*)(t4+12)=(uint32_t)(a+8);
+            __builtin___clear_cache((char*)t4,(char*)t4+16);
+            g_orig_mono_add_internal_call=(void(*)(const char*,const void*))t4;
+            hook_arm64(a,(uintptr_t)my_mono_add_internal_call);
+            fprintf(stderr,"[HOOK] mono_add_internal_call -> icall filter\n");
+          }
+        }
         { uintptr_t ps=so_find_addr_safe("mono_pagesize"); uintptr_t base=ps-0x29d7e4; uintptr_t gt=base+0x1a6a8;
           g_mono_base=base;
           g_grd_fn=(void*)so_find_addr_safe("mono_get_root_domain"); g_dget_fn=(void*)so_find_addr_safe("mono_domain_get"); g_dset_fn=(void*)so_find_addr_safe("mono_domain_set"); g_jatt_fn=(void*)so_find_addr_safe("mono_jit_thread_attach");
@@ -631,7 +1120,7 @@ int main(void){
   fprintf(stderr,"[B] JNI_OnLoad=0x%x\n",ver);
   static long t=0xA1, surf=0x5F, ctx=0xC0;
   /* janela GLES2 do device (egl_shim do core, provado) */
-  if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO)!=0) fprintf(stderr,"SDL_Init: %s\n",SDL_GetError());
+  if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_GAMECONTROLLER)!=0) fprintf(stderr,"SDL_Init: %s\n",SDL_GetError());
   egl_shim_create_window();
   fprintf(stderr,"[C] janela SDL/GLES2 criada\n");
   void *fn;
@@ -658,9 +1147,17 @@ int main(void){
     else if(d && att){ void*th=att(d); fprintf(stderr,"[MONO] thread_attach -> %p\n",th); }
   }
   void *render=N("nativeRender");
+  void *inject=N("nativeInjectEvent");
   for(int f=0; render && f<1200; f++){
+    g_re4_frame=f;
+    re4_pump_sdl_input(env, &t, inject, f);
+    re4_autotap(env, &t, inject, f);
     ((unsigned char(*)(void*,void*))render)(env,&t);
+    re4_probe_frame_pixels(f);
+    re4_force_fbo1_blit_if_needed(f);
+    if(!getenv("RE4_SKIP_FRAME_PRESENT")) egl_shim_force_present("frame-end");
     opensles_shim_pump_callbacks(); /* alimenta o audio (OpenSL->SDL2) */
+    re4_log_and_reset_fbo_stats(f);
     if(f<5||f%100==0) fprintf(stderr,"[render %d]\n",f);
   }
   fprintf(stderr,"=== render loop terminou ===\n");

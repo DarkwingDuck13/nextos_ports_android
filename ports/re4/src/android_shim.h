@@ -197,10 +197,12 @@ typedef struct {
 // Additional input functions
 float AMotionEvent_getAxisValue(void *event, int axis, int pointerIndex);
 int AInputEvent_getSource(void *event);
+int AInputEvent_getDeviceId(void *event);
 
 int AInputEvent_getType(void *event);
 int AKeyEvent_getAction(void *event);
 int AKeyEvent_getKeyCode(void *event);
+int AKeyEvent_getMetaState(void *event);
 float AMotionEvent_getX(void *event, int pointerIndex);
 float AMotionEvent_getY(void *event, int pointerIndex);
 int AMotionEvent_getAction(void *event);
@@ -237,5 +239,7 @@ struct android_app *android_shim_init(void);
 void android_shim_cleanup(void);
 void android_shim_send_cmd(struct android_app *app, int8_t cmd);
 ANativeWindow *android_shim_get_window(void);
+void android_shim_pump_sdl_events(void);
+int android_shim_pop_input_event(FakeInputEvent *out_event);
 
 #endif
