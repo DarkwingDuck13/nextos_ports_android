@@ -3094,11 +3094,11 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   /* MOVIMENTO NO GAMEPLAY (Leon anda): o gameplay e TOUCH (dpad na tela inf-esq). Traduzimos
      a direcao do gamepad (dpad ou analogico esq) num ARRASTO de toque sobre esse dpad virtual.
      So no gameplay (!g_in_menu). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
-  if(!g_in_menu && getenv("RE4_TOUCHMOVE")){   /* opt-in (isola causa de freeze); liga p/ andar */
+  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE")){   /* default ON no gameplay: anda o Leon */
     static int touching=0; static float lx2=0,ly2=0;
-    float cx=(float)re4_int_env("RE4_DPAD_CX",170,0,1920);
-    float cy=(float)re4_int_env("RE4_DPAD_CY",560,0,1080);
-    float R =(float)re4_int_env("RE4_DPAD_R",70,10,400);
+    float cx=(float)re4_int_env("RE4_DPAD_CX",95,0,1920);
+    float cy=(float)re4_int_env("RE4_DPAD_CY",555,0,1080);
+    float R =(float)re4_int_env("RE4_DPAD_R",60,10,400);
     float dx = (g_re4_gp_btn[RE4_BTN_DR]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DL]?1.0f:0.0f) + g_re4_gp_lx;
     float dy = (g_re4_gp_btn[RE4_BTN_DD]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DU]?1.0f:0.0f) + g_re4_gp_ly; /* tela: baixo=+ */
     if(dx>1)dx=1; if(dx<-1)dx=-1; if(dy>1)dy=1; if(dy<-1)dy=-1;
