@@ -116,6 +116,9 @@ static re4_input_key_string_icall_t g_orig_input_get_key_down_string = 0;
 static re4_input_key_string_icall_t g_orig_input_get_key_up_string = 0;
 static re4_input_anykey_icall_t g_orig_input_any_key = 0;
 static re4_input_anykey_icall_t g_orig_input_any_key_down = 0;
+/* originais dos icalls de touch (cair no jogo quando NAO injetamos movimento -> nao trava no load) */
+static int  (*g_orig_touchcount)(void) = 0;
+static void (*g_orig_gettouch)(int,void*) = 0;
 static float my_input_get_axis(void *mono_string);
 static float my_input_get_axis_raw(void *mono_string);
 static int my_input_get_button(void *mono_string);
@@ -224,9 +227,11 @@ static void my_mono_add_internal_call(const char *name, const void *method){
         resolved = (const void*)my_input_get_mouse_present;
         fprintf(stderr, "[ICALL] override %s -> mousePresent=1\n", name);
       } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
+        if(!g_orig_gettouch) g_orig_gettouch=(void(*)(int,void*))method;
         resolved = (const void*)my_icall_get_touch;
         fprintf(stderr, "[ICALL] override %s -> virtual touch\n", name);
       } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "get_touchCount")){
+        if(!g_orig_touchcount) g_orig_touchcount=(int(*)(void))method;
         resolved = (const void*)my_input_get_touch_count;
         fprintf(stderr, "[ICALL] override %s -> virtual touchCount\n", name);
       }
@@ -1078,17 +1083,22 @@ static void my_icall_get_mousePosition(void *out_vec3){
   v[1]=(float)h - g_mouse_y;   /* inverte Y p/ coords do Unity */
   v[2]=0.0f;
 }
-/* touchCount: 1 enquanto o toque virtual esta ativo (inclui o frame do Ended). */
+/* touchCount: se estamos injetando movimento, 1; senao cai no jogo (toque real = nenhum).
+   Cair no original evita travar o sistema de toque do jogo no load. */
 static int my_input_get_touch_count(void){
   float x,y; int down,prev;
-  return re4_active_touch(&x,&y,&down,&prev) ? 1 : 0;
+  if(re4_active_touch(&x,&y,&down,&prev)) return 1;
+  return g_orig_touchcount ? g_orig_touchcount() : 0;
 }
 /* INTERNAL_CALL_GetTouch(int index, out Touch). Layout Unity 2018 (ARM32, 4B campos):
    0:fingerId 4:pos.x 8:pos.y 12:rawPos.x 16:rawPos.y 20:dPos.x 24:dPos.y 28:dTime
    32:tapCount 36:phase 40:type 44:pressure ... Preenchemos o essencial p/ o EventSystem. */
 static void my_icall_get_touch(int index, void *out_touch){
   if(!out_touch) return;
-  float mx,my; int down,prev; re4_active_touch(&mx,&my,&down,&prev);
+  float mx,my; int down,prev;
+  if(!re4_active_touch(&mx,&my,&down,&prev)){   /* sem movimento injetado -> deixa o jogo */
+    if(g_orig_gettouch){ g_orig_gettouch(index,out_touch); return; }
+  }
   unsigned char *t=(unsigned char*)out_touch;
   memset(t, 0, 56);
   int h = re4_screen_height();
