@@ -218,9 +218,13 @@ static class TexConv {
         if (sor4_astc_decode(astc, (ulong)lvl0, w, h, bx, by, full) != 0) return -1;
 
         if (!NoMaskFix){
-            long sa=0; int colored=0, np=full.Length/4;
-            for (int p=0;p<full.Length;p+=4){ sa+=full[p+3]; int mx=full[p]; if(full[p+1]>mx)mx=full[p+1]; if(full[p+2]>mx)mx=full[p+2]; if(mx>16) colored++; }
-            if (np>0 && sa/np > 12 && (long)colored*100 < (long)np)
+            // MESMA regra do Texture2DReader.SOR4.cs: so e mascara de FONTE se entre os pixels
+            // OPACOS (alpha>128) quase nenhum tem cor (<1%). Cerca/grade/escada de fundo =
+            // pixel opaco COLORIDO (fio/degrau) -> NAO e mascara -> POUPA (mantem a cor).
+            // O criterio antigo media cor GLOBAL e pintava de branco cercas finas (<1% global).
+            long sa=0; int nOp=0, nOpCol=0, np=full.Length/4;
+            for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; sa+=a; int mx=full[p]; if(full[p+1]>mx)mx=full[p+1]; if(full[p+2]>mx)mx=full[p+2]; if(a>128){ nOp++; if(mx>16) nOpCol++; } }
+            if (np>0 && sa/np > 12 && nOp>0 && (long)nOpCol*100 < (long)nOp)
                 for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; }
         }
 
