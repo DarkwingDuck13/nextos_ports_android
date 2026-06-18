@@ -21,6 +21,8 @@
 #define SCREEN_WIDTH 1280
 #define SCREEN_HEIGHT 720
 
+extern void *recon_gl_override(const char *procname) __attribute__((weak));
+
 /* resolucao REAL da window (nativa do display) — Unity renderiza nessa res
    p/ preencher a tela toda. ANativeWindow_get{Width,Height} usam esses. */
 static int g_win_w = SCREEN_WIDTH;
@@ -391,6 +393,10 @@ void *egl_shim_GetProcAddress(const char *procname) {
   /* ANTI-WEDGE: glFinish satura o Utgard (Bully) -> no-op (religa: HK_ALLOWFINISH=1) */
   if (procname && !getenv("HK_ALLOWFINISH") && !strcmp(procname, "glFinish"))
     return (void *)gl_noop_stub;
+  if (procname && procname[0] == 'g' && procname[1] == 'l' && recon_gl_override) {
+    void *ov = recon_gl_override(procname);
+    if (ov) return ov;
+  }
   void *ptr = SDL_GL_GetProcAddress(procname);
   if (ptr) return ptr;
 

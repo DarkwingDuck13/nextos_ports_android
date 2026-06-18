@@ -15,6 +15,7 @@
 /* bridge dlopen/dlsym -> modulos do so-loader (libil2cpp/libunity) */
 #include <stdlib.h>
 extern so_module *g_m_il2cpp, *g_m_unity;
+extern int egl_shim_width(void), egl_shim_height(void);
 
 /* fwd: wrappers GL (HK Mali-450), definidos antes de recon_wire_egl */
 static const unsigned char *my_glGetString(unsigned);
@@ -290,8 +291,10 @@ static unsigned char *ubo_shadow(unsigned id, long need) {
   return g_ubostore[free_i].data;
 }
 static void (*real_glBindBuffer)(unsigned, unsigned) = 0;
+static unsigned g_bound_arraybuf = 0;
 static void my_glBindBuffer(unsigned target, unsigned buf) {
   if (target == 0x8A11) { g_bound_ubo = buf; return; } /* driver GLES2 nao conhece */
+  if (target == 0x8892) g_bound_arraybuf = buf;         /* GL_ARRAY_BUFFER */
   if (!real_glBindBuffer) real_glBindBuffer = (void (*)(unsigned, unsigned))dlsym(RTLD_DEFAULT, "glBindBuffer");
   if (real_glBindBuffer) real_glBindBuffer(target, buf);
 }
@@ -322,6 +325,331 @@ static void emul_glBindBufferRange(unsigned target, unsigned index, unsigned buf
 static void emul_glBindBufferBase(unsigned target, unsigned index, unsigned buf) {
   emul_glBindBufferRange(target, index, buf, 0, 0);
 }
+/* FBO COLOR -> textura: o HK renderiza em render target e depois faz composite por
+   triangulo para a tela. No Mali-450 atual esse composite cola em 2 pixels; este
+   rastreio permite testar/provar e substituir o ultimo passo sem mexer no resto. */
+#define HK_FBOS 128
+static struct { unsigned fb; unsigned color_tex; } g_fbotex[HK_FBOS];
+static unsigned g_last_color_tex = 0;
+static void (*real_glFramebufferTexture2D)(unsigned, unsigned, unsigned, unsigned, int) = 0;
+static unsigned fbo_color_tex(unsigned fb) {
+  for (int i = 0; i < HK_FBOS; i++)
+    if (g_fbotex[i].fb == fb) return g_fbotex[i].color_tex;
+  return 0;
+}
+static void record_fbo_color_tex(unsigned fb, unsigned tex) {
+  if (!fb) return;
+  int free_i = -1;
+  for (int i = 0; i < HK_FBOS; i++) {
+    if (g_fbotex[i].fb == fb) { g_fbotex[i].color_tex = tex; break; }
+    if (free_i < 0 && !g_fbotex[i].fb) free_i = i;
+    if (i == HK_FBOS - 1 && free_i >= 0) {
+      g_fbotex[free_i].fb = fb;
+      g_fbotex[free_i].color_tex = tex;
+    }
+  }
+  if (tex) g_last_color_tex = tex;
+}
+static void diag_glFramebufferTexture2D(unsigned target, unsigned attachment,
+                                        unsigned textarget, unsigned tex, int level) {
+  if (!real_glFramebufferTexture2D)
+    real_glFramebufferTexture2D = (void (*)(unsigned, unsigned, unsigned, unsigned, int))dlsym(RTLD_DEFAULT, "glFramebufferTexture2D");
+  if ((target == 0x8D40 || target == 0x8CA9) && attachment == 0x8CE0) { /* COLOR_ATTACHMENT0 */
+    record_fbo_color_tex(g_cur_fbo, tex);
+    static int n = 0;
+    if (n < 16)
+      fprintf(stderr, "[FBO-TEX] fb=%u color_tex=%u textarget=0x%x level=%d\n",
+              g_cur_fbo, tex, textarget, level);
+    n++;
+  }
+  if (real_glFramebufferTexture2D)
+    real_glFramebufferTexture2D(target == 0x8CA9 ? 0x8D40 : target, attachment, textarget, tex, level);
+}
+static int hk_env_on(const char *name) {
+  const char *e = getenv(name);
+  return e && *e && strcmp(e, "0") != 0;
+}
+static unsigned (*p_glCreateShader)(unsigned) = 0;
+static void (*p_glDeleteShader)(unsigned) = 0;
+static void (*p_glShaderSource)(unsigned, int, const char *const *, const int *) = 0;
+static void (*p_glCompileShader)(unsigned) = 0;
+static unsigned (*p_glCreateProgram)(void) = 0;
+static void (*p_glAttachShader)(unsigned, unsigned) = 0;
+static void (*p_glLinkProgram)(unsigned) = 0;
+static void (*p_glGetShaderiv)(unsigned, unsigned, int *) = 0;
+static void (*p_glGetProgramiv)(unsigned, unsigned, int *) = 0;
+static void (*p_glGetShaderInfoLog)(unsigned, int, int *, char *) = 0;
+static void (*p_glGetProgramInfoLog)(unsigned, int, int *, char *) = 0;
+static int (*p_glGetAttribLocation)(unsigned, const char *) = 0;
+static int (*p_glGetUniformLocation)(unsigned, const char *) = 0;
+static void (*p_glUniform1i)(int, int) = 0;
+static void (*p_glVertexAttribPointer)(unsigned, int, unsigned, unsigned char, int, const void *) = 0;
+static void (*p_glEnableVertexAttribArray)(unsigned) = 0;
+static void (*p_glDisableVertexAttribArray)(unsigned) = 0;
+static void (*p_glActiveTexture)(unsigned) = 0;
+static void (*p_glDisable)(unsigned) = 0;
+static void (*p_glViewport)(int, int, int, int) = 0;
+static void (*real_glDrawArrays)(unsigned, int, int) = 0;
+static struct {
+  int enabled, size, stride;
+  unsigned type, norm, buf;
+  const void *ptr;
+} g_attr[16];
+#define HK_SHMAP 512
+static struct { unsigned sh; int dump_id; int is_frag; } g_shmap[HK_SHMAP];
+#define HK_PROGMAP 128
+static struct { unsigned prog; unsigned sh[8]; int n; } g_progmap[HK_PROGMAP];
+typedef struct { unsigned sh[8]; int n; } hk_prog_shaders;
+static unsigned g_force_red_prog = 0;
+static unsigned g_force_blit_prog = 0;
+static void force_resolve_gl(void) {
+  if (!p_glCreateShader) p_glCreateShader = (unsigned (*)(unsigned))dlsym(RTLD_DEFAULT, "glCreateShader");
+  if (!p_glDeleteShader) p_glDeleteShader = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glDeleteShader");
+  if (!p_glShaderSource) p_glShaderSource = (void (*)(unsigned, int, const char *const *, const int *))dlsym(RTLD_DEFAULT, "glShaderSource");
+  if (!p_glCompileShader) p_glCompileShader = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glCompileShader");
+  if (!p_glCreateProgram) p_glCreateProgram = (unsigned (*)(void))dlsym(RTLD_DEFAULT, "glCreateProgram");
+  if (!p_glAttachShader) p_glAttachShader = (void (*)(unsigned, unsigned))dlsym(RTLD_DEFAULT, "glAttachShader");
+  if (!p_glLinkProgram) p_glLinkProgram = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glLinkProgram");
+  if (!p_glGetShaderiv) p_glGetShaderiv = (void (*)(unsigned, unsigned, int *))dlsym(RTLD_DEFAULT, "glGetShaderiv");
+  if (!p_glGetProgramiv) p_glGetProgramiv = (void (*)(unsigned, unsigned, int *))dlsym(RTLD_DEFAULT, "glGetProgramiv");
+  if (!p_glGetShaderInfoLog) p_glGetShaderInfoLog = (void (*)(unsigned, int, int *, char *))dlsym(RTLD_DEFAULT, "glGetShaderInfoLog");
+  if (!p_glGetProgramInfoLog) p_glGetProgramInfoLog = (void (*)(unsigned, int, int *, char *))dlsym(RTLD_DEFAULT, "glGetProgramInfoLog");
+  if (!p_glGetAttribLocation) p_glGetAttribLocation = (int (*)(unsigned, const char *))dlsym(RTLD_DEFAULT, "glGetAttribLocation");
+  if (!p_glGetUniformLocation) p_glGetUniformLocation = (int (*)(unsigned, const char *))dlsym(RTLD_DEFAULT, "glGetUniformLocation");
+  if (!p_glUniform1i) p_glUniform1i = (void (*)(int, int))dlsym(RTLD_DEFAULT, "glUniform1i");
+  if (!p_glVertexAttribPointer) p_glVertexAttribPointer = (void (*)(unsigned, int, unsigned, unsigned char, int, const void *))dlsym(RTLD_DEFAULT, "glVertexAttribPointer");
+  if (!p_glEnableVertexAttribArray) p_glEnableVertexAttribArray = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glEnableVertexAttribArray");
+  if (!p_glDisableVertexAttribArray) p_glDisableVertexAttribArray = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glDisableVertexAttribArray");
+  if (!p_glActiveTexture) p_glActiveTexture = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glActiveTexture");
+  if (!p_glDisable) p_glDisable = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glDisable");
+  if (!p_glViewport) p_glViewport = (void (*)(int, int, int, int))dlsym(RTLD_DEFAULT, "glViewport");
+  if (!real_glDrawArrays) real_glDrawArrays = (void (*)(unsigned, int, int))dlsym(RTLD_DEFAULT, "glDrawArrays");
+  if (!real_glBindTexture) real_glBindTexture = (void (*)(unsigned, unsigned))dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (!real_glUseProgram) real_glUseProgram = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glUseProgram");
+  if (!real_glBindBuffer) real_glBindBuffer = (void (*)(unsigned, unsigned))dlsym(RTLD_DEFAULT, "glBindBuffer");
+  if (!real_glGetError) real_glGetError = (int (*)(void))dlsym(RTLD_DEFAULT, "glGetError");
+}
+static void shmap_set(unsigned sh, int dump_id, int is_frag) {
+  int free_i = -1;
+  for (int i = 0; i < HK_SHMAP; i++) {
+    if (g_shmap[i].sh == sh) { g_shmap[i].dump_id = dump_id; g_shmap[i].is_frag = is_frag; return; }
+    if (free_i < 0 && !g_shmap[i].sh) free_i = i;
+  }
+  if (free_i >= 0) { g_shmap[free_i].sh = sh; g_shmap[free_i].dump_id = dump_id; g_shmap[free_i].is_frag = is_frag; }
+}
+static int shmap_dump(unsigned sh) {
+  for (int i = 0; i < HK_SHMAP; i++) if (g_shmap[i].sh == sh) return g_shmap[i].dump_id;
+  return -1;
+}
+static void prog_attach(unsigned prog, unsigned sh) {
+  int free_i = -1;
+  for (int i = 0; i < HK_PROGMAP; i++) {
+    if (g_progmap[i].prog == prog) {
+      if (g_progmap[i].n < 8) g_progmap[i].sh[g_progmap[i].n++] = sh;
+      return;
+    }
+    if (free_i < 0 && !g_progmap[i].prog) free_i = i;
+  }
+  if (free_i >= 0) {
+    g_progmap[free_i].prog = prog;
+    g_progmap[free_i].sh[0] = sh;
+    g_progmap[free_i].n = 1;
+  }
+}
+static hk_prog_shaders prog_shaders(unsigned prog) {
+  hk_prog_shaders r; memset(&r, 0, sizeof r);
+  for (int i = 0; i < HK_PROGMAP; i++)
+    if (g_progmap[i].prog == prog) {
+      r.n = g_progmap[i].n;
+      for (int k = 0; k < r.n && k < 8; k++) r.sh[k] = g_progmap[i].sh[k];
+      break;
+    }
+  return r;
+}
+static void diag_glAttachShader(unsigned prog, unsigned sh) {
+  force_resolve_gl();
+  prog_attach(prog, sh);
+  if (p_glAttachShader) p_glAttachShader(prog, sh);
+}
+static void diag_glLinkProgram(unsigned prog) {
+  force_resolve_gl();
+  if (p_glLinkProgram) p_glLinkProgram(prog);
+  int ok = 0;
+  if (p_glGetProgramiv) p_glGetProgramiv(prog, 0x8B82, &ok); /* LINK_STATUS */
+  hk_prog_shaders ps = prog_shaders(prog);
+  static int n = 0;
+  if (n < 80 || !ok) {
+    fprintf(stderr, "[LINK] prog=%u ok=%d shaders=", prog, ok);
+    for (int i = 0; i < ps.n; i++)
+      fprintf(stderr, "%s%u(dump=%d)", i ? "," : "", ps.sh[i], shmap_dump(ps.sh[i]));
+    if (!ok && p_glGetProgramInfoLog) {
+      char log[1024]; int len = 0;
+      p_glGetProgramInfoLog(prog, sizeof log, &len, log);
+      fprintf(stderr, " log=%.*s", len, log);
+    }
+    fprintf(stderr, "\n");
+    n++;
+  }
+}
+static unsigned make_force_program(int textured) {
+  force_resolve_gl();
+  if (!p_glCreateShader || !p_glShaderSource || !p_glCompileShader || !p_glCreateProgram ||
+      !p_glAttachShader || !p_glLinkProgram) return 0;
+  const char *vs =
+      "attribute vec2 a_pos;\n"
+      "attribute vec2 a_uv;\n"
+      "varying vec2 v_uv;\n"
+      "void main(){ v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+  const char *fs_red =
+      "precision mediump float;\n"
+      "void main(){ gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+  const char *fs_tex =
+      "precision mediump float;\n"
+      "varying vec2 v_uv;\n"
+      "uniform sampler2D u_tex;\n"
+      "void main(){ gl_FragColor = texture2D(u_tex, v_uv); }\n";
+  unsigned shv = p_glCreateShader(0x8B31), shf = p_glCreateShader(0x8B30);
+  unsigned prog = p_glCreateProgram();
+  p_glShaderSource(shv, 1, &vs, 0);
+  p_glShaderSource(shf, 1, textured ? &fs_tex : &fs_red, 0);
+  p_glCompileShader(shv);
+  p_glCompileShader(shf);
+  diag_glAttachShader(prog, shv);
+  diag_glAttachShader(prog, shf);
+  diag_glLinkProgram(prog);
+  if (p_glGetProgramiv) {
+    int ok = 0; p_glGetProgramiv(prog, 0x8B82, &ok); /* LINK_STATUS */
+    if (!ok) {
+      char log[512]; int len = 0;
+      if (p_glGetProgramInfoLog) p_glGetProgramInfoLog(prog, sizeof log, &len, log);
+      fprintf(stderr, "[FORCE-DRAW] link failed textured=%d: %.*s\n", textured, len, log);
+    }
+  }
+  return prog;
+}
+static void force_screen_draw(unsigned tex) {
+  int textured = tex != 0;
+  unsigned *prog_slot = textured ? &g_force_blit_prog : &g_force_red_prog;
+  if (!*prog_slot) *prog_slot = make_force_program(textured);
+  if (!*prog_slot) return;
+  force_resolve_gl();
+  static const float v[] = {
+    -1.0f, -1.0f, 0.0f, 0.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+     1.0f,  1.0f, 1.0f, 1.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+  };
+  unsigned save_prog = g_cur_program;
+  unsigned save_array = g_bound_arraybuf;
+  if (real_glBindFramebuffer) real_glBindFramebuffer(0x8D40, 0);
+  if (p_glViewport) p_glViewport(0, 0, egl_shim_width(), egl_shim_height());
+  if (p_glDisable) { p_glDisable(0x0C11); p_glDisable(0x0B71); p_glDisable(0x0BE2); } /* scissor/depth/blend */
+  if (real_glUseProgram) real_glUseProgram(*prog_slot);
+  if (real_glBindBuffer) real_glBindBuffer(0x8892, 0);
+  if (textured) {
+    int loc = p_glGetUniformLocation ? p_glGetUniformLocation(*prog_slot, "u_tex") : -1;
+    if (p_glActiveTexture) p_glActiveTexture(0x84C0); /* TEXTURE0 */
+    if (real_glBindTexture) real_glBindTexture(0x0DE1, tex);
+    if (loc >= 0 && p_glUniform1i) p_glUniform1i(loc, 0);
+  }
+  int lp = p_glGetAttribLocation ? p_glGetAttribLocation(*prog_slot, "a_pos") : 0;
+  int lu = p_glGetAttribLocation ? p_glGetAttribLocation(*prog_slot, "a_uv") : 1;
+  if (lp >= 0 && p_glVertexAttribPointer && p_glEnableVertexAttribArray) {
+    p_glEnableVertexAttribArray((unsigned)lp);
+    p_glVertexAttribPointer((unsigned)lp, 2, 0x1406, 0, 4 * (int)sizeof(float), v);
+  }
+  if (lu >= 0 && p_glVertexAttribPointer && p_glEnableVertexAttribArray) {
+    p_glEnableVertexAttribArray((unsigned)lu);
+    p_glVertexAttribPointer((unsigned)lu, 2, 0x1406, 0, 4 * (int)sizeof(float), v + 2);
+  }
+  if (real_glDrawArrays) real_glDrawArrays(0x0004, 0, 6); /* TRIANGLES */
+  if (lp >= 0 && p_glDisableVertexAttribArray) p_glDisableVertexAttribArray((unsigned)lp);
+  if (lu >= 0 && p_glDisableVertexAttribArray) p_glDisableVertexAttribArray((unsigned)lu);
+  if (real_glUseProgram) real_glUseProgram(save_prog);
+  if (real_glBindBuffer) real_glBindBuffer(0x8892, save_array);
+  if (real_glGetError) {
+    static int n = 0;
+    if (n < 12)
+      fprintf(stderr, "[FORCE-DRAW] t=%lds textured=%d tex=%u err=0x%x\n",
+              hk_secs(), textured, tex, real_glGetError());
+    n++;
+  }
+}
+static int diag_glGetAttribLocation(unsigned prog, const char *name) {
+  force_resolve_gl();
+  int loc = p_glGetAttribLocation ? p_glGetAttribLocation(prog, name) : -1;
+  if (name && (!strcmp(name, "vertex") || !strcmp(name, "in_POSITION0") ||
+               !strcmp(name, "a_pos") || !strcmp(name, "a_uv"))) {
+    static int n = 0;
+    if (n < 40) { fprintf(stderr, "[ATTRLOC] prog=%u %s -> %d\n", prog, name, loc); n++; }
+  }
+  return loc;
+}
+static int diag_glGetUniformLocation(unsigned prog, const char *name) {
+  force_resolve_gl();
+  int loc = p_glGetUniformLocation ? p_glGetUniformLocation(prog, name) : -1;
+  if (name && (!strcmp(name, "tex") || !strcmp(name, "uvOffsetAndScale") ||
+               !strcmp(name, "_MainTex") || !strcmp(name, "_MainTex_ST"))) {
+    static int n = 0;
+    if (n < 60) { fprintf(stderr, "[UNILOC] prog=%u %s -> %d\n", prog, name, loc); n++; }
+  }
+  return loc;
+}
+static void diag_glVertexAttribPointer(unsigned idx, int size, unsigned type,
+                                       unsigned char norm, int stride, const void *ptr) {
+  if (!p_glVertexAttribPointer)
+    p_glVertexAttribPointer = (void (*)(unsigned, int, unsigned, unsigned char, int, const void *))dlsym(RTLD_DEFAULT, "glVertexAttribPointer");
+  if (idx < 16) {
+    g_attr[idx].size = size; g_attr[idx].type = type; g_attr[idx].norm = norm;
+    g_attr[idx].stride = stride; g_attr[idx].ptr = ptr; g_attr[idx].buf = g_bound_arraybuf;
+  }
+  if (p_glVertexAttribPointer) p_glVertexAttribPointer(idx, size, type, norm, stride, ptr);
+}
+static void diag_glEnableVertexAttribArray(unsigned idx) {
+  if (!p_glEnableVertexAttribArray)
+    p_glEnableVertexAttribArray = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glEnableVertexAttribArray");
+  if (idx < 16) g_attr[idx].enabled = 1;
+  if (p_glEnableVertexAttribArray) p_glEnableVertexAttribArray(idx);
+}
+static void diag_glDisableVertexAttribArray(unsigned idx) {
+  if (!p_glDisableVertexAttribArray)
+    p_glDisableVertexAttribArray = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glDisableVertexAttribArray");
+  if (idx < 16) g_attr[idx].enabled = 0;
+  if (p_glDisableVertexAttribArray) p_glDisableVertexAttribArray(idx);
+}
+static void force_native_final_draw(void) {
+  force_resolve_gl();
+  if (!g_cur_program || !p_glGetAttribLocation || !p_glVertexAttribPointer ||
+      !p_glEnableVertexAttribArray || !real_glDrawArrays) return;
+  int loc = p_glGetAttribLocation(g_cur_program, "vertex");
+  if (loc < 0) return;
+  static const float v[] = {
+    -1.0f, -1.0f, 0.0f, 0.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+     1.0f, -1.0f, 1.0f, 0.0f,
+     1.0f,  1.0f, 1.0f, 1.0f,
+    -1.0f,  1.0f, 0.0f, 1.0f,
+  };
+  unsigned save_array = g_bound_arraybuf;
+  if (real_glBindFramebuffer) real_glBindFramebuffer(0x8D40, 0);
+  if (p_glViewport) p_glViewport(0, 0, egl_shim_width(), egl_shim_height());
+  if (p_glDisable) { p_glDisable(0x0C11); p_glDisable(0x0B71); p_glDisable(0x0BE2); }
+  if (real_glBindBuffer) real_glBindBuffer(0x8892, 0);
+  p_glEnableVertexAttribArray((unsigned)loc);
+  p_glVertexAttribPointer((unsigned)loc, 4, 0x1406, 0, 4 * (int)sizeof(float), v);
+  real_glDrawArrays(0x0004, 0, 6);
+  if (real_glBindBuffer) real_glBindBuffer(0x8892, save_array);
+  if (real_glGetError) {
+    static int n = 0;
+    if (n < 12)
+      fprintf(stderr, "[FIXFINAL] prog=%u vertex_loc=%d err=0x%x\n",
+              g_cur_program, loc, real_glGetError());
+    n++;
+  }
+}
 /* DIAG: os draws acontecem e passam? (render preto = ou nao desenha ou erra) */
 static void (*real_glDrawElements)(unsigned, int, unsigned, const void *) = 0;
 static void diag_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
@@ -329,6 +657,25 @@ static void diag_glDrawElements(unsigned mode, int count, unsigned type, const v
   if (!real_glGetError) real_glGetError = (int (*)(void))dlsym(RTLD_DEFAULT, "glGetError");
   unsigned pre = real_glGetError ? (unsigned)real_glGetError() : 0; /* limpa + captura acumulado */
   if (real_glDrawElements) real_glDrawElements(mode, count, type, idx);
+  if (g_cur_fbo == 0 && count == 3) {
+    force_resolve_gl();
+    int vloc = p_glGetAttribLocation ? p_glGetAttribLocation(g_cur_program, "vertex") : -1;
+    int tloc = p_glGetUniformLocation ? p_glGetUniformLocation(g_cur_program, "tex") : -1;
+    int uloc = p_glGetUniformLocation ? p_glGetUniformLocation(g_cur_program, "uvOffsetAndScale") : -1;
+    static int fn = 0;
+    if (fn < 12) {
+      int ai = (vloc >= 0 && vloc < 16) ? vloc : 0;
+      fprintf(stderr, "[FINAL] prog=%u vloc=%d texloc=%d uvloc=%d attr%d en=%d size=%d type=0x%x stride=%d buf=%u ptr=%p\n",
+              g_cur_program, vloc, tloc, uloc, ai, g_attr[ai].enabled, g_attr[ai].size,
+              g_attr[ai].type, g_attr[ai].stride, g_attr[ai].buf, g_attr[ai].ptr);
+      fn++;
+    }
+    if (hk_env_on("HK_FIXFINAL")) force_native_final_draw();
+  }
+  if (g_cur_fbo == 0 && (hk_env_on("HK_FORCEFINAL") || hk_env_on("HK_FORCEBLIT"))) {
+    unsigned tex = hk_env_on("HK_FORCEBLIT") ? (fbo_color_tex(1) ? fbo_color_tex(1) : g_last_color_tex) : 0;
+    force_screen_draw(tex);
+  }
   static int n = 0;
   /* periodico: 25 no inicio + rajadas de 8 a cada 5000 draws (ver o ESTADO ESTAVEL) */
   if (n < 25 || (n % 5000) < 8) { unsigned post = real_glGetError ? (unsigned)real_glGetError() : 0;
@@ -341,7 +688,6 @@ static int (*real_glGetUniformLocation)(unsigned, const char *) = 0;
 static void (*real_glUniform1i)(int, int) = 0;
 static void (*real_glUniform4fvI)(int, int, const float *) = 0;
 static void (*real_glUniform2fvI)(int, int, const float *) = 0;
-static void (*real_glDrawArrays)(unsigned, int, int) = 0;
 static void inst_resolve(void) {
   if (!real_glGetUniformLocation) real_glGetUniformLocation = (int (*)(unsigned, const char *))dlsym(RTLD_DEFAULT, "glGetUniformLocation");
   if (!real_glUniform1i) real_glUniform1i = (void (*)(int, int))dlsym(RTLD_DEFAULT, "glUniform1i");
@@ -482,11 +828,19 @@ static void *my_dlsym(void *h, const char *sym) {
     if (strcmp(sym, "glUniformMatrix4fv") == 0)                      return (void *)diag_glUniformMatrix4fv;
     if (strcmp(sym, "glViewport") == 0)                              return (void *)diag_glViewport;
     if (strcmp(sym, "glScissor") == 0)                               return (void *)diag_glScissor;
+    if (strcmp(sym, "glGetAttribLocation") == 0)                     return (void *)diag_glGetAttribLocation;
+    if (strcmp(sym, "glGetUniformLocation") == 0)                    return (void *)diag_glGetUniformLocation;
+    if (strcmp(sym, "glVertexAttribPointer") == 0)                   return (void *)diag_glVertexAttribPointer;
+    if (strcmp(sym, "glEnableVertexAttribArray") == 0)               return (void *)diag_glEnableVertexAttribArray;
+    if (strcmp(sym, "glDisableVertexAttribArray") == 0)              return (void *)diag_glDisableVertexAttribArray;
+    if (strcmp(sym, "glAttachShader") == 0)                          return (void *)diag_glAttachShader;
+    if (strcmp(sym, "glLinkProgram") == 0)                            return (void *)diag_glLinkProgram;
     /* ANTI-WEDGE: glFinish satura o Utgard (Bully) -> no-op (religa: HK_ALLOWFINISH=1) */
     if (!getenv("HK_ALLOWFINISH") && strcmp(sym, "glFinish") == 0)   return (void *)noop_glFinish;
     if (texcap() && strcmp(sym, "glBindTexture") == 0)               return (void *)my_glBindTexture;
     /* UBO shadow + instancing (sprites): rastreia program/buffers */
     if (strcmp(sym, "glBindFramebuffer") == 0)                       return (void *)my_glBindFramebuffer;
+    if (strcmp(sym, "glFramebufferTexture2D") == 0)                  return (void *)diag_glFramebufferTexture2D;
     if (strcmp(sym, "glUseProgram") == 0)                            return (void *)my_glUseProgram;
     if (strcmp(sym, "glBindBuffer") == 0)                            return (void *)my_glBindBuffer;
     if (strcmp(sym, "glBufferData") == 0)                            return (void *)my_glBufferData;
@@ -512,6 +866,48 @@ static void *my_dlsym(void *h, const char *sym) {
     if (n++ < 60) fprintf(stderr, "[gl stub] %s\n", sym);
   }
   return r;
+}
+
+void *recon_gl_override(const char *sym) {
+  if (!sym) return 0;
+  if (!getenv("HK_NOSPOOF") && strcmp(sym, "glGetString") == 0)   return (void *)my_glGetString;
+  if (!getenv("HK_NOSPOOF") && strcmp(sym, "glGetIntegerv") == 0) return (void *)my_glGetIntegerv;
+  if (strcmp(sym, "glShaderSource") == 0)                         return (void *)my_glShaderSource;
+  if (strcmp(sym, "glTexSubImage2D") == 0)                        return (void *)diag_glTexSubImage2D;
+  if (strcmp(sym, "glCompressedTexImage2D") == 0)                 return (void *)diag_glCompressedTexImage2D;
+  if (strcmp(sym, "glCheckFramebufferStatus") == 0)               return (void *)diag_glCheckFramebufferStatus;
+  if (strcmp(sym, "glDrawElements") == 0)                         return (void *)diag_glDrawElements;
+  if (strcmp(sym, "glUniform4fv") == 0)                           return (void *)diag_glUniform4fv;
+  if (strcmp(sym, "glUniformMatrix4fv") == 0)                     return (void *)diag_glUniformMatrix4fv;
+  if (strcmp(sym, "glViewport") == 0)                             return (void *)diag_glViewport;
+  if (strcmp(sym, "glScissor") == 0)                              return (void *)diag_glScissor;
+  if (strcmp(sym, "glGetAttribLocation") == 0)                    return (void *)diag_glGetAttribLocation;
+  if (strcmp(sym, "glGetUniformLocation") == 0)                   return (void *)diag_glGetUniformLocation;
+  if (strcmp(sym, "glVertexAttribPointer") == 0)                  return (void *)diag_glVertexAttribPointer;
+  if (strcmp(sym, "glEnableVertexAttribArray") == 0)              return (void *)diag_glEnableVertexAttribArray;
+  if (strcmp(sym, "glDisableVertexAttribArray") == 0)             return (void *)diag_glDisableVertexAttribArray;
+  if (strcmp(sym, "glAttachShader") == 0)                         return (void *)diag_glAttachShader;
+  if (strcmp(sym, "glLinkProgram") == 0)                           return (void *)diag_glLinkProgram;
+  if (!getenv("HK_ALLOWFINISH") && strcmp(sym, "glFinish") == 0)  return (void *)noop_glFinish;
+  if (texcap() && strcmp(sym, "glBindTexture") == 0)              return (void *)my_glBindTexture;
+  if (strcmp(sym, "glBindFramebuffer") == 0)                      return (void *)my_glBindFramebuffer;
+  if (strcmp(sym, "glFramebufferTexture2D") == 0)                 return (void *)diag_glFramebufferTexture2D;
+  if (strcmp(sym, "glUseProgram") == 0)                           return (void *)my_glUseProgram;
+  if (strcmp(sym, "glBindBuffer") == 0)                           return (void *)my_glBindBuffer;
+  if (strcmp(sym, "glBufferData") == 0)                           return (void *)my_glBufferData;
+  if (strcmp(sym, "glBufferSubData") == 0)                        return (void *)my_glBufferSubData;
+  if (strcmp(sym, "glGetInternalformativ") == 0)                  return (void *)stub_glGetInternalformativ;
+  if (strcmp(sym, "glTexStorage2D") == 0)                         return (void *)stub_glTexStorage2D;
+  if (strcmp(sym, "glFenceSync") == 0)                            return (void *)stub_glFenceSync;
+  if (strcmp(sym, "glClientWaitSync") == 0)                       return (void *)stub_glClientWaitSync;
+  if (strcmp(sym, "glGetSynciv") == 0)                            return (void *)stub_glGetSynciv;
+  if (strcmp(sym, "glMapBufferRange") == 0)                       return (void *)emul_glMapBufferRange;
+  if (strcmp(sym, "glUnmapBuffer") == 0)                          return (void *)emul_glUnmapBuffer;
+  if (strcmp(sym, "glBindBufferRange") == 0)                      return (void *)emul_glBindBufferRange;
+  if (strcmp(sym, "glBindBufferBase") == 0)                       return (void *)emul_glBindBufferBase;
+  if (strcmp(sym, "glDrawElementsInstanced") == 0)                return (void *)emul_glDrawElementsInstanced;
+  if (strcmp(sym, "glDrawArraysInstanced") == 0)                  return (void *)emul_glDrawArraysInstanced;
+  return 0;
 }
 
 /* ---- __android_log_* REAL (revela mensagens de erro do il2cpp/unity) ---- */
@@ -674,6 +1070,15 @@ static char *translate_gles3_gles2(const char *src) {
   int is_frag = (strstr(src, "gl_Position") == NULL); /* sem gl_Position = fragment */
   char *s = str_rep(src, "#version 300 es", "#version 100");
   char *t = str_rep(s, "texture(", "texture2D("); free(s); s = t;
+  /* Shaders internos de blit/composite da Unity usam macros abstratas em vez de
+     `in/out/texture` direto. Se elas ficam como GLES3, o shader ES2 nao linka e
+     o composite final vira 1-2 pixels. */
+  t = str_rep(s, "#define ATTRIBUTE_IN in", "#define ATTRIBUTE_IN attribute"); free(s); s = t;
+  t = str_rep(s, "#define VARYING_IN in", "#define VARYING_IN varying"); free(s); s = t;
+  t = str_rep(s, "#define VARYING_OUT out", "#define VARYING_OUT varying"); free(s); s = t;
+  t = str_rep(s, "#define DECLARE_FRAG_COLOR out vec4 fragColor", "/* DECLARE_FRAG_COLOR removed for GLES2 */"); free(s); s = t;
+  t = str_rep(s, "#define FRAG_COLOR fragColor", "#define FRAG_COLOR gl_FragColor"); free(s); s = t;
+  t = str_rep(s, "#define SAMPLE_TEXTURE_2D texture", "#define SAMPLE_TEXTURE_2D texture2D"); free(s); s = t;
   /* INSTANCING (sprites do HK): o boilerplate hlslcc tem #if HLSLCC_ENABLE_UNIFORM_BUFFERS
      em volta dos blocos UBO -> flag 0 = membros viram uniforms PLANOS (struct array, ES2 ok).
      gl_InstanceID nao existe em ES2 -> uniform u_hk_instID setado pelo emul_DrawInstanced.
@@ -737,6 +1142,7 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
   char *tr = translate_gles3_gles2(src);
   if (g_shdump < 80) {
     char p[160]; int id = g_shdump++;
+    shmap_set(sh, id, strstr(src, "gl_Position") == NULL);
     snprintf(p, sizeof p, "/storage/hollow-recon/shdump/sh_%03d.glsl", id);
     FILE *f = fopen(p, "w"); if (f) { fputs(src, f); fclose(f); }
     snprintf(p, sizeof p, "/storage/hollow-recon/shdump/sh_%03d.gles2", id);
