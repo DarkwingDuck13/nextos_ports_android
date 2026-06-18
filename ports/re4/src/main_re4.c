@@ -298,7 +298,7 @@ static void (*r_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,
 static unsigned g_snap_tex=0;   /* snapshot do composite (capturado quando FBO0 e valido) */
 static int g_snap_w=0,g_snap_h=0;
 static unsigned g_gl_bound_fbo=0;
-static int g_re4_frame=-1;
+int g_re4_frame=-1;      /* global: pthread_shim le p/ gatear o CONDBREAK so no gameplay carregado */
 static int g_in_menu=0;  /* 1 = menu CODEX visivel; 0 = gameplay (reabilita injecao android_shim p/ mover Leon) */
 int g_gameplay=0; /* 1 = entrou no gameplay -> PARA toda poke-Mono (evita FREEZE no gameplay/pause) */
 int g_gameplay_frame=0; /* frame em que entrou no gameplay (p/ esperar a cena carregar antes do touch-move) */
@@ -2881,6 +2881,7 @@ static void re4_menu_drive(int frame){
       if(btn_cls) m_onclick=MN.class_get_method_from_name(btn_cls,"get_onClick",0);
       void* ev_cls=MN.class_from_name(core_img,"UnityEngine.Events","UnityEvent");
       if(ev_cls) m_uinvoke=MN.class_get_method_from_name(ev_cls,"Invoke",0); }
+    if((!strcasecmp(want,"New")||!strcasecmp(want,"Continue")) && !g_gameplay){ g_gameplay=1; g_gameplay_frame=frame; }
     if(m_onclick && m_uinvoke){
       void* e4=0; void* evt=MN.runtime_invoke(m_onclick,target_sel,NULL,&e4);
       if(!e4 && evt){ void* e5=0; MN.runtime_invoke(m_uinvoke,evt,NULL,&e5);

@@ -103,8 +103,30 @@ static int sh_mutex_destroy(void *m) { (void)m; return 0; }
 
 /* ---- cond ---- */
 static int sh_cond_init(void *c, const void *a) { (void)a; (void)gcnd(c); return 0; }
+extern int g_gameplay, g_gameplay_frame, g_re4_frame; /* main_re4: gatear CONDBREAK so no gameplay carregado */
 static int sh_cond_wait(void *c, void *m) {
-  return pthread_cond_wait((pthread_cond_t *)gcnd(c), (pthread_mutex_t *)gmtx(m));
+  pthread_cond_t *cc=(pthread_cond_t *)gcnd(c); pthread_mutex_t *mm=(pthread_mutex_t *)gmtx(m);
+  /* QUEBRA-DEADLOCK do job-system no MOVIMENTO: ao mover o Leon o Unity espera num pthread_cond
+     que NAO e sinalizado (sinal perdido no ambiente stubado) -> futex_wait eterno (tela congela).
+     SO aplicamos no GAMEPLAY JA CARREGADO (g_gameplay + apos o settle) -> NAO toca no load/menu
+     (quebrar conds do load congelava). RE4_NO_CONDBREAK=1 desliga; RE4_CONDBREAK_MS ajusta. */
+  int gp_ready = g_gameplay && g_re4_frame > g_gameplay_frame + 180;
+  if(gp_ready && !getenv("RE4_NO_CONDBREAK")){
+    const char *bms=getenv("RE4_CONDBREAK_MS");
+    long total_ms=(bms&&bms[0])?atol(bms):120; if(total_ms<1)total_ms=120;
+    const long step_ms=20; long waited=0; struct timespec ts;
+    for(;;){
+      clock_gettime(CLOCK_REALTIME,&ts);
+      ts.tv_nsec += step_ms*1000000L; if(ts.tv_nsec>=1000000000L){ ts.tv_sec++; ts.tv_nsec-=1000000000L; }
+      int r=pthread_cond_timedwait(cc,mm,&ts);
+      if(r==0) return 0;                 /* sinalizado de verdade */
+      if(r==ETIMEDOUT){ waited+=step_ms;
+        if(waited>=total_ms){ static int n=0; if(n++<10) fprintf(stderr,"[CONDBREAK] wake c=%p apos %ldms\n",c,waited); return 0; }
+        continue; }
+      return r;
+    }
+  }
+  return pthread_cond_wait(cc,mm);
 }
 static int sh_cond_timedwait(void *c, void *m, const void *ts) {
   return pthread_cond_timedwait((pthread_cond_t *)gcnd(c), (pthread_mutex_t *)gmtx(m),

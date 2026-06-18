@@ -88,8 +88,10 @@ static void prefs_set_str(const char *k, const char *v){ if(!k)return; int i=pre
   if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
   if(g_prefs[i].val) free(g_prefs[i].val); g_prefs[i].val=strdup(v?v:""); g_prefs[i].isint=0;
   debugPrintf("[PREFS] set str '%s'='%s'\n", k, v?v:"");
-  /* sceneToLoad com valor de nivel = entrou no gameplay; vazio/0 = voltou ao menu */
-  if(strcmp(k,"sceneToLoad")==0) re4_signal_gameplay(v && v[0] && strcmp(v,"0")!=0); }
+  /* sceneToLoad com valor de nivel = entrou no gameplay. NAO zeramos no vazio: o jogo LIMPA
+     o sceneToLoad depois de carregar a cena -> zerar desligava o movimento. Uma vez no
+     gameplay, fica (g_gameplay so volta a 0 ao recarregar o menu, tratado em outro lugar). */
+  if(strcmp(k,"sceneToLoad")==0 && v && v[0] && strcmp(v,"0")!=0) re4_signal_gameplay(1); }
 static void prefs_set_int(const char *k, long v){ if(!k)return; int i=prefs_find(k);
   if(i<0){ if(g_prefs_n>=PREFS_MAX)return; i=g_prefs_n++; g_prefs[i].key=strdup(k); g_prefs[i].val=NULL; }
   g_prefs[i].ival=v; g_prefs[i].isint=1;
