@@ -86,7 +86,16 @@ cp -f "$GAMEDIR/SOR4.dll" "$PKG/SOR4.dll"
 cp -f "$TOOLS/SOR4Bridge.dll" "$PKG/SOR4Bridge.dll" 2>/dev/null
 S="$PKG/SOR4.dll"
 run_dll "$TOOLS/patchgam.dll"  "$S" "$TOOLS/SOR4Bridge.dll"        || { msgbox "Streets of Rage 4" "Falha no patch (patchgam)."; exit 1; }
-run_dll "$TOOLS/noopm.dll"     "$S" "AndroidServices.*" save_save_game save_config
+# SAVE LOCAL: NAO noopar save_save_game/save_config -- eles ja gravam ARQUIVO local
+# (bin_serialize_to_file -> Save.bin / Config.txt em get_save_file_path = $HOME). O unico
+# motivo do crash era AndroidServices::SaveCloudFile (cloud) DENTRO deles -- e o AndroidServices.*
+# ja esta noopado, entao a chamada cloud vira no-op e o write local roda -> save PERSISTE.
+# (o launcher aponta $HOME pra uma pasta gravavel/persistente do port.)
+run_dll "$TOOLS/noopm.dll"     "$S" "AndroidServices.*"
+# remove o save_save_game REDUNDANTE no startup (program.initialize): esse save dispara o
+# serialize/GC do .NET bem na init do libWwise so-loader -> race de sinais (SIGSEGV) -> crash.
+# Sem ele, o jogo boota E os saves de fim-de-fase (depois da init do audio) gravam normal.
+run_dll "$TOOLS/skipcall.dll"  "$S" "initialize" "save_save_game"
 run_dll "$TOOLS/skipvideo.dll" "$S"
 run_dll "$TOOLS/verstub.dll"   "$S"
 run_dll "$TOOLS/noopm.dll"     "$S" "EOSManager.PollMessage"

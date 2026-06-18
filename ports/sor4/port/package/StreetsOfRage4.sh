@@ -87,6 +87,11 @@ export DOTNET_EnableWriteXorExecute=0
 export DOTNET_gcServer=0
 export SOR4_ASSETS="$GAMEDIR/gameassets"
 export SOR4_TEXCACHE="$GAMEDIR/texcache"
+# SAVE LOCAL: o jogo grava/le Save.bin + Config.txt em get_save_file_path = $HOME (via
+# Environment.GetFolderPath(Personal)). Apontamos $HOME pra uma pasta GRAVAVEL + PERSISTENTE
+# do port (vfat) -> progresso/desbloqueios persistem entre sessoes. (save des-noopado no patch.)
+export HOME="$GAMEDIR/save"
+mkdir -p "$HOME" 2>/dev/null
 # AUDIO (hibrido): SFX in-bank = manifest+<id>.opus em SOR4_AUDIO=audioout; MUSICA+SFX
 # streamed = .wem de gameassets por PATH. SOR4_BANKDIR=gameassets (a Wwise real acha o
 # Init.bnk p/ init=1). pump LIGADO (sem WWISE_NOPUMP) -> a Wwise avanca a musica em tempo
