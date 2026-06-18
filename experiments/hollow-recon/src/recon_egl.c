@@ -70,6 +70,10 @@ static int fmt_bpp(unsigned fmt) {
     default: return 0;
   }
 }
+static int hk_int_env(const char *name, int def) {
+  const char *e = getenv(name);
+  return (e && *e) ? atoi(e) : def;
+}
 /* glTexStorage2D (GLES3, storage imutavel) -> aloca via glTexImage2D (GLES2). SEM isso a
    textura nao existe -> glTexSubImage2D falha -> UI amostra vazio -> TELA PRETA. */
 static void (*real_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = 0;
@@ -122,6 +126,18 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
   if (sh && px && type == 0x1401 /*UNSIGNED_BYTE*/) {
     int bpp = fmt_bpp(fmt);
     int dw = w >> sh, dh = h >> sh;
+    static long long capb = 0;
+    int src_bpp = bpp ? bpp : 4;
+    capb += (long long)w * h * src_bpp;
+    int skip_after = hk_int_env("HK_TEXSKIP_AFTER_MB", 0);
+    if (skip_after > 0 && (capb >> 20) > skip_after && w >= 1024 && h >= 1024) {
+      static int sn = 0;
+      if (sn < 20 || (sn % 25) == 0)
+        fprintf(stderr, "[TEXSUB-SKIP] #%d t=%lds %dx%d>>%d total=%lldMB limit=%dMB\n",
+                sn, hk_secs(), w, h, sh, capb >> 20, skip_after);
+      sn++;
+      return;
+    }
     if (bpp && dw >= 1 && dh >= 1) {
       unsigned char *out = (unsigned char *)malloc((size_t)dw * dh * bpp);
       int step = 1 << sh;
@@ -147,11 +163,10 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
       if (ring[ri]) free(ring[ri]);
       ring[ri] = out; ri = (ri + 1) & 7;
       static int ts = -1;
-      if (ts < 0) { const char *e = getenv("HK_TEXSLEEP_MS"); ts = e ? atoi(e) : 10; }
+      if (ts < 0) ts = hk_int_env("HK_TEXSLEEP_MS", 10);
       if (ts > 0) usleep((unsigned)ts * 1000);
     } /* sub-regiao menor que o fator: pula (1 texel de borda, inofensivo) */
-    static int dn = 0; static long long capb = 0;
-    capb += (long long)w * h * (fmt_bpp(fmt) ? fmt_bpp(fmt) : 4);
+    static int dn = 0;
     if (dn < 10 || (dn % 25) == 0)
       fprintf(stderr, "[TEXSUB-CAP] #%d t=%lds %dx%d>>%d fmt=0x%x total=%lldMB\n",
               dn, hk_secs(), w, h, sh, fmt, capb >> 20);

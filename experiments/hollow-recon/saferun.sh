@@ -16,6 +16,10 @@ pkill -9 -x hollow-recon 2>/dev/null; sleep 1        # mata orfaos antigos
 if grep -q zram0 /proc/swaps 2>/dev/null; then
   swapoff /dev/zram0 2>/dev/null && echo "[saferun] zram OFF (reprovado)"
 fi
+for sw in /storage/roms/hollow-big.swap /storage/roms/hollow-big2.swap; do
+  [ -f "$sw" ] && swapon "$sw" 2>/dev/null || true
+done
+echo "[saferun] swap: $(awk 'NR>1{sum+=$3} END{printf "%.1fGB", sum/1024/1024}' /proc/swaps)"
 
 ( while true; do sync; sleep 1; done ) & SYNCPID=$!  # flusha o log
 # post-mortem do wedge: memoria/swap/load a cada 1s (distingue OOM-thrash vs GPU wedge)
