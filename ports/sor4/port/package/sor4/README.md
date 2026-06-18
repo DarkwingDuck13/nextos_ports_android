@@ -28,8 +28,18 @@ Isso roda **uma única vez**. Depois o jogo abre direto.
 
 ## Controles
 
-Mapeados via `gptokeyb` (`sor4.gptk`): A = ataque, B = pulo, X = especial,
-Y = corrida, Start/Select = menus, D-pad/analógico = movimento.
+O jogo lê o **gamepad nativo direto** (SDL GameController) — não precisa de gptokeyb.
+A = ataque, B = pulo, X = especial, Y = corrida, Start/Select = menus, D-pad/analógico
+= movimento. **SELECT + START = sair do jogo** (volta pro menu de Ports).
+
+Para customizar (ou em devices que precisem de teclas) há um `sor4.gptk` pronto; o
+launcher religa o gptokeyb com `SOR4_USE_GPTK=1`.
+
+## Áudio
+
+Som original do jogo (Wwise) tocado por um reimpl OpenAL leve: música, vozes e SFX de
+combate. A música troca limpa ao mudar de cena (roteamento por HIRC). Backend de áudio
+auto-detectado pelo device (pulse/pipewire/alsa) — o launcher não força nada.
 
 ## Porter
 
