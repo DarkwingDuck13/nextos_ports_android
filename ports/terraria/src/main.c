@@ -3137,11 +3137,11 @@ static void ter_menu_nav(void) {
   /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
      teste p/ dropdowns/sublistas que têm foco de controle próprio). */
   if (access("/tmp/ternonav", F_OK) == 0) { g_girm_ovr = 0; return; }
-  /* Dentro do mundo, deixa o Terraria navegar nativamente. Este override fica
-     restrito ao menu principal/listas de selecao, onde ele realmente resolve. */
-  if (ter_gameplay_active()) {
+  /* Dentro do mundo livre, deixa o Terraria nativo. Se Start/inventario/opcoes
+     abriu UI sobre o gameplay, religa a navegacao por regioes para mover menus. */
+  if (ter_gameplay_free()) {
     static int logged;
-    if (!logged++) { fprintf(stderr, "[GAME] player ativo: menu nav OFF (gameplay nativo)\n"); fsync(2); }
+    if (!logged++) { fprintf(stderr, "[GAME] gameplay livre: menu nav OFF\n"); fsync(2); }
     g_girm_ovr=0; g_fcmode=0; return;
   }
   if (g_fcmode) {
