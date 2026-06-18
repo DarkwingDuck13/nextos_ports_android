@@ -61,6 +61,46 @@ static int g_method_tags[16]; /* unique addresses used as method IDs */
 static const char *g_package_name = "com.microids.syberia";
 static int g_obb_version = 12;
 
+static int ter_env_positive_int(const char *name) {
+  const char *s = getenv(name);
+  if (!s || !*s) return 0;
+  char *end = NULL;
+  long v = strtol(s, &end, 10);
+  return (end != s && v > 0 && v < 32768) ? (int)v : 0;
+}
+
+static int ter_read_display_pair(const char *path, int *w, int *h) {
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+  char buf[128];
+  int ok = fgets(buf, sizeof(buf), f) != NULL;
+  fclose(f);
+  if (!ok) return 0;
+  int a = 0, b = 0;
+  if (sscanf(buf, "%d,%d", &a, &b) != 2 &&
+      sscanf(buf, "%dx%d", &a, &b) != 2 &&
+      sscanf(buf, "%*[^0-9]%dx%d", &a, &b) != 2) return 0;
+  if (a <= 0 || b <= 0 || a >= 32768 || b >= 32768) return 0;
+  *w = a; *h = b;
+  return 1;
+}
+
+static void ter_display_size(int *w, int *h) {
+  static int cached_w = -1, cached_h = -1;
+  if (cached_w >= 0 && cached_h >= 0) { *w = cached_w; *h = cached_h; return; }
+  int ew = ter_env_positive_int("TER_SCREEN_W");
+  int eh = ter_env_positive_int("TER_SCREEN_H");
+  if (!ew) ew = ter_env_positive_int("TER_SCREEN_WIDTH");
+  if (!eh) eh = ter_env_positive_int("TER_SCREEN_HEIGHT");
+  if (ew > 0 && eh > 0) { cached_w = ew; cached_h = eh; *w = ew; *h = eh; return; }
+  if (ter_read_display_pair("/sys/class/graphics/fb0/mode", &ew, &eh) ||
+      ter_read_display_pair("/sys/class/graphics/fb0/modes", &ew, &eh) ||
+      ter_read_display_pair("/sys/class/graphics/fb0/virtual_size", &ew, &eh)) {
+    cached_w = ew; cached_h = eh; *w = ew; *h = eh; return;
+  }
+  cached_w = 0; cached_h = 0; *w = 0; *h = 0;
+}
+
 void jni_shim_set_package(const char *package_name, int obb_version) {
   g_package_name = package_name;
   g_obb_version = obb_version;
@@ -510,15 +550,14 @@ static void *jni_GetObjectField(void *env, void *obj, void *fieldID) {
   return &fake_obj_field;
 }
 
-/* GetIntField (idx 100): DisplayMetrics widthPixels/heightPixels/densityDpi.
-   0 aqui -> engine ve resolucao invalida -> "Unable to initialize Unity Engine". */
+/* GetIntField (idx 100): DisplayMetrics widthPixels/heightPixels/densityDpi. */
 static jint jni_GetIntField(void *env, void *obj, void *fieldID) {
   (void)env; (void)obj;
   const char *nm = mid_name(fieldID);
   if (nm) {
     if (obj == (void *)&g_message_sentinel && strcmp(nm, "what") == 0) return g_message_what;
-    if (strcmp(nm, "widthPixels") == 0) return 1280;
-    if (strcmp(nm, "heightPixels") == 0) return 720;
+    if (strcmp(nm, "widthPixels") == 0) { int w, h; ter_display_size(&w, &h); return w; }
+    if (strcmp(nm, "heightPixels") == 0) { int w, h; ter_display_size(&w, &h); return h; }
     if (strcmp(nm, "densityDpi") == 0) return 160;
   }
   return 0;
@@ -731,13 +770,16 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
          (chromaticAberration/noise/blur) — esses efeitos usam FBO/render-to-texture
          que TRAVAM o GPU Mali Utgard no carregamento do título. */
       if (getenv("CUP_NOFX") && key && strstr(key, "settings_data")) {
-        static const char *FX_OFF =
+        int sw = 0, sh = 0;
+        ter_display_size(&sw, &sh);
+        static char FX_OFF[512];
+        snprintf(FX_OFF, sizeof(FX_OFF),
           "{\"hasBootedUpGame\":true,\"overscan\":0.0,\"chromaticAberration\":0.0,"
-          "\"screenWidth\":1280,\"screenHeight\":720,\"effects\":false,\"blur\":false,"
+          "\"screenWidth\":%d,\"screenHeight\":%d,\"effects\":false,\"blur\":false,"
           "\"forceOriginalTitleScreen\":false,\"masterVolume\":0.0,\"sFXVolume\":0.0,"
           "\"musicVolume\":0.0,\"canVibrate\":true,\"rotateControlsWithCamera\":false,"
           "\"language\":-1,\"chromaticAberrationEffect\":false,\"noiseEffect\":false,"
-          "\"subtleBlurEffect\":false,\"brightness\":0.0}";
+          "\"subtleBlurEffect\":false,\"brightness\":0.0}", sw, sh);
         debugPrintf("[NOFX] getString settings -> efeitos OFF (anti-wedge Utgard)\n");
         return make_jstring(FX_OFF);
       }
@@ -884,7 +926,7 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     }
     /* android.os.StatFs — variantes int (API antiga). ~50GB livres p/ não bloquear save. */
     if (strcmp(nm, "getBlockSize") == 0) return 4096;
-    if (strcmp(nm, "getAvailableBlocks") == 0 || strcmp(nm, "getFreeBlocks") == 0) return 13107200; /* ×4096=50GB */
+    if (strcmp(nm, "getAvailableBlocks") == 0 || strcmp(nm, "getFreeBlocks") == 0) return 50 * 1024 * 256; /* x4096=50GB */
     if (strcmp(nm, "getBlockCount") == 0) return 26214400; /* ×4096=100GB */
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     /* ---- InputDevice Xbox 360 virtual (getters int) ---- */
@@ -912,10 +954,9 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
     if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
     if (strcmp(nm, "size") == 0) return 0; /* List/Collection vazia */
-    /* ---- Display: o engine pega a resolucao/rotacao; 0x0 -> "Unable to
-       initialize the Unity Engine". Devolve 1280x720, rotacao 0, displayId 0. ---- */
-    if (strcmp(nm, "getWidth") == 0 || strcmp(nm, "getRawWidth") == 0) return 1280;
-    if (strcmp(nm, "getHeight") == 0 || strcmp(nm, "getRawHeight") == 0) return 720;
+    /* ---- Display: o engine pega resolucao/rotacao reais, sem fallback fixo. ---- */
+    if (strcmp(nm, "getWidth") == 0 || strcmp(nm, "getRawWidth") == 0) { int w, h; ter_display_size(&w, &h); return w; }
+    if (strcmp(nm, "getHeight") == 0 || strcmp(nm, "getRawHeight") == 0) { int w, h; ter_display_size(&w, &h); return h; }
     if (strcmp(nm, "getRotation") == 0) return 0;
     if (strcmp(nm, "getDisplayId") == 0) return 0;
   }
@@ -1332,7 +1373,7 @@ static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap
     if (strcmp(nm, "getUsableSpace") == 0 || strcmp(nm, "getFreeSpace") == 0) return 50LL*1024*1024*1024;
     if (strcmp(nm, "getTotalSpace") == 0) return 100LL*1024*1024*1024;
     if (strcmp(nm, "getBlockSizeLong") == 0) return 4096;
-    if (strcmp(nm, "getAvailableBlocksLong") == 0 || strcmp(nm, "getBlockCountLong") == 0 || strcmp(nm, "getFreeBlocksLong") == 0) return 13107200LL; /* ×4096 = 50GB */
+    if (strcmp(nm, "getAvailableBlocksLong") == 0 || strcmp(nm, "getBlockCountLong") == 0 || strcmp(nm, "getFreeBlocksLong") == 0) return 50LL * 1024 * 256; /* x4096 = 50GB */
   }
   return 0;
 }

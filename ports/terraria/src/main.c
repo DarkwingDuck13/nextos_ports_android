@@ -178,8 +178,11 @@ void ter_inline_task(void *obj) {
    no nosso JNI fake). Usa a API il2cpp REAL (exportada) p/ achar a classe+método e patchar o
    methodPointer p/ `ret` (no-op). Roda lazy do swap-hook até achar (il2cpp já inicializado). */
 static void ter_nuke_methods(void) {
-  static int done = 0; if (done || !g_il2cpp_base || !getenv("TER_NUKEKB")) { if (!getenv("TER_NUKEKB")) done = 1; return; }
-  static int tries = 0; if (tries++ > 240) { done = 1; return; }
+  static int done = 0;
+  int want_kb = getenv("TER_NUKEKB") ? 1 : 0;
+  int want_nanpart = getenv("TER_FIXNANPART") ? 1 : 0;
+  if (done || !g_il2cpp_base || (!want_kb && !want_nanpart)) { if (!want_kb && !want_nanpart) done = 1; return; }
+  static int tries = 0; if (tries++ > 600) { done = 1; return; }
   void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0x73c860);
   const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
   void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
@@ -187,14 +190,19 @@ static void ter_nuke_methods(void) {
   void *(*cls_method)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
   void *domain = dom_get(); if (!domain) return;
   size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
-  /* classes/métodos a neutralizar (no-op): nome de classe (ns vazio) + método + argc */
-  static const char *targets[][3] = { {"KeyboardInput", "Update", (const char*)0} };
+  struct nuke_target { const char *env, *ns, *cn, *mn; int argc; };
+  static const struct nuke_target targets[] = {
+    { "TER_NUKEKB", "", "KeyboardInput", "Update", 0 },
+    { "TER_FIXNANPART", "Terraria.Graphics.Renderers", "LittleFlyingCritterParticle", "Update", 1 },
+  };
+  static unsigned patched_mask;
   int patched = 0;
   for (size_t i = 0; i < na; i++) {
     void *img = asm_img(asms[i]); if (!img) continue;
     for (unsigned t = 0; t < sizeof targets/sizeof targets[0]; t++) {
-      void *cls = cls_from_name(img, "", targets[t][0]); if (!cls) continue;
-      void *m = cls_method(cls, targets[t][1], (int)(intptr_t)targets[t][2]); if (!m) continue;
+      if (!getenv(targets[t].env) || (patched_mask & (1u << t))) continue;
+      void *cls = cls_from_name(img, targets[t].ns, targets[t].cn); if (!cls) continue;
+      void *m = cls_method(cls, targets[t].mn, targets[t].argc); if (!m) continue;
       void *mp = *(void **)m;   /* MethodInfo.methodPointer @ off 0 */
       if (!mp) continue;
       long pgsz = sysconf(_SC_PAGESIZE);
@@ -203,11 +211,18 @@ static void ter_nuke_methods(void) {
       *(uint32_t *)mp = 0xD65F03C0u;   /* ret */
       mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
       __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
-      fprintf(stderr, "[NUKEKB] %s.%s @%p -> ret (asm %zu)\n", targets[t][0], targets[t][1], mp, i);
-      fsync(2); patched++;
+      patched_mask |= (1u << t);
+      fprintf(stderr, "[NUKE] %s%s%s.%s @%p -> ret (asm %zu)\n",
+              targets[t].ns, targets[t].ns[0] ? "." : "", targets[t].cn, targets[t].mn, mp, i);
+      fsync(2);
+      patched++;
     }
   }
-  if (patched) done = 1;
+  int all = 1;
+  for (unsigned t = 0; t < sizeof targets/sizeof targets[0]; t++)
+    if (getenv(targets[t].env) && !(patched_mask & (1u << t))) all = 0;
+  if (all) done = 1;
+  (void)patched;
 }
 
 /* 🖤 TER_FIXSP: tela preta ao clicar Single Player. SelectSinglePlayer→Main.LoadPlayers→
@@ -1012,15 +1027,75 @@ static int my_alog_vprint(int prio, const char *tag, const char *fmt, va_list ap
    Os egl* do libunity são imports PLT que resolvem no libEGL REAL do Mali (dlopen GLOBAL);
    no fbdev a EGLNativeWindowType é só struct {u16 w, u16 h} → entrega uma DE VERDADE e o
    Unity cria a window surface direto no fb0 (sem shim). CUP_SHIMEGL=1 volta pro fake int. */
-static struct { unsigned short w, h; } g_fbdev_win = {1280, 720};
-static int g_anw = 0xA11;
+static struct { unsigned short w, h; } g_fbdev_win = {0, 0};
 static int cup_use_kmsdrm(void);  /* fwd: decide fbdev vs kmsdrm (def. abaixo) */
+static int g_anw = 0xA11;
+static int ter_env_positive_int_main(const char *name) {
+  const char *s = getenv(name);
+  if (!s || !*s) return 0;
+  char *end = NULL;
+  long v = strtol(s, &end, 10);
+  return (end != s && v > 0 && v < 32768) ? (int)v : 0;
+}
+static int ter_read_screen_pair_main(const char *path, int *w, int *h) {
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+  char buf[128];
+  int ok = fgets(buf, sizeof(buf), f) != NULL;
+  fclose(f);
+  if (!ok) return 0;
+  int a = 0, b = 0;
+  if (sscanf(buf, "%d,%d", &a, &b) != 2 &&
+      sscanf(buf, "%dx%d", &a, &b) != 2 &&
+      sscanf(buf, "%*[^0-9]%dx%d", &a, &b) != 2) return 0;
+  if (a <= 0 || b <= 0 || a >= 32768 || b >= 32768) return 0;
+  *w = a; *h = b;
+  return 1;
+}
+static int ter_native_screen_size_main(int *w, int *h) {
+  int sw = ter_env_positive_int_main("TER_SCREEN_W");
+  int sh = ter_env_positive_int_main("TER_SCREEN_H");
+  if (!sw) sw = ter_env_positive_int_main("TER_SCREEN_WIDTH");
+  if (!sh) sh = ter_env_positive_int_main("TER_SCREEN_HEIGHT");
+  if (sw > 0 && sh > 0) { *w = sw; *h = sh; return 1; }
+  if (ter_read_screen_pair_main("/sys/class/graphics/fb0/mode", &sw, &sh) ||
+      ter_read_screen_pair_main("/sys/class/graphics/fb0/modes", &sw, &sh) ||
+      ter_read_screen_pair_main("/sys/class/graphics/fb0/virtual_size", &sw, &sh)) {
+    *w = sw; *h = sh; return 1;
+  }
+  return 0;
+}
+static int ter_window_w(void) {
+  int sw = 0, sh = 0;
+  if (g_fbdev_win.w > 0) return g_fbdev_win.w;
+  return ter_native_screen_size_main(&sw, &sh) ? sw : 0;
+}
+static int ter_window_h(void) {
+  int sw = 0, sh = 0;
+  if (g_fbdev_win.h > 0) return g_fbdev_win.h;
+  return ter_native_screen_size_main(&sw, &sh) ? sh : 0;
+}
 static void *my_aw_fromSurface(void *e, void *s) { (void)e; (void)s;
   /* kmsdrm: ANativeWindow fake (egl_shim ignora a window). fbdev: struct {w,h} real. */
-  return cup_use_kmsdrm() ? (void *)&g_anw : (void *)&g_fbdev_win; }
-static int my_aw_setgeom(void *w, int a, int b, int c) { (void)w; (void)a; (void)b; (void)c; return 0; }
-static int my_aw_getWidth(void *w) { (void)w; return 1280; }
-static int my_aw_getHeight(void *w) { (void)w; return 720; }
+  if (cup_use_kmsdrm()) return (void *)&g_anw;
+  int sw = ter_window_w();
+  int sh = ter_window_h();
+  if (sw > 0 && sh > 0) {
+    g_fbdev_win.w = (unsigned short)sw;
+    g_fbdev_win.h = (unsigned short)sh;
+  }
+  return (void *)&g_fbdev_win;
+}
+static int my_aw_setgeom(void *w, int a, int b, int c) {
+  (void)w; (void)c;
+  if (a > 0 && b > 0) {
+    g_fbdev_win.w = (unsigned short)a;
+    g_fbdev_win.h = (unsigned short)b;
+  }
+  return 0;
+}
+static int my_aw_getWidth(void *w) { (void)w; return ter_window_w(); }
+static int my_aw_getHeight(void *w) { (void)w; return ter_window_h(); }
 static int my_aw_getFormat(void *w) { (void)w; return 1; }
 static void my_aw_noop(void *w) { (void)w; }
 /* dlopen/dlsym: Unity dlopen libGLESv2/EGL/OpenSLES + dlsym em runtime */
@@ -1689,6 +1764,7 @@ static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
 static unsigned char g_gp_log[16], g_gp_log_prev[16];
 float g_lt_analog, g_rt_analog;   /* gatilhos analógicos 0..1 (LT/RT) */
 /* lê o js0 e recalcula o estado lógico (1×/frame); guarda o anterior p/ edge (GetKeyDown). */
+static void ter_cursor_ensure_init(void);
 static void ter_gamepad_poll(void) {
   memcpy(g_gp_log_prev, g_gp_log, sizeof g_gp_log);
   memset(g_gp_log, 0, sizeof g_gp_log);
@@ -1805,9 +1881,8 @@ static void ter_gamepad_poll(void) {
     if (g_gp_axis[0] > 9000 || g_gp_axis[0] < -9000) dx += g_gp_axis[0]*SP;
     if (g_gp_axis[1] > 9000 || g_gp_axis[1] < -9000) dy += g_gp_axis[1]*SP;
   }
+  ter_cursor_ensure_init();
   g_cursor_x += dx; g_cursor_y += dy;
-  if (g_cursor_x < 0) g_cursor_x = 0; if (g_cursor_x > 1280) g_cursor_x = 1280;
-  if (g_cursor_y < 0) g_cursor_y = 0; if (g_cursor_y > 720) g_cursor_y = 720;
   if (getenv("TER_GPAXLOG")) { static int af=0; if ((af++%30)==0) {
     if (used_sdl) fprintf(stderr,"[TGPAX] pad=sdl lx=%.2f ly=%.2f rx=%.2f ry=%.2f lt=%.2f rt=%.2f dpad=%d%d%d%d abxy=%d%d%d%d\n",
       g_gp_axis[0]/32768.0f,g_gp_axis[1]/32768.0f,g_gp_axis[3]/32768.0f,g_gp_axis[4]/32768.0f,
@@ -1881,6 +1956,7 @@ static void ter_force_main_player_name(const char *text);
 static void ter_player_name_menu_force_text(const char *text);
 static const char *ter_vkbd_effective_name(const char *fallback);
 static int ter_vkbd_blocking(void) {
+  if (getenv("TER_NOVKBD")) return 0;
   return jni_softinput_active() || g_vkbd_swallow > 0;
 }
 /* substituem UnityEngine.Input.GetKeyInt/GetKeyDownInt/GetKeyUpInt (x0=keycode) */
@@ -1903,25 +1979,37 @@ void ter_fna_keyboard_getstate(void *result) {
   if (g_gp_log[3]) TKSET(39);                 /* Right */
   if (g_gp_log[4]) { TKSET(13); TKSET(32); }  /* A -> Enter + Space (confirma) */
   if (g_gp_log[5]) TKSET(27);                 /* B -> Escape (volta) */
-  if (g_gp_log[6]) TKSET(90);                 /* X -> Z */
   if (g_gp_log[7]) TKSET(88);                 /* Y -> X */
   ks[8] = 0;   /* campo [32]: 0 (IsKeyDown usa o bitmask, não este) */
   (void)n;
 }
 /* cursor do mouse virtual (movido pelo analógico direito). Terraria é point-and-click. */
-float g_cursor_x = 640.0f, g_cursor_y = 360.0f;
+float g_cursor_x = 0.0f, g_cursor_y = 0.0f;
+static int g_cursor_init = 0;
+static void ter_cursor_ensure_init(void) {
+  int sw = ter_window_w();
+  int sh = ter_window_h();
+  if (!g_cursor_init && sw > 0 && sh > 0) {
+    g_cursor_x = sw * 0.5f;
+    g_cursor_y = sh * 0.5f;
+    g_cursor_init = 1;
+  }
+}
 /* modo cursor-livre do menu (stick direito) — usado por ter_menu_nav p/ dropdowns (ex.: Idioma) */
 int g_fcmode = 0; float g_fcx = 451.0f, g_fcy = 253.0f;
+static int ter_gameplay_active(void);
 /* 🔑 FNA Mouse.GetState() -> MouseState (36 bytes, 9 ints): [0]=X [4]=Y [8]=scroll
-   [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll. A=clique esquerdo. */
+   [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll.
+   Mouse fica para menu/UI. Ataque em gameplay passa pelo GamePad nativo. */
 void ter_fna_mouse_getstate(void *result) {
-  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAMOUSE] chamado #%d cur=%d,%d A=%d\n", c,(int)g_cursor_x,(int)g_cursor_y,g_gp_log[4]); fsync(2);} }
+  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAMOUSE] chamado #%d cur=%d,%d A=%d RB=%d gameplay=%d\n", c,(int)g_cursor_x,(int)g_cursor_y,g_gp_log[4],g_gp_log[11],ter_gameplay_active()); fsync(2);} }
   int *ms = (int *)result;
   memset(ms, 0, 36);
   if (ter_vkbd_blocking()) return;
+  ter_cursor_ensure_init();
   ms[0] = (int)g_cursor_x;            /* X */
   ms[1] = (int)g_cursor_y;            /* Y */
-  ms[3] = g_gp_log[4] ? 1 : 0;        /* LeftButton  = A (confirma/clica) */
+  ms[3] = g_gp_log[4] ? 1 : 0;        /* LeftButton = A (menu/UI) */
   ms[5] = g_gp_log[5] ? 1 : 0;        /* RightButton = B */
 }
 
@@ -1976,8 +2064,9 @@ static int vk_gl_begin(int *sw, int *sh, int old_scissor[4], float old_clear[4],
     p_gf=dlsym(RTLD_DEFAULT,"glGetFloatv"); p_ie=dlsym(RTLD_DEFAULT,"glIsEnabled");
   }
   if (!p_en || !p_dis || !p_sc || !p_cc || !p_cl) return 0;
-  *sw = g_fbdev_win.w > 0 ? g_fbdev_win.w : 1280;
-  *sh = g_fbdev_win.h > 0 ? g_fbdev_win.h : 720;
+  *sw = ter_window_w();
+  *sh = ter_window_h();
+  if (*sw <= 0 || *sh <= 0) return 0;
   if (p_gi) p_gi(0x0C10, old_scissor); else memset(old_scissor, 0, 4*sizeof(int));
   if (p_gf) p_gf(0x0C22, old_clear); else old_clear[0]=old_clear[1]=old_clear[2]=old_clear[3]=0.0f;
   *old_enabled = p_ie ? p_ie(0x0C11) : 0;
@@ -2047,6 +2136,7 @@ static void vk_accept_key(const char *k) {
   if (k[0] && !k[1]) vk_append_char(k[0]);
 }
 static void ter_vkbd_maybe_open(void) {
+  if (getenv("TER_NOVKBD")) return;
   if (!getenv("TER_OSK") || jni_softinput_active()) return;
   if (access("/tmp/tervkbd", F_OK) == 0) {
     unlink("/tmp/tervkbd");
@@ -2059,6 +2149,7 @@ static void ter_vkbd_maybe_open(void) {
   }
 }
 static void ter_vkbd_update(void) {
+  if (getenv("TER_NOVKBD")) return;
   static int rep, was, auto_frames;
   if (!jni_softinput_active()) { was = 0; return; }
   if (!was) {
@@ -2189,12 +2280,55 @@ static struct {
   int resolved, tried;
   void *fmenuMode, *fmouseX, *fmouseY, *fmouseLeft, *fmouseRight,
        *fmouseLeftRelease, *fmouseRightRelease, *fhasFocus,
-       *fscreenWidth, *fscreenHeight, *fnetMode, *fselectedMenu, *fgameMenu;
+       *fscreenWidth, *fscreenHeight, *fnetMode, *fselectedMenu, *fgameMenu,
+       *fplayerInventory, *fingameOptionsWindow, *fmapFullscreen;
 } MM;
 static int ter_geti(void *f){ if(!f)return -1; int v=0; void(*g)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); g(f,&v); return v; }
 static void ter_seti(void *f,int v){ if(!f)return; void(*s)(void*,void*)=(void*)(g_il2cpp_base+0x73ca48); s(f,&v); }
 static int ter_getb(void *f){ if(!f)return -1; unsigned char v=0; void(*g)(void*,void*)=(void*)(g_il2cpp_base+0x73ca44); g(f,&v); return v; }
 static void ter_setb(void *f,int v){ if(!f)return; unsigned char b=v?1:0; void(*s)(void*,void*)=(void*)(g_il2cpp_base+0x73ca48); s(f,&b); }
+static void *ter_find_static_field_exact(const char *want) {
+  if (!g_il2cpp_base || !want || !want[0]) return NULL;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  size_t (*img_clscount)(void*) = (void*)(g_il2cpp_base + 0x73cea0);
+  void *(*img_class)(void*, size_t) = (void*)(g_il2cpp_base + 0x73ceb4);
+  void *(*cls_fields)(void*, void**) = (void*)(g_il2cpp_base + 0x73c270);
+  const char *(*cls_name)(void*) = (void*)(g_il2cpp_base + 0x73c290);
+  const char *(*cls_ns)(void*) = (void*)(g_il2cpp_base + 0x73c294);
+  void (*cls_init)(void*) = (void*)(g_il2cpp_base + 0x73cc80);
+  const char *(*fld_name)(void*) = (void*)(g_il2cpp_base + 0x73ca1c);
+  unsigned (*fld_flags)(void*) = (void*)(g_il2cpp_base + 0x73ca20);
+  size_t (*fld_off)(void*) = (void*)(g_il2cpp_base + 0x73ca28);
+  void *(*fld_type)(void*) = (void*)(g_il2cpp_base + 0x73ca2c);
+  char *(*type_name)(void*) = (void*)(g_il2cpp_base + 0x73cd18);
+  void *domain = dom_get(); if (!domain) return NULL;
+  size_t na=0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return NULL;
+  for (size_t i=0; i<na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    size_t cc = img_clscount(img);
+    for (size_t k=0; k<cc; k++) {
+      void *c = img_class(img, k); if (!c) continue;
+      void *it=NULL, *fi; int n=0;
+      while ((fi = cls_fields(c, &it)) && n++ < 4000) {
+        const char *fn = fld_name(fi);
+        if (!fn || strcmp(fn, want)) continue;
+        unsigned fl = fld_flags(fi);
+        if (!(fl & 0x10)) continue;  /* FieldAttributes.Static */
+        cls_init(c);
+        void *ty = fld_type(fi); char *tn = ty ? type_name(ty) : NULL;
+        fprintf(stderr, "[FIELD] %s -> %s%s%s.%s off=0x%zx flags=0x%x type=%s\n",
+                want, cls_ns(c)?cls_ns(c):"", (cls_ns(c)&&*cls_ns(c))?".":"",
+                cls_name(c)?cls_name(c):"?", fn, fld_off(fi), fl, tn?tn:"?");
+        fsync(2);
+        return fi;
+      }
+    }
+  }
+  fprintf(stderr, "[FIELD] %s nao encontrado como static\n", want); fsync(2);
+  return NULL;
+}
 static int ter_menu_resolve(void) {
   if (MM.resolved) return 1;
   if (!g_il2cpp_base) return 0;
@@ -2329,8 +2463,16 @@ static int ter_menu_resolve(void) {
   MM.fhasFocus=getf(cls,"hasFocus"); MM.fscreenWidth=getf(cls,"screenWidth"); MM.fscreenHeight=getf(cls,"screenHeight");
   MM.fnetMode=getf(cls,"netMode"); MM.fselectedMenu=getf(cls,"selectedMenu");
   MM.fgameMenu=getf(cls,"gameMenu");   /* true = tela de menu/título; false = JOGANDO (gameplay) */
-  fprintf(stderr,"[MENU] Terraria.Main resolvida: menuMode=%p mouseX=%p mouseY=%p mouseLeft=%p mLR=%p hasFocus=%p sw=%p sh=%p sel=%p\n",
-    MM.fmenuMode,MM.fmouseX,MM.fmouseY,MM.fmouseLeft,MM.fmouseLeftRelease,MM.fhasFocus,MM.fscreenWidth,MM.fscreenHeight,MM.fselectedMenu); fsync(2);
+  MM.fplayerInventory=getf(cls,"playerInventory");
+  MM.fingameOptionsWindow=getf(cls,"ingameOptionsWindow");
+  MM.fmapFullscreen=getf(cls,"mapFullscreen");
+  if (!MM.fgameMenu) MM.fgameMenu = ter_find_static_field_exact("gameMenu");
+  if (!MM.fplayerInventory) MM.fplayerInventory = ter_find_static_field_exact("playerInventory");
+  if (!MM.fingameOptionsWindow) MM.fingameOptionsWindow = ter_find_static_field_exact("ingameOptionsWindow");
+  if (!MM.fmapFullscreen) MM.fmapFullscreen = ter_find_static_field_exact("mapFullscreen");
+  fprintf(stderr,"[MENU] Terraria.Main resolvida: menuMode=%p mouseX=%p mouseY=%p mouseLeft=%p mLR=%p hasFocus=%p sw=%p sh=%p sel=%p gameMenu=%p inv=%p opt=%p map=%p\n",
+    MM.fmenuMode,MM.fmouseX,MM.fmouseY,MM.fmouseLeft,MM.fmouseLeftRelease,MM.fhasFocus,MM.fscreenWidth,MM.fscreenHeight,MM.fselectedMenu,
+    MM.fgameMenu,MM.fplayerInventory,MM.fingameOptionsWindow,MM.fmapFullscreen); fsync(2);
   MM.resolved = 1; return 1;
 }
 /* neutraliza PlayerInput.UpdateInput (-> ret) p/ não clobberar Main.mouse* que dirigimos */
@@ -2372,7 +2514,9 @@ static void ter_menu_drive(void) {
     static const int nT = (int)(sizeof ys/sizeof ys[0]);
     static int tf=0, ti=0, baseMM=-999;
     int phase = (tf++) % 50;
-    g_cursor_x = 640.0f; g_cursor_y = ys[ti % nT];
+    int sw = ter_geti(MM.fscreenWidth);
+    if (sw > 0) g_cursor_x = sw * 0.5f;
+    g_cursor_y = ys[ti % nT];
     if (phase>=12 && phase<22) A = 1;   /* segura o "clique" por ~10 frames */
     if (phase==0) {
       int mm = ter_geti(MM.fmenuMode), sel = ter_geti(MM.fselectedMenu);
@@ -2389,11 +2533,11 @@ static void ter_menu_drive(void) {
       ter_getb(MM.fmouseLeft), ter_getb(MM.fmouseLeftRelease), ter_geti(MM.fscreenWidth), ter_geti(MM.fscreenHeight),
       ter_geti(MM.fnetMode), ter_geti(MM.fselectedMenu), g_cursor_x, g_cursor_y, A); fsync(2);} }
   if (!getenv("TER_MENU")) { aprev=A; bprev=B; return; }
-  /* DIRIGE: escreve os campos que a UI lê. Escala o cursor (espaço 1280x720) p/ a resolução real. */
+  /* DIRIGE: escreve os campos que a UI lê, sem escala/fallback fixo. */
   int sw = ter_geti(MM.fscreenWidth), sh = ter_geti(MM.fscreenHeight);
-  if (sw<=0) sw=1280; if (sh<=0) sh=720;
-  int mx = (int)(g_cursor_x * (float)sw / 1280.0f);
-  int my = (int)(g_cursor_y * (float)sh / 720.0f);
+  if (sw <= 0 || sh <= 0) { aprev=A; bprev=B; return; }
+  int mx = (int)g_cursor_x;
+  int my = (int)g_cursor_y;
   if (mx<0)mx=0; if(mx>sw-1)mx=sw-1; if(my<0)my=0; if(my>sh-1)my=sh-1;
   ter_setb(MM.fhasFocus, 1);
   ter_seti(MM.fmouseX, mx); ter_seti(MM.fmouseY, my);
@@ -2443,10 +2587,11 @@ TerGPS my_gamepad_getstate(int index, void *mi) {
   TerGPS s; memset(&s, 0, sizeof s);
   s.IsConnected = 1;
   if (ter_vkbd_blocking()) return s;
+  int gameplay = ter_gameplay_active();
   unsigned int b = 0;
   if (g_gp_log[4]) b |= 0x1000;   /* A */
   if (g_gp_log[5]) b |= 0x2000;   /* B */
-  if (g_gp_log[6]) b |= 0x4000;   /* X */
+  if (g_gp_log[6]) b |= 0x4000;   /* X: pulo nativo; ataque fica no R1/RB */
   if (g_gp_log[7]) b |= 0x8000;   /* Y */
   if (g_gp_log[8]) b |= 0x10;     /* Start */
   if (g_gp_log[9]) b |= 0x20;     /* Back (Select) */
@@ -2459,10 +2604,11 @@ TerGPS my_gamepad_getstate(int index, void *mi) {
   if (g_gp_log[2]) b |= 0x4;      /* DPadLeft */
   if (g_gp_log[3]) b |= 0x8;      /* DPadRight */
   s.Buttons = b;
-  /* gatilhos XNA: dirige pelo estado digital (inclui input virtual e threshold) OU analógico —
-     o seletor/dropdown do Settings lê [LT]/[RT] via GamePad.GetState p/ Previous/Next item */
+  /* Gameplay: o Terraria usa RightTrigger como "usar/atacar". Para layout Xbox daqui,
+     R1/RB assume esse papel e R2/RT fica livre para o caminho de troca de item/UI.
+     Fora do gameplay preserva LT/RT nativos para menus/dropdowns. */
   s.TrigL = g_gp_log[12] ? 1.0f : g_lt_analog;
-  s.TrigR = g_gp_log[13] ? 1.0f : g_rt_analog;
+  s.TrigR = gameplay ? (g_gp_log[11] ? 1.0f : 0.0f) : (g_gp_log[13] ? 1.0f : g_rt_analog);
   s.DPadUp = g_gp_log[0]?1:0; s.DPadDown = g_gp_log[1]?1:0;
   s.DPadLeft = g_gp_log[2]?1:0; s.DPadRight = g_gp_log[3]?1:0;
   /* thumbsticks: js0 axis cru (-32768..32767) → -1..1. XNA: Y p/ cima = +1 (js down=+1 → inverter). */
@@ -2651,7 +2797,7 @@ static void ter_player_name_draw_hook(void *self, void *mi) {
   g_player_name_menu_inst = self;
   g_player_name_menu_frame = g_render_frame;
   if (!g_vkbd_force_text[0])
-    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("Player"));
   ter_player_name_menu_force_text(g_vkbd_force_text);
   if (g_orig_player_name_draw) g_orig_player_name_draw(self, mi);
   ter_player_name_menu_force_text(g_vkbd_force_text);
@@ -2675,7 +2821,7 @@ static void ter_player_create_save_hook(void *self, void *mi) {
   g_player_create_menu_inst = self;
   g_player_create_menu_frame = g_render_frame;
   if (!g_vkbd_force_text[0])
-    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("Player"));
   ter_name_force_text(g_vkbd_force_text);
   ter_force_main_player_name(g_vkbd_force_text);
   fprintf(stderr, "[VKBD] CreateAndSave forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
@@ -2687,7 +2833,7 @@ static void ter_player_create_player_hook(void *self, void *mi) {
   g_player_create_menu_inst = self;
   g_player_create_menu_frame = g_render_frame;
   if (!g_vkbd_force_text[0])
-    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("nextos"));
+    snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("Player"));
   ter_name_force_text(g_vkbd_force_text);
   ter_force_main_player_name(g_vkbd_force_text);
   fprintf(stderr, "[VKBD] CreatePlayer forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
@@ -2796,6 +2942,56 @@ static void *ter_static_obj(const char *ns, const char *cn, const char *fn) {
     void *obj = NULL; sget(fld, &obj); return obj;
   }
   return NULL;
+}
+static int ter_player_active_offset(void) {
+  static int off = -2;
+  if (off != -2) return off;
+  off = -1;
+  if (!g_il2cpp_base) return off;
+  void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
+  const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
+  void *(*asm_img)(const void*) = (void*)(g_il2cpp_base + 0x73c22c);
+  void *(*cls_from_name)(void*, const char*, const char*) = (void*)(g_il2cpp_base + 0x73c264);
+  void *(*getf)(void*, const char*) = (void*)(g_il2cpp_base + 0x73c284);
+  size_t (*fld_off)(void*) = (void*)(g_il2cpp_base + 0x73ca28);
+  void *domain = dom_get(); if (!domain) return off;
+  size_t na=0; const void **as = dom_asms(domain, &na); if (!as) return off;
+  for (size_t i=0; i<na; i++) {
+    void *img = asm_img(as[i]); if (!img) continue;
+    void *cls = cls_from_name(img, "Terraria", "Player"); if (!cls) continue;
+    void *fld = getf(cls, "active"); if (!fld) break;
+    off = (int)fld_off(fld);
+    fprintf(stderr, "[GAME] Terraria.Player.active off=0x%x\n", off); fsync(2);
+    break;
+  }
+  return off;
+}
+static int ter_gameplay_active(void) {
+  int off = ter_player_active_offset();
+  if (off < 0) return 0;
+  void *arr = ter_static_obj("Terraria", "Main", "player");
+  if (!arr) return 0;
+  size_t len = *(size_t *)((char *)arr + 0x18);
+  if (len > 256) len = 256;
+  void **vec = (void **)((char *)arr + 0x20);
+  for (size_t i=0; i<len; i++) {
+    void *p = vec[i];
+    if (p && *(unsigned char *)((char *)p + off)) return 1;
+  }
+  return 0;
+}
+static int ter_ingame_ui_open(void) {
+  if (!ter_menu_resolve()) return 0;
+  if (MM.fgameMenu && ter_getb(MM.fgameMenu) > 0) return 1;
+  if (MM.fplayerInventory && ter_getb(MM.fplayerInventory) > 0) return 1;
+  if (MM.fingameOptionsWindow && ter_getb(MM.fingameOptionsWindow) > 0) return 1;
+  if (MM.fmapFullscreen && ter_getb(MM.fmapFullscreen) > 0) return 1;
+  return 0;
+}
+static int ter_gameplay_free(void) {
+  if (!ter_gameplay_active()) return 0;
+  if (ter_ingame_ui_open()) return 0;
+  return 1;
 }
 static void ter_force_player_obj_name(void *player, void *s) {
   if (!player || !s) return;
@@ -2942,10 +3138,13 @@ static void ter_menu_nav(void) {
   /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
      teste p/ dropdowns/sublistas que têm foco de controle próprio). */
   if (access("/tmp/ternonav", F_OK) == 0) { g_girm_ovr = 0; return; }
-  /* 🔑 SÓ navega em MENU (tela de título/Settings). No GAMEPLAY (gameMenu=false) NÃO mexe no cursor
-     — senão forçava o cursor pra um item do HUD (volta sempre pro mesmo lugar) e o D-pad movia o
-     cursor. Assim no jogo o cursor fica 100% no stick direito (ter_gamepad_poll). */
-  if (ter_menu_resolve() && MM.fgameMenu && !ter_getb(MM.fgameMenu)) { g_girm_ovr=0; g_fcmode=0; return; }
+  /* Dentro do mundo, deixa o Terraria navegar nativamente. Este override fica
+     restrito ao menu principal/listas de selecao, onde ele realmente resolve. */
+  if (ter_gameplay_active()) {
+    static int logged;
+    if (!logged++) { fprintf(stderr, "[GAME] player ativo: menu nav OFF (gameplay nativo)\n"); fsync(2); }
+    g_girm_ovr=0; g_fcmode=0; return;
+  }
   if (g_fcmode) {
     g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;
     g_cursor_x = g_fcx; g_cursor_y = g_fcy;
@@ -3036,6 +3235,7 @@ static void ter_ctrl_feed(void) {
         fprintf(stderr,"   region[%d] x[%d..%d] y[%d..%d]\n",r,b[0],b[1],b[2],b[3]); }
       fsync(2);}} }
   if (!getenv("TER_NOFORCEACTIVE")) ter_ctrl_force_active();
+  int gameplay = ter_gameplay_active();
   memset(g_inj_btn,0,sizeof g_inj_btn);
   for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
   /* 🎮 mapeamento XBOX COMPLETO -> Controller.Buttons do InControl
@@ -3043,12 +3243,12 @@ static void ter_ctrl_feed(void) {
       Options=8,Switch=9,StickL=10,StickR=11,Back=12} */
   g_inj_btn[0]=g_gp_log[4];   /* Action1     = A (confirma)   */
   g_inj_btn[1]=g_gp_log[5];   /* Action2     = B (volta)      */
-  g_inj_btn[2]=g_gp_log[6];   /* Action3     = X             */
+  g_inj_btn[2]=gameplay ? 0 : g_gp_log[6];   /* X nao entra no caminho de ataque no gameplay */
   g_inj_btn[3]=g_gp_log[7];   /* Action4     = Y             */
   g_inj_btn[4]=g_gp_log[10];  /* ShoulderL   = LB            */
   g_inj_btn[5]=g_gp_log[11];  /* ShoulderR   = RB            */
   g_inj_btn[6]=g_gp_log[12];  /* LTrig       = LT (>30%)     */
-  g_inj_btn[7]=g_gp_log[13];  /* RTrig       = RT (>30%)     */
+  g_inj_btn[7]=g_gp_log[13];  /* RTrig = RT: troca de item nativa, nao atacar */
   g_inj_btn[8]=g_gp_log[8];   /* Options     = Start         */
   g_inj_btn[10]=g_gp_log[14]; /* StickL      = L3            */
   g_inj_btn[11]=g_gp_log[15]; /* StickR      = R3            */

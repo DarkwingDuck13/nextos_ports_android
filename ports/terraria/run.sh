@@ -18,6 +18,32 @@ i=0; while [ -n "$(ter_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 # backend de vídeo: fbdev (Mali-450 Utgard) — EGL real do Mali via SDL2-mali
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
+_ter_mode=
+if [ -r /sys/class/graphics/fb0/mode ]; then
+  read -r _ter_mode < /sys/class/graphics/fb0/mode || true
+fi
+if [ -z "$_ter_mode" ] && [ -r /sys/class/graphics/fb0/modes ]; then
+  read -r _ter_mode < /sys/class/graphics/fb0/modes || true
+fi
+if [ -n "$_ter_mode" ]; then
+  _ter_pair=${_ter_mode#*:}
+  _ter_pair=${_ter_pair%%[!0-9x]*}
+  _ter_sw=${_ter_pair%x*}
+  _ter_sh=${_ter_pair#*x}
+  case "$_ter_sw" in ''|*[!0-9]*) _ter_sw= ;; esac
+  case "$_ter_sh" in ''|*[!0-9]*) _ter_sh= ;; esac
+  if [ -n "$_ter_sw" ] && [ -n "$_ter_sh" ]; then
+    export TER_SCREEN_W="$_ter_sw" TER_SCREEN_H="$_ter_sh"
+  fi
+fi
+if { [ -z "${TER_SCREEN_W:-}" ] || [ -z "${TER_SCREEN_H:-}" ]; } && [ -r /sys/class/graphics/fb0/virtual_size ]; then
+  IFS=, read -r _ter_sw _ter_sh < /sys/class/graphics/fb0/virtual_size || true
+  case "$_ter_sw" in ''|*[!0-9]*) _ter_sw= ;; esac
+  case "$_ter_sh" in ''|*[!0-9]*) _ter_sh= ;; esac
+  if [ -n "$_ter_sw" ] && [ -n "$_ter_sh" ]; then
+    export TER_SCREEN_W="$_ter_sw" TER_SCREEN_H="$_ter_sh"
+  fi
+fi
 mkdir -p "$GAMEDIR/Players"
 if [ -d "$GAMEDIR/default_players" ]; then
   for plr in "$GAMEDIR"/default_players/*.plr; do
@@ -30,7 +56,7 @@ fi
 # CONTROLES: SDL normaliza o pad para layout Xbox; Terraria recebe InControl + XNA.
 # Menu usa TER_NAVMENU para D-pad/A; TER_RSCURSOR e teclado virtual ficam fora.
 # CUP_NOLOGFILE=1 é OBRIGATÓRIO: sem ele, o log em arquivo trava a inicialização (nem renderiza).
-export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 CUP_NOLOGFILE=1
+export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_FIXNANPART=1 CUP_NOLOGFILE=1
 # CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
 export CUP_FRAMES=999999999
 export TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_NAVMENU=1 TER_FIXSP=1 TER_NOVKBD=1

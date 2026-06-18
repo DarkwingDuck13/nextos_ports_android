@@ -1,5 +1,48 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
+## 🟢 2026-06-17 NOITE — ESTADO VALIDADO: CONTROLES + AUDIO + PLAYER/MUNDO + SEM TELA PRETA
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device. Se o jogo estiver criando mundo, **não matar**: aguardar terminar.
+
+Estado validado pelo NextOS:
+- Controles estão bons e devem ser preservados.
+- Áudio está bom: FMOD roda em 24000 Hz e `TER_STREAMFALLBACK=1` mantém música/SFX.
+- Player foi criado pelo fluxo nativo do Terraria: `/storage/roms/terraria/Players/Player.plr`.
+- Mundo foi criado e salvo pelo jogo: `/storage/roms/terraria/Worlds/Cama_da_Postura_de_Decepção.wld`.
+- Tela preta alguns segundos após entrar no mundo foi corrigida neutralizando `Terraria.Graphics.Renderers.LittleFlyingCritterParticle.Update` com `TER_FIXNANPART=1`.
+
+Estado de controles que NÃO deve ser perdido:
+- `run.sh`: `TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_NAVMENU=1 TER_FIXSP=1 TER_NOVKBD=1`.
+- `TER_RSCURSOR` fica fora do default. Não reativar: causou cursor duplicado/quebra de gameplay.
+- `TER_OSK` fica fora do default. Não reativar teclado virtual: quebrou navegação/estado de menu.
+- Menu: `TER_NAVMENU` dirige hover/click por regiões reais (`GUIInputRegionManager`), D-pad/stick esquerdo navega, `A` confirma, `B` volta, `LB/RB` mantêm abas nativas.
+- Gameplay: stick direito move o cursor nativo via `GamePad.GetState`; o menu não deve forçar cursor quando `Main.gameMenu=false`.
+
+Estado de criação de nome:
+- `run.sh` usa `TER_AUTONAME=1 TER_PLAYER_DEFAULT=Player TER_WORLD_DEFAULT=World`.
+- Autonome preenche campos nativos e `Main.PendingPlayer.name`; não abre teclado e não deve mexer nos controles.
+
+Estado de boot/render:
+- `run.sh` usa `CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_FIXNANPART=1 CUP_NOLOGFILE=1`.
+- `TER_SKIPJOBWAIT` ficou necessário para boot/menu. A criação de mundo pode demorar vários minutos; não considerar travado só porque `Worlds/` ainda está vazio.
+
+## 🟡 2026-06-17 NOITE — SAVES GERADOS INVALIDADOS; VOLTAR AO CREATE NATIVO COM AUTONOME
+**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+
+Estado atual:
+- NextOS não mexeu nos controles; tratar o bug recente como save/estado inválido, não como regressão voluntária do usuário.
+- Os saves `Player.plr`, `Player_2.plr` e `Player_3.plr` gerados no device foram invalidados: ao carregar gameplay, houve tela preta/estado ruim e exceção Unity em mundo.
+- `ports/terraria/default_players/` deve ficar sem `.plr` default até existir um save realmente validado.
+- O caminho atual é criar personagem do zero pelo menu original do Terraria.
+- `run.sh` liga `TER_AUTONAME=1 TER_PLAYER_DEFAULT=Player TER_WORLD_DEFAULT=World` e mantém `TER_NOVKBD=1`, sem `TER_OSK`.
+- O autonome só preenche campos internos de nome e `Main.PendingPlayer.name`; ele não deve abrir teclado virtual nem mudar navegação/controle.
+
+Detalhe importante do gerador em `src/main.c`:
+- Flag manual: `TER_MAKECLEANPLAYER="Player,Player 2,Player 3"`.
+- Ele roda só quando a flag está ligada e não participa da navegação normal. Não usar como default.
+- Ele cria `GUIPlayerCreateMenu`, roda `Setup()`, seta o nome em `Main.PendingPlayer.name` e chama o `CreateAndSave()` original do menu.
+- Não voltar ao caminho antigo de salvar `Main.LocalPlayer`: isso clona o player ativo com desbloqueios/progresso e trava ao carregar.
+- Não recolocar chamada do gerador em `ter_ctrl_feed`: isso roda no caminho de input/render e já causou crash cedo ao chamar `il2cpp_string_new`.
+
 ## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES + PLAYER SAVE FUNCIONANDO
 **Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
