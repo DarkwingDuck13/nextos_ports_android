@@ -30,7 +30,14 @@ static class TexConv {
 
     static int Scale = 2;
     static bool Dry = false;
-    static bool NoMaskFix = false;
+    // MASKFIX DESLIGADO por padrao: o diagnostico provou que NENHUMA fonte depende dele
+    // (os atlas gui/fonts sao COLORIDOS, renderizam normal) e que ele so EMBRANQUECIA por
+    // engano sprites (animatedsprites: sombras/silhuetas) e cenario (decors: cercas/escadas).
+    // Reative com --maskfix se algum texto sumir (nao deve: fontes validadas legiveis sem ele).
+    static bool NoMaskFix = true;
+    static bool Diag = false;
+    [ThreadStatic] static int LastReason;
+    [ThreadStatic] static bool LastWhitened;
 
     static int Main(string[] args){
         string apk = null;
@@ -39,6 +46,8 @@ static class TexConv {
             if (args[i]=="--apk" && i+1<args.Length) apk = args[++i];
             else if (args[i]=="--dry") Dry=true;
             else if (args[i]=="--nomaskfix") NoMaskFix=true;
+            else if (args[i]=="--maskfix") NoMaskFix=false;   // reativa o MASKFIX (default = OFF)
+            else if (args[i]=="--diag") Diag=true;
             else if (int.TryParse(args[i], out int sc)) Scale = sc;
             else pos.Add(args[i]);
         }
@@ -85,11 +94,16 @@ static class TexConv {
                     var dd = Path.GetDirectoryName(dst); if (!string.IsNullOrEmpty(dd)) Directory.CreateDirectory(dd);
                     if (rel.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase)){
                         int r = ConvertBytes(raw, out byte[] outb);
-                        if (r==1 && !Dry){ File.WriteAllBytes(dst, outb); Interlocked.Increment(ref conv); Interlocked.Add(ref saved, raw.Length - outb.Length); }
+                        if (Diag){   // so categoriza, NAO escreve (rapido)
+                            if (r==0) Console.Error.WriteLine($"[SKIP r{LastReason}] {rel}");
+                            else if (r==1 && LastWhitened) Console.Error.WriteLine($"[WHITEN] {rel}");
+                            if (r==1) Interlocked.Increment(ref conv); else if (r==0) Interlocked.Increment(ref skip); else Interlocked.Increment(ref err);
+                        }
+                        else if (r==1 && !Dry){ File.WriteAllBytes(dst, outb); Interlocked.Increment(ref conv); Interlocked.Add(ref saved, raw.Length - outb.Length); }
                         else if (r==1){ Interlocked.Increment(ref conv); }     // dry
                         else { File.WriteAllBytes(dst, raw); if (r==0) Interlocked.Increment(ref skip); else Interlocked.Increment(ref err); }
                     } else {
-                        File.WriteAllBytes(dst, raw); Interlocked.Increment(ref copy);
+                        if (!Diag){ File.WriteAllBytes(dst, raw); Interlocked.Increment(ref copy); }
                     }
                 } catch (Exception e){ Interlocked.Increment(ref err); Console.Error.WriteLine($"[texconv] ERR {rel}: {e.Message}"); }
                 int d = Interlocked.Increment(ref done);
@@ -175,11 +189,11 @@ static class TexConv {
 
     // NUCLEO: bytes XNB ASTC -> bytes XNB ETC1/Color. retorna 1=convertido(outXnb), 0=pular, -1=erro.
     static int ConvertBytes(byte[] raw, out byte[] outXnb){
-        outXnb = null;
-        if (raw.Length < 10 || raw[0]!='X' || raw[1]!='N' || raw[2]!='B') return 0;
+        outXnb = null; LastReason=0; LastWhitened=false;
+        if (raw.Length < 10 || raw[0]!='X' || raw[1]!='N' || raw[2]!='B'){ LastReason=1; return 0; }
         byte platform = raw[3], version = raw[4], flags = raw[5];
         bool lz4 = (flags & 0x40)!=0, lzx = (flags & 0x80)!=0;
-        if (lzx) return 0;
+        if (lzx){ LastReason=2; return 0; }
 
         byte[] content;
         if (lz4){
@@ -203,19 +217,19 @@ static class TexConv {
         if (typeIdx < 1 || typeIdx > trCount) return 0;
 
         int fmt = br.ReadInt32();
-        if (fmt < ASTC_MIN) return 0;
+        if (fmt < ASTC_MIN){ LastReason=4; return 0; }   // nao-ASTC (ja Color/RGBA) - ok como esta
         int w = br.ReadInt32(), h = br.ReadInt32(), levelCount = br.ReadInt32();
-        if (w<=0 || h<=0 || levelCount<=0) return 0;
+        if (w<=0 || h<=0 || levelCount<=0){ LastReason=5; return 0; }
         int lvl0 = br.ReadInt32();
-        if (lvl0<=0 || lvl0 > content.Length) return 0;
+        if (lvl0<=0 || lvl0 > content.Length){ LastReason=5; return 0; }
         byte[] astc = br.ReadBytes(lvl0);
 
         int nb = lvl0/16, bx=0, by=0;
         for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0], cby=AstcBlk[i,1];
             if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
-        if (bx==0) return 0;
+        if (bx==0){ LastReason=6; return 0; }   // ASTC com bloco DESCONHECIDO (nao na tabela) - precisa de ajuste!
         var full = new byte[w*h*4];
-        if (sor4_astc_decode(astc, (ulong)lvl0, w, h, bx, by, full) != 0) return -1;
+        if (sor4_astc_decode(astc, (ulong)lvl0, w, h, bx, by, full) != 0){ LastReason=7; return -1; }
 
         if (!NoMaskFix){
             // MESMA regra do Texture2DReader.SOR4.cs: so e mascara de FONTE se entre os pixels
@@ -224,8 +238,8 @@ static class TexConv {
             // O criterio antigo media cor GLOBAL e pintava de branco cercas finas (<1% global).
             long sa=0; int nOp=0, nOpCol=0, np=full.Length/4;
             for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; sa+=a; int mx=full[p]; if(full[p+1]>mx)mx=full[p+1]; if(full[p+2]>mx)mx=full[p+2]; if(a>128){ nOp++; if(mx>16) nOpCol++; } }
-            if (np>0 && sa/np > 12 && nOp>0 && (long)nOpCol*100 < (long)nOp)
-                for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; }
+            if (np>0 && sa/np > 12 && nOp>0 && (long)nOpCol*100 < (long)nOp){ LastWhitened=true;
+                for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; } }
         }
 
         int tw=Math.Max(w/Scale,1), th=Math.Max(h/Scale,1);

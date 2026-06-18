@@ -67,7 +67,9 @@ namespace Microsoft.Xna.Framework.Content
             // finas (fio <1% da textura toda) -> as pintava de branco. Olhar so o OPACO separa
             // fonte (opaco sem cor) de cerca/escada (opaco colorido). SOR4_MASKFIX_PCT ajusta o
             // limiar; SOR4_NOMASKFIX=1 desliga. Mudanca invalida o texcache (limpar SOR4_TEXCACHE).
-            if (System.Environment.GetEnvironmentVariable("SOR4_NOMASKFIX")!="1") {
+            // MASKFIX de runtime DESLIGADO por padrao (o progressor ja converte tudo; e o
+            // diagnostico provou que nenhuma fonte depende do maskfix). Reative com SOR4_MASKFIX=1.
+            if (System.Environment.GetEnvironmentVariable("SOR4_MASKFIX")=="1") {
                 long sa=0; int colored=0, nOp=0, nOpCol=0, np=full.Length/4;
                 for(int p=0;p<full.Length;p+=4){
                     byte a=full[p+3]; sa+=a;
