@@ -29,9 +29,11 @@ O som de verdade é tocado por um **reimpl OpenAL+opusfile** (`audioout.c`). Doi
 - `SOR4_BANKDIR=gameassets`  ← os `.bnk` vivem aqui. A Wwise real PRECISA achar o `Init.bnk`
   senão `real init=0` e **o áudio inteiro nem liga** (foi o "mudo total" desta sessão).
 - `SOR4_AUDIO=audioout`      ← os `.opus` + `manifest.txt` (SFX in-bank). **≠ BANKDIR!**
-- `WWISE_NOPUMP=1`           ← não bombeia o sink nativo (evita decode duplicado).
+- `WWISE_TICK_US=33333`      ← pump LIGADO @30Hz (a Wwise dirige as TRANSIÇÕES de música em
+  tempo real). Antes era `WWISE_NOPUMP=1` (transição lenta). 30Hz alivia a CPU do decode.
 - `SOR4_MUSIC_GRACE=3600`    ← música não para no fechamento de segmento (loopa até pedirem outra).
-- `SOR4_SFXGAIN=0.85` `SOR4_MUSICGAIN=0.6`.
+- `SOR4_SFXGAIN=1.1` (era 0.85; golpe tava baixo) `SOR4_MUSICGAIN=0.6`.
+- `music_ids.txt` (em `SOR4_AUDIO`) ← lista de wem-IDs de MÚSICA (HIRC); ver fix 2026-06-18.
 
 ---
 
@@ -42,6 +44,43 @@ O som de verdade é tocado por um **reimpl OpenAL+opusfile** (`audioout.c`). Doi
 3. **Controle pulo/menu DOBRADO** = gptokeyb + pad nativo SDL os dois lendo o controle.
    FIX: launcher NÃO roda gptokeyb (pad nativo só; `SOR4_USE_GPTK=1` religa se precisar).
 4. **SFX existir** (menu, soco no AR, voz do personagem, música) — OK.
+
+## ✅ RESOLVIDO 2026-06-18 (commit 1dbc6e4) — MÚSICA SOBREPOSTA — aguarda ouvido do NextOS
+
+**Sintoma (NextOS):** ao trocar de cena (título → seleção → loading → fase) a música da
+cena ANTERIOR continua tocando POR CIMA da nova; e DENTRO da fase, quando ela tem 2/3 faixas,
+"uma música por cima da outra". A nova deveria começar de imediato (a anterior PARA).
+
+**CAUSA RAIZ:** o roteamento música-vs-SFX no `wwise_native.c` (`AAssetManager_open`) decidia
+por **TAMANHO** (`.wem >= 1.5MB = música`). Mas **~302 segmentos de música têm <1.5MB** →
+eram classificados como **SFX streamed** e tocados em PARALELO (`ao_play_streamed_sfx`, várias
+fontes ao mesmo tempo). A música real usa UMA fonte (`g_mus_src`) que SUBSTITUI a anterior —
+mas os segmentos mal-roteados escapavam disso → empilhavam.
+
+**FIX:** roteamento por **HIRC** (preciso), não por tamanho.
+ - `wwise_extract.py` gera `music_ids.txt` = wem-IDs referenciados por
+   **MusicSegment(0x0A)/MusicTrack(0x0B)/MusicRanSeq(0x0D)** ∩ os `.wem` do gameassets.
+   Resultado: **423 wems de música, 0 overlap** com os 50 SFX streamed (Sound 0x02).
+ - `wwise_native.c`: `load_music_ids()` carrega a lista (busca binária, ~7KB RAM). No
+   `AAsset_open`: ID na lista → `ao_music_request` (fonte única, substitui); senão → **fallback
+   por tamanho** (compat. devices sem a lista). Custo desprezível, sem CPU extra.
+**Validado:** device loga `[wwise] music_ids carregados: 423` + `pump LIGADO`. Lógica conferida
+offline (423 música / 50 SFX / 0 overlap / 302 música <1.5MB = a causa). **FALTA:** NextOS ouvir
+in-game (a música só abre depois do menu — não dá p/ testar sem navegar). Se sobrar sobreposição
+residual, são os ~190 wems FORA do HIRC dos 4 bancos (usam fallback por tamanho).
+
+## 🔎 X5M (.103) — FREEZE de imagem no meio da fase (HDMI off/on, som continua) — HIPÓTESE
+
+NÃO testável agora (X5M offline). Diagnóstico: no Amlogic o link HDMI é compartilhado
+áudio+vídeo; uma reconfiguração de áudio (re-open/rate) dispara um **modeset** (HDMI re-sync)
+e o **blob Valhall congela o present** (a thread de áudio continua → som segue, imagem trava).
+R36S (Bifrost) não trava nisso. **Nosso `audioout.c` abre o device UMA vez (linha 386, sem
+reabrir)** → o re-open NÃO vem do nosso reimpl; vem do lado PipeWire/HDMI Amlogic OU de um
+modeset de vídeo (mudança de modo/refresh in-stage). A INVESTIGAR no device: `dmesg | grep -i
+meson_vout/modeset` correlacionado ao freeze; e se `pw-top` mostra o node de áudio
+suspendendo/re-negociando. Fix candidato (LEVE, X5M-only via alsoft.conf): fixar `frequency` do
+OpenAL = nativo do HDMI (evita renegociação) + impedir suspend-on-idle do node PipeWire. NÃO
+mexer no caminho do Mali (que está bom).
 
 ## ✅ RESOLVIDO 2026-06-17 (commit bfba090) — aguarda só ouvido do NextOS em combate
 
