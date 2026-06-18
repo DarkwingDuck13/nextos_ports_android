@@ -14,16 +14,27 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 > 🦔 **DESTAQUE — SONIC MANIA PLUS (engine RSDKv5/Retro Engine, build Netflix Android) rodando no Mali-450 (GLES2, fbdev) — INÉDITO MUNDIAL.** Fluxo **completo e jogável COM SOM**: logos → título → menu (Mania Mode) → save select → escolher personagem → cutscene de abertura (Angel Island) → **Green Hill Zone jogável**, sai com SELECT+START (padrão PortMaster). Leia [`ports/sonicmania/README.md`](ports/sonicmania/README.md): documenta os destraves — **título** travava em `WaitForConflictState` esperando um cloud-save (fix: forçar `PressButton` + patch `GetCloudSaveConflictState→0`); **menu** preto/spinner (fix: JNI `GetStringUTFChars` p/ jstring falso + `PrerollChecks` completar natural); **save de jogo novo** travava (cloud-only via `JniWrapper::CloudSave` async → entregar os callbacks via `CallCallback`); **crash de fase** ao destruir badnik (telemetria `Stats::TryTrackStat`→`std::wstring_convert` → no-op); e a **RECEITA DE SOM**: a callback do Oboe crasha em STL, então chamamos o mixer puro `RSDK::Audio::MixToBuffer` **direto na thread do SDL** (bypass do Oboe) + forçar `streamVolume`/`soundFXVolume`. Render via blit GLES2 próprio (shaders eram do lado Java). **BYO-data** (APK do Sonic Mania Plus que você possui).
 
-## Jogos portados
-| Jogo | Estado | Pasta |
-|---|---|---|
-| **Bully: Anniversary Edition** | ✅ **100% jogável** (Mali-450, GLES2) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
-| **GTA: Vice City** | ✅ **100% jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
-| **Sonic Mania Plus** (RSDKv5 Netflix) | ✅ **100% jogável COM SOM** (Mali-450, GLES2) — fluxo completo: título→menu→save→cutscene→fase, música+sfx | [`ports/sonicmania`](ports/sonicmania/) |
-| **Hollow Knight** (Unity 2020 IL2CPP) | 🔬 pesquisa — **renderiza em GLES3** (S905X5M, Mali-G310); muro = input nativo dos menus. No Mali-450/GLES2 há parede de shader (jogo é GLES3-only) | [`experiments/hollow-recon`](experiments/hollow-recon/) |
-| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | 📦 referência (de **mtojek**) — validam o framework no Utgard | — |
+> 🥊 **DESTAQUE — STREETS OF RAGE 4 (MonoGame/.NET 9) rodando NATIVO no Mali-450 (GLES2).** Diferente dos demais, este NÃO é so-loader: o runtime **.NET 9 CoreCLR** + **MonoGame compilado em GLES2** executam o código gerenciado do jogo direto, com um host próprio (`sor4host`) no lugar da `MainActivity`. Fluxo **jogável com áudio** — menu → seleção → fases, com a **música original (Wwise)** tocada por um reimpl OpenAL leve (troca limpa entre faixas) e SFX de combate. As texturas ASTC são convertidas pra **ETC1** na 1ª execução (BYO-data via APK). Leia [`ports/sor4/README.md`](ports/sor4/).
 
-> Todos os ports são **BYO-data**: o repo traz só o código/loader; você fornece o `.so` + assets do APK que **possui legalmente**.
+## Jogos portados
+| Jogo | Engine / método | Estado | Pasta |
+|---|---|---|---|
+| **Bully: Anniversary Edition** | so-loader (`libGame.so`) | ✅ **100% jogável** (Mali-450, GLES2) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
+| **GTA: Vice City** (reVC) | so-loader 2-módulos | ✅ **100% jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
+| **Sonic Mania Plus** (RSDKv5) | so-loader | ✅ **100% jogável COM SOM** — título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
+| **Streets of Rage 4** | **MonoGame/.NET 9 NATIVO** (não so-loader) | ✅ **jogável + áudio validado** (Mali-450 GLES2) — música/SFX, texturas ETC1, BYO via APK | [`ports/sor4`](ports/sor4/) |
+| **DYSMANTLE** | so-loader (GameActivity) | ✅ **jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
+| **Terraria** (Unity IL2CPP) | so-loader | ✅ **jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
+| **NFS Most Wanted (2012)** | so-loader (armhf) | 🟡 gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
+| **Resident Evil 4** (Unity) | so-loader | 🔴 demo — menu + entrada Cap.1 OK; **andar congela** (deadlock job-system) | [`ports/re4`](ports/re4/) |
+| **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | 🟢 cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
+| **Cuphead** (Unity IL2CPP) | so-loader | 🔬 WIP | [`ports/cuphead`](ports/cuphead/) |
+| **Hollow Knight** (Unity IL2CPP) | so-loader | 🔬 pesquisa — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
+| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | so-loader (ref. **mtojek**) | 📦 referência — validam o framework no Utgard | — |
+
+> ⚙️ **Dois caminhos**: a maioria é **so-loader** (carrega o `.so` Android e roda direto); alguns são **nativos** — Streets of Rage 4 roda o runtime **.NET 9 + MonoGame** compilado em GLES2, e Dusklight é um **recomp**. O empacotamento PortMaster (launcher + BYO-data) é o mesmo nos dois.
+
+> Todos os ports são **BYO-data**: o repo traz só o código/loader; você fornece o `.so`/dados do APK que **possui legalmente**.
 
 ## Por que funciona tão bem
 Android é Linux. O código do jogo é **ARM nativo** rodando no ARM do device — zero emulação de CPU. GLES é GLES (mesma API). Nos teus TV boxes, é praticamente o hardware nativo do jogo (mesmo SoC/GPU classe Android). Só a "casca" Android é trocada por SDL2/glibc.
