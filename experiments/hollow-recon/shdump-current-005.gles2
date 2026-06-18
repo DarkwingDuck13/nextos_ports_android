@@ -1,0 +1,19 @@
+#version 100
+#define ATTRIBUTE_IN attribute
+#define VARYING_IN varying
+#define VARYING_OUT varying
+/* DECLARE_FRAG_COLOR removed for GLES2 */
+#define FRAG_COLOR gl_FragColor
+#define SAMPLE_TEXTURE_2D texture2D
+
+precision mediump float;
+VARYING_IN vec2 texCoord;
+#ifdef DECLARE_FRAG_COLOR
+    DECLARE_FRAG_COLOR;
+#endif
+uniform sampler2D tex;
+void main()
+{
+    vec4 c = SAMPLE_TEXTURE_2D(tex, texCoord);
+    FRAG_COLOR = c;
+}

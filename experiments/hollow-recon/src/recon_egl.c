@@ -66,9 +66,68 @@ static int fmt_bpp(unsigned fmt) {
   switch (fmt) {
     case 0x1908: case 0x80E1: return 4;  /* RGBA / BGRA */
     case 0x1907: return 3;               /* RGB */
-    case 0x190A: return 2;               /* LUMINANCE_ALPHA */
-    case 0x1909: case 0x1906: return 1;  /* LUMINANCE / ALPHA */
+    case 0x190A: case 0x8227: return 2;  /* LUMINANCE_ALPHA / RG */
+    case 0x1903: case 0x1909: case 0x1906: return 1;  /* RED / LUMINANCE / ALPHA */
     default: return 0;
+  }
+}
+static int type_bpc(unsigned type) {
+  switch (type) {
+    case 0x1401: return 1;               /* GL_UNSIGNED_BYTE */
+    case 0x140B: case 0x8D61: return 2;  /* GL_HALF_FLOAT / GL_HALF_FLOAT_OES */
+    case 0x1406: return 4;               /* GL_FLOAT */
+    default: return 0;
+  }
+}
+static float half_to_float_u01(unsigned short h) {
+  int sign = (h >> 15) & 1, exp = (h >> 10) & 31, frac = h & 1023;
+  float v;
+  if (exp == 0) {
+    v = frac ? ((float)frac / 1024.0f) : 0.0f;
+    for (int i = 0; i < 14; i++) v *= 0.5f;
+  } else if (exp == 31) {
+    v = 1.0f;
+  } else {
+    v = 1.0f + (float)frac / 1024.0f;
+    int e = exp - 15;
+    while (e > 0) { v *= 2.0f; e--; }
+    while (e < 0) { v *= 0.5f; e++; }
+  }
+  return sign ? -v : v;
+}
+static unsigned char float_to_u8(float v) {
+  if (!(v > 0.0f)) return 0;
+  if (v >= 1.0f) return 255;
+  return (unsigned char)(v * 255.0f + 0.5f);
+}
+static int translate_upload_format(unsigned fmt, unsigned type,
+                                   unsigned *out_fmt, unsigned *out_type) {
+  *out_fmt = fmt;
+  *out_type = type;
+  if (fmt == 0x1903) *out_fmt = 0x1909;       /* GL_RED -> GL_LUMINANCE */
+  else if (fmt == 0x8227) *out_fmt = 0x190A;  /* GL_RG  -> GL_LUMINANCE_ALPHA */
+  if (type == 0x140B || type == 0x8D61 || type == 0x1406)
+    *out_type = 0x1401;                       /* float/half -> byte */
+  return (*out_fmt != fmt) || (*out_type != type);
+}
+static void sample_upload_pixel(unsigned char *dst, const unsigned char *src,
+                                int comps, unsigned type) {
+  if (type == 0x1401) {
+    memcpy(dst, src, (size_t)comps);
+    return;
+  }
+  for (int c = 0; c < comps; c++) {
+    if (type == 0x140B || type == 0x8D61) {
+      unsigned short h;
+      memcpy(&h, src + c * 2, sizeof h);
+      dst[c] = float_to_u8(half_to_float_u01(h));
+    } else if (type == 0x1406) {
+      float f;
+      memcpy(&f, src + c * 4, sizeof f);
+      dst[c] = float_to_u8(f);
+    } else {
+      dst[c] = 0;
+    }
   }
 }
 static int hk_int_env(const char *name, int def) {
@@ -77,19 +136,23 @@ static int hk_int_env(const char *name, int def) {
 }
 /* glTexStorage2D (GLES3, storage imutavel) -> aloca via glTexImage2D (GLES2). SEM isso a
    textura nao existe -> glTexSubImage2D falha -> UI amostra vazio -> TELA PRETA. */
+static int (*real_glGetError)(void) = 0;
 static void (*real_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = 0;
 static void stub_glTexStorage2D(unsigned target, int levels, unsigned ifmt, int w, int h) {
   if (!real_glTexImage2D)
     real_glTexImage2D = (void (*)(unsigned, int, int, int, int, int, unsigned, unsigned,
                                   const void *))dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!real_glGetError) real_glGetError = (int (*)(void))dlsym(RTLD_DEFAULT, "glGetError");
   unsigned fmt = 0x1908, type = 0x1401;  /* GL_RGBA, GL_UNSIGNED_BYTE */
   switch (ifmt) {
     case 0x8051: case 0x1907: fmt = 0x1907; break;             /* RGB8/RGB -> GL_RGB */
     case 0x8D62: fmt = 0x1907; type = 0x8363; break;           /* RGB565 -> GL_RGB + 5_6_5 */
     case 0x8056: fmt = 0x1908; type = 0x8033; break;           /* RGBA4 -> GL_RGBA + 4_4_4_4 */
     case 0x8057: fmt = 0x1908; type = 0x8034; break;           /* RGB5_A1 -> GL_RGBA + 5_5_5_1 */
-    case 0x8229: fmt = 0x1909; break;                          /* R8 -> GL_LUMINANCE */
-    case 0x822B: fmt = 0x190A; break;                          /* RG8 -> GL_LUMINANCE_ALPHA */
+    case 0x8229: case 0x822D: case 0x822E: fmt = 0x1909; break;/* R8/R16F/R32F -> GL_LUMINANCE */
+    case 0x822B: case 0x822F: case 0x8230: fmt = 0x190A; break;/* RG8/RG16F/RG32F -> GL_LUMINANCE_ALPHA */
+    case 0x881B: case 0x8815: fmt = 0x1907; break;             /* RGB16F/RGB32F -> GL_RGB */
+    case 0x881A: case 0x8814: fmt = 0x1908; break;             /* RGBA16F/RGBA32F -> GL_RGBA */
     default: break;                                            /* RGBA8/RGBA -> GL_RGBA */
   }
   int sh = tex_shift_for(w, h);                  /* HK_TEXCAP: aloca reduzida */
@@ -101,7 +164,21 @@ static void stub_glTexStorage2D(unsigned target, int levels, unsigned ifmt, int 
   if (!real_glTexImage2D) return;
   for (int i = 0; i < levels; i++) {
     int lw = aw >> i, lh = ah >> i; if (lw < 1) lw = 1; if (lh < 1) lh = 1;
-    real_glTexImage2D(target, i, (int)fmt, lw, lh, 0, fmt, type, 0);
+    int faces = target == 0x8513 ? 6 : 1;  /* GL_TEXTURE_CUBE_MAP -> 6 faces */
+    for (int f = 0; f < faces; f++) {
+      unsigned t = target == 0x8513 ? (0x8515u + (unsigned)f) : target;
+      if (real_glGetError) for (int k = 0; k < 8 && real_glGetError(); k++) {}
+      real_glTexImage2D(t, i, (int)fmt, lw, lh, 0, fmt, type, 0);
+      if (real_glGetError) {
+        int e = real_glGetError();
+        static int en = 0;
+        if (e && en < 20) {
+          fprintf(stderr, "[TEXSTOR-ERR] target=0x%x face=0x%x ifmt=0x%x fmt=0x%x type=0x%x level=%d %dx%d err=0x%x\n",
+                  target, t, ifmt, fmt, type, i, lw, lh, e);
+          en++;
+        }
+      }
+    }
   }
 }
 /* SYNC objects (GLES3) ausentes no Mali-450: fingir "ja sinalizado" p/ a engine NAO
@@ -116,7 +193,6 @@ static void stub_glGetSynciv(void *s, unsigned pname, int bufSize, int *length, 
   if (length) *length = 1;
 }
 /* DIAGNOSTICO de textura (caca a tela preta): o upload casa com a alocacao? ha erro GL? */
-static int (*real_glGetError)(void) = 0;
 static void (*real_glTexSubImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = 0;
 static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int h,
                                  unsigned fmt, unsigned type, const void *px) {
@@ -124,11 +200,13 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
   if (!real_glGetError) real_glGetError = (int (*)(void))dlsym(RTLD_DEFAULT, "glGetError");
   /* HK_TEXCAP: textura alocada reduzida -> downsample point-sample do upload */
   int sh = (g_bound_tex < TEXSHIFT_SLOTS) ? g_tex_shift[g_bound_tex] : 0;
-  if (sh && px && type == 0x1401 /*UNSIGNED_BYTE*/) {
-    int bpp = fmt_bpp(fmt);
+  unsigned upload_fmt = fmt, upload_type = type;
+  int convert = translate_upload_format(fmt, type, &upload_fmt, &upload_type);
+  if ((sh || convert) && px) {
+    int bpp = fmt_bpp(fmt), bpc = type_bpc(type);
     int dw = w >> sh, dh = h >> sh;
     static long long capb = 0;
-    int src_bpp = bpp ? bpp : 4;
+    int src_bpp = (bpp && bpc) ? bpp * bpc : 4;
     capb += (long long)w * h * src_bpp;
     int skip_after = hk_int_env("HK_TEXSKIP_AFTER_MB", 0);
     if (skip_after > 0 && (capb >> 20) > skip_after && w >= 1024 && h >= 1024) {
@@ -139,10 +217,10 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
       sn++;
       return;
     }
-    if (bpp && dw >= 1 && dh >= 1) {
+    if (bpp && bpc && dw >= 1 && dh >= 1) {
       unsigned char *out = (unsigned char *)malloc((size_t)dw * dh * bpp);
       int step = 1 << sh;
-      if (bpp == 4) {            /* caminho rapido: copia por palavra (RGBA) */
+      if (!convert && bpp == 4 && type == 0x1401) {  /* caminho rapido: copia por palavra (RGBA) */
         unsigned *o32 = (unsigned *)out;
         for (int y = 0; y < dh; y++) {
           const unsigned *row = (const unsigned *)((const unsigned char *)px + (size_t)(y * step) * w * 4);
@@ -152,11 +230,22 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
         const unsigned char *in = (const unsigned char *)px;
         for (int y = 0; y < dh; y++)
           for (int x = 0; x < dw; x++)
-            memcpy(out + ((size_t)y * dw + x) * bpp,
-                   in + ((size_t)(y * step) * w + (x * step)) * bpp, bpp);
+            sample_upload_pixel(out + ((size_t)y * dw + x) * bpp,
+                                in + ((size_t)(y * step) * w + (x * step)) * src_bpp,
+                                bpp, type);
       }
+      if (real_glGetError) for (int k = 0; k < 8 && real_glGetError(); k++) {}
       if (real_glTexSubImage2D)
-        real_glTexSubImage2D(t, lv, xo >> sh, yo >> sh, dw, dh, fmt, type, out);
+        real_glTexSubImage2D(t, lv, xo >> sh, yo >> sh, dw, dh, upload_fmt, upload_type, out);
+      if (real_glGetError) {
+        int e = real_glGetError();
+        static int en = 0;
+        if (e && en < 20) {
+          fprintf(stderr, "[TEXSUB-CAP-ERR] target=0x%x level=%d %dx%d>>%d fmt=0x%x->0x%x type=0x%x->0x%x err=0x%x\n",
+                  t, lv, w, h, sh, fmt, upload_fmt, type, upload_type, e);
+          en++;
+        }
+      }
       /* Utgard pode ADIAR a leitura da textura -> free imediato = risco UAF no driver.
          Anel de 8 buffers adia o free. glFlush por upload TESTADO E REPROVADO (run8:
          wedge ainda mais cedo). Pacing usleep da um respiro pra fila da GPU. */
@@ -169,15 +258,17 @@ static void diag_glTexSubImage2D(unsigned t, int lv, int xo, int yo, int w, int 
     } /* sub-regiao menor que o fator: pula (1 texel de borda, inofensivo) */
     static int dn = 0;
     if (dn < 10 || (dn % 25) == 0)
-      fprintf(stderr, "[TEXSUB-CAP] #%d t=%lds %dx%d>>%d fmt=0x%x total=%lldMB\n",
-              dn, hk_secs(), w, h, sh, fmt, capb >> 20);
+      fprintf(stderr, "[TEXSUB-CAP] #%d t=%lds %dx%d>>%d fmt=0x%x->0x%x type=0x%x->0x%x total=%lldMB\n",
+              dn, hk_secs(), w, h, sh, fmt, upload_fmt, type, upload_type, capb >> 20);
     dn++;
     return;
   }
-  if (real_glTexSubImage2D) real_glTexSubImage2D(t, lv, xo, yo, w, h, fmt, type, px);
+  if (real_glGetError) for (int k = 0; k < 8 && real_glGetError(); k++) {}
+  if (real_glTexSubImage2D) real_glTexSubImage2D(t, lv, xo, yo, w, h, upload_fmt, upload_type, px);
   static int n = 0;
   if (n < 25) { int e = real_glGetError ? real_glGetError() : 0;
-    fprintf(stderr, "[TEXSUB] %dx%d fmt=0x%x type=0x%x px=%p err=0x%x\n", w, h, fmt, type, px, e); n++; }
+    fprintf(stderr, "[TEXSUB] target=0x%x %dx%d fmt=0x%x->0x%x type=0x%x->0x%x px=%p err=0x%x\n",
+            t, w, h, fmt, upload_fmt, type, upload_type, px, e); n++; }
 }
 static void (*real_glCompressedTexImage2D)(unsigned, int, unsigned, int, int, int, int, const void *) = 0;
 static void diag_glCompressedTexImage2D(unsigned t, int lv, unsigned ifmt, int w, int h, int b, int sz, const void *d) {
@@ -1046,6 +1137,8 @@ static void my_glGetIntegerv(unsigned pname, int *p) {
   if (!getenv("HK_NOSPOOF")) {
     if (pname == 0x821B) { if (p) p[0] = 3; return; }  /* GL_MAJOR_VERSION */
     if (pname == 0x821C) { if (p) p[0] = 0; return; }  /* GL_MINOR_VERSION */
+    if (pname == 0x88FF) { if (p) p[0] = hk_int_env("HK_MAX_ARRAY_LAYERS", 256); return; } /* GL_MAX_ARRAY_TEXTURE_LAYERS */
+    if (pname == 0x8073) { if (p) p[0] = hk_int_env("HK_MAX_3D_TEX", 256); return; }       /* GL_MAX_3D_TEXTURE_SIZE */
   }
   if (real_glGetIntegerv) real_glGetIntegerv(pname, p);
 }

@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='utf-8'?>
+<gameList>
+  <game>
+    <path>./StreetsOfRage4.sh</path>
+    <name>Streets of Rage 4</name>
+    <desc>Wood Oak City voltou a ferver. Axel, Blaze e companhia partem pra cima do submundo do crime em mais um classico beat 'em up de rolagem lateral, agora com arte desenhada a mao, combos profundos e trilha sonora pesada. Esta e a versao 1.4.5 (MonoGame/.NET9) rodando NATIVO em aarch64/Linux via host .NET proprio + MonoGame GLES2 -- otimizada pro Mali-450 com texturas convertidas pra ETC1 na 1a execucao (voce escolhe o downscale na tela). BYO-data: requer sua copia legal.</desc>
+    <image>./sor4/cover.png</image>
+    <releasedate>20200430T000000</releasedate>
+    <developer>Dotemu / Lizardcube / Guard Crush Games</developer>
+    <publisher>Dotemu</publisher>
+    <genre>Beat 'em up</genre>
+  </game>
+</gameList>

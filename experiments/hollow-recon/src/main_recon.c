@@ -793,12 +793,18 @@ int main(int argc, char **argv) {
             fake_env, &t, g_hk_choreo_cookie, (long long)frame * 16666666LL);
       }
       unsigned char r = rf(fake_env, &t);
-      /* TESTE sem teclado fisico: HK_AUTOKEY=<keycode> aperta a tecla a cada ~3s
-         (depois do frame 240) p/ validar a injecao por SSH (66=ENTER, 23=DPAD_CENTER) */
+      /* TESTE sem teclado fisico: HK_AUTOKEY=<keycode> injeta tecla periodicamente.
+         HK_AUTOKEY_START/INTERVAL deixam os testes gdb curtos sem esperar frame 240. */
       static int autok = -2;
+      static long autok_start = -1, autok_interval = -1;
       if (autok == -2) autok = getenv("HK_AUTOKEY") ? atoi(getenv("HK_AUTOKEY")) : 0;
+      if (autok_start < 0) autok_start = getenv("HK_AUTOKEY_START") ? atol(getenv("HK_AUTOKEY_START")) : 240;
+      if (autok_interval < 0) {
+        autok_interval = getenv("HK_AUTOKEY_INTERVAL") ? atol(getenv("HK_AUTOKEY_INTERVAL")) : 200;
+        if (autok_interval < 1) autok_interval = 1;
+      }
       if (!getenv("HK_NOTRAP")) *trap_glob = 0; /* destrava o guard de input */
-      if (injfn && autok > 0 && frame > 240 && (frame % 200) == 0) {
+      if (injfn && autok > 0 && frame >= autok_start && ((frame - autok_start) % autok_interval) == 0) {
         for (int ph = 0; ph < 2; ph++) {  /* down depois up */
           g_hk_inject.action = ph; g_hk_inject.keycode = autok; g_hk_inject.source = 0x101;
           g_hk_inject.deviceId = 0; g_hk_inject.eventTime = evt_clock;

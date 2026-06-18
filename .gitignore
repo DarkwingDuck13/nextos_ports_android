@@ -50,3 +50,18 @@ ports/gtavc/gtavc
 ports/revc/revc
 experiments/hollow-recon/hollow-recon-no
 experiments/hollow-recon/evdev2key
+
+# build output .NET (gerado por build/publish -- NAO versionar)
+ports/sor4/port/tools/texconv/bin/
+ports/sor4/port/tools/texconv/obj/
+ports/sor4/port/tools/texconv/out/
+__pycache__/
+*.pyc
+# dumps de gdb (debug efemero)
+experiments/hollow-recon/*.mem
+# crazytaxi: 269M de assets de jogo (copyright Sega) -- NAO vai pro repo publico
+ports/crazytaxi/
+# build artifacts das ferramentas .NET (Cecil) -- reproduziveis de *.cs, NAO versionar
+ports/sor4/port/tools/*/bin/
+ports/sor4/port/tools/*/obj/
+*.pdb

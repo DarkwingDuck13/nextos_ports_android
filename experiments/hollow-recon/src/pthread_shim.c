@@ -20,10 +20,17 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <errno.h>
 
 #define PMAP_SZ 32768
 static struct { void *bionic; void *glibc; } g_pmap[PMAP_SZ];
 static pthread_mutex_t g_pmap_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_pthread_null_logs;
+
+static void log_null_obj(const char *fn, void *a, void *b) {
+  int n = __sync_fetch_and_add(&g_pthread_null_logs, 1);
+  if (n < 24) fprintf(stderr, "[pthread-null] %s a=%p b=%p\n", fn, a, b);
+}
 
 enum { K_MUTEX, K_COND, K_SEM, K_RWLOCK };
 
@@ -67,43 +74,112 @@ static void *gcnd(void *b) { return pmap_get(b, K_COND, 0); }
 static void *grwl(void *b) { return pmap_get(b, K_RWLOCK, 0); }
 
 /* ---- mutex ---- */
-static int sh_mutex_init(void *m, const void *a) { (void)a; (void)gmtx(m); return 0; }
-static int sh_mutex_lock(void *m) { return pthread_mutex_lock((pthread_mutex_t *)gmtx(m)); }
-static int sh_mutex_unlock(void *m) { return pthread_mutex_unlock((pthread_mutex_t *)gmtx(m)); }
-static int sh_mutex_trylock(void *m) { return pthread_mutex_trylock((pthread_mutex_t *)gmtx(m)); }
+static int sh_mutex_init(void *m, const void *a) {
+  (void)a;
+  if (!m) { log_null_obj("mutex_init", m, NULL); return 0; }
+  return gmtx(m) ? 0 : ENOMEM;
+}
+static int sh_mutex_lock(void *m) {
+  pthread_mutex_t *gm = (pthread_mutex_t *)gmtx(m);
+  if (!gm) { log_null_obj("mutex_lock", m, NULL); return 0; }
+  return pthread_mutex_lock(gm);
+}
+static int sh_mutex_unlock(void *m) {
+  pthread_mutex_t *gm = (pthread_mutex_t *)gmtx(m);
+  if (!gm) { log_null_obj("mutex_unlock", m, NULL); return 0; }
+  return pthread_mutex_unlock(gm);
+}
+static int sh_mutex_trylock(void *m) {
+  pthread_mutex_t *gm = (pthread_mutex_t *)gmtx(m);
+  if (!gm) { log_null_obj("mutex_trylock", m, NULL); return 0; }
+  return pthread_mutex_trylock(gm);
+}
 static int sh_mutex_destroy(void *m) { (void)m; return 0; }
 
 /* ---- cond ---- */
-static int sh_cond_init(void *c, const void *a) { (void)a; (void)gcnd(c); return 0; }
+static int sh_cond_init(void *c, const void *a) {
+  (void)a;
+  if (!c) { log_null_obj("cond_init", c, NULL); return 0; }
+  return gcnd(c) ? 0 : ENOMEM;
+}
 static int sh_cond_wait(void *c, void *m) {
-  return pthread_cond_wait((pthread_cond_t *)gcnd(c), (pthread_mutex_t *)gmtx(m));
+  pthread_cond_t *gc = (pthread_cond_t *)gcnd(c);
+  pthread_mutex_t *gm = (pthread_mutex_t *)gmtx(m);
+  if (!gc || !gm) { log_null_obj("cond_wait", c, m); return 0; }
+  return pthread_cond_wait(gc, gm);
 }
 static int sh_cond_timedwait(void *c, void *m, const void *ts) {
-  return pthread_cond_timedwait((pthread_cond_t *)gcnd(c), (pthread_mutex_t *)gmtx(m),
-                                (const struct timespec *)ts);
+  pthread_cond_t *gc = (pthread_cond_t *)gcnd(c);
+  pthread_mutex_t *gm = (pthread_mutex_t *)gmtx(m);
+  if (!gc || !gm) { log_null_obj("cond_timedwait", c, m); return ETIMEDOUT; }
+  return pthread_cond_timedwait(gc, gm, (const struct timespec *)ts);
 }
-static int sh_cond_signal(void *c) { return pthread_cond_signal((pthread_cond_t *)gcnd(c)); }
-static int sh_cond_broadcast(void *c) { return pthread_cond_broadcast((pthread_cond_t *)gcnd(c)); }
+static int sh_cond_signal(void *c) {
+  pthread_cond_t *gc = (pthread_cond_t *)gcnd(c);
+  if (!gc) { log_null_obj("cond_signal", c, NULL); return 0; }
+  return pthread_cond_signal(gc);
+}
+static int sh_cond_broadcast(void *c) {
+  pthread_cond_t *gc = (pthread_cond_t *)gcnd(c);
+  if (!gc) { log_null_obj("cond_broadcast", c, NULL); return 0; }
+  return pthread_cond_broadcast(gc);
+}
 static int sh_cond_destroy(void *c) { (void)c; return 0; }
 
 /* ---- semaforo (job system do Unity: bionic sem_t=4B vs glibc=32B) ---- */
 static int sh_sem_init(void *s, int pshared, unsigned val) {
-  (void)pshared; (void)pmap_get(s, K_SEM, val); return 0;
+  (void)pshared;
+  if (!s) { log_null_obj("sem_init", s, NULL); return 0; }
+  return pmap_get(s, K_SEM, val) ? 0 : ENOMEM;
 }
-static int sh_sem_wait(void *s) { return sem_wait((sem_t *)pmap_get(s, K_SEM, 0)); }
-static int sh_sem_trywait(void *s) { return sem_trywait((sem_t *)pmap_get(s, K_SEM, 0)); }
-static int sh_sem_post(void *s) { return sem_post((sem_t *)pmap_get(s, K_SEM, 0)); }
+static int sh_sem_wait(void *s) {
+  sem_t *gs = (sem_t *)pmap_get(s, K_SEM, 0);
+  if (!gs) { log_null_obj("sem_wait", s, NULL); return 0; }
+  return sem_wait(gs);
+}
+static int sh_sem_trywait(void *s) {
+  sem_t *gs = (sem_t *)pmap_get(s, K_SEM, 0);
+  if (!gs) { log_null_obj("sem_trywait", s, NULL); return EAGAIN; }
+  return sem_trywait(gs);
+}
+static int sh_sem_post(void *s) {
+  sem_t *gs = (sem_t *)pmap_get(s, K_SEM, 0);
+  if (!gs) { log_null_obj("sem_post", s, NULL); return 0; }
+  return sem_post(gs);
+}
 static int sh_sem_timedwait(void *s, const void *ts) {
-  return sem_timedwait((sem_t *)pmap_get(s, K_SEM, 0), (const struct timespec *)ts);
+  sem_t *gs = (sem_t *)pmap_get(s, K_SEM, 0);
+  if (!gs) { log_null_obj("sem_timedwait", s, NULL); return ETIMEDOUT; }
+  return sem_timedwait(gs, (const struct timespec *)ts);
 }
-static int sh_sem_getvalue(void *s, int *v) { return sem_getvalue((sem_t *)pmap_get(s, K_SEM, 0), v); }
+static int sh_sem_getvalue(void *s, int *v) {
+  sem_t *gs = (sem_t *)pmap_get(s, K_SEM, 0);
+  if (!gs) { log_null_obj("sem_getvalue", s, NULL); if (v) *v = 0; return 0; }
+  return sem_getvalue(gs, v);
+}
 static int sh_sem_destroy(void *s) { (void)s; return 0; }
 
 /* ---- rwlock ---- */
-static int sh_rwl_init(void *l, const void *a) { (void)a; (void)grwl(l); return 0; }
-static int sh_rwl_rdlock(void *l) { return pthread_rwlock_rdlock((pthread_rwlock_t *)grwl(l)); }
-static int sh_rwl_wrlock(void *l) { return pthread_rwlock_wrlock((pthread_rwlock_t *)grwl(l)); }
-static int sh_rwl_unlock(void *l) { return pthread_rwlock_unlock((pthread_rwlock_t *)grwl(l)); }
+static int sh_rwl_init(void *l, const void *a) {
+  (void)a;
+  if (!l) { log_null_obj("rwlock_init", l, NULL); return 0; }
+  return grwl(l) ? 0 : ENOMEM;
+}
+static int sh_rwl_rdlock(void *l) {
+  pthread_rwlock_t *gl = (pthread_rwlock_t *)grwl(l);
+  if (!gl) { log_null_obj("rwlock_rdlock", l, NULL); return 0; }
+  return pthread_rwlock_rdlock(gl);
+}
+static int sh_rwl_wrlock(void *l) {
+  pthread_rwlock_t *gl = (pthread_rwlock_t *)grwl(l);
+  if (!gl) { log_null_obj("rwlock_wrlock", l, NULL); return 0; }
+  return pthread_rwlock_wrlock(gl);
+}
+static int sh_rwl_unlock(void *l) {
+  pthread_rwlock_t *gl = (pthread_rwlock_t *)grwl(l);
+  if (!gl) { log_null_obj("rwlock_unlock", l, NULL); return 0; }
+  return pthread_rwlock_unlock(gl);
+}
 static int sh_rwl_destroy(void *l) { (void)l; return 0; }
 
 /* ---- pthread_create: Unity passa pthread_attr_t BIONIC (layout != glibc).
@@ -123,10 +199,12 @@ static int sh_create(void *thr, const void *battr, void *(*fn)(void *), void *ar
 static int sh_attr_init(void *a) { if (a) memset(a, 0, 56); return 0; }
 static int sh_attr_destroy(void *a) { (void)a; return 0; }
 static int sh_attr_setstacksize(void *a, size_t s) {
-  if (a) *(size_t *)((unsigned char *)a + 16) = s; return 0;
+  if (a) *(size_t *)((unsigned char *)a + 16) = s;
+  return 0;
 }
 static int sh_attr_setdetachstate(void *a, int s) {
-  if (a) *(int *)((unsigned char *)a + 0) = s ? 1 : 0; return 0;
+  if (a) *(int *)((unsigned char *)a + 0) = s ? 1 : 0;
+  return 0;
 }
 static int sh_ok0(void) { return 0; }
 

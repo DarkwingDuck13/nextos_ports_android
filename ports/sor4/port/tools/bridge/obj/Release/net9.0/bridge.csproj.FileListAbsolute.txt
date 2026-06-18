@@ -1,5 +1,0 @@
-/home/nextos/nextos_ports_android/ports/sor4/port/tools/bridge/obj/Release/net9.0/bridge.GeneratedMSBuildEditorConfig.editorconfig
-/home/nextos/nextos_ports_android/ports/sor4/port/tools/bridge/obj/Release/net9.0/bridge.AssemblyInfoInputs.cache
-/home/nextos/nextos_ports_android/ports/sor4/port/tools/bridge/obj/Release/net9.0/bridge.AssemblyInfo.cs
-/home/nextos/nextos_ports_android/ports/sor4/port/tools/bridge/obj/Release/net9.0/bridge.csproj.CoreCompileInputs.cache
-/home/nextos/nextos_ports_android/ports/sor4/port/tools/bridge/obj/Release/net9.0/bridge.sourcelink.json

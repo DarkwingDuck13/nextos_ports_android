@@ -1,8 +1,8 @@
-using System; using System.IO; using System.Reflection;
+using System; using System.IO; using System.Linq; using System.Reflection;
 using System.Runtime.Loader;
 class Host {
   static void L(string s){ Console.Error.WriteLine("[host] "+s); Console.Error.Flush(); }
-  static void Main(){
+  static void Main(string[] args){
     string dir = AppContext.BaseDirectory;
     AssemblyLoadContext.Default.Resolving += (ctx, name) => {
       var n = name.Name;
@@ -15,6 +15,21 @@ class Host {
       L("NAO resolvido: "+name.FullName); return null;
     };
     AppDomain.CurrentDomain.UnhandledException += (s,e)=>{ L("UNHANDLED: "+e.ExceptionObject); };
+
+    // --- modo SETUP (1a execucao, sem grafico): roda uma ferramenta .NET (patch Cecil ou
+    // conversor ETC1) usando o runtime JA embutido no host -> sem dotnet de sistema, qualquer
+    // device. O progressor chama: sor4host --run-dll <ferramenta.dll> <args...>
+    if (args.Length >= 2 && args[0] == "--run-dll") {
+      var dll = Path.IsPathRooted(args[1]) ? args[1] : Path.Combine(dir, args[1]);
+      var toolArgs = args.Skip(2).ToArray();
+      L("--run-dll "+dll+" ["+string.Join(" ",toolArgs)+"]");
+      var asm = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.GetFullPath(dll));
+      var ep = asm.EntryPoint;
+      if (ep == null) { L("--run-dll: sem EntryPoint em "+dll); Environment.Exit(3); }
+      try { ep.Invoke(null, ep.GetParameters().Length==1 ? new object[]{toolArgs} : null); }
+      catch (TargetInvocationException tie){ L("ferramenta EXC: "+(tie.InnerException??tie)); Environment.Exit(4); }
+      return;
+    }
     try {
       L("carregando SOR4.dll");
       var sor4 = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(dir,"SOR4.dll"));

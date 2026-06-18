@@ -104,13 +104,12 @@ static const char *mid_name(void *tag) {
 }
 
 /* ===================================================================
- * AssetManager bridge — le de /storage/hollow-recon/assets/<path>
+ * AssetManager bridge — le de assets/<path>
  * (Unity: getAssets() + AssetManager.open(path) + InputStream.read/close)
  * =================================================================== */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#define ASSET_BASE "/storage/roms/hollow-recon/assets/"
 
 static int g_assetmgr;   /* tag do objeto AssetManager */
 static int g_empty_list; /* tag de uma java.util.List vazia */
@@ -142,10 +141,31 @@ static struct astream g_astreams[MAX_ASTREAMS];
 static int g_astream_n = 0;
 static void *asset_open(const char *path) {
   char full[1200];
-  snprintf(full, sizeof(full), ASSET_BASE "%s", path ? path : "");
-  FILE *fp = fopen(full, "rb");
-  debugPrintf("asset: open(%s) -> %s\n", path ? path : "?",
-              fp ? "OK" : "FALHOU (sem arquivo)");
+  const char *env_base = getenv("HK_ASSET_BASE");
+  const char *bases[] = { "/storage/hollow-recon/assets/",
+                          "/storage/roms/hollow-recon/assets/",
+                          NULL };
+  FILE *fp = NULL;
+  const char *used = NULL;
+  if (env_base && env_base[0]) {
+    snprintf(full, sizeof(full), "%s%s%s", env_base,
+             env_base[strlen(env_base) - 1] == '/' ? "" : "/",
+             path ? path : "");
+    fp = fopen(full, "rb");
+    if (fp) used = env_base;
+  }
+  for (int b = 0; bases[b]; b++) {
+    if (fp) break;
+    if (!bases[b][0]) continue;
+    snprintf(full, sizeof(full), "%s%s%s", bases[b],
+             bases[b][strlen(bases[b]) - 1] == '/' ? "" : "/",
+             path ? path : "");
+    fp = fopen(full, "rb");
+    if (fp) { used = bases[b]; break; }
+  }
+  debugPrintf("asset: open(%s) -> %s%s%s\n", path ? path : "?",
+              fp ? "OK " : "FALHOU (sem arquivo)",
+              fp ? used : "", fp ? "" : "");
   if (!fp) return NULL;
   int i = g_astream_n++ % MAX_ASTREAMS;
   if (g_astreams[i].fp) fclose(g_astreams[i].fp);

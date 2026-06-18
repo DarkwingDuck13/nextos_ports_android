@@ -1,0 +1,49 @@
+#!/bin/bash
+# common.src — helpers do progressor (protocolo JSON base64 via stdout, reply via stdin).
+# Reuso do modelo Dysmantle/Bully/TMNT.
+# _b64: alguns devices (este Mali-450/NextOS) NAO tem 'base64' (nem busybox/toybox).
+# Fallback via python3 (existe no device) -> o protocolo $<base64>$ do progressor funciona.
+_b64() {
+  if command -v base64 >/dev/null 2>&1; then base64 -w0 -
+  else python3 -c 'import sys,base64;sys.stdout.write(base64.b64encode(sys.stdin.buffer.read()).decode())'
+  fi
+}
+get_label()
+{
+    LABEL=${1//\\/\\\\}
+    LABEL=${LABEL//\//\\\/}
+    LABEL=${LABEL//\"/\\\"}
+    LABEL=${LABEL//	/\\t}
+    LABEL=${LABEL//
+/\\\n}
+    echo "$LABEL"
+}
+
+confirm() {
+	local TITLE=$(get_label "$1")
+	local LABEL=$(get_label "$2")
+	local JSON=$( echo '{"type":"confirm","title":"'${TITLE}'","message":"'${LABEL}'"}' | _b64 )
+	echo "\$<${JSON}>\$"
+	read RESULT
+}
+
+msgbox() {
+	local TITLE=$(get_label "$1")
+	local LABEL=$(get_label "$2")
+	local JSON=$( echo '{"type":"msgbox","title":"'${TITLE}'","message":"'${LABEL}'"}' | _b64 )
+	echo "\$<${JSON}>\$"
+	read RESULT
+}
+
+settitle() {
+	local TITLE=$(get_label "$1")
+	local JSON=$( echo '{"type":"settitle","value":"'${TITLE}'"}' | _b64 )
+	echo "\$<${JSON}>\$"
+}
+
+# barra textual: pbar <0-100>
+pbar() {
+  local p=$1 i n=$(( $1 / 5 )) bar=""
+  for ((i=0;i<20;i++)); do [ "$i" -lt "$n" ] && bar="${bar}#" || bar="${bar}."; done
+  echo "    [${bar}] ${p}%"
+}

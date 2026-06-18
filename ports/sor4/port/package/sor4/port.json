@@ -1,0 +1,28 @@
+{
+    "version": 2,
+    "name": "sor4.zip",
+    "items": [
+        "StreetsOfRage4.sh",
+        "sor4"
+    ],
+    "items_opt": [],
+    "attr": {
+        "title": "Streets of Rage 4",
+        "porter": [
+            "felc18-blip"
+        ],
+        "desc": "Streets of Rage 4 (v1.4.5), MonoGame/.NET9, rodando NATIVO em aarch64/Linux/PortMaster (Mali-450 via GLES2). Na 1a execucao o port abre uma janela (progressor) que deixa voce ESCOLHER o downscale das texturas (1/2/3) e o modo de conversao (rapida = full RAM / low memory) e converte as texturas ASTC->ETC1 (o Mali le ETC1 nativo). BYO-data: requer os dados da sua copia legal.",
+        "inst": "BYO-data: copie o seu APK do Streets of Rage 4 1.4.5 para a pasta ports/sor4/ e abra o jogo. Na 1a vez escolha o downscale (3 recomendado) e o modo na janela; ele extrai do APK, patcha, converte as texturas (ETC1) e apaga o APK sozinho. Veja README.md.",
+        "genres": [
+            "beatemup",
+            "action"
+        ],
+        "image": {},
+        "rtr": false,
+        "runtime": [],
+        "reqs": [],
+        "arch": [
+            "aarch64"
+        ]
+    }
+}
