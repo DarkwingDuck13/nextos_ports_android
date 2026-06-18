@@ -34,11 +34,15 @@ do APK** (feito nesta sessão, ~25905 arquivos, do `Streets-of-Rage-4-v1.4.5...a
 - **Zip da Área de trabalho atualizado** com os DLLs novos (instalação BYO futura já vem certa).
 - Áudio (audioout/music_ids) intacto.
 
-## FALTA (quando o NextOS voltar)
-- **Testar de olho**: cercas/escadas/sprites com cor certa em todas as fases (esp. ato 2 fase 2)
-  e o texto/fontes continua legível. Se algum texto SUMIR (improvável), reative: rodar o
-  progressor com `--maskfix` OU `SOR4_MASKFIX=1` no launcher — mas o diag diz que não precisa.
+## ✅ VALIDADO DE OLHO pelo NextOS (2026-06-18)
+"arrumou tudo mesmo" — corrigiu cercas/escadas/sombras E **o menu** (preto-transparente voltou
+ao certo) E **a barra de vida**. Um fix conceitual resolveu vários bugs de uma vez (o MASKFIX
+atacava TODO escuro+alpha, não só as cercas). Fontes/texto seguem legíveis. CASO FECHADO.
+
+- Instalação BYO nova: o progressor do zip chama `texconv --apk ... $SCALE` **sem `--maskfix`**
+  → já converte SEM branco automaticamente. Nada a repetir.
 - Os 1479 "puladas" são **não-ASTC** (já Color/RGBA) — corretas como estão, não é bug.
+- Recuperação (só se algum texto sumir, não deve): `--maskfix` no progressor ou `SOR4_MASKFIX=1`.
 
 ## Modo diag (pra reusar)
 `sor4host --run-dll sor4texconv.dll --apk <apk> <gameassets> 3 --diag` → loga `[SKIP rN]`
