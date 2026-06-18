@@ -45,7 +45,9 @@ O som de verdade é tocado por um **reimpl OpenAL+opusfile** (`audioout.c`). Doi
    FIX: launcher NÃO roda gptokeyb (pad nativo só; `SOR4_USE_GPTK=1` religa se precisar).
 4. **SFX existir** (menu, soco no AR, voz do personagem, música) — OK.
 
-## ✅ RESOLVIDO 2026-06-18 (commit 1dbc6e4) — MÚSICA SOBREPOSTA — aguarda ouvido do NextOS
+## ✅✅ RESOLVIDO+VALIDADO 2026-06-18 (commit 1dbc6e4) — MÚSICA SOBREPOSTA
+> **NextOS validou de OUVIDO**: fase completa, troca de música LIMPA (transições E dentro da
+> fase com 2/3 faixas). "a fase toda ficou top, música trocou limpa". CASO FECHADO.
 
 **Sintoma (NextOS):** ao trocar de cena (título → seleção → loading → fase) a música da
 cena ANTERIOR continua tocando POR CIMA da nova; e DENTRO da fase, quando ela tem 2/3 faixas,
