@@ -1868,9 +1868,8 @@ static void ter_gamepad_poll(void) {
   extern float g_cursor_x, g_cursor_y;
   int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
   int ry = getenv("TER_GP_RY") ? atoi(getenv("TER_GP_RY")) : 4;
-  /* velocidade do cursor: SP menor = mais devagar. Default 1/240 (era 1/110 = rápido demais).
-     Tunável TER_GP_CURSP (px por unidade de eixo; ex.: 200 mais lento, 110 mais rápido). */
-  float SPdiv = getenv("TER_GP_CURSP") ? atof(getenv("TER_GP_CURSP")) : 240.0f;
+  /* velocidade do cursor FNA/menu. Divisor maior = cursor mais lento. */
+  float SPdiv = getenv("TER_GP_CURSP") ? atof(getenv("TER_GP_CURSP")) : 420.0f;
   if (SPdiv < 30.0f) SPdiv = 30.0f;
   float dx=0, dy=0, SP=1.0f/SPdiv;
   /* 🖱️ cursor SÓ no stick DIREITO (rx/ry). O stick ESQUERDO é movimento do personagem — NÃO move
@@ -3259,7 +3258,7 @@ static void ter_ctrl_feed(void) {
   /* 🕹️ eixos analógicos PROPORCIONAIS × escala (cursor do gameplay). Antes era digital ±1 = sempre
      deflexão MÁXIMA → cursor rápido demais. Agora segue a intensidade do stick × TER_CURSPEED.
      DPad continua digital (navegação). Movimento (push firme) ainda passa o threshold do jogo. */
-  float cs = getenv("TER_CURSPEED") ? atof(getenv("TER_CURSPEED")) : 0.65f;
+  float cs = getenv("TER_CURSPEED") ? atof(getenv("TER_CURSPEED")) : 0.38f;
   int lxa=getenv("TER_GP_LX")?atoi(getenv("TER_GP_LX")):0, lya=getenv("TER_GP_LY")?atoi(getenv("TER_GP_LY")):1;
   int rxa=getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3, rya=getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
   float alx=g_gp_axis[lxa]/32768.0f, aly=g_gp_axis[lya]/32768.0f;
