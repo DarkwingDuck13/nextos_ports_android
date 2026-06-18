@@ -111,7 +111,7 @@ static int sh_cond_wait(void *c, void *m) {
      SO aplicamos no GAMEPLAY JA CARREGADO (g_gameplay + apos o settle) -> NAO toca no load/menu
      (quebrar conds do load congelava). RE4_NO_CONDBREAK=1 desliga; RE4_CONDBREAK_MS ajusta. */
   int gp_ready = g_gameplay && g_re4_frame > g_gameplay_frame + 180;
-  if(gp_ready && !getenv("RE4_NO_CONDBREAK")){
+  if(gp_ready && getenv("RE4_CONDBREAK")){
     const char *bms=getenv("RE4_CONDBREAK_MS");
     long total_ms=(bms&&bms[0])?atol(bms):120; if(total_ms<1)total_ms=120;
     const long step_ms=20; long waited=0; struct timespec ts;
@@ -161,10 +161,30 @@ static int sh_sem_init(void *s, int pshared, unsigned val) {
 }
 static int sh_sem_wait(void *s) {
   sem_t *g=(sem_t *)pmap_get(s, K_SEM, 0);
-  /* QUEBRA-DEADLOCK (LIGADO POR PADRAO): ao abrir o menu o Unity trava num semaforo (global da
-     libunity) que e inicializado=0 e NUNCA postado no nosso ambiente stubado -> sem_wait eterno.
-     Aqui, se o wait travar >N segundos, retornamos como se postado -> o menu aparece. Desligar com
-     RE4_NO_SEMBREAK=1; ajustar o tempo com RE4_SEMBREAK=<segundos>. */
+  /* GAMEPLAY ASSENTADO -> espera REAL (sem SEMBREAK). O SEMBREAK (forca-acordar no timeout) e
+     necessario no MENU/LOAD (1 semaforo global da libunity nunca e postado), mas no GAMEPLAY ele
+     CORROMPE o job-system: forca os workers a acordar sem job real -> a conclusao que a UnityMain
+     espera nunca chega -> a main gira em codigo JIT sem renderizar -> tela CONGELA (confirmado por
+     gdb: GfxDevice+workers em sh_sem_wait, UnityMain em JIT). No gameplay o engine posta os
+     semaforos de verdade, entao a espera real funciona. RE4_SEMBREAK_GP=1 forca o SEMBREAK no
+     gameplay (debug). gp_ready: g_gameplay + ja assentado (nao toca no load, que precisa do break). */
+  /* DIAG opt-in (RE4_SEMDIAG): no gameplay assentado, espera REAL com log do sem travado/caller.
+     NAO e o caminho normal (SEMBREAK abaixo segue ligado p/ o gameplay limpar). */
+  int gp_ready = g_gameplay && g_re4_frame > g_gameplay_frame + 180;
+  if(gp_ready && getenv("RE4_SEMDIAG")){
+    struct timespec ts; int waited=0;
+    for(;;){
+      clock_gettime(CLOCK_REALTIME,&ts); ts.tv_sec+=1;
+      int r=sem_timedwait(g,&ts);
+      if(r==0) return 0;
+      if(errno==ETIMEDOUT){ waited++;
+        if(waited==2||waited==5||(waited%10==0)){ int v=-1; sem_getvalue(g,&v);
+          fprintf(stderr,"[GPSTUCK] b=%p glibc=%p val=%d waited=%ds tid=%p caller=%p\n",
+            s,(void*)g,v,waited,(void*)pthread_self(),__builtin_return_address(0)); }
+        continue; }
+      return r;
+    }
+  }
   if(!getenv("RE4_NO_SEMBREAK")){
     /* timeout total p/ forcar wake. RE4_SEMBREAK_MS (ms) tem prioridade; senao RE4_SEMBREAK (s).
        Default = 150ms: o job-system do Unity (workers+main parados no mesmo wait, ninguem posta)
@@ -206,6 +226,10 @@ static int sh_sem_wait(void *s) {
 static int sh_sem_trywait(void *s) { return sem_trywait((sem_t *)pmap_get(s, K_SEM, 0)); }
 static int sh_sem_post(void *s) {
   if(getenv("RE4_SEMLOG")){static int n=0;if(n++<8000)fprintf(stderr,"[SEM] post  b=%p tid=%p\n",s,(void*)pthread_self());}
+  if(getenv("RE4_SEMDIAG") && g_gameplay && g_re4_frame > g_gameplay_frame + 180){
+    static int n=0; if(n++<400) fprintf(stderr,"[GPPOST] b=%p tid=%p caller=%p f=%d\n",
+      s,(void*)pthread_self(),__builtin_return_address(0),g_re4_frame);
+  }
   return sem_post((sem_t *)pmap_get(s, K_SEM, 0)); }
 static int sh_sem_timedwait(void *s, const void *ts) {
   return sem_timedwait((sem_t *)pmap_get(s, K_SEM, 0), (const struct timespec *)ts);
