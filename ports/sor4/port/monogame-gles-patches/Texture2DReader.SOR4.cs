@@ -58,22 +58,30 @@ namespace Microsoft.Xna.Framework.Content
             else { try { int rc = sor4_astc_decode(data, (ulong)len, w, h, bx, by, full);
                 if (rc!=0){ System.Console.Error.WriteLine("[ASTC] decode rc="+rc); for(int p=0;p<full.Length;p+=4){full[p]=128;full[p+1]=128;full[p+2]=128;full[p+3]=255;} } }
                 catch (System.Exception e){ System.Console.Error.WriteLine("[ASTC] EXC "+e.Message); } }
-            // SOR4: atlas de FONTE/mascara = glifos guardados SO no ALPHA, com RGB=0 em
-            // PRATICAMENTE TODOS os pixels -> RGB=A (branco premult) p/ o texto ficar visivel.
-            // ANTES usava media de RGB<8, o que pegava por engano CERCAS/GRADES/ESCADAS do
-            // cenario (quase todas transparentes c/ RGB=0 nos buracos) e as pintava de BRANCO.
-            // Agora exigimos que <1% dos pixels tenham COR real (fio de cerca tem RGB>0 ->
-            // NAO dispara). SOR4_NOMASKFIX=1 desliga de vez (A/B). Mudanca invalida o texcache.
+            // SOR4: atlas de FONTE/mascara = glifos guardados SO no ALPHA, com RGB=0 onde o
+            // alpha e alto -> RGB=A (branco premult) p/ o texto ficar visivel (a cor real vem
+            // do vertice). CERCAS/GRADES/ESCADAS de fundo NAO sao mascara: onde sao OPACAS
+            // (fio/degrau) tem COR REAL -> nao podem virar branco.
+            // CRITERIO (preciso): so e mascara se entre os pixels OPACOS (alpha>128) quase
+            // NENHUM tem cor (<1%). O criterio antigo media cor GLOBAL e ainda pegava cercas
+            // finas (fio <1% da textura toda) -> as pintava de branco. Olhar so o OPACO separa
+            // fonte (opaco sem cor) de cerca/escada (opaco colorido). SOR4_MASKFIX_PCT ajusta o
+            // limiar; SOR4_NOMASKFIX=1 desliga. Mudanca invalida o texcache (limpar SOR4_TEXCACHE).
             if (System.Environment.GetEnvironmentVariable("SOR4_NOMASKFIX")!="1") {
-                long sa=0; int colored=0, np=full.Length/4;
+                long sa=0; int colored=0, nOp=0, nOpCol=0, np=full.Length/4;
                 for(int p=0;p<full.Length;p+=4){
-                    sa+=full[p+3];
+                    byte a=full[p+3]; sa+=a;
                     int mx=full[p]; if(full[p+1]>mx)mx=full[p+1]; if(full[p+2]>mx)mx=full[p+2];
-                    if(mx>16) colored++;
+                    bool col = mx>16; if(col) colored++;
+                    if(a>128){ nOp++; if(col) nOpCol++; }
                 }
-                if (np>0 && sa/np > 12 && (long)colored*100 < (long)np) {
+                int pct=1; var pv=System.Environment.GetEnvironmentVariable("SOR4_MASKFIX_PCT"); if(!string.IsNullOrEmpty(pv)) int.TryParse(pv, out pct);
+                bool isMask = nOp>0 && (long)nOpCol*100 < (long)nOp*pct;   // <pct% dos OPACOS tem cor
+                if (np>0 && sa/np > 12 && isMask) {
                     for(int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; }
-                    if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1") System.Console.Error.WriteLine($"[MASKFIX] {w}x{h} RGB=A (colored={colored}/{np})");
+                    if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1") System.Console.Error.WriteLine($"[MASKFIX] {w}x{h} RGB=A (opacoColorido={nOpCol}/{nOp}, globalColored={colored}/{np})");
+                } else if(System.Environment.GetEnvironmentVariable("SOR4_TEXLOG")=="1" && np>0 && sa/np>12 && (long)colored*100<(long)np) {
+                    System.Console.Error.WriteLine($"[MASKFIX-POUPADO cerca/escada?] {w}x{h} opacoColorido={nOpCol}/{nOp} globalColored={colored}/{np}");
                 }
             }
             if (System.Environment.GetEnvironmentVariable("SOR4_DUMPTEX")=="1" && w<=400 && h<=400) {
