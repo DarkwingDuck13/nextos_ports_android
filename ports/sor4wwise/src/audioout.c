@@ -90,10 +90,16 @@ static float music_gain(void){ const char* e=getenv("SOR4_MUSICGAIN"); return (e
 // =================== SFX (manifest -> .opus) ===================
 typedef struct { uint32_t id; int ids[8]; int nids; int cur; } Entry;
 static Entry* g_ent=NULL; static int g_nent=0, g_cap=0;
-typedef struct { int id; ALuint buf; int valid; } BufC;
+typedef struct { int id; ALuint buf; int valid; int bytes; unsigned last_use; } BufC;
 static BufC* g_buf=NULL; static int g_nbuf=0, g_cbuf=0;
+static unsigned g_use_clock=0;   // relogio p/ LRU
+static long g_sfx_bytes=0;       // total de PCM cacheado (bytes)
 #define NSFX 28
 static ALuint g_sfx_src[NSFX];
+// Teto do cache de SFX em RAM. O round-robin entre variantes (cada golpe/queda/morte
+// tem 6-8 wems) faz o cache crescer rapido; sem teto ele iria pra swap. LRU evicta o
+// menos usado quando passa do limite. Default 24MB (centenas de SFX curtos cabem).
+static long sfx_cache_limit(void){ const char* e=getenv("SOR4_SFXCACHE_MB"); long mb=(e&&*e)?atol(e):24; if(mb<2)mb=2; return mb*1024*1024; }
 
 static uint32_t fnv1_32(const char* s){
   uint32_t h=2166136261u;
@@ -115,10 +121,12 @@ static void load_manifest(void){
   fclose(f);
   char b[128]; snprintf(b,sizeof(b),"[audioout] manifest: %d eventos SFX",g_nent); aolog(b);
 }
-// decodifica <id>.opus -> AL buffer (cache).
+// decodifica <id>.opus -> AL buffer (cache LRU com teto de RAM).
 static ALuint sfx_buffer(int wem_id){
-  for(int i=0;i<g_nbuf;i++) if(g_buf[i].id==wem_id) return g_buf[i].valid? g_buf[i].buf : 0;
-  ALuint outbuf=0; int valid=0;
+  // hit: marca uso (LRU). Entradas com valid=0 (decode falhou) ficam cacheadas como
+  // "ausente" p/ nao re-tentar; entradas evictadas viram id=-1 (re-decodificam se voltarem).
+  for(int i=0;i<g_nbuf;i++) if(g_buf[i].id==wem_id){ if(g_buf[i].valid) g_buf[i].last_use=++g_use_clock; return g_buf[i].valid? g_buf[i].buf : 0; }
+  ALuint outbuf=0; int valid=0, nbytes=0;
   char path[600]; snprintf(path,sizeof(path),"%s/%d.opus",g_sfxdir,wem_id);
   FILE* f=fopen(path,"rb");
   if(f){
@@ -137,7 +145,7 @@ static ALuint sfx_buffer(int wem_id){
           }
           p_op_free(of);
           if(n>0){ p_alGenBuffers(1,&outbuf);
-            p_alBufferData(outbuf, ch==1?AL_FORMAT_MONO16:AL_FORMAT_STEREO16, pcm, n*(int)sizeof(int16_t), 48000); valid=1; }
+            p_alBufferData(outbuf, ch==1?AL_FORMAT_MONO16:AL_FORMAT_STEREO16, pcm, n*(int)sizeof(int16_t), 48000); valid=1; nbytes=n*(int)sizeof(int16_t); }
           free(pcm);
         }
       }
@@ -145,8 +153,25 @@ static ALuint sfx_buffer(int wem_id){
     }
     fclose(f);
   }
-  if(g_nbuf>=g_cbuf){ g_cbuf=g_cbuf?g_cbuf*2:512; g_buf=realloc(g_buf,g_cbuf*sizeof(BufC)); }
-  g_buf[g_nbuf].id=wem_id; g_buf[g_nbuf].buf=outbuf; g_buf[g_nbuf].valid=valid; g_nbuf++;
+  // EVICTA LRU ate caber (nao remove o que acabamos de criar).
+  if(valid){
+    long limit=sfx_cache_limit();
+    while(g_sfx_bytes+nbytes>limit){
+      int lru=-1; unsigned best=0xffffffffu;
+      for(int i=0;i<g_nbuf;i++) if(g_buf[i].valid && g_buf[i].buf!=outbuf && g_buf[i].last_use<best){ best=g_buf[i].last_use; lru=i; }
+      if(lru<0) break;
+      if(g_buf[lru].buf) p_alDeleteBuffers(1,&g_buf[lru].buf);
+      g_sfx_bytes-=g_buf[lru].bytes;
+      g_buf[lru].id=-1; g_buf[lru].buf=0; g_buf[lru].valid=0; g_buf[lru].bytes=0;
+      if(getenv("WWISE_TRACE")){ char b[96]; snprintf(b,sizeof(b),"[audioout] LRU evict (cache %ld KB)",g_sfx_bytes/1024); aolog(b); }
+    }
+  }
+  // insere: reusa slot evictado (id==-1) se houver, senao cresce.
+  int slot=-1;
+  for(int i=0;i<g_nbuf;i++) if(g_buf[i].id==-1 && !g_buf[i].valid){ slot=i; break; }
+  if(slot<0){ if(g_nbuf>=g_cbuf){ g_cbuf=g_cbuf?g_cbuf*2:512; g_buf=realloc(g_buf,g_cbuf*sizeof(BufC)); } slot=g_nbuf++; }
+  g_buf[slot].id=wem_id; g_buf[slot].buf=outbuf; g_buf[slot].valid=valid; g_buf[slot].bytes=nbytes; g_buf[slot].last_use=++g_use_clock;
+  if(valid) g_sfx_bytes+=nbytes;
   return valid? outbuf : 0;
 }
 static ALuint sfx_free_source(void){

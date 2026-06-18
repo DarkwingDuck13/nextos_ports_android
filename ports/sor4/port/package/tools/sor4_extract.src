@@ -1,0 +1,135 @@
+#!/bin/bash
+# Streets of Rage 4 -- BYO-DATA -- script mostrado na JANELA do 'progressor'
+# (mesmo modelo do Bully/Dysmantle). Voce poe o APK do SOR4 1.4.5 na pasta
+# ports/sor4/ e na 1a execucao isto:
+#   1) pergunta DOWNSCALE (1/2/3) e MODO (rapida/low-mem) no controle;
+#   2) EXTRAI do seu APK: gameassets(.xnb) + audio(.wem/.bnk) + libWwise + fontes
+#      + SOR4.dll (do assembly-store XABA/LZ4, via sor4_apkextract.py);
+#   3) PATCHA o SOR4.dll (pipeline Cecil) pra rodar nativo;
+#   4) CONVERTE as texturas ASTC->ETC1 (+downscale) -- o Mali le ETC1 nativo;
+#   5) apaga o APK (so apos SUCESSO).
+# Tudo com % na tela. Roda 1x (marcador .setup_done). (NAO usa settitle -> --title.)
+SCRIPT="${BASH_SOURCE:-$0}"
+SCRIPT_PATH="$(cd "$(dirname "${SCRIPT}")" && pwd)"
+source "${SCRIPT_PATH}/common.src"
+
+GAMEDIR="$(cd "${SCRIPT_PATH}/.." && pwd)"
+PKG="$GAMEDIR/host_pkg"
+ASSETS="$GAMEDIR/gameassets"
+TOOLS="$SCRIPT_PATH"
+export LD_LIBRARY_PATH="$PKG/libs:/usr/lib:/lib"
+export DOTNET_EnableWriteXorExecute=0 DOTNET_gcServer=0
+# OBRIGATORIO p/ o sor4host --run-dll (CoreCLR): o SDL rouba o SIGSEGV que o GC usa.
+# O launcher so seta o ambiente DEPOIS do progressor (igual Dysmantle, p/ o progressor
+# usar o SDL do SISTEMA no kmsdrm), entao a extracao garante isto aqui dentro.
+export SDL_NO_SIGNAL_HANDLERS=1
+
+APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK "$GAMEDIR"/*.xapk 2>/dev/null | head -1)
+
+# progresso real vem por ARQUIVO (N/TOTAL %% caminho) do python/texconv -> pbar e no-op
+# (sem barra [####....], conforme pedido).
+pbar() { :; }
+
+# ask <titulo> <msg> -> ANS=1 (SIM/A) ou 0 (NAO/B). FAIL-SAFE: so NAO explicito vira NAO.
+ask() {
+  RESULT=""; confirm "$1" "$2"
+  case "$(printf '%s' "$RESULT" | tr 'A-Z' 'a-z' | tr -d ' \t\r\n')" in
+    0|n|no|nao|false|cancel|c) ANS=0 ;; *) ANS=1 ;;
+  esac
+}
+
+run_dll() {  # run_dll <dll> <args...> via runtime embutido no host
+  "$PKG/sor4host" --run-dll "$1" "${@:2}"
+}
+
+if [ -z "$APK" ]; then
+  msgbox "Streets of Rage 4" $'Nenhum APK do Streets of Rage 4 (v1.4.5) encontrado.\n\nCopie o seu APK (sua copia legal) para a pasta\nports/sor4/ e abra o jogo de novo.'
+  exit 1
+fi
+
+# ---------------- MENU: DOWNSCALE (3/2/1) ----------------
+SCALE=3
+ask "Streets of Rage 4 - Qualidade das texturas" \
+$'DOWNSCALE 3 (RECOMENDADO)\nTexturas a 1/3 do tamanho. Cabe em ~1GB de RAM.\n\nSIM = downscale 3.   NAO = escolher outra.'
+if [ "$ANS" = 1 ]; then SCALE=3
+else
+  ask "Streets of Rage 4 - Qualidade das texturas" \
+$'DOWNSCALE 2 (mais nitido)\n1/2 do tamanho. Precisa de ~1.5GB de RAM.\n\nSIM = downscale 2.   NAO = QUALIDADE TOTAL (1).'
+  if [ "$ANS" = 1 ]; then SCALE=2; else SCALE=1; fi
+fi
+
+# ---------------- MENU: MODO (rapida / low-mem) ----------------
+ask "Streets of Rage 4 - Modo de conversao" \
+$'Como converter as texturas?\n\nSIM = RAPIDA (FULL RAM, todos os nucleos).\nNAO = LOW MEMORY (lenta, segura em pouca RAM).'
+if [ "$ANS" = 1 ]; then MODO="RAPIDA (full RAM)"; unset SOR4_CONV_THREADS
+else MODO="LOW MEMORY"; export SOR4_CONV_THREADS=2; fi
+echo "$SCALE" > "$TOOLS/texscale.txt" 2>/dev/null
+
+echo "Streets of Rage 4 - Primeira execucao (BYO-DATA)"
+echo "Downscale 1/${SCALE}  |  Modo: ${MODO}"
+echo "Extraindo do seu APK, consertando e otimizando. Leva alguns minutos."
+echo "NAO desligue o aparelho."
+echo ""
+
+# ---------------- 1) EXTRAIR DO APK so libWwise + SOR4.dll + fontes (rapido) ----------------
+echo ">> Extraindo bibliotecas e codigo do jogo do seu APK..."
+python3 "$TOOLS/sor4_apkextract.py" "$APK" "$GAMEDIR" --libs-only
+rc=$?
+if [ "$rc" != 0 ] || [ ! -f "$GAMEDIR/SOR4.dll" ]; then
+  msgbox "Streets of Rage 4" $'Falha ao extrair o codigo do jogo do APK.\nO APK pode estar corrompido ou faltou espaco.\nVeja tools/extract.log.'
+  exit 1
+fi
+
+# ---------------- 2) PATCHAR o SOR4.dll (pipeline Cecil) ----------------
+echo ">> Preparando o codigo do jogo (patch)..."
+cp -f "$GAMEDIR/SOR4.dll" "$PKG/SOR4.dll"
+cp -f "$TOOLS/SOR4Bridge.dll" "$PKG/SOR4Bridge.dll" 2>/dev/null
+S="$PKG/SOR4.dll"
+run_dll "$TOOLS/patchgam.dll"  "$S" "$TOOLS/SOR4Bridge.dll"        || { msgbox "Streets of Rage 4" "Falha no patch (patchgam)."; exit 1; }
+run_dll "$TOOLS/noopm.dll"     "$S" "AndroidServices.*" save_save_game save_config
+run_dll "$TOOLS/skipvideo.dll" "$S"
+run_dll "$TOOLS/verstub.dll"   "$S"
+run_dll "$TOOLS/noopm.dll"     "$S" "EOSManager.PollMessage"
+run_dll "$TOOLS/rettrue.dll"   "$S" "CommonLib.platform::load_save_and_config_is_finished"
+run_dll "$TOOLS/noopm.dll"     "$S" "MoreGamesNotificationUpdate"
+run_dll "$TOOLS/noopm.dll"     "$S" "platform.video_exists"
+rm -f "$GAMEDIR/SOR4.dll"
+
+# ---------------- 3) EXTRAIR+CONVERTER os assets numa passada (1 progresso 0->100%) ----------------
+# texconv le cada arquivo de assets/ DIRETO do APK: .xnb -> ETC1 e grava em gameassets;
+# resto (bigfile, .wem, .bnk, videos...) -> copia. Um unico 0->100%.
+echo ""
+echo ">> Extraindo + convertendo as texturas para ETC1 (downscale 1/${SCALE})..."
+run_dll "$PKG/sor4texconv.dll" --apk "$APK" "$ASSETS" "$SCALE"
+rc=$?
+if [ "$rc" != 0 ] || [ ! -d "$ASSETS" ] || [ ! -f "$ASSETS/bigfile" ]; then
+  msgbox "Streets of Rage 4" "A extracao/conversao de texturas falhou (codigo $rc)."
+  exit 1
+fi
+
+# ---------------- 4) SFX: gerar audioout (.opus + manifest) dos .bnk in-bank ----------------
+# os golpes/menu (SFX in-bank) tocam via OpenAL a partir de <id>.opus + manifest.txt.
+# wwise_extract.py parseia os .bnk (HIRC: evento->wem, DIDX: wem embarcado=Ogg Opus) e gera.
+echo ""
+echo ">> Preparando os efeitos sonoros (SFX)..."
+BNKS=$(ls "$ASSETS"/*.bnk 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+if [ -n "$BNKS" ]; then
+  mkdir -p "$GAMEDIR/audioout"
+  python3 "$TOOLS/wwise_extract.py" "$BNKS" "$GAMEDIR/audioout" 2>&1 | tail -2
+  echo -n "  SFX gerados: "; ls "$GAMEDIR/audioout"/*.opus 2>/dev/null | wc -l
+else
+  echo "  (nenhum .bnk encontrado -- SFX in-bank podem faltar)"
+fi
+
+# ---------------- 5) liberar espaco (apaga o APK so apos sucesso) ----------------
+echo ">> Liberando espaco (apagando o APK)..."
+rm -f "$APK"
+sync
+touch "$GAMEDIR/.setup_done"
+sync
+pbar 100
+echo ""
+echo "Pronto! Dados extraidos, jogo preparado e texturas otimizadas."
+echo "O jogo vai iniciar."
+sleep 3
+exit 0
