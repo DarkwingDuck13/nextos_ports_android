@@ -38,6 +38,17 @@ static int my_rename(const char*a,const char*b){ char tmp[1024]; const char*fa=r
   strncpy(tmp,fa,sizeof tmp-1); tmp[sizeof tmp-1]=0; return rename(tmp,re4_fixpath(b)); }
 static int my_mkdir(const char*p,unsigned m){ return mkdir(re4_fixpath(p),m); }
 static uintptr_t g_mono_base=0, g_unity_base=0;
+/* resolve um endereco p/ "libunity+0xOFF" / "libmono+0xOFF" / "0xADDR" (buffer thread-local).
+   Usado pelo diagnostico de semaforo (pthread_shim) p/ achar a FUNCAO (offset estavel c/ ASLR). */
+/* 1 se o endereco esta dentro da libunity (p/ o shim mirar os semaforos de job do engine). */
+int re4_in_unity(uintptr_t a){ return g_unity_base && a>=g_unity_base && a<g_unity_base+0x2000000; }
+const char *re4_addr_mod(uintptr_t a){
+  static __thread char b[48];
+  if(g_unity_base&&a>=g_unity_base&&a<g_unity_base+0x2000000) snprintf(b,sizeof b,"libunity+0x%lx",(unsigned long)(a-g_unity_base));
+  else if(g_mono_base&&a>=g_mono_base&&a<g_mono_base+0x600000) snprintf(b,sizeof b,"libmono+0x%lx",(unsigned long)(a-g_mono_base));
+  else snprintf(b,sizeof b,"0x%lx",(unsigned long)a);
+  return b;
+}
 static void getmem_trace(const char*tag);
 static const char *re4_gamedir(void);
 void egl_shim_force_present(const char *reason);
@@ -2492,6 +2503,9 @@ static int my_mprotect(void *a,size_t l,int prot){ int r=mprotect(a,l,prot);
    constantes _SC_* do BIONIC, que NAO batem com as do glibc. Ex: sysconf(40)=_SC_PAGESIZE bionic,
    mas glibc 40 = outra coisa -> page size lixo -> GC_page_size errado -> heap=0 -> OOM.
    Traducao bionic->valor correto (constantes de bionic/libc/include/bits/sysconf.h). */
+/* nro de CPUs reportado ao Unity -> dimensiona o pool de job workers. Default 2 (1 worker).
+   RE4_NPROC ajusta p/ testar starvation do pool (workers travam em sub-jobs sem worker livre). */
+int re4_nproc(void){ const char *e=getenv("RE4_NPROC"); int n=(e&&e[0])?atoi(e):2; if(n<1)n=1; if(n>16)n=16; return n; }
 static long my_sysconf(int name){
   long ps=4096;
   switch(name){
@@ -2499,9 +2513,9 @@ static long my_sysconf(int name){
       fprintf(stderr,"[SYSCONF] bionic PAGESIZE(%d) -> 4096\n",name); return 4096;
     case 6:  /* bionic _SC_CLK_TCK */ return 100;
     case 96: case 97: /* bionic _SC_NPROCESSORS_CONF / _ONLN */
-      /* 2 CPUs -> Unity cria 1 job worker que PROCESSA os jobs do WaitForJobGroup (com 1 core
-         dava 0 workers e o WaitForJobGroup travava sem ninguem rodar os jobs inline). */
-      fprintf(stderr,"[SYSCONF] bionic NPROC(%d) -> 2\n",name); return 2;
+      /* N CPUs -> Unity cria N-1 job workers. Com 1 core dava 0 workers e o WaitForJobGroup
+         travava (ninguem roda inline). RE4_NPROC ajusta (testar starvation). */
+      { long n=re4_nproc(); fprintf(stderr,"[SYSCONF] bionic NPROC(%d) -> %ld\n",name,n); return n; }
     case 98: /* bionic _SC_PHYS_PAGES */
       fprintf(stderr,"[SYSCONF] bionic PHYS_PAGES -> 512MB\n"); return (512L*1024*1024)/ps;
     case 99: /* bionic _SC_AVPHYS_PAGES */
@@ -2577,15 +2591,15 @@ static FILE* my_fopen(const char*p0,const char*m){ const char*p=re4_fixpath(p0);
   /* core count vem daqui (/sys/.../possible|present) -> Unity dimensiona job workers. Forcamos 1
      core ("0") -> jobs INLINE, sem workers, sem WaitForJobGroup deadlock. */
   if(p&&(!strcmp(p,"/sys/devices/system/cpu/possible")||!strcmp(p,"/sys/devices/system/cpu/present")||!strcmp(p,"/sys/devices/system/cpu/online"))){
-    fprintf(stderr,"[FOPEN] %s -> fake 2 cores\n",p); FILE*t=tmpfile(); if(t){ fputs("0-1\n",t); rewind(t); return t; } }
+    int nc=re4_nproc(); fprintf(stderr,"[FOPEN] %s -> fake %d cores\n",p,nc); FILE*t=tmpfile(); if(t){ if(nc<=1)fputs("0\n",t); else fprintf(t,"0-%d\n",nc-1); rewind(t); return t; } }
   return fopen(p,m); }
 static int my_open(const char*p0,int fl,...){ const char*p=re4_fixpath(p0); if(p&&(strstr(p,"proc")||strstr(p,"mem"))) fprintf(stderr,"[OPEN] %s\n",p);
   /* /proc/cpuinfo: Unity conta cores p/ dimensionar o job worker pool. Forcamos 1 core (1 entrada
      "processor") -> jobs rodam INLINE, sem workers, sem WaitForJobGroup deadlock. */
-  if(p&&!strcmp(p,"/proc/cpuinfo")){ FILE*t=tmpfile();
-    if(t){ fputs("processor\t: 0\nmodel name\t: ARMv7 Processor rev 1 (v7l)\nFeatures\t: half thumb fastmult vfp edsp neon vfpv3\nCPU implementer\t: 0x41\nCPU architecture: 7\n\nprocessor\t: 1\nmodel name\t: ARMv7 Processor rev 1 (v7l)\nFeatures\t: half thumb fastmult vfp edsp neon vfpv3\nCPU implementer\t: 0x41\nCPU architecture: 7\n\n",t); fflush(t); int fd=dup(fileno(t)); fclose(t); lseek(fd,0,SEEK_SET); fprintf(stderr,"[OPEN] cpuinfo -> fake 2 cores (fd=%d)\n",fd); return fd; } }
+  if(p&&!strcmp(p,"/proc/cpuinfo")){ FILE*t=tmpfile(); int nc=re4_nproc();
+    if(t){ for(int i=0;i<nc;i++) fprintf(t,"processor\t: %d\nmodel name\t: ARMv7 Processor rev 1 (v7l)\nFeatures\t: half thumb fastmult vfp edsp neon vfpv3\nCPU implementer\t: 0x41\nCPU architecture: 7\n\n",i); fflush(t); int fd=dup(fileno(t)); fclose(t); lseek(fd,0,SEEK_SET); fprintf(stderr,"[OPEN] cpuinfo -> fake %d cores (fd=%d)\n",nc,fd); return fd; } }
   if(p&&(!strcmp(p,"/sys/devices/system/cpu/possible")||!strcmp(p,"/sys/devices/system/cpu/present")||!strcmp(p,"/sys/devices/system/cpu/online"))){
-    FILE*t=tmpfile(); if(t){ fputs("0-1\n",t); fflush(t); int fd=dup(fileno(t)); fclose(t); lseek(fd,0,SEEK_SET); fprintf(stderr,"[OPEN] %s -> fake 2 cores\n",p); return fd; } }
+    FILE*t=tmpfile(); int nc=re4_nproc(); if(t){ if(nc<=1)fputs("0\n",t); else fprintf(t,"0-%d\n",nc-1); fflush(t); int fd=dup(fileno(t)); fclose(t); lseek(fd,0,SEEK_SET); fprintf(stderr,"[OPEN] %s -> fake %d cores\n",p,nc); return fd; } }
   va_list ap; va_start(ap,fl); int mo=va_arg(ap,int); va_end(ap); return open(p,fl,mo); }
 /* ANativeWindow: a Unity (nativeRecreateGfxState) chama ANativeWindow_fromSurface(env,surface)
    e ESPERA num cond ate o global de window virar !=NULL. Estavam STUBADOS (retornavam NULL)

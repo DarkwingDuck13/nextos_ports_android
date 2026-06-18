@@ -104,6 +104,8 @@ static int sh_mutex_destroy(void *m) { (void)m; return 0; }
 /* ---- cond ---- */
 static int sh_cond_init(void *c, const void *a) { (void)a; (void)gcnd(c); return 0; }
 extern int g_gameplay, g_gameplay_frame, g_re4_frame; /* main_re4: gatear CONDBREAK so no gameplay carregado */
+extern const char *re4_addr_mod(uintptr_t a); /* resolve caller -> "libunity+0xOFF" (offset estavel) */
+extern int re4_in_unity(uintptr_t a); /* 1 se o caller esta na libunity (mirar sems de job) */
 static int sh_cond_wait(void *c, void *m) {
   pthread_cond_t *cc=(pthread_cond_t *)gcnd(c); pthread_mutex_t *mm=(pthread_mutex_t *)gmtx(m);
   /* QUEBRA-DEADLOCK do job-system no MOVIMENTO: ao mover o Leon o Unity espera num pthread_cond
@@ -157,6 +159,7 @@ static int sh_sem_init(void *s, int pshared, unsigned val) {
     if (getenv("RE4_SEM_REINIT")) { sem_destroy(g); sem_init(g, 0, val); }  /* legado/debug */
   }
   if(getenv("RE4_SEMLOG")){static int n=0;if(n++<5000)fprintf(stderr,"[SEM] init  b=%p val=%u existed=%d tid=%p\n",s,val,existed,(void*)pthread_self());}
+  if(getenv("RE4_SEMDIAG")){static int n=0;if(n++<2000)fprintf(stderr,"[SEMINIT] b=%p val=%u existed=%d creator=%s\n",s,val,existed,re4_addr_mod((uintptr_t)__builtin_return_address(0)));}
   return 0;
 }
 static int sh_sem_wait(void *s) {
@@ -179,8 +182,8 @@ static int sh_sem_wait(void *s) {
       if(r==0) return 0;
       if(errno==ETIMEDOUT){ waited++;
         if(waited==2||waited==5||(waited%10==0)){ int v=-1; sem_getvalue(g,&v);
-          fprintf(stderr,"[GPSTUCK] b=%p glibc=%p val=%d waited=%ds tid=%p caller=%p\n",
-            s,(void*)g,v,waited,(void*)pthread_self(),__builtin_return_address(0)); }
+          fprintf(stderr,"[GPSTUCK] b=%p val=%d waited=%ds tid=%p acquire=%s\n",
+            s,v,waited,(void*)pthread_self(),re4_addr_mod((uintptr_t)__builtin_return_address(0))); }
         continue; }
       return r;
     }
@@ -193,7 +196,19 @@ static int sh_sem_wait(void *s) {
     const char *bms=getenv("RE4_SEMBREAK_MS"); const char *bv=getenv("RE4_SEMBREAK");
     long total_ms = (bms&&bms[0]) ? atol(bms) : (bv&&bv[0] ? atol(bv)*1000 : 150);
     if(total_ms<1) total_ms=150;
-    const long step_ms=25; long waited_ms=0;
+    long step_ms=25;
+    /* GAMEPLAY: os semaforos de JOB do Unity (chamados de DENTRO da libunity) ficam presos no
+       movimento (dispatch worker<->main desconectado). Force-wake RAPIDO p/ "arrastar" o gameplay
+       mais rapido em vez de 150ms por espera (que dava ~0.14fps). RE4_JOBSEM_MS ajusta (default 4ms).
+       So no gameplay assentado e so p/ chamadas vindas da libunity (nao mexe no menu/load/mono). */
+    /* OPT-IN (RE4_JOBSEM_MS): force-wake RAPIDO dos sems de job da libunity. TESTADO: <150ms
+       CORROMPE o job-system e CRASHA no movimento; 150ms (default) so arrasta ~0.14fps sem crash.
+       Mantido opt-in p/ experimentacao; default NAO aplica (estavel). */
+    { const char *jm=getenv("RE4_JOBSEM_MS");
+      if(jm&&jm[0] && g_gameplay && g_re4_frame > g_gameplay_frame + 180 && re4_in_unity((uintptr_t)__builtin_return_address(0))){
+        long j=atol(jm); if(j<1)j=1; total_ms=j; step_ms=(j<5)?j:5;
+      } }
+    long waited_ms=0;
     struct timespec ts;
     for(;;){
       clock_gettime(CLOCK_REALTIME,&ts);
@@ -227,8 +242,8 @@ static int sh_sem_trywait(void *s) { return sem_trywait((sem_t *)pmap_get(s, K_S
 static int sh_sem_post(void *s) {
   if(getenv("RE4_SEMLOG")){static int n=0;if(n++<8000)fprintf(stderr,"[SEM] post  b=%p tid=%p\n",s,(void*)pthread_self());}
   if(getenv("RE4_SEMDIAG") && g_gameplay && g_re4_frame > g_gameplay_frame + 180){
-    static int n=0; if(n++<400) fprintf(stderr,"[GPPOST] b=%p tid=%p caller=%p f=%d\n",
-      s,(void*)pthread_self(),__builtin_return_address(0),g_re4_frame);
+    static int n=0; if(n++<600) fprintf(stderr,"[GPPOST] b=%p tid=%p release=%s f=%d\n",
+      s,(void*)pthread_self(),re4_addr_mod((uintptr_t)__builtin_return_address(0)),g_re4_frame);
   }
   return sem_post((sem_t *)pmap_get(s, K_SEM, 0)); }
 static int sh_sem_timedwait(void *s, const void *ts) {
