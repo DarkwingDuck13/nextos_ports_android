@@ -223,10 +223,10 @@ static void my_mono_add_internal_call(const char *name, const void *method){
       } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "get_mousePresent")){
         resolved = (const void*)my_input_get_mouse_present;
         fprintf(stderr, "[ICALL] override %s -> mousePresent=1\n", name);
-      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
+      } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
         resolved = (const void*)my_icall_get_touch;
         fprintf(stderr, "[ICALL] override %s -> virtual touch\n", name);
-      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "get_touchCount")){
+      } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "get_touchCount")){
         resolved = (const void*)my_input_get_touch_count;
         fprintf(stderr, "[ICALL] override %s -> virtual touchCount\n", name);
       }
@@ -1027,6 +1027,16 @@ static int my_input_get_key_up(int keycode){ return my_input_get_key_common(keyc
 static float g_mouse_x=640.0f, g_mouse_y=360.0f;   /* pixels, origem topo-esquerda */
 static int g_mouse_down=0, g_mouse_down_prev=0;
 static int g_mouse_click_until=-1;
+/* TOUCH DO GAMEPLAY (movimento do Leon): o dpad da tela le Input.GetTouch. O gamepad
+   alimenta este "dedo virtual" sobre o dpad. Tem prioridade sobre o touch de debug. */
+static float g_gp_tx=0, g_gp_ty=0; static int g_gp_tdown=0, g_gp_tprev=0;
+static void re4_mouse_poll(void); /* fwd */
+/* preenche o toque virtual ATIVO: gameplay tem prioridade; senao o debug (/tmp). */
+static int re4_active_touch(float *x, float *y, int *down, int *prev){
+  if(g_gp_tdown || g_gp_tprev){ *x=g_gp_tx; *y=g_gp_ty; *down=g_gp_tdown; *prev=g_gp_tprev; return 1; }
+  re4_mouse_poll(); *x=g_mouse_x; *y=g_mouse_y; *down=g_mouse_down; *prev=g_mouse_down_prev;
+  return (*down||*prev);
+}
 static void re4_mouse_poll(void){
   static int last=-999999;
   if(last==g_re4_frame) return; last=g_re4_frame;
@@ -1068,26 +1078,25 @@ static void my_icall_get_mousePosition(void *out_vec3){
   v[1]=(float)h - g_mouse_y;   /* inverte Y p/ coords do Unity */
   v[2]=0.0f;
 }
-/* touchCount: 1 enquanto o toque esta ativo (inclui o frame do Ended). */
+/* touchCount: 1 enquanto o toque virtual esta ativo (inclui o frame do Ended). */
 static int my_input_get_touch_count(void){
-  re4_mouse_poll();
-  int active = g_mouse_down || (!g_mouse_down && g_mouse_down_prev);
-  return active ? 1 : 0;
+  float x,y; int down,prev;
+  return re4_active_touch(&x,&y,&down,&prev) ? 1 : 0;
 }
 /* INTERNAL_CALL_GetTouch(int index, out Touch). Layout Unity 2018 (ARM32, 4B campos):
    0:fingerId 4:pos.x 8:pos.y 12:rawPos.x 16:rawPos.y 20:dPos.x 24:dPos.y 28:dTime
    32:tapCount 36:phase 40:type 44:pressure ... Preenchemos o essencial p/ o EventSystem. */
 static void my_icall_get_touch(int index, void *out_touch){
-  re4_mouse_poll();
   if(!out_touch) return;
+  float mx,my; int down,prev; re4_active_touch(&mx,&my,&down,&prev);
   unsigned char *t=(unsigned char*)out_touch;
   memset(t, 0, 56);
   int h = re4_screen_height();
-  float px=g_mouse_x, py=(float)h - g_mouse_y;   /* Unity touch = bottom-left */
+  float px=mx, py=(float)h - my;   /* Unity touch = bottom-left */
   int phase; /* 0=Began 1=Moved 2=Stationary 3=Ended 4=Canceled */
-  if(g_mouse_down && !g_mouse_down_prev) phase=0;        /* Began */
-  else if(!g_mouse_down && g_mouse_down_prev) phase=3;   /* Ended */
-  else phase=2;                                          /* Stationary */
+  if(down && !prev) phase=0;        /* Began */
+  else if(!down && prev) phase=3;   /* Ended */
+  else phase=1;                     /* Moved (joystick arrastando) */
   *(int*)(t+0)   = 0;        /* fingerId */
   *(float*)(t+4) = px;       /* position.x */
   *(float*)(t+8) = py;       /* position.y */
@@ -3102,25 +3111,25 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
   /* MOVIMENTO NO GAMEPLAY (Leon anda): o gameplay e TOUCH (dpad na tela inf-esq). Traduzimos
      a direcao do gamepad (dpad ou analogico esq) num ARRASTO de toque sobre esse dpad virtual.
      So no gameplay (!g_in_menu). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
-  /* touch-move so DEPOIS da cena carregar (settle) p/ nao injetar toque durante o load (freeze) */
-  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE") && g_gameplay && frame > g_gameplay_frame+240){
-    static int touching=0; static float lx2=0,ly2=0;
-    float cx=(float)re4_int_env("RE4_DPAD_CX",95,0,1920);
-    float cy=(float)re4_int_env("RE4_DPAD_CY",555,0,1080);
-    float R =(float)re4_int_env("RE4_DPAD_R",60,10,400);
+  /* MOVIMENTO DO LEON: o dpad da tela le Input.GetTouch -> alimentamos o TOQUE VIRTUAL
+     (g_gp_t*) sobre o dpad conforme o analogico/dpad do gamepad. So no gameplay, depois da
+     cena carregar (settle 180f). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
+  g_gp_tprev = g_gp_tdown;
+  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE") && g_gameplay && frame > g_gameplay_frame+180){
+    float cx=(float)re4_int_env("RE4_DPAD_CX",80,0,1920);
+    float cy=(float)re4_int_env("RE4_DPAD_CY",500,0,1080);
+    float R =(float)re4_int_env("RE4_DPAD_R",55,10,400);
     float dx = (g_re4_gp_btn[RE4_BTN_DR]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DL]?1.0f:0.0f) + g_re4_gp_lx;
     float dy = (g_re4_gp_btn[RE4_BTN_DD]?1.0f:0.0f) - (g_re4_gp_btn[RE4_BTN_DU]?1.0f:0.0f) + g_re4_gp_ly; /* tela: baixo=+ */
     if(dx>1)dx=1; if(dx<-1)dx=-1; if(dy>1)dy=1; if(dy<-1)dy=-1;
     float mag = dx*dx+dy*dy;
     if(mag>0.09f){   /* direcao ativa */
-      float tx2=cx+dx*R, ty2=cy+dy*R;
-      if(!touching){ re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_DOWN,cx,cy,frame); touching=1; }
-      re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_MOVE,tx2,ty2,frame);
-      lx2=tx2; ly2=ty2;
-    } else if(touching){
-      re4_inject_touch(env,thiz,inject,AMOTION_EVENT_ACTION_UP,lx2,ly2,frame); touching=0;
-    }
-  }
+      if(!g_gp_tdown){ g_gp_tx=cx; g_gp_ty=cy; }   /* Began = ancora no centro */
+      else { g_gp_tx=cx+dx*R; g_gp_ty=cy+dy*R; }   /* Moved = arrasta na direcao */
+      g_gp_tdown=1;
+      if(getenv("RE4_GPLOG")){ static int lg=0; if(lg++<60){fprintf(stderr,"[MOVE] vtouch x=%.0f y=%.0f dx=%.2f dy=%.2f f=%d\n",g_gp_tx,g_gp_ty,dx,dy,frame);fsync(2);} }
+    } else g_gp_tdown=0;
+  } else g_gp_tdown=0;
 }
 static void re4_autotap(void *env, void *thiz, void *inject, int frame){
   static int tapkey = -2;
