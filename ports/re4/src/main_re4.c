@@ -1083,22 +1083,20 @@ static void my_icall_get_mousePosition(void *out_vec3){
   v[1]=(float)h - g_mouse_y;   /* inverte Y p/ coords do Unity */
   v[2]=0.0f;
 }
-/* touchCount: se estamos injetando movimento, 1; senao cai no jogo (toque real = nenhum).
-   Cair no original evita travar o sistema de toque do jogo no load. */
+/* touchCount: 1 SO quando injetamos movimento; senao 0 (NAO chamamos o original -> chamar o
+   icall real de touch do Unity no menu/load TRAVAVA). g_orig_* mantido so p/ debug. */
 static int my_input_get_touch_count(void){
   float x,y; int down,prev;
-  if(re4_active_touch(&x,&y,&down,&prev)) return 1;
-  return g_orig_touchcount ? g_orig_touchcount() : 0;
+  return re4_active_touch(&x,&y,&down,&prev) ? 1 : 0;
 }
 /* INTERNAL_CALL_GetTouch(int index, out Touch). Layout Unity 2018 (ARM32, 4B campos):
    0:fingerId 4:pos.x 8:pos.y 12:rawPos.x 16:rawPos.y 20:dPos.x 24:dPos.y 28:dTime
    32:tapCount 36:phase 40:type 44:pressure ... Preenchemos o essencial p/ o EventSystem. */
 static void my_icall_get_touch(int index, void *out_touch){
   if(!out_touch) return;
-  float mx,my; int down,prev;
-  if(!re4_active_touch(&mx,&my,&down,&prev)){   /* sem movimento injetado -> deixa o jogo */
-    if(g_orig_gettouch){ g_orig_gettouch(index,out_touch); return; }
-  }
+  float mx,my; int down,prev; re4_active_touch(&mx,&my,&down,&prev);
+  /* NAO chamamos g_orig_gettouch (chamar o icall real no menu/load travava). Quando parado,
+     touchCount=0 entao o jogo nem chama isto; se chamar, devolvemos toque zerado/inativo. */
   unsigned char *t=(unsigned char*)out_touch;
   memset(t, 0, 56);
   int h = re4_screen_height();
