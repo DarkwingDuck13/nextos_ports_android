@@ -226,11 +226,11 @@ static void my_mono_add_internal_call(const char *name, const void *method){
       } else if(getenv("RE4_MOUSEHOOK") && strstr(name, "get_mousePresent")){
         resolved = (const void*)my_input_get_mouse_present;
         fprintf(stderr, "[ICALL] override %s -> mousePresent=1\n", name);
-      } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
+      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "INTERNAL_CALL_GetTouch")){
         if(!g_orig_gettouch) g_orig_gettouch=(void(*)(int,void*))method;
         resolved = (const void*)my_icall_get_touch;
         fprintf(stderr, "[ICALL] override %s -> virtual touch\n", name);
-      } else if(!getenv("RE4_NO_TOUCHHOOK") && strstr(name, "get_touchCount")){
+      } else if(getenv("RE4_TOUCHHOOK") && strstr(name, "get_touchCount")){
         if(!g_orig_touchcount) g_orig_touchcount=(int(*)(void))method;
         resolved = (const void*)my_input_get_touch_count;
         fprintf(stderr, "[ICALL] override %s -> virtual touchCount\n", name);
@@ -3124,7 +3124,7 @@ static void re4_pump_sdl_input(void *env, void *thiz, void *inject, int frame){
      (g_gp_t*) sobre o dpad conforme o analogico/dpad do gamepad. So no gameplay, depois da
      cena carregar (settle 180f). Centro/raio tunaveis (RE4_DPAD_CX/CY/R). RE4_NO_TOUCHMOVE desliga. */
   g_gp_tprev = g_gp_tdown;
-  if(!g_in_menu && !getenv("RE4_NO_TOUCHMOVE") && g_gameplay && frame > g_gameplay_frame+180){
+  if(getenv("RE4_TOUCHMOVE") && !g_in_menu && g_gameplay && frame > g_gameplay_frame+180){
     float cx=(float)re4_int_env("RE4_DPAD_CX",80,0,1920);
     float cy=(float)re4_int_env("RE4_DPAD_CY",500,0,1080);
     float R =(float)re4_int_env("RE4_DPAD_R",55,10,400);
