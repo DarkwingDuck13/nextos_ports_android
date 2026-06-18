@@ -25,6 +25,7 @@ extern void ao_init(void);
 extern void ao_post_event(const char* name);
 extern void ao_music_request(const char* path);
 extern void ao_music_close(const char* path);
+extern void ao_play_streamed_sfx(const char* path);   // .wem pequeno = efeito one-shot
 
 extern DynLibFunction dynlib_functions[];
 extern size_t dynlib_numfunctions;
@@ -80,6 +81,38 @@ static void w_syslog(int pri,const char* fmt,...){
 // ---------------- AAssetManager (carrega os bancos de g_bankbase) ----------------
 static char g_bankbase[512]="/storage/roms/sor4-test/gameassets";
 typedef struct { FILE* f; long len; int is_music; char path[1024]; } AAsset;
+
+// --- lista de wems que sao MUSICA (music_ids.txt, gerado pelo parser via HIRC) ---
+// Roteamos a MUSICA por esta lista (precisa, 0 overlap c/ SFX) em vez de por TAMANHO, que
+// classificava ~300 segmentos de musica <1.5MB como SFX streamed PARALELO -> uma musica
+// por cima da outra dentro da fase. Com a lista, todo segmento de musica vai p/ a fonte
+// UNICA (g_mus_src), que SUBSTITUI o anterior -> sem sobreposicao. Custo: ~7KB de RAM.
+static uint32_t* g_music_ids=NULL; static int g_nmusic=0;
+static int cmp_u32(const void* a,const void* b){ uint32_t x=*(const uint32_t*)a,y=*(const uint32_t*)b; return (x>y)-(x<y); }
+static void load_music_ids(void){
+  const char* dir=getenv("SOR4_AUDIO"); if(!dir||!*dir) return;
+  char path[1100]; snprintf(path,sizeof(path),"%s/music_ids.txt",dir);
+  FILE* f=fopen(path,"r"); if(!f){ wlog("[wwise] music_ids.txt ausente -> roteamento por tamanho"); return; }
+  int cap=512; g_music_ids=malloc(cap*sizeof(uint32_t)); g_nmusic=0;
+  char line[64];
+  while(g_music_ids && fgets(line,sizeof(line),f)){
+    uint32_t v=(uint32_t)strtoul(line,NULL,10);
+    if(v){ if(g_nmusic>=cap){ cap*=2; uint32_t* np=realloc(g_music_ids,cap*sizeof(uint32_t)); if(!np)break; g_music_ids=np; } g_music_ids[g_nmusic++]=v; }
+  }
+  fclose(f);
+  if(g_music_ids) qsort(g_music_ids,g_nmusic,sizeof(uint32_t),cmp_u32);
+  char b[96]; snprintf(b,sizeof(b),"[wwise] music_ids carregados: %d",g_nmusic); wlog(b);
+}
+static int is_music_id(uint32_t id){      // 1=musica, 0=nao, -1=sem lista (usa fallback tamanho)
+  if(g_nmusic<=0) return -1;
+  int lo=0,hi=g_nmusic-1;
+  while(lo<=hi){ int m=(lo+hi)/2; if(g_music_ids[m]==id)return 1; if(g_music_ids[m]<id)lo=m+1; else hi=m-1; }
+  return 0;
+}
+static uint32_t wem_id_from_path(const char* p){
+  const char* b=strrchr(p,'/'); b=b?b+1:p; return (uint32_t)strtoul(b,NULL,10);
+}
+
 static void* w_AAssetManager_fromJava(void* env,void* obj){ (void)env;(void)obj; wlog("[wwise] AAssetManager_fromJava"); return (void*)0x1; }
 static void* w_AAssetManager_open(void* mgr,const char* fn,int mode){
   (void)mgr;(void)mode;
@@ -90,10 +123,18 @@ static void* w_AAssetManager_open(void* mgr,const char* fn,int mode){
   fseek(f,0,SEEK_END); long len=ftell(f); fseek(f,0,SEEK_SET);
   AAsset* a=malloc(sizeof(AAsset)); a->f=f; a->len=len; a->is_music=0; a->path[0]=0;
   char b[1100]; snprintf(b,sizeof(b),"[wwise] AAsset open %s (%ld)",path,len); wlog(b);
-  // HIBRIDO: a Wwise nativa decide qual MUSICA tocar e abre o .wem streamed certo
-  // (menu/fase/chefe). Echoamos esse wem p/ a saida de audio custom (OpenAL, em loop).
-  // No CLOSE paramos no momento certo -> segue o fluxo original (para/troca de musica).
-  { size_t pl=strlen(path); if(pl>4 && strcmp(path+pl-4,".wem")==0){ a->is_music=1; strncpy(a->path,path,sizeof(a->path)-1); ao_music_request(path); } }
+  // HIBRIDO: a Wwise nativa decide qual MUSICA/efeito streamed tocar e abre o .wem certo.
+  // Distinguimos por TAMANHO: .wem GRANDE = MUSICA de fundo (loop, echo p/ ao_music_request,
+  // para no fluxo original via close); .wem PEQUENO = EFEITO streamed one-shot (hit/voz/
+  // stinger) -> toca uma vez SEM mexer na musica (antes qualquer .wem sequestrava a musica).
+  { size_t pl=strlen(path);
+    if(pl>4 && strcmp(path+pl-4,".wem")==0){
+      // MUSICA pela lista do HIRC (music_ids.txt); sem lista -> fallback por TAMANHO.
+      uint32_t wid=wem_id_from_path(path); int mus=is_music_id(wid);
+      if(mus<0){ long minsz=1572864; const char* e=getenv("SOR4_MUSIC_MINSIZE"); if(e&&*e) minsz=atol(e); mus=(len>=minsz); }
+      if(mus){ a->is_music=1; strncpy(a->path,path,sizeof(a->path)-1); ao_music_request(path); }
+      else ao_play_streamed_sfx(path);
+    } }
   return a;
 }
 static unsigned long g_rd_calls=0, g_rd_bytes=0;
@@ -214,11 +255,18 @@ static void render_audio_locked(void){
 // Acoplar elimina o desync entre behavioral e render que deixava o mix VAZIO.
 static void* pump_thread_fn(void* a){ (void)a;
   { char b[64]; snprintf(b,sizeof(b),"[wwise-native] audio thread tid=%ld",syscall(SYS_gettid)); wlog(b);}
-  // A engine nativa serve so p/ SELECIONAR a musica (abre o .wem certo por contexto);
-  // o audio dela e' descartado. Tickamos devagar (~33Hz) p/ economizar CPU e nao
-  // roubar tempo da thread de streaming de musica (OpenAL) -> sem stutter.
+  // A engine nativa serve SO p/ SELECIONAR a musica (RenderAudio processa eventos/states
+  // -> abre o .wem certo por contexto, que nos echoamos p/ o OpenAL). O AUDIO dela e'
+  // descartado. Por padrao NAO bombeamos o sink (WWISE_NOPUMP): assim a Wwise nao
+  // decodifica a musica em tempo real (decode que meu OpenAL ja faz) -> alivia MUITO a
+  // CPU no combate pesado. RenderAudio continua p/ a logica de selecao de musica.
   unsigned us=20000; { const char* e=getenv("WWISE_TICK_US"); if(e&&*e) us=(unsigned)atoi(e); }
-  for(;;){ render_audio_locked(); opensles_shim_pump_callbacks(); usleep(us); }
+  // pump LIGADO por padrao: a Wwise nativa precisa "tocar" a musica em tempo real p/ as
+  // TRANSICOES de musica interativa dispararem (loading->fase). Sem isso a fase ficava
+  // com a musica do loading. WWISE_NOPUMP=1 desliga (mais leve, mas quebra transicoes).
+  int pump = getenv("WWISE_NOPUMP")==NULL;
+  wlog(pump?"[wwise-native] pump LIGADO (transicoes de musica funcionam)":"[wwise-native] pump DESLIGADO (leve, sem transicoes)");
+  for(;;){ render_audio_locked(); if(pump) opensles_shim_pump_callbacks(); usleep(us); }
   return NULL;
 }
 static void start_pump_thread(void){
@@ -238,7 +286,7 @@ int native_wwise_init(const char* p){
   uintptr_t a=so_find_addr("native_wwise_init"); if(!a){ wlog("[wwise-native] init addr=0"); return 0; }
   int r=((int(*)(const char*))a)(base);
   g_init_ok = (r!=0);
-  if(g_init_ok){ start_pump_thread(); force_volumes_now(); ao_init(); wlog("[wwise-native] volumes iniciais forcados pos-init + audioout custom"); }
+  if(g_init_ok){ start_pump_thread(); force_volumes_now(); ao_init(); load_music_ids(); wlog("[wwise-native] volumes iniciais forcados pos-init + audioout custom"); }
   // diagnostico: le os globais que o 2o check (0x256b24) testa
   { unsigned char* fb=(unsigned char*)((char*)text_base + 0x2d0628);
     void** pl=(void**)((char*)text_base + 0x2d1dc0);

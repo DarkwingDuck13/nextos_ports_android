@@ -158,6 +158,28 @@ def main():
         if emb:
             if len(emb) > 1: nmulti += 1
             manifest.append((eid, emb))
+    # ---- music_ids.txt: wem IDs que sao MUSICA (referenciados por MusicSegment/Track/RanSeq
+    # no HIRC). O reimpl (wwise_native.c) roteia ESSES p/ ao_music_request (UMA fonte, que
+    # SUBSTITUI a anterior) em vez de ao_play_streamed_sfx (PARALELO) -> corrige a musica
+    # sobreposta. O limiar por TAMANHO classificava ~300 segmentos de musica <1.5MB como SFX
+    # paralelo (uma musica por cima da outra). Aqui usamos o HIRC (preciso, 0 overlap c/ SFX).
+    import glob
+    banks_dir = os.path.dirname(os.path.abspath(banks[0]))
+    ga_wems = set()
+    for p in glob.glob(os.path.join(banks_dir, "*.wem")):
+        try: ga_wems.add(int(os.path.basename(p)[:-4]))
+        except Exception: pass
+    music_u32 = set()
+    for oid, (ot, ob) in ALL_HIRC.items():
+        if ot in (0x0A, 0x0B, 0x0D):  # MusicSegment, MusicTrack, MusicRanSeq
+            for off in range(0, len(ob)-3, 4): music_u32.add(struct.unpack_from("<I", ob, off)[0])
+            for off in range(2, len(ob)-3, 4): music_u32.add(struct.unpack_from("<I", ob, off)[0])
+    music_ids = sorted(ga_wems & music_u32)
+    with open(os.path.join(outdir, "music_ids.txt"), "w") as f:
+        f.write("\n".join(str(m) for m in music_ids))
+    sys.stderr.write("music_ids=%d (de %d wems no gameassets) -> %s/music_ids.txt\n"
+                     % (len(music_ids), len(ga_wems), outdir))
+
     with open(os.path.join(outdir, "manifest.txt"), "w") as f:
         for eid, ids in manifest:
             f.write("%d\t%s\n" % (eid, ",".join(str(x) for x in ids)))
