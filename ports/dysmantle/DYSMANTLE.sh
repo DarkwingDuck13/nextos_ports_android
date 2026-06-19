@@ -11,8 +11,11 @@ XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 # ============================================================
 #  OPCOES (edite aqui)
 # ============================================================
-# TEXSCALE: reduz as texturas por este fator = mais FPS / menos memoria.
-#   1.3 = recomendado (quase imperceptivel)  |  1.0 = qualidade total
+# DOWNSCALE DE TEXTURA (estilo SOR4): reduz TODAS as texturas por este fator, OFFLINE
+# (bakeado no cache na 1a vez) -> menos memoria / mais FPS. O fator vale pro cache E pro
+# runtime juntos. Mudar o valor RE-GERA o cache na 1a abertura seguinte (uma vez).
+#   1.0 = qualidade total (mais nitido, mais memoria)
+#   1.2 = leve            |  1.3 = RECOMENDADO (quase imperceptivel)  |  2.0 = max economia (1GB)
 export DYSMANTLE_TEXSCALE="${DYSMANTLE_TEXSCALE:-1.3}"
 # ============================================================
 # DLC (Underworld / Doomsday / Pets and Dungeons) -- automatico e seguro:
@@ -67,22 +70,12 @@ else
   exec >/dev/null 2>&1
 fi
 
-# ---------- escolha do binario (DOIS binarios cobrem qualquer device) ----------
-# dysmantle = build NextOS (precisa GLIBC_2.38: NextOS/muOS/Knulli/ROCKNIX/X5M).
-# dysmantle.compat = MESMO codigo em Debian (GLIBC_2.27 -> ArkOS/dArkOS/R36S; roda
-# em QUALQUER glibc >= 2.27). Metodo ROBUSTO: ve se a libc.so.6 DO SISTEMA exporta o
-# simbolo "GLIBC_2.38" (independe do formato de getconf/ldd, que varia por CFW e dava
-# selecao errada). Achou -> native; senao / na duvida -> compat (mais compativel).
-GLIBC_NEED="GLIBC_2.38"
-syslibc=$(ldd /bin/sh 2>/dev/null | grep -oE '/[^ ]*/libc\.so\.6' | head -1)
-[ -n "$syslibc" ] || for d in /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib /lib /lib64; do
-  [ -e "$d/libc.so.6" ] && { syslibc="$d/libc.so.6"; break; }
-done
-if [ -n "$syslibc" ] && grep -qaF "$GLIBC_NEED" "$syslibc" 2>/dev/null && [ -x "$GAMEDIR/dysmantle" ]; then
-  BIN="dysmantle";        echo "[launcher] $syslibc tem $GLIBC_NEED -> binario NextOS (dysmantle)"
-else
-  BIN="dysmantle.compat"; echo "[launcher] sem $GLIBC_NEED (libc=${syslibc:-nao-achada}) -> compat GLIBC_2.27 (dysmantle.compat)"
-fi
+# ---------- binario UNICO (universal) ----------
+# Desde a v5: UM SO binario `dysmantle`, compilado no Docker (debian:bullseye, GCC 10)
+# contra glibc velha -> simbolo max GLIBC_2.27 -> roda em QUALQUER aarch64 (ArkOS/R36S
+# 2.27, NextOS/X5M 2.38+, etc). Acabou a detecao de glibc e o 2o binario: mesmo codigo,
+# um arquivo so. (Build: build_compat_gcc.sh dentro do container.)
+BIN="dysmantle"
 
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
 # Igual ao Bully/TMNT: a logica toda fica no tools/dysmantle_extract.src; aqui so
@@ -115,6 +108,21 @@ if [ -x "$GAMEDIR/fixpak" ] && [ ! -f "$GAMEDIR/.textures_fixed" ] && [ -f "$GAM
   printf "\033c" >> $CUR_TTY
 fi
 
+# ---------- REDE DE SEGURANCA: cache ETC1 (gera na escala escolhida; re-gera se mudou) -
+# O cache guarda as texturas OPACAS ja em ETC1 (4bpp) E ja DOWNSCALED no fator escolhido.
+# Se o fator (DYSMANTLE_TEXSCALE) mudou desde o ultimo bake, RE-GERA (uma vez) p/ as dims
+# do cache casarem com o downscale do runtime. So-1x por escala (marcador .etc1_scale).
+BAKED_SCALE=$(cat "$GAMEDIR/.etc1_scale" 2>/dev/null)
+if [ -x "$GAMEDIR/texbake" ] && [ -f "$GAMEDIR/assets/data.pak" ] && \
+   { [ ! -f "$GAMEDIR/etc1.cache" ] || [ "$BAKED_SCALE" != "$DYSMANTLE_TEXSCALE" ]; }; then
+  echo "Convertendo texturas (escala $DYSMANTLE_TEXSCALE, 1a vez)... pode demorar, nao desligue." > $CUR_TTY
+  $ESUDO rm -f "$GAMEDIR/etc1.cache" "$GAMEDIR/etc1.cache.tmpdata"*
+  ( cd "$GAMEDIR" && LD_LIBRARY_PATH="/usr/lib:/lib:$GAMEDIR" nice -n 10 $ESUDO ./texbake assets/data.pak assets/data-gfx1200.pak --scale "$DYSMANTLE_TEXSCALE" --sidetable etc1.cache ) && \
+    { $ESUDO sh -c "echo '$DYSMANTLE_TEXSCALE' > '$GAMEDIR/.etc1_scale'"; $ESUDO touch "$GAMEDIR/.etc1_cached"; }
+  sync
+  printf "\033c" >> $CUR_TTY
+fi
+
 # ---------- ambiente ----------
 export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
@@ -127,6 +135,14 @@ export SDL_VIDEO_FULLSCREEN_DESKTOP=1
 export DYSMANTLE_ASSETS=assets
 # Shader ES2 (vale tb no ES3).
 export DYSMANTLE_GLVER=2.0
+# 🧊 CACHE ETC1 OFFLINE: o binario sobe a ETC1 ja pronta no upload, VERIFICANDO o
+# conteudo (decodifica uma amostra e compara com o RGBA real) -> nunca sobe a textura
+# errada (anti-magenta); se o nome colide, cai pro RGBA8 correto. ZERO encode em runtime.
+# Mapas de iluminacao (normals/specular) ficam de fora (RGBA8) p/ a luz nao quebrar.
+# O cache foi bakeado no MESMO DYSMANTLE_TEXSCALE -> dims casam com o downscale do runtime.
+if [ -f "$GAMEDIR/etc1.cache" ]; then
+  export DYSMANTLE_ETC1CACHE="$GAMEDIR/etc1.cache"
+fi
 # VSYNC por BACKEND (T1): fbdev (Mali-450/Amlogic, sem /dev/dri) liga vsync=1 ->
 # o present sincroniza com o refresh -> MATA o tearing/flicker. KMSDRM (X5M/R26S)
 # fica 0 (o limiter da engine cuida do pacing; vsync por cima = double-pacing 30fps).

@@ -15,6 +15,9 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -399,6 +402,9 @@ static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                       const void *) = NULL;
   rgl("glCompressedTexImage2D", (void **)&real);
   static unsigned (*gerr)(void) = NULL; rgl("glGetError", (void **)&gerr);
+  /* As texturas que a engine carrega COMPRIMIDAS (ETC2) são DECODIFICADAS p/ RGBA
+   * (Mali-450 não amostra ETC2). NÃO subir como ETC1 cru (modos planar/T/H do ETC2
+   * viram lixo/magenta no chão liso). Caminho validado da v5. */
   if (px && ifmt >= 0x9274 && ifmt <= 0x9279) {
     unsigned char *rgba = etc2_decode_rgba(ifmt, w, h, px, sz);
     if (rgba) {
@@ -823,15 +829,186 @@ static void my_glTexParameteri(unsigned tgt, unsigned pname, int param) {
   }
   if (real) real(tgt, pname, param);
 }
+/* ========== CACHE ETC1 OFFLINE (sidetable do texbake) ==========
+ * A engine carrega o .jpg/.png normal (imagem completa, sem crash/pink). Aqui, no
+ * upload, em vez de ENCODAR ETC1 em runtime (stutter), fazemos LOOKUP por NOME da
+ * ETC1 já pré-bakeada -> ZERO encode. Caminho do SOR4: controlar no nosso hook. */
+extern const char *bk_last_bmp_name(void);
+typedef struct { const char *name; int w, h; const unsigned char *blob; int size; } EtcEnt;
+static EtcEnt *g_etc = NULL; static long g_netc = -1;   /* -1 = ainda não tentou carregar */
+static unsigned char *g_etcfile = NULL;
+static int g_etc_zlib = 0;   /* 1 = blobs do cache estão comprimidos (zlib) */
+static int (*g_zuncompress)(unsigned char *, unsigned long *, const unsigned char *, unsigned long) = NULL;
+static int etc_name_cmp(const char *a, const char *b) {  /* bytewise (igual texbake) */
+  const unsigned char *x = (const unsigned char *)a, *y = (const unsigned char *)b;
+  while (*x && *x == *y) { x++; y++; }
+  return (int)*x - (int)*y;
+}
+static void etc1cache_load(void) {
+  g_netc = 0;
+  const char *path = getenv("DYSMANTLE_ETC1CACHE");
+  if (!path) return;
+  /* 🔑 mmap (NÃO malloc+fread): o cache tem centenas de MB; carregá-lo inteiro na RAM
+   * estouraria 1GB. mmap deixa as páginas no disco e só residem as ACESSADAS (cada
+   * textura é lida 1× no upload e a página pode ser evictada). */
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) { fprintf(stderr, "[ETC1CACHE] nao abriu %s\n", path); return; }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size < 16) { close(fd); return; }
+  long n = (long)st.st_size;
+  g_etcfile = (unsigned char *)mmap(NULL, n, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (g_etcfile == MAP_FAILED) { g_etcfile = NULL; fprintf(stderr, "[ETC1CACHE] mmap falhou\n"); return; }
+  if (!memcmp(g_etcfile, "ETC1CAZ1", 8)) {        /* cache COMPRIMIDO (zlib) */
+    g_etc_zlib = 1;
+    void *z = dlopen("libz.so.1", RTLD_NOW); if (!z) z = dlopen("libz.so", RTLD_NOW);
+    if (z) g_zuncompress = dlsym(z, "uncompress");
+    if (!g_zuncompress) { fprintf(stderr, "[ETC1CACHE] cache zlib mas sem libz -> desligado\n"); return; }
+  } else if (memcmp(g_etcfile, "ETC1CACH", 8)) { fprintf(stderr, "[ETC1CACHE] magic ruim\n"); return; }
+  uint32_t count = *(uint32_t *)(g_etcfile + 8), data_off = *(uint32_t *)(g_etcfile + 12);
+  g_etc = (EtcEnt *)malloc((size_t)count * sizeof(EtcEnt));
+  unsigned char *p = g_etcfile + 16;
+  for (uint32_t i = 0; i < count; i++) {
+    g_etc[i].name = (const char *)p; int L = (int)strlen((const char *)p); p += L + 1;
+    g_etc[i].w = *(uint16_t *)p; p += 2; g_etc[i].h = *(uint16_t *)p; p += 2;
+    uint32_t bo = *(uint32_t *)p; p += 4; g_etc[i].size = (int)(*(uint32_t *)p); p += 4;
+    g_etc[i].blob = g_etcfile + data_off + bo;
+  }
+  g_netc = count;
+  fprintf(stderr, "[ETC1CACHE] %ld texturas ETC1 carregadas de %s\n", g_netc, path);
+}
+static const EtcEnt *etc1cache_find(const char *name) {
+  if (g_netc <= 0 || !name) return NULL;
+  long lo = 0, hi = g_netc - 1;
+  while (lo <= hi) { long m = (lo + hi) / 2; int c = etc_name_cmp(g_etc[m].name, name);
+    if (c == 0) return &g_etc[m]; if (c < 0) lo = m + 1; else hi = m - 1; }
+  return NULL;
+}
+
+/* 🔎 VERIFICAÇÃO DE CONTEÚDO (mata o magenta): o cache é indexado por NOME, mas o
+ * nome (bk_last_bmp_name) pode estar VELHO entre uploads (mips/atlas/FBO sem nome).
+ * Quando uma textura ERRADA bate a MESMA dim de uma entrada do cache (512²/256²/128²
+ * são comuns), a guarda de tamanho passa e subiríamos a ETC1 ERRADA -> chão magenta.
+ * Solução: antes de aceitar, DECODIFICA uma AMOSTRA de blocos ETC1 do cache e compara
+ * com o RGBA REAL que a engine vai subir. Se o conteúdo bate (dentro da perda do ETC1)
+ * -> é a textura certa, sobe. Se não bate -> colisão de nome -> recusa (cai pro RGBA8
+ * correto). Decode por-bloco (4x4) em ~24 posições espalhadas = barato (load-time).
+ * ETC1 cru rotula como ETC2-RGB (0x9274) e o decoder ETC2 decodifica idêntico (nossos
+ * blocos só usam modos individual/differential, subconjunto válido do ETC2). */
+static int etc1cache_content_ok(const EtcEnt *e, const unsigned char *blob, int blobsz,
+                                const void *data, int ch) {
+  extern unsigned char *etc2_decode_rgba(unsigned, int, int, const void *, int);
+  int bw = e->w / 4, bh = e->h / 4;
+  if (bw <= 0 || bh <= 0) return 0;
+  (void)blobsz;
+  const unsigned char *src = (const unsigned char *)data;
+  /* amostra ~24 blocos espalhados em grade */
+  int gx = bw < 5 ? bw : 5, gy = bh < 5 ? bh : 5;
+  long sum = 0, cnt = 0; int sampled = 0;
+  for (int iy = 0; iy < gy; iy++) {
+    for (int ix = 0; ix < gx; ix++) {
+      int bx = (int)((long)ix * (bw - 1) / (gx > 1 ? gx - 1 : 1));
+      int by = (int)((long)iy * (bh - 1) / (gy > 1 ? gy - 1 : 1));
+      const unsigned char *blk = blob + ((long)by * bw + bx) * 8;
+      unsigned char *dec = etc2_decode_rgba(0x9274, 4, 4, blk, 8);
+      if (!dec) continue;
+      sampled++;
+      for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+        long px = ((long)(by * 4 + j) * e->w + (bx * 4 + i));
+        const unsigned char *s = src + px * ch;
+        const unsigned char *d = dec + (j * 4 + i) * 4;
+        int dr = d[0] - s[0], dg = d[1] - s[1], db = d[2] - s[2];
+        sum += (dr < 0 ? -dr : dr) + (dg < 0 ? -dg : dg) + (db < 0 ? -db : db);
+        cnt += 3;
+      }
+      free(dec);
+    }
+  }
+  if (!sampled || !cnt) return -1;
+  return (int)(sum / cnt);   /* erro médio absoluto por canal (caller decide o limite) */
+}
+
 /* T3: tenta subir a textura como ETC1 (0x8D64) em vez de RGBA8. Só texturas
  * OPACAS, mip 0, dim múltipla de 4. ~8× menos VRAM no Utgard (amostra ETC1 nativo).
- * Encoda 1× por textura (no load, não por frame). Retorna 1 se subiu ETC1; 0 =
- * caller faz o upload RGBA normal. DYSMANTLE_NO_ETC1 desliga. */
+ * 1º: LOOKUP no cache offline (sem encode) + VERIFICAÇÃO DE CONTEÚDO. SEM fallback de
+ * encode em runtime no caminho de produção (nada convertido dentro do jogo).
+ * Retorna 1 se subiu ETC1; 0 = caller faz o upload RGBA normal. DYSMANTLE_NO_ETC1 desliga. */
 static int try_upload_etc1(unsigned tgt, int lvl, int w, int h,
                            const void *data, unsigned fmt) {
   static int en = -1;
   if (en < 0) en = getenv("DYSMANTLE_NO_ETC1") ? 0 : 1;
   if (!en || lvl != 0 || !data) return 0;
+
+  static int diag = -1;
+  if (diag < 0) diag = getenv("DYSMANTLE_CACHEDIAG") ? 1 : 0;
+  static int dn = 0;
+  /* limite do MAD pra aceitar a ETC1 do cache (tunável: DYSMANTLE_VERIFY_MAX). */
+  static int ETC1_VERIFY_MAX = -1;
+  if (ETC1_VERIFY_MAX < 0) { const char *v = getenv("DYSMANTLE_VERIFY_MAX"); ETC1_VERIFY_MAX = v ? atoi(v) : 28; }
+
+  /* 🌑 NÃO comprimir MAPAS DE ILUMINAÇÃO em ETC1: normals/specular/heights guardam
+   * dado por-canal (não cor). ETC1 (lossy, correlaciona RGB) destrói esse dado ->
+   * iluminação errada -> chão/personagem/árvores PRETOS. Sobem RGBA8 (correto). */
+  {
+    const char *nm = bk_last_bmp_name();
+    if (nm && (strstr(nm, "normal") || strstr(nm, "specular") || strstr(nm, "-spec") ||
+               strstr(nm, "height") || strstr(nm, "-gloss") || strstr(nm, "roughness"))) {
+      if (diag && dn < 600 && w >= 32) { fprintf(stderr, "[DIAG] EXCLUDED-LIGHT '%s' %dx%d\n", nm, w, h); dn++; }
+      return 0;
+    }
+  }
+
+  /* 🔑 CACHE OFFLINE: se esta textura (por nome) tem ETC1 pré-bakeada, sobe direto. */
+  if (g_netc < 0) etc1cache_load();
+  if (g_netc > 0 && (fmt == 0x1908 || fmt == 0x1907)) {
+    const char *nm = bk_last_bmp_name();
+    const EtcEnt *e = etc1cache_find(nm);
+    if (diag && dn < 600 && w >= 32) {
+      if (!e) { fprintf(stderr, "[DIAG] MISS-NONAME '%s' %dx%d\n", nm, w, h); dn++; }
+      else if (e->w != w || e->h != h) { fprintf(stderr, "[DIAG] MISS-DIM '%s' up=%dx%d cache=%dx%d\n", nm, w, h, e->w, e->h); dn++; }
+      else { fprintf(stderr, "[DIAG] HIT '%s' %dx%d\n", nm, w, h); dn++; }
+    }
+    /* 🛡️ GUARDA DE TAMANHO: só substitui se as dims do cache BATEM com o upload atual.
+     * g_last_bmp_name pode estar VELHO (FBO/mip/upload sem nome) -> sem a guarda
+     * subiríamos a ETC1 errada -> textura branca/preta/lixo no gameplay. */
+    if (e && e->w == w && e->h == h) {
+      static void (*rc)(unsigned, int, unsigned, int, int, int, int, const void *) = NULL;
+      rgl("glCompressedTexImage2D", (void **)&rc);
+      static unsigned (*ge)(void) = NULL; rgl("glGetError", (void **)&ge);
+      if (ge) while (ge()) {}
+      int ok = 0;
+      const unsigned char *blob = e->blob; int blobsz = e->size;
+      unsigned char *infl = NULL;
+      /* 🗜️ cache COMPRIMIDO: infla o blob (tam. ETC1 = (w/4)*(h/4)*8, derivado de w,h). */
+      if (g_etc_zlib) {
+        unsigned long unc = (unsigned long)(e->w / 4) * (e->h / 4) * 8;
+        infl = (unsigned char *)malloc(unc);
+        unsigned long got = unc;
+        if (infl && g_zuncompress(infl, &got, e->blob, e->size) == 0 && got == unc) {
+          blob = infl; blobsz = (int)unc;
+        } else { free(infl); infl = NULL; blob = NULL; }
+      }
+      /* 🔎 só sobe a ETC1 do cache se o CONTEÚDO bate com o RGBA real (anti-magenta).
+       * MAD = erro médio por canal entre a ETC1 do cache e o RGBA que a engine vai subir.
+       * textura CERTA: MAD baixo (perda do ETC1 ~3-20); colisão de nome: MAD alto (~40+). */
+      int mad = blob ? etc1cache_content_ok(e, blob, blobsz, data, (fmt == 0x1908) ? 4 : 3) : -1;
+      int verified = (mad >= 0 && mad <= ETC1_VERIFY_MAX);
+      if (verified && rc && blob) { rc(tgt, 0, 0x8D64, e->w, e->h, 0, blobsz, blob); ok = (ge ? ge() : 1) == 0; }
+      free(infl);
+      /* 📊 contadores cumulativos (sem cap) p/ medir a taxa real de uso do cache. */
+      static long n_ok = 0, n_rej = 0; if (ok) n_ok++; else if (mad >= 0) n_rej++;
+      if (diag && ((n_ok + n_rej) % 500) == 0 && (n_ok + n_rej) > 0)
+        fprintf(stderr, "[CACHESTATS] ETC1-usado=%ld rejeitado=%ld (%.0f%% aceito)\n", n_ok, n_rej, 100.0 * n_ok / (n_ok + n_rej));
+      if (diag && dn < 600 && w >= 32 && !verified) { fprintf(stderr, "[DIAG] VERIFY-FAIL '%s' %dx%d MAD=%d (limite=%d)\n", nm, w, h, mad, ETC1_VERIFY_MAX); dn++; }
+      static int cl = 0;
+      if (cl < 12) { fprintf(stderr, "[ETC1CACHE] '%s' %dx%d -> %s\n", bk_last_bmp_name(), e->w, e->h, ok ? "ETC1(cache)" : (verified ? "falhou" : "rejeitado(conteudo)")); cl++; }
+      if (ok) return 1;     /* subiu do cache verificado, sem encode */
+    }
+  }
+  /* 🚫 SEM ENCODE EM RUNTIME no caminho de produção (nada convertido dentro do jogo):
+   * cache-miss / dim-mismatch / colisão -> a engine sobe RGBA8 (cor correta). O encode
+   * em runtime (stutter na CPU fraca) só liga com DYSMANTLE_RT_ENCODE=1 (diagnóstico). */
+  if (!getenv("DYSMANTLE_RT_ENCODE")) return 0;
   if (fmt != 0x1908 && fmt != 0x1907) return 0;          /* só RGBA/RGB */
   if (w < 32 || h < 32 || (w & 3) || (h & 3)) return 0;  /* conteúdo, múltiplo de 4 */
   int ch = (fmt == 0x1908) ? 4 : 3;
@@ -894,7 +1071,9 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
     }
     if (texscale > 0.0f && px && lvl == 0 && fmt == 0x1908 && typ == 0x1401 &&
         w >= 128 && h >= 128) {
-      int nw = (int)((float)w / texscale), nh = (int)((float)h / texscale);
+      /* 🔑 dims do downscale IDÊNTICAS ao texbake (round p/ múltiplo de 4: (n+2)&~3),
+       * senão o cache ETC1 (bakeado na mesma escala) dá MISS-DIM e não é usado. */
+      int nw = ((int)((float)w / texscale) + 2) & ~3, nh = ((int)((float)h / texscale) + 2) & ~3;
       if (nw >= 16 && nh >= 16 && (nw < w || nh < h)) {
         static unsigned char *sb = NULL; static long scap = 0;
         long need = (long)nw * nh * 4;

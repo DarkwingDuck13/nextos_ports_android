@@ -14,4 +14,8 @@ void etc1_encode_block_rgba(const uint8_t *block_rgba, uint8_t out[8]);
  * out deve ter (w/4)*(h/4)*8 bytes. channels=3 ou 4 (stride do pixel). */
 void etc1_encode_image(const uint8_t *rgba, int w, int h, int channels, uint8_t *out);
 
+/* Liga (1, default) / desliga (0) o modo RÁPIDO do encoder (flip heurístico + sem
+ * refino, ~4-5× mais rápido, qualidade ~igual). 0 = exaustivo (máxima qualidade). */
+void etc1_set_fast(int fast);
+
 #endif

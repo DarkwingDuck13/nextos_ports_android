@@ -11,8 +11,8 @@
         "porter": [
             "felc18-blip"
         ],
-        "desc": "DYSMANTLE (10tons, v1.4.1.12 Android) via so-loader do libNativeGame.so. Mundo aberto de sobrevivencia/crafting, GLES2/GLES3, audio Oboe e controle nativos. Dois binarios (glibc novo + GLIBC_2.27 p/ ArkOS/R36S). BYO-data: requer sua copia legal do APK DYSMANTLE 1.4.1.12 (veja README.md).",
-        "inst": "Copie seu APK do DYSMANTLE 1.4.1.12 para a pasta 'dysmantle/' e abra o jogo -- uma janela extrai os dados e conserta as texturas sozinha na 1a vez.",
+        "desc": "DYSMANTLE (10tons, v1.4.1.12 Android) via so-loader do libNativeGame.so. Mundo aberto de sobrevivencia/crafting, GLES2/GLES3, audio Oboe e controle nativos. v5: UM binario universal (GLIBC velha, roda em qualquer aarch64) + conversao de textura OFFLINE na 1a execucao (cache ETC1) = jogo abre limpo, SEM travadas em jogo. BYO-data: requer sua copia legal do APK DYSMANTLE 1.4.1.12 (veja README.md).",
+        "inst": "Copie seu APK do DYSMANTLE 1.4.1.12 para a pasta 'dysmantle/' e abra o jogo -- na 1a vez uma janela extrai os dados, conserta as texturas e gera o cache ETC1 (demora alguns minutos, UMA vez so); depois abre direto e limpo.",
         "genres": [
             "action",
             "adventure"

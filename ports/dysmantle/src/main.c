@@ -922,6 +922,8 @@ static void hook_createvb(void) {
 /* GOT-hooks BitmapLoader: nome do bitmap + resultado do LoadBitmapInternal
  * (caça do mundo-branco: 'tile-floor-normals.jpg' falha; queremos o passo). */
 static char g_last_bmp_name[256] = "?";
+/* nome da textura sendo carregada AGORA — usado pelo cache ETC1 offline (imports.c). */
+const char *bk_last_bmp_name(void) { return g_last_bmp_name; }
 static void (*orig_setbmpname)(void *, const char *, size_t) = NULL;
 static void my_setbmpname(void *bmp, const char *p, size_t n) {
   if (p && n > 0 && n < sizeof(g_last_bmp_name)) {

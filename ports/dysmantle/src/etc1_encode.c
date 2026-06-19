@@ -20,6 +20,12 @@ static const int kMod[8][4] = {
 
 static inline int clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
+/* modo RÁPIDO (default ON): escolhe o flip por heurística e pula o refino de base.
+ * ~4-5× mais rápido que o exaustivo, qualidade ~igual (refino e o 2º flip davam ganho
+ * marginal). etc1_set_fast(0) volta pro exaustivo (máxima qualidade). */
+static int s_etc1_fast = 1;
+void etc1_set_fast(int f) { s_etc1_fast = f; }
+
 /* expande 4 bits -> 8 (replicacao de nibble) e 5 bits -> 8. */
 static inline int exp4(int v4) { return (v4 << 4) | v4; }
 static inline int exp5(int v5) { return (v5 << 3) | (v5 >> 2); }
@@ -100,6 +106,29 @@ static void pack_block(int diff, int flip,
   memcpy(out, b, 8);
 }
 
+/* heurística: qual split deixa os 2 sub-blocos mais uniformes (menor variância).
+ * flip=0 = colunas {0,1}|{2,3} (esq/dir); flip=1 = linhas (topo/baixo). */
+static int pick_flip(const uint8_t *blk) {
+#define PXF(x, y) (blk + (((y) * 4 + (x)) * 4))
+  long errH = 0, errV = 0;
+  /* esq/dir (flip=0) */
+  for (int half = 0; half < 2; half++) {
+    long s[3] = {0,0,0}; int x0 = half * 2;
+    for (int x = x0; x < x0 + 2; x++) for (int y = 0; y < 4; y++) { const uint8_t *p = PXF(x,y); s[0]+=p[0]; s[1]+=p[1]; s[2]+=p[2]; }
+    int m[3] = {(int)(s[0]/8),(int)(s[1]/8),(int)(s[2]/8)};
+    for (int x = x0; x < x0 + 2; x++) for (int y = 0; y < 4; y++) { const uint8_t *p = PXF(x,y); errH += (p[0]-m[0])*(p[0]-m[0])+(p[1]-m[1])*(p[1]-m[1])+(p[2]-m[2])*(p[2]-m[2]); }
+  }
+  /* topo/baixo (flip=1) */
+  for (int half = 0; half < 2; half++) {
+    long s[3] = {0,0,0}; int y0 = half * 2;
+    for (int y = y0; y < y0 + 2; y++) for (int x = 0; x < 4; x++) { const uint8_t *p = PXF(x,y); s[0]+=p[0]; s[1]+=p[1]; s[2]+=p[2]; }
+    int m[3] = {(int)(s[0]/8),(int)(s[1]/8),(int)(s[2]/8)};
+    for (int y = y0; y < y0 + 2; y++) for (int x = 0; x < 4; x++) { const uint8_t *p = PXF(x,y); errV += (p[0]-m[0])*(p[0]-m[0])+(p[1]-m[1])*(p[1]-m[1])+(p[2]-m[2])*(p[2]-m[2]); }
+  }
+#undef PXF
+  return errH <= errV ? 0 : 1;
+}
+
 void etc1_encode_block_rgba(const uint8_t *blk, uint8_t out[8]) {
   /* blk: row-major, pixel (x,y) em offset (y*4+x)*4. sel idx p = x*4+y. */
 #define PX(x, y) (blk + (((y) * 4 + (x)) * 4))
@@ -109,7 +138,9 @@ void etc1_encode_block_rgba(const uint8_t *blk, uint8_t out[8]) {
   int best_c1[3] = {0,0,0}, best_c2[3] = {0,0,0};
   int best_sel[16] = {0};
 
-  for (int flip = 0; flip < 2; flip++) {
+  int flip0 = 0, flip1 = 2;
+  if (s_etc1_fast) { flip0 = pick_flip(blk); flip1 = flip0 + 1; }  /* só 1 flip */
+  for (int flip = flip0; flip < flip1; flip++) {
     /* monta os 2 sub-blocos (8 px cada) + mapeamento p/ sel global */
     const uint8_t *s1[8], *s2[8]; int p1[8], p2[8];
     int n = 0, m = 0;
@@ -130,12 +161,14 @@ void etc1_encode_block_rgba(const uint8_t *blk, uint8_t out[8]) {
       int q1[3] = { q4(a1[0]), q4(a1[1]), q4(a1[2]) };
       int q2[3] = { q4(a2[0]), q4(a2[1]), q4(a2[2]) };
       int t1, t2, sel1[8], sel2[8];
-      sub_best(s1, 8, exp4(q1[0]), exp4(q1[1]), exp4(q1[2]), &t1, sel1);
-      sub_best(s2, 8, exp4(q2[0]), exp4(q2[1]), exp4(q2[2]), &t2, sel2);
-      refine_base(s1, sel1, 8, t1, 4, q1);  /* 1 iteração de refino da base */
-      refine_base(s2, sel2, 8, t2, 4, q2);
       long err = sub_best(s1, 8, exp4(q1[0]), exp4(q1[1]), exp4(q1[2]), &t1, sel1)
                + sub_best(s2, 8, exp4(q2[0]), exp4(q2[1]), exp4(q2[2]), &t2, sel2);
+      if (!s_etc1_fast) {                    /* refino (1 iteração) só no modo lento */
+        refine_base(s1, sel1, 8, t1, 4, q1);
+        refine_base(s2, sel2, 8, t2, 4, q2);
+        err = sub_best(s1, 8, exp4(q1[0]), exp4(q1[1]), exp4(q1[2]), &t1, sel1)
+            + sub_best(s2, 8, exp4(q2[0]), exp4(q2[1]), exp4(q2[2]), &t2, sel2);
+      }
       if (best_total < 0 || err < best_total) {
         best_total = err; best_diff = 0; best_flip = flip;
         best_t1 = t1; best_t2 = t2;
@@ -156,7 +189,7 @@ void etc1_encode_block_rgba(const uint8_t *blk, uint8_t out[8]) {
         if (b2[k] < 0 || b2[k] > 31) { ok = 0; break; }
         d2[k] = d & 0x7;
       }
-      if (ok) {
+      if (ok && !s_etc1_fast) {              /* refino só no modo lento */
         int t1, t2, sel1[8], sel2[8];
         sub_best(s1, 8, exp5(b1[0]), exp5(b1[1]), exp5(b1[2]), &t1, sel1);
         sub_best(s2, 8, exp5(b2[0]), exp5(b2[1]), exp5(b2[2]), &t2, sel2);

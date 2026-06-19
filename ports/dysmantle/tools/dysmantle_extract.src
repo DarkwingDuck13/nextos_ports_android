@@ -1,9 +1,12 @@
 #!/bin/bash
-# DYSMANTLE BYO-DATA -- script de extracao mostrado na JANELA do 'progressor'
-# (mesmo metodo do Bully/TMNT). Os echos aparecem na tela com PORCENTAGEM + barra.
-# Extrai do APK: libNativeGame.so + a pasta assets/ (os .pak) e RODA o fixpak
-# (conserto de texturas ETC2 -> JPEG/PNG) na mesma janela. msgbox em caso de erro.
-# libc++_shared.so JA VEM no pacote (versao validada) -> nao depende do APK.
+# DYSMANTLE v5 — BYO-DATA — script mostrado na JANELA do 'progressor' (igual SOR4/Bully).
+# Na 1a execucao, com o APK do DYSMANTLE 1.4.1.12 na pasta ports/dysmantle/:
+#   1) EXTRAI do APK: libNativeGame.so + assets/ (os .pak);
+#   2) FIXPAK: preenche os .jpg/.png VAZIOS a partir do .ktx (ETC2) -> imagem completa;
+#   3) TEXBAKE: gera o CACHE ETC1 offline (nome->ETC1, so opacas) -> ZERO conversao
+#      em runtime (sem stutter). Mapas de iluminacao (normals/specular) ficam de fora.
+#   4) apaga o APK (so apos SUCESSO).
+# Tudo com % na tela. Roda 1x (marcador .setup_done).
 SCRIPT="${BASH_SOURCE:-$0}"
 SCRIPT_PATH="$(cd "$(dirname "${SCRIPT}")" && pwd)"
 source "${SCRIPT_PATH}/common.src"
@@ -12,7 +15,6 @@ GAMEDIR="$(cd "${SCRIPT_PATH}/.." && pwd)"
 cd "$GAMEDIR"
 APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK "$GAMEDIR"/*.xapk 2>/dev/null | head -1)
 
-# barra de progresso textual: pbar <0-100>
 pbar() {
   local p=$1 i n=$(( $1 / 5 )) bar=""
   for ((i=0;i<20;i++)); do [ "$i" -lt "$n" ] && bar="${bar}#" || bar="${bar}."; done
@@ -24,75 +26,90 @@ if [ -z "$APK" ]; then
   exit 1
 fi
 
-echo "Primeira execucao -- extraindo os dados do seu APK (~800 MB)."
-echo "Leva alguns minutos. Nao desligue o aparelho."
+echo "Primeira execucao -- preparando o seu jogo (~800 MB)."
+echo "Converte as texturas UMA VEZ (sem conversao durante o jogo)."
+echo "Pode levar varios minutos. NAO desligue o aparelho."
 echo ""
 
+# ---------- 1) EXTRAIR DO APK ----------
 echo ">> Biblioteca do jogo (libNativeGame.so)..."
 pbar 2
-if ! unzip -o -j "$APK" "lib/arm64-v8a/libNativeGame.so" -d "$GAMEDIR"; then
-  msgbox "DYSMANTLE" "Falha ao extrair libNativeGame.so do APK."
-  exit 1
+if ! unzip -o -j "$APK" "lib/arm64-v8a/libNativeGame.so" -d "$GAMEDIR" >/dev/null 2>&1; then
+  msgbox "DYSMANTLE" "Falha ao extrair libNativeGame.so do APK."; exit 1
 fi
-
 mkdir -p "$GAMEDIR/assets"
-# os .pak grandes, um por vez (% proporcional ao tamanho: data.pak e o maior)
-echo ">> Dados de idiomas (data-localizations.pak)..."
-pbar 5
+echo ">> Dados (idiomas + texturas extras)..."
+pbar 6
 unzip -o -j "$APK" "assets/data-localizations.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1
-echo ">> Texturas extras (data-gfx1200.pak)..."
-pbar 14
 unzip -o -j "$APK" "assets/data-gfx1200.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1
 echo ">> Dados principais (data.pak ~570 MB, demora mais)..."
-pbar 32
+pbar 18
 if ! unzip -o -j "$APK" "assets/data.pak" -d "$GAMEDIR/assets" >/dev/null 2>&1; then
-  msgbox "DYSMANTLE" "Falha ao extrair data.pak. APK incompleto ou sem espaco?"
-  exit 1
+  msgbox "DYSMANTLE" "Falha ao extrair data.pak. APK incompleto ou sem espaco?"; exit 1
 fi
-
 echo ">> Manifestos e arquivos restantes..."
-pbar 72
-# o resto do assets/ (manifest-*.xml, prog.xml, AVConfig.json, hashes, etc).
-# -o sobrescreve; -j achata o caminho assets/ para a pasta assets/.
+pbar 30
 unzip -o -j "$APK" "assets/*" -d "$GAMEDIR/assets" >/dev/null 2>&1
 sync
 
-echo ">> Conferindo a extracao..."
-pbar 78
 ok=1
 [ -f "$GAMEDIR/libNativeGame.so" ] || ok=0
 [ -f "$GAMEDIR/assets/data.pak" ] || ok=0
 if [ "$ok" != 1 ]; then
-  msgbox "DYSMANTLE" $'Extracao incompleta.\nO APK pode estar corrompido ou faltou espaco.'
-  exit 1
+  msgbox "DYSMANTLE" $'Extracao incompleta.\nO APK pode estar corrompido ou faltou espaco.'; exit 1
 fi
 
-# ---------- conserto de texturas (o passo decisivo p/ NAO ficar branco/lavado) ----------
-# Muitos APKs deixam os JPEG/PNG VAZIOS dentro do .pak (so o irmao .ktx ETC2 tem
-# dados) -> personagens/chao/itens BRANCOS. O fixpak decodifica o ETC2 no device e
-# preenche TODOS os slots (data.pak + data-gfx1200.pak). Roda 1x; ~1-2 min.
+# ---------- 2) FIXPAK: preenche os .jpg/.png VAZIOS (imagem REAL, anti-branco) ----------
+# Os APKs modados deixam ~643 .jpg/.png vazios (so o irmao .ktx ETC2 tem dado). O fixpak
+# decodifica o .ktx e grava o JPEG/PNG real no slot vazio -> imagem completa. As texturas
+# que ja vem reais ficam INTACTAS. (Caminho validado da v5 -- nada de placeholder.)
 echo ""
-echo ">> Consertando texturas (ETC2 -> JPEG/PNG). Pode levar 1-2 min, nao desligue..."
-pbar 82
+echo ">> Consertando texturas vazias (ETC2 -> JPEG/PNG real). ~1-2 min..."
+pbar 38
 if [ -x "$GAMEDIR/fixpak" ]; then
   LD_LIBRARY_PATH="/usr/lib:/lib:$GAMEDIR" "$GAMEDIR/fixpak" "$GAMEDIR/assets/data.pak" "$GAMEDIR/assets/data-gfx1200.pak"
-  rc=$?
-  pbar 96
-  if [ "$rc" != 0 ]; then
-    msgbox "DYSMANTLE" $'O conserto de texturas falhou.\nO jogo pode abrir com texturas brancas/lavadas.\nVeja o tools/extract.log.'
-  else
-    touch "$GAMEDIR/.textures_fixed"
-  fi
+  [ $? = 0 ] && touch "$GAMEDIR/.textures_fixed" || msgbox "DYSMANTLE" "Aviso: conserto de texturas falhou (pode haver texturas brancas)."
 else
   msgbox "DYSMANTLE" "fixpak nao encontrado -- texturas podem ficar brancas."
 fi
 sync
+pbar 55
 
+# ---------- 3) TEXBAKE: cache ETC1 offline COMPRIMIDO (nome->ETC1; sem conversao em jogo) ----------
+# Gera o cache ETC1 (so opacas; normals/specular ficam de fora) a partir dos paks. Os blobs
+# ETC1 sao COMPRIMIDOS com zlib (~50%): o cache cai de ~600MB p/ ~300MB no disco SEM perder
+# nada (o runtime infla o blob no upload). Imagem completa, sem stutter, metade do disco do
+# cache. As texturas que dao cache-miss (UI/nomes instaveis) caem no JPEG REAL (nao cinza).
+echo ""
+# escala de downscale escolhida no launcher (DYSMANTLE_TEXSCALE); default 1.3.
+SCALE="${DYSMANTLE_TEXSCALE:-1.3}"
+echo ">> Convertendo as texturas em ETC1 + downscale (escala $SCALE), UMA VEZ. Esta e a"
+echo ">> parte que mais demora, mas em troca o jogo abre LIMPO, leve e SEM travadas..."
+pbar 60
+if [ -x "$GAMEDIR/texbake" ]; then
+  LD_LIBRARY_PATH="/usr/lib:/lib:$GAMEDIR" nice -n 10 "$GAMEDIR/texbake" \
+    "$GAMEDIR/assets/data.pak" "$GAMEDIR/assets/data-gfx1200.pak" \
+    --scale "$SCALE" --sidetable "$GAMEDIR/etc1.cache"
+  if [ $? = 0 ] && [ -f "$GAMEDIR/etc1.cache" ]; then
+    echo "$SCALE" > "$GAMEDIR/.etc1_scale"; touch "$GAMEDIR/.etc1_cached"
+  else
+    msgbox "DYSMANTLE" $'Aviso: cache ETC1 falhou.\nO jogo ainda abre (converte em runtime, com mais travadas).'
+  fi
+else
+  msgbox "DYSMANTLE" "texbake nao encontrado -- o jogo converte em runtime (mais travadas)."
+fi
+sync
+pbar 95
+
+# ---------- 4) liberar espaco (apaga o APK, so apos sucesso) ----------
 echo ">> Liberando espaco (apagando o APK)..."
 rm -f "$APK"
 sync
+
+touch "$GAMEDIR/.setup_done"
+sync
 pbar 100
 echo ""
-echo "Pronto! Dados extraidos e texturas consertadas. O jogo vai iniciar."
+echo "Pronto! Texturas convertidas em ETC1. O jogo vai abrir LIMPO e enxuto."
 sleep 3
 exit 0

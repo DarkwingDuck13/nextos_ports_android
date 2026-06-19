@@ -15,21 +15,24 @@ Este pacote **não contém os dados do jogo** — você fornece o seu APK legal.
 2. Coloque o seu **APK do DYSMANTLE v1.4.1.12** (que tem
    `lib/arm64-v8a/libNativeGame.so` + a pasta `assets/` com os `data*.pak`) dentro de
    **`ports/dysmantle/`**.
-3. Abra **DYSMANTLE** na lista de Ports. Na **1ª vez** abre uma **janela de extração**
-   com **barra de %**: extrai os dados (~800 MB) e **conserta as texturas**
-   (ETC2→JPEG/PNG, ~1–2 min). Ao terminar, o APK é liberado e o **jogo inicia sozinho**.
-4. Da 2ª vez em diante abre direto no jogo.
+3. Abra **DYSMANTLE** na lista de Ports. Na **1ª vez** abre uma **janela** com **barra de
+   %** que prepara TUDO de uma vez: extrai os dados (~800 MB), **conserta as texturas**
+   (anti-branco) e **gera o cache ETC1 offline**. Essa parte **demora alguns minutos**
+   (o cache é a parte pesada), mas é **UMA vez só**. Ao terminar, o APK é liberado e o
+   **jogo abre sozinho — LIMPO**.
+4. Da 2ª vez em diante abre direto no jogo, **sem conversão nenhuma em runtime**.
 
-- **Dois binários** no pacote: `dysmantle` (glibc ≥ 2.38: NextOS/muOS/ROCKNIX/JELOS/
-  X5M) e `dysmantle.compat` (GLIBC_2.27: **ArkOS/dArkOS/R36S**). O launcher escolhe
-  sozinho pela glibc do device.
-- **Texturas:** o conserto (`fixpak`) roda na 1ª vez **e** tem rede de segurança no
-  launcher → **nunca** abre branco/lavado. Marcador: `.textures_fixed`.
+- 🧊 **Cache ETC1 OFFLINE = sem travadas (v5):** toda textura opaca é convertida pra ETC1
+  **na instalação** (`texbake`, multi-thread + `nice`); em jogo o binário só **sobe a
+  ETC1 pronta** (zero encode/decode de textura em runtime). Mapas de iluminação
+  (normals/specular) ficam RGBA8 (pra luz não quebrar). Marcador: `.etc1_cached`.
+- 🎮 **UM binário** universal: `dysmantle` (GLIBC velha, compilado no Docker) roda em
+  **qualquer aarch64** (glibc ≥ 2.27: ArkOS/R36S até NextOS/X5M/2.30+). Sem detecção.
+- **Texturas:** o `fixpak` preenche os .jpg/.png vazios na 1ª vez **e** tem rede de
+  segurança no launcher → **nunca** abre branco/lavado. Marcador: `.textures_fixed`.
 - **Controles:** gptokeyb (`dysmantle.gptk`); sticks/gatilhos analógicos direto do pad;
   D-pad = quick slots. **Sair: SELECT+START**.
 - **Vídeo/áudio:** auto-detectados (KMSDRM / mali-fbdev; ALSA/Oboe).
-- **Performance:** `DYSMANTLE_TEXSCALE` (default 1.3) no topo do `DYSMANTLE.sh` reduz as
-  texturas por um fator = mais FPS / menos memória (1.0 = qualidade total).
 
 ---
 

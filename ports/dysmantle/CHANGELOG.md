@@ -2,6 +2,65 @@
 
 ---
 
+## v5.1 — LEAN PAK (corta a duplicação de disco) + por que não dá "ETC1 puro sem cache"
+
+### 🗜️ Disco: ~metade do que as texturas gastavam
+- O progressor agora **enxuga o pak** depois de gerar o cache (`texbake --leanpak`): as
+  texturas cobertas pelo cache viram um **placeholder mínimo** (o jogo lê os pixels REAIS
+  do cache no hook — só importam as dimensões, que batem), as de alpha vêm reais, e os
+  `.ktx` ETC2 (mortos no runtime, só serviam de fonte do bake) são **dropados**. Resultado:
+  o pak deixa de **duplicar** as texturas que já estão no cache → ~200 MB a menos no device.
+- **Atômico + seguro**: se faltar espaço no disco, PRESERVA o pak e cai pro modo `fixpak`
+  (texturas reais, sem enxugar). Nunca deixa pak corrompido. O APK é apagado logo após a
+  extração (libera espaço pro bake caber).
+- Com o cache presente o launcher força `TEXSCALE=1.0` (reduzir as dims bypassaria a guarda
+  de tamanho do cache → cache-miss → encode em runtime/stutter; o ETC1 já é 4bpp).
+
+### 🧱 Por que NÃO existe "ETC1 puro sem cache" (igual SOR4)
+- O motor do DYSMANTLE é FECHADO e **escolhe o decodificador de textura pelo formato do
+  MANIFEST**, não pela extensão do arquivo. Forçar a engine a carregar `.ktx` (renomeando)
+  faz ela tratar o KTX como JPEG → `LoadBitmapInternal` falha → crash. Mesmo gerando o KTX
+  ETC1 com a cadeia de mips IDÊNTICA à original, o muro persiste (é antes do upload GL).
+- Diferente do SOR4 (onde NÓS controlamos o motor MonoGame e mandamos carregar ETC1), aqui
+  a única via é o **hook no upload** (engine carrega JPEG → trocamos por ETC1). O ETC1 PRECISA
+  morar em algum lugar que o hook leia (o "cache" = o store ETC1, equivalente ao texcache do
+  próprio SOR4). O lean pak elimina a DUPLICAÇÃO, que era o custo real de disco.
+
+---
+
+## v5 — CONVERSÃO OFFLINE NO PROGRESSOR + 1 BINÁRIO (sem conversão em jogo)
+
+> Tudo é preparado UMA VEZ na 1ª execução (janela do progressor). O jogo abre LIMPO,
+> **sem conversão de textura durante o gameplay** (sem stutter). Pacote BYO-DATA: você
+> põe o seu APK do DYSMANTLE 1.4.1.12, abre, e o progressor faz tudo sozinho.
+
+### 🧊 Cache ETC1 OFFLINE (o fim dos stutters) — estilo SOR4
+- Na 1ª execução o **`texbake`** gera um **cache ETC1** (nome→ETC1, só texturas OPACAS) a
+  partir dos paks. Em runtime o jogo **sobe a ETC1 já pronta** (lookup por nome no hook de
+  upload) → **ZERO encode/decode de textura em jogo** = sem travadas. Antes o ETC1 era
+  encodado em runtime (causava stutter ao entrar em áreas novas).
+- **`texbake` é multi-thread (cores-1) + streaming** (RAM baixa, ~60MB): NÃO acumula o
+  cache na RAM (seriam ~600MB → OOM no device de 1GB); grava em disco na hora. Roda com
+  `nice` p/ o device não "congelar" durante o bake.
+- 🌑 **Mapas de iluminação (normals/specular/heights) NÃO viram ETC1** (ficam RGBA8): ETC1
+  é lossy e correlaciona RGB → destruía a luz → chão/personagem/árvores PRETOS. Agora a
+  iluminação fica correta.
+- 🛡️ **Guarda de tamanho** no lookup do cache (só substitui se as dims batem) → não pega
+  textura errada por nome desatualizado (FBO/mip).
+
+### 🎮 1 BINÁRIO universal
+- Acabou o esquema de 2 binários. Agora **um só** `dysmantle` (GLIBC velha, compilado no
+  Docker/`debian:bullseye`) que roda em **qualquer aarch64** (glibc ≥ 2.27: ArkOS/R36S até
+  NextOS/X5M/2.30+). O launcher não detecta mais glibc.
+
+### 🪟 Progressor (1ª execução) faz TUDO
+- Extrai do APK → **fixpak** (preenche os .jpg/.png vazios = imagem completa, anti-branco)
+  → **texbake** (cache ETC1) → apaga o APK. Com barra de % na tela.
+- A geração do cache demora (é a parte pesada, ~minutos), mas é **uma vez só**; depois o
+  jogo abre direto e limpo.
+
+---
+
 ## 📋 RESUMO — o que mudou da v2 → v3 (pra quem já testou a v2)
 
 - 🪟 **Instalação com JANELA de extração + barra de %** na tela (BYO-DATA): você põe o
