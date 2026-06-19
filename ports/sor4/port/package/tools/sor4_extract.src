@@ -113,8 +113,8 @@ run_dll "$TOOLS/noopm.dll"     "$S" "platform.video_exists"
 #   apos a Fase 1 -> descarta a FUSAO (slot0 |= slot1..3) e a LIMPEZA (zera slot1..3) que o build
 #   mobile faz p/ jogar tudo no Player 1. Assim cada pad fisico vira um player e o join de P2/3/4
 #   na selecao de personagem passa a funcionar. Seguro p/ 1 player (slots 1-3 ja vem desconectados
-#   da Fase 1). Default OFF ate validar na TV com 2 controles; ligar com SOR4_COOP=1.
-if [ "${SOR4_COOP:-0}" = "1" ]; then
+#   da Fase 1). VALIDADO (Axel P1 + Blaze P2 na fase) -> default ON; desligar com SOR4_COOP=0.
+if [ "${SOR4_COOP:-1}" = "1" ]; then
   run_dll "$TOOLS/coopsplit.dll" "$S"
 fi
 rm -f "$GAMEDIR/SOR4.dll"
