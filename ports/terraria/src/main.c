@@ -3167,11 +3167,10 @@ static void ter_menu_nav(void) {
     if (!logged++) { fprintf(stderr, "[GAME] gameplay livre: menu nav OFF\n"); fsync(2); }
     g_girm_ovr=0; g_fcmode=0; return;
   }
-  /* 🎒 SO age quando ha UI IN-GAME (bolsa/criacao/opcoes/mapa) aberta DENTRO do mundo. No menu
-     principal e telas fora do mundo, o cursor NATIVO de gamepad cuida -> NAO sobrepor (senao
-     conflita com o cursor nativo que ja funciona). A nav nativa de item da bolsa nao avança
-     neste build mobile, entao aqui movemos o cursor entre os slots reais (regioes) pelo D-pad. */
-  if (!ter_gameplay_active()) { g_girm_ovr = 0; g_fcmode = 0; return; }
+  /* 🎮 Age em TODA tela de menu/lista (menu principal, JOGADORES, mundos, bolsa, CRIAÇÃO,
+     opções, mapa) — NÃO no gameplay livre (acima). A nav nativa de item/lista não avança neste
+     build mobile, então o D-pad move o cursor entre os itens/slots/botões REAIS (regiões do
+     GUIInputRegionManager) e A confirma. Cobre as telas que o cursor nativo sozinho não navega. */
   if (g_fcmode) {
     g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;
     g_cursor_x = g_fcx; g_cursor_y = g_fcy;
@@ -3179,9 +3178,9 @@ static void ter_menu_nav(void) {
   }
   void *g = ter_girm_instance(); if (!g) { g_girm_ovr=0; g_fcmode=0; return; }
   int nr=*(int*)((char*)g+0x40); void*arr=*(void**)((char*)g+0x48);
-  if(!arr||nr<=0||nr>32){ g_girm_ovr=0; g_fcmode=0; return; }
-  int cx[32], cy[32], order[32], n=0;
-  for(int r=0;r<nr&&r<32;r++){ int*b=(int*)((char*)arr+0x20+r*16);
+  if(!arr||nr<=0||nr>256){ g_girm_ovr=0; g_fcmode=0; return; }   /* 256: grade cheia da bolsa/criacao */
+  int cx[256], cy[256], order[256], n=0;
+  for(int r=0;r<nr&&r<256;r++){ int*b=(int*)((char*)arr+0x20+r*16);
     int ccx=(b[0]+b[1])/2, ccy=(b[2]+b[3])/2;
     if(ccy<100) continue;   /* pula regiões da barra do topo (ex: ícone canto sup-dir 848,27) */
     cx[n]=ccx; cy[n]=ccy; order[n]=n; n++; }
@@ -3191,13 +3190,13 @@ static void ter_menu_nav(void) {
     for(int i=0;i<n;i++) fprintf(stderr,"   [%d] (%d,%d)\n",i,cx[order[i]],cy[order[i]]); fsync(2);} }
   extern float g_cursor_x,g_cursor_y;
   /* dedupe regiões quase-coincidentes (ex: 446/447 no mesmo y viram uma) */
-  int dcx[32], dcy[32], dn2=0;
+  int dcx[256], dcy[256], dn2=0;
   for(int i=0;i<n;i++){ int X=cx[order[i]],Y=cy[order[i]],dup=0;
     for(int k=0;k<dn2;k++) if(abs(dcx[k]-X)<=10 && abs(dcy[k]-Y)<=12){ dup=1; break; }
     if(!dup){ dcx[dn2]=X; dcy[dn2]=Y; dn2++; } }
   if(dn2<=0){ g_girm_ovr=0; return; }
   /* agrupa em LINHAS por Y (≤22px = mesma linha). dcx/dcy já vêm ordenados por (y,x). */
-  int rowStart[32], rowLen[32], nrows=0;
+  int rowStart[256], rowLen[256], nrows=0;
   for(int i=0;i<dn2;){ int j=i+1; while(j<dn2 && dcy[j]-dcy[i]<=22) j++; rowStart[nrows]=i; rowLen[nrows]=j-i; nrows++; i=j; }
   /* Navegacao por grade: cima/baixo troca linha, esquerda/direita troca item na
      mesma linha. Isso deixa a linha Voltar/Aleatorio/Criar acessivel sem depender
