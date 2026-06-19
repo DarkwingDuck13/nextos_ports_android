@@ -1776,14 +1776,28 @@ static void ter_gamepad_poll(void) {
     if (!sdl_tried) {
       sdl_tried = 1;
       SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS);
+      /* 🎮 Mapeamento conhecido-bom p/ o adaptador genérico "USB Gamepad" (vendor 0810 / prod 0001,
+         "Twin USB PS2 Adapter"): o mapa EMBUTIDO do SDL p/ esse adaptador erra o eixo Y do stick
+         DIREITO -> cursor "só horizontal". A entrada do gamecontrollerdb da comunidade põe o stick
+         direito em rightx:a3 (ABS_RZ) / righty:a2 (ABS_Z) -> cursor 2D. Override por GUID só afeta
+         este controle; outros pads usam o mapa normal. NextOS pode sobrepor: TER_GP_MAP="<string>".
+         Se ainda errar, TER_GP_RAWJS=1 usa o js0 cru (TER_GP_RX=2 TER_GP_RY=3 TER_GP_AXDX=4 AXDY=5). */
+      const char *usermap = getenv("TER_GP_MAP");
+      SDL_GameControllerAddMapping(usermap && *usermap ? usermap :
+        "0300605b100800000100000010010000,USB Gamepad,platform:Linux,"
+        "a:b1,b:b2,x:b0,y:b3,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,"
+        "back:b8,start:b9,leftstick:b10,rightstick:b11,leftx:a0,lefty:a1,rightx:a3,righty:a2,"
+        "dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,");
       int n = SDL_NumJoysticks();
       fprintf(stderr, "[TGP] SDL_NumJoysticks=%d\n", n); fsync(2);
       for (int i = 0; i < n; i++) {
         if (!SDL_IsGameController(i)) continue;
         gc = SDL_GameControllerOpen(i);
         if (gc) {
+          char *mp = SDL_GameControllerMapping(gc);
           fprintf(stderr, "[TGP] Xbox layout via SDL_GameController js%d: %s\n",
                   i, SDL_GameControllerName(gc) ? SDL_GameControllerName(gc) : "?");
+          if (mp) { fprintf(stderr, "[TGP] mapping=%s\n", mp); SDL_free(mp); }
           fsync(2);
           break;
         }
