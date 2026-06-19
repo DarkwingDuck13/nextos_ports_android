@@ -22,9 +22,9 @@ dotnet $T/noopm/bin/noopm.dll "$OUT" \
 if [ "$2" = "--skipvideo" ] || [ "$1" = "--skipvideo" ]; then
   dotnet $T/noopm/bin/noopm.dll "$OUT" "platform.video_exists"
 fi
-# CO-OP LOCAL 2/3/4P (opt-in SOR4_COOP=1): trunca update_game_pad_state_array apos a Fase 1
-# (descarta fusao slot0|=slot1..3 + limpeza slot1..3) -> cada pad fisico = 1 player. Seguro p/ 1P.
-if [ "${SOR4_COOP:-0}" = "1" ]; then
+# CO-OP LOCAL 2/3/4P (default ON, desliga com SOR4_COOP=0): trunca update_game_pad_state_array
+# apos a Fase 1 + fia o handler de join -> cada pad fisico = 1 player. Validado; seguro p/ 1P.
+if [ "${SOR4_COOP:-1}" = "1" ]; then
   dotnet $T/coopsplit/bin/coopsplit.dll "$OUT"
 fi
 echo "OK -> $OUT"
