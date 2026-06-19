@@ -1813,15 +1813,13 @@ static void ter_gamepad_poll(void) {
       short rt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
       g_lt_analog = lt > 0 ? lt / 32767.0f : 0.0f;
       g_rt_analog = rt > 0 ? rt / 32767.0f : 0.0f;
-      int TH = 16000;
-      g_gp_log[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP) ||
-                    g_gp_axis[1] < -TH;
-      g_gp_log[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
-                    g_gp_axis[1] > TH;
-      g_gp_log[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT) ||
-                    g_gp_axis[0] < -TH;
-      g_gp_log[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ||
-                    g_gp_axis[0] > TH;
+      /* g_gp_log[0..3] = D-pad PURO. NAO misturar o analogico esquerdo aqui: senao o stick
+         vira "navegacao" e o D-pad vira "movimento" -> conflito que travava a bolsa/criacao.
+         Stick esquerdo fica em g_gp_axis[0]/[1] (movimento do personagem); D-pad = nav de UI. */
+      g_gp_log[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP);
+      g_gp_log[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+      g_gp_log[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+      g_gp_log[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
       g_gp_log[4] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
       g_gp_log[5] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B);
       g_gp_log[6] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
@@ -1858,10 +1856,11 @@ static void ter_gamepad_poll(void) {
       int bX=getenv("TER_GP_X")?atoi(getenv("TER_GP_X")):2, bY=getenv("TER_GP_Y")?atoi(getenv("TER_GP_Y")):3;
       int bL=getenv("TER_GP_L1")?atoi(getenv("TER_GP_L1")):4, bR=getenv("TER_GP_R1")?atoi(getenv("TER_GP_R1")):5;
       int bSe=getenv("TER_GP_SEL")?atoi(getenv("TER_GP_SEL")):6, bSt=getenv("TER_GP_ST")?atoi(getenv("TER_GP_ST")):7;
-      g_gp_log[0] = (g_gp_axis[axDY] < -TH) || (g_gp_axis[1] < -TH) || g_gp_btn[12] ? 1:0;
-      g_gp_log[1] = (g_gp_axis[axDY] >  TH) || (g_gp_axis[1] >  TH) || g_gp_btn[13] ? 1:0;
-      g_gp_log[2] = (g_gp_axis[axDX] < -TH) || (g_gp_axis[0] < -TH) || g_gp_btn[14] ? 1:0;
-      g_gp_log[3] = (g_gp_axis[axDX] >  TH) || (g_gp_axis[0] >  TH) || g_gp_btn[15] ? 1:0;
+      /* D-pad PURO (hat + botoes dpad); NAO misturar o analogico esq (axis 0/1 = movimento). */
+      g_gp_log[0] = (g_gp_axis[axDY] < -TH) || g_gp_btn[12] ? 1:0;
+      g_gp_log[1] = (g_gp_axis[axDY] >  TH) || g_gp_btn[13] ? 1:0;
+      g_gp_log[2] = (g_gp_axis[axDX] < -TH) || g_gp_btn[14] ? 1:0;
+      g_gp_log[3] = (g_gp_axis[axDX] >  TH) || g_gp_btn[15] ? 1:0;
       g_gp_log[4] = g_gp_btn[bA]; g_gp_log[5] = g_gp_btn[bB];
       g_gp_log[6] = g_gp_btn[bX]; g_gp_log[7] = g_gp_btn[bY];
       g_gp_log[8] = g_gp_btn[bSt]; g_gp_log[9] = g_gp_btn[bSe];
@@ -2610,8 +2609,8 @@ TerGPS my_gamepad_getstate(int index, void *mi) {
   if (ter_vkbd_blocking()) return s;
   int gameplay = ter_gameplay_active();
   unsigned int b = 0;
-  if (g_gp_log[4]) b |= 0x1000;   /* A */
-  if (g_gp_log[5]) b |= 0x2000;   /* B */
+  if (getenv("TER_SWAPAB") ? g_gp_log[5] : g_gp_log[4]) b |= 0x1000;   /* A (TER_SWAPAB troca A<->B) */
+  if (getenv("TER_SWAPAB") ? g_gp_log[4] : g_gp_log[5]) b |= 0x2000;   /* B */
   if (g_gp_log[6]) b |= 0x4000;   /* X: pulo nativo; ataque fica no R1/RB */
   if (g_gp_log[7]) b |= 0x8000;   /* Y */
   if (g_gp_log[8]) b |= 0x10;     /* Start */
@@ -3262,8 +3261,11 @@ static void ter_ctrl_feed(void) {
   /* 🎮 mapeamento XBOX COMPLETO -> Controller.Buttons do InControl
      {Action1=0,Action2=1,Action3=2,Action4=3,ShoulderL=4,ShoulderR=5,LTrig=6,RTrig=7,
       Options=8,Switch=9,StickL=10,StickR=11,Back=12} */
-  g_inj_btn[0]=g_gp_log[4];   /* Action1     = A (confirma)   */
-  g_inj_btn[1]=g_gp_log[5];   /* Action2     = B (volta)      */
+  /* TER_SWAPAB: troca A<->B (NextOS pediu). A=Action1(confirma), B=Action2(volta). */
+  int physA = getenv("TER_SWAPAB") ? g_gp_log[5] : g_gp_log[4];
+  int physB = getenv("TER_SWAPAB") ? g_gp_log[4] : g_gp_log[5];
+  g_inj_btn[0]=physA;         /* Action1     = A (confirma)   */
+  g_inj_btn[1]=physB;         /* Action2     = B (volta)      */
   g_inj_btn[2]=gameplay ? 0 : g_gp_log[6];   /* X nao entra no caminho de ataque no gameplay */
   g_inj_btn[3]=g_gp_log[7];   /* Action4     = Y             */
   g_inj_btn[4]=g_gp_log[10];  /* ShoulderL   = LB            */
@@ -3285,10 +3287,13 @@ static void ter_ctrl_feed(void) {
   int rxa=getenv("TER_GP_RX")?atoi(getenv("TER_GP_RX")):3, rya=getenv("TER_GP_RY")?atoi(getenv("TER_GP_RY")):4;
   float alx=g_gp_axis[lxa]/32768.0f, aly=g_gp_axis[lya]/32768.0f;
   float arx=g_gp_axis[rxa]/32768.0f, ary=g_gp_axis[rya]/32768.0f;
-  g_inj_axis[0] = (alx>0.12f||alx<-0.12f) ? alx*cs : x;   /* LeftX  (analógico ou dpad) */
-  g_inj_axis[1] = (aly>0.12f||aly<-0.12f) ? aly*cs : y;   /* LeftY */
-  g_inj_axis[2] = arx*cs; g_inj_axis[3] = ary*cs;          /* RightX/Y (cursor) escalado */
-  g_inj_axis[4]=x; g_inj_axis[5]=y;                        /* DPadX/Y digital (navegação) */
+  /* 🕹️ SEPARADO (fix do conflito que travava bolsa/criação): o analogico ESQUERDO move SO o
+     personagem (LeftX/Y, escala CHEIA, sem cair no D-pad); o D-pad move SO a navegacao de UI
+     (DPadX/Y), sem mexer no personagem. O analogico DIREITO e a mira (cursor) escalada. */
+  g_inj_axis[0] = (alx>0.12f||alx<-0.12f) ? alx : 0.0f;   /* LeftX  = SO analogico esq (movimento) */
+  g_inj_axis[1] = (aly>0.12f||aly<-0.12f) ? aly : 0.0f;   /* LeftY */
+  g_inj_axis[2] = arx*cs; g_inj_axis[3] = ary*cs;          /* RightX/Y = mira (cursor) escalada */
+  g_inj_axis[4]=x; g_inj_axis[5]=y;                        /* DPadX/Y = SO D-pad (nav UI/inventario) */
   /* LTrig/RTrig: dirige o EIXO analógico E o botão. Se o gatilho está digitalmente "pressionado"
      (g_gp_log[12]/[13], inclui o input virtual e o threshold do gatilho real), força o eixo a 1.0;
      senão usa o valor analógico cru. Cobre tanto o jogo lendo trigger-como-eixo (GetAxisRaw 6/7,
