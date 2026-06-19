@@ -3167,10 +3167,12 @@ static void ter_menu_nav(void) {
     if (!logged++) { fprintf(stderr, "[GAME] gameplay livre: menu nav OFF\n"); fsync(2); }
     g_girm_ovr=0; g_fcmode=0; return;
   }
-  /* 🎮 Age em TODA tela de menu/lista (menu principal, JOGADORES, mundos, bolsa, CRIAÇÃO,
-     opções, mapa) — NÃO no gameplay livre (acima). A nav nativa de item/lista não avança neste
-     build mobile, então o D-pad move o cursor entre os itens/slots/botões REAIS (regiões do
-     GUIInputRegionManager) e A confirma. Cobre as telas que o cursor nativo sozinho não navega. */
+  /* 🎒 NO GAMEPLAY (mundo) — inclusive com a BOLSA/inventário aberto — NÃO sobrepor o cursor.
+     A bolsa expõe só 1 "região" (os slots NÃO são regiões do GUIInputRegionManager), então a
+     region-nav CONGELAVA o cursor nessa única região. Aqui deixamos o cursor NATIVO do jogo
+     (movido pelo D-pad/stick) agir livre sobre os slots. A region-nav só vale para telas de
+     MENU/lista FORA do mundo (principal, jogadores, mundos), onde os itens são regiões reais. */
+  if (ter_gameplay_active()) { g_girm_ovr = 0; g_fcmode = 0; return; }
   if (g_fcmode) {
     g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;
     g_cursor_x = g_fcx; g_cursor_y = g_fcy;
@@ -3274,10 +3276,13 @@ static void ter_ctrl_feed(void) {
   g_inj_btn[1]=physB;         /* Action2     = B (volta)      */
   g_inj_btn[2]=gameplay ? 0 : g_gp_log[6];   /* X nao entra no caminho de ataque no gameplay */
   g_inj_btn[3]=g_gp_log[7];   /* Action4     = Y             */
-  g_inj_btn[4]=g_gp_log[10];  /* ShoulderL   = LB            */
-  g_inj_btn[5]=g_gp_log[11];  /* ShoulderR   = RB            */
-  g_inj_btn[6]=g_gp_log[12];  /* LTrig       = LT (>30%)     */
-  g_inj_btn[7]=g_gp_log[13];  /* RTrig = RT: troca de item nativa, nao atacar */
+  /* TER_SWAPLR: inverte L1<->L2 e R1<->R2 (NextOS pediu; pode tirar a dupla-funcao do R1). */
+  int l1=g_gp_log[10], r1=g_gp_log[11], l2=g_gp_log[12], r2=g_gp_log[13];
+  if (getenv("TER_SWAPLR")) { int t; t=l1; l1=l2; l2=t; t=r1; r1=r2; r2=t; }
+  g_inj_btn[4]=l1;            /* ShoulderL   = L1 (trocavel)  */
+  g_inj_btn[5]=r1;            /* ShoulderR   = R1 (trocavel)  */
+  g_inj_btn[6]=l2;            /* LTrig       = L2 (trocavel)  */
+  g_inj_btn[7]=r2;            /* RTrig       = R2 (trocavel)  */
   g_inj_btn[8]=g_gp_log[8];   /* Options     = Start         */
   g_inj_btn[10]=g_gp_log[14]; /* StickL      = L3            */
   g_inj_btn[11]=g_gp_log[15]; /* StickR      = R3            */
