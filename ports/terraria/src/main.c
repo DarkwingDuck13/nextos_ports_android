@@ -2716,8 +2716,10 @@ static void ter_ctrl_patch(void) {
     mprotect(pa,pgsz*2,PROT_READ|PROT_EXEC); __builtin___clear_cache((char*)pa,(char*)pa+16);
     fprintf(stderr,"[GPAD] GamePad.GetState @0xe114ac substituido (controle nativo)\n"); fsync(2);
   }
-  /* hook de SetMousePosition (cbf18c) p/ o cursor do menu seguir nossa posição (TER_GIRM) */
-  if (getenv("TER_GIRM")) {
+  /* hook de SetMousePosition (cbf18c): só sobrepõe o cursor quando g_girm_ovr=1 (UI in-game da
+     bolsa/criação, setado por ter_menu_nav); senão passa direto (trampolim) -> menu/gameplay
+     ficam com o cursor NATIVO. Instala no build nativo (TER_CTRL) e no modo de teste (TER_GIRM). */
+  if (getenv("TER_CTRL") || getenv("TER_GIRM")) {
     if (ter_install_hook4(0xcbf18c, (void*)my_setmousepos, (void**)&g_orig_setmp))
       fprintf(stderr,"[CTRL] SetMousePosition hookado\n"); fsync(2);
   }
@@ -3165,6 +3167,11 @@ static void ter_menu_nav(void) {
     if (!logged++) { fprintf(stderr, "[GAME] gameplay livre: menu nav OFF\n"); fsync(2); }
     g_girm_ovr=0; g_fcmode=0; return;
   }
+  /* 🎒 SO age quando ha UI IN-GAME (bolsa/criacao/opcoes/mapa) aberta DENTRO do mundo. No menu
+     principal e telas fora do mundo, o cursor NATIVO de gamepad cuida -> NAO sobrepor (senao
+     conflita com o cursor nativo que ja funciona). A nav nativa de item da bolsa nao avança
+     neste build mobile, entao aqui movemos o cursor entre os slots reais (regioes) pelo D-pad. */
+  if (!ter_gameplay_active()) { g_girm_ovr = 0; g_fcmode = 0; return; }
   if (g_fcmode) {
     g_girm_mx = (int)g_fcx; g_girm_my = (int)g_fcy; g_girm_ovr = 1;
     g_cursor_x = g_fcx; g_cursor_y = g_fcy;
@@ -3400,6 +3407,8 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
      pelos hooks instalados por ter_ctrl_patch. */
   ter_ctrl_patch();
   ter_ctrl_feed();
+  ter_menu_nav();   /* 🎒 SÓ age na UI in-game (bolsa/criação/opções/mapa): D-pad move o cursor
+                       entre os slots reais via SetMousePosition. Menu principal + gameplay = nativo. */
   if (getenv("TER_MENU")) ter_menu_nuke_updateinput();  /* p/ não clobberar Main.mouse* */
   ter_menu_drive();     /* TER_MENU/TER_MENULOG: dirige/observa Main.mouseX/Y/Left/hasFocus */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
