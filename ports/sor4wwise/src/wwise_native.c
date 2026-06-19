@@ -18,6 +18,9 @@
 #include <sys/auxv.h>
 #include <link.h>
 #include <pthread.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <ucontext.h>
 #include "so_util.h"
 extern void opensles_shim_pump_callbacks(void);   // opensles_shim.c: dispara o BufferQueue cb da Wwise
 // audioout.c — saida de audio CUSTOM (hibrido): SFX via manifest, musica via wem streamed
@@ -47,6 +50,14 @@ extern char __sF[];   // bionic_shims.c: char __sF[3*512]
 static void wlog(const char* s){
   const char* lp=getenv("WWISE_LOG"); if(!lp||!*lp) lp="/storage/roms/sor4-test/wwise.log";
   FILE* f=fopen(lp,"a"); if(f){fprintf(f,"%s\n",s); fclose(f);}
+}
+// Log VERBOSO por-evento de audio (set_switch/set_state): no gameplay roda
+// milhares de vezes -> ~15k linhas/sessao + fopen por chamada. Gateado por
+// SOR4_NATLOG=1 (default off); os markers de init seguem sempre via wlog().
+static int wlog_verbose(void){
+  static int v=-1;
+  if(v<0){ const char* e=getenv("SOR4_NATLOG"); v=(e&&e[0]=='1')?1:0; }
+  return v;
 }
 
 // ---------------- __sF (bionic stdio std streams) ----------------
@@ -188,6 +199,33 @@ static int g_init_ok=0;   // so encaminha aos trampolins se a init REAL deu cert
 typedef int  (*fn_init_t)(const char*);
 typedef void (*fn_void_t)(void);
 
+/* Crash-handler diagnostico TARDIO (opt-in WWISE_CRASHLOG=1): instalado DEPOIS da init do
+ * Wwise/.NET p/ capturar o backtrace NATIVO do SIGSEGV (em stderr->log.txt) antes de morrer.
+ * async-safe (so write/backtrace_symbols_fd), alt-stack proprio. So p/ diagnostico. */
+static volatile int g_in_crash = 0;
+static void wwise_crash_handler(int sig, siginfo_t* info, void* uc){
+  if(g_in_crash) _exit(128+sig); g_in_crash=1;
+  ucontext_t* u=(ucontext_t*)uc; uintptr_t pcv=0;
+#if defined(__aarch64__)
+  if(u) pcv=(uintptr_t)u->uc_mcontext.pc;
+#endif
+  char hdr[160]; int n=snprintf(hdr,sizeof(hdr),"\n[WWISE-CRASH] sig=%d addr=%p pc=%p\n",
+    sig, info?info->si_addr:(void*)0, (void*)pcv);
+  (void)!write(2,hdr,n);
+  void* bt[64]; int nb=backtrace(bt,64);
+  backtrace_symbols_fd(bt,nb,2);
+  _exit(128+sig);
+}
+static void install_wwise_crash_handler(void){
+  if(!getenv("WWISE_CRASHLOG")) return;
+  static char altstk[262144];
+  stack_t ss; ss.ss_sp=altstk; ss.ss_size=sizeof altstk; ss.ss_flags=0; sigaltstack(&ss,NULL);
+  struct sigaction sa; memset(&sa,0,sizeof sa);
+  sa.sa_sigaction=wwise_crash_handler; sa.sa_flags=SA_SIGINFO|SA_ONSTACK; sigemptyset(&sa.sa_mask);
+  sigaction(SIGSEGV,&sa,NULL); sigaction(SIGBUS,&sa,NULL); sigaction(SIGABRT,&sa,NULL);
+  wlog("[wwise-native] crash-handler diagnostico instalado (WWISE_CRASHLOG=1)");
+}
+
 static void load_real(void){
   if(g_loaded) return;
   const char* path=getenv("WWISE_REAL"); if(!path||!*path) path=WWISE_REAL;
@@ -231,6 +269,7 @@ static void load_real(void){
   if(jol){ int v=((int(*)(void*,void*))jol)(g_fake_vm,NULL); char b[64]; snprintf(b,sizeof(b),"[wwise-native] JNI_OnLoad=%d",v); wlog(b); }
   uintptr_t pre=so_find_addr("native_android_preinit");
   if(pre){ ((long(*)(void*))pre)((void*)0x1000); wlog("[wwise-native] native_android_preinit(fake activity) chamado"); }
+  install_wwise_crash_handler();   /* TARDIO: depois do Wwise init (opt-in WWISE_CRASHLOG=1) */
   { const char* gp=getenv("WWISE_GDB"); if(gp&&*gp){ int s=atoi(gp); if(s<=0)s=40; so_make_text_writable(); char b[120]; snprintf(b,sizeof(b),"[wwise-native] PAUSANDO %ds p/ gdb (pid=%d text_base=%p)...",s,(int)getpid(),text_base); wlog(b); sleep(s); wlog("[wwise-native] resumindo"); } }
 }
 
@@ -307,8 +346,8 @@ int native_wwise_post_event_with_id(const char* e,uint64_t o){ if(!g_init_ok)ret
 int native_wwise_post_trigger_with_id(const char* t,uint64_t o){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_post_trigger_with_id"); return a?((int(*)(const char*,uint64_t))a)(t,o):0; }
 void native_wwise_register_gameobject_with_id(uint64_t id){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id"); if(a)((void(*)(uint64_t))a)(id); }
 void native_wwise_register_gameobject_with_id_and_name(uint64_t id,const char* n){ if(!g_init_ok)return; uintptr_t a=so_find_addr("native_wwise_register_gameobject_with_id_and_name"); if(a)((void(*)(uint64_t,const char*))a)(id,n); }
-void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_init_ok)return; { char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_switch grp='%s' sw='%s' obj=%llu",g?g:"",s?s:"",(unsigned long long)o); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
-void native_wwise_set_state(const char* g,const char* s){ if(!g_init_ok)return; { char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_state grp='%s' state='%s'",g?g:"",s?s:""); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
+void native_wwise_set_switch(const char* g,const char* s,uint64_t o){ if(!g_init_ok)return; if(wlog_verbose()){ char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_switch grp='%s' sw='%s' obj=%llu",g?g:"",s?s:"",(unsigned long long)o); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_switch"); if(a)((void(*)(const char*,const char*,uint64_t))a)(g,s,o); }
+void native_wwise_set_state(const char* g,const char* s){ if(!g_init_ok)return; if(wlog_verbose()){ char b[200]; snprintf(b,sizeof(b),"[wwise-native] set_state grp='%s' state='%s'",g?g:"",s?s:""); wlog(b);} uintptr_t a=so_find_addr("native_wwise_set_state"); if(a)((void(*)(const char*,const char*))a)(g,s); }
 int native_wwise_set_listener_position(void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_listener_position"); return a?((int(*)(void*))a)(v):0; }
 int native_wwise_set_gameobject_position(uint64_t o,void* v){ if(!g_init_ok)return 0; uintptr_t a=so_find_addr("native_wwise_set_gameobject_position"); return a?((int(*)(uint64_t,void*))a)(o,v):0; }
 // ---- volume forcado (RTPC MusicVolume/SfxVolume) ----

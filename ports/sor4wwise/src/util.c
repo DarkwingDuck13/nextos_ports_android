@@ -7,13 +7,29 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "util.h"
 
 #define LOG_NAME "debug.log"
 
+/* SOR4/Mali-450: o log nativo (jni_shim/so_util/...) era escrito a CADA chamada
+ * (fopen+vprintf), gerando ~centenas de linhas/sessao + custo de I/O sincrono.
+ * Agora GATEADO por env: silencioso por padrao, liga com WWISE_LOG=1 quando
+ * precisar diagnosticar (SOR4_NATLOG=1; mesmo padrao do SOR4_MGLOG no .NET). */
+static int dbg_on(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("SOR4_NATLOG");
+    v = (e && e[0] == '1') ? 1 : 0;
+  }
+  return v;
+}
+
 int debugPrintf(const char *text, ...) {
   va_list list;
+
+  if (!dbg_on()) return 0;
 
   FILE *f = fopen(LOG_NAME, "a");
   if (f) {

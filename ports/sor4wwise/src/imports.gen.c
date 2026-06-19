@@ -72,9 +72,14 @@ extern long sem_init_fake();
 extern long sem_post_fake();
 extern long sem_wait_fake();
 
+/* sigaction ABI bionic->glibc (bionic_shims.c): rotear o sigaction do Wwise pela nossa shim
+ * conserta o ABI (32B bionic vs 152B glibc; oldact estourava a stack do caller) E permite o
+ * gate CUP_NOSIGH impedir o Wwise de clobberar o handler de SIGSEGV do .NET CoreCLR. */
+extern int my_sigaction(int sig, const void *act, void *oldact);
 
 // === passthrough/pthread/shim: ligados automaticamente ===
 DynLibFunction dynlib_functions[] = {
+  {"sigaction", (uintptr_t)&my_sigaction},  // ABI bionic->glibc + gate CUP_NOSIGH (fix crash do save)
   {"abort", (uintptr_t)&abort},  // pass
   // TODO {"acosf", (uintptr_t)&stub_acosf},  // <<< IMPLEMENTAR
   // TODO {"android_set_abort_message", (uintptr_t)&stub_android_set_abort_message},  // <<< IMPLEMENTAR

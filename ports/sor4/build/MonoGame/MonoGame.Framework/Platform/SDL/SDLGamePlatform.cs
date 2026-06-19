@@ -154,7 +154,7 @@ namespace Microsoft.Xna.Framework
                         Game.Exit();
                         break;
                     case Sdl.EventType.JoyDeviceAdded:
-                        System.Console.Error.WriteLine("[PAD] JoyDeviceAdded -> AddDevices");
+                        MonoGame.MgDbg.Log("[PAD] JoyDeviceAdded -> AddDevices");
                         Joystick.AddDevices();
                         break;
                     case Sdl.EventType.JoyDeviceRemoved:
