@@ -1,11 +1,12 @@
 using System; using System.Linq; using System.Collections.Generic;
 using Mono.Cecil; using Mono.Cecil.Cil;
 // skipcall <dll> <Method|Type.Method> <CalleeName>
-//   Substitui por NOP a chamada (call/callvirt) a <CalleeName> DENTRO de <Method>.
-//   Usado p/ remover o save_save_game REDUNDANTE no startup (program.initialize) -- esse
-//   save dispara serialize/GC do .NET bem na init do libWwise so-loader -> race de sinais
-//   (SIGSEGV) -> crash. Os saves de fim-de-fase (depois da init do audio) seguem funcionando.
-//   So funciona se o call alvo for parametros-neutros no stack (save_save_game() = void sem args).
+//   Remove a chamada (call/callvirt) a <CalleeName> DENTRO de <Method> BALANCEANDO a pilha.
+//   Usado p/ tirar o save_save_game REDUNDANTE do startup (program.initialize) sem disparar o
+//   save (que crasha na init do audio). 🔑 O NOP simples (versao antiga) deixava o 'this' + args
+//   na pilha -> corrompia o metodo 'initialize' -> QUEBRAVA o setup de input do jogo (controle
+//   morto no "TAP ANYWHERE"). Agora troca o 'call' por N 'pop' (N = nargs + this) e empurra um
+//   default se o retorno for usado -> stack balanceada -> initialize integro -> input OK.
 class SkipCall {
   static void Main(string[] a){
     var asm=AssemblyDefinition.ReadAssembly(a[0], new ReaderParameters{ReadWrite=true});
@@ -16,8 +17,21 @@ class SkipCall {
       var il=m.Body.GetILProcessor();
       foreach(var ins in m.Body.Instructions.ToList()){
         if((ins.OpCode==OpCodes.Call||ins.OpCode==OpCodes.Callvirt) && ins.Operand is MethodReference mr && mr.Name==callee){
-          il.Replace(ins, il.Create(OpCodes.Nop));
-          n++; Console.WriteLine("skipcall: "+t.FullName+"."+m.Name+" -> NOP call "+mr.Name);
+          int npop = mr.Parameters.Count + (mr.HasThis ? 1 : 0);
+          var repl = new List<Instruction>();
+          for(int i=0;i<npop;i++) repl.Add(il.Create(OpCodes.Pop));
+          var rt = mr.ReturnType; string rn = rt.FullName;
+          if(rn != "System.Void"){
+            if(rn=="System.Single") repl.Add(il.Create(OpCodes.Ldc_R4, 0f));
+            else if(rn=="System.Double") repl.Add(il.Create(OpCodes.Ldc_R8, 0d));
+            else if(rn=="System.Int64"||rn=="System.UInt64") repl.Add(il.Create(OpCodes.Ldc_I8, 0L));
+            else if(rt.IsValueType) repl.Add(il.Create(OpCodes.Ldc_I4_0)); // int/bool/etc
+            else repl.Add(il.Create(OpCodes.Ldnull));                       // ref
+          }
+          if(repl.Count==0) repl.Add(il.Create(OpCodes.Nop));
+          il.Replace(ins, repl[0]);
+          for(int i=1;i<repl.Count;i++) il.InsertAfter(repl[i-1], repl[i]);
+          n++; Console.WriteLine("skipcall: "+t.FullName+"."+m.Name+" -> "+callee+" (pop x"+npop+", hasThis="+mr.HasThis+", args="+mr.Parameters.Count+", ret="+rn+")");
         }
       }
     }

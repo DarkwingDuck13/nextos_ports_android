@@ -79,9 +79,24 @@ if [ ! -f "$PKG/SOR4.dll" ] || [ ! -d "$GAMEDIR/gameassets" ] || [ ! -f "$GAMEDI
 fi
 
 # ---------- ambiente (SO AGORA, DEPOIS do progressor -- p/ o JOGO) ----------
-# NUNCA setar SDL_VIDEODRIVER nem SDL_AUDIODRIVER -- o SDL2 do device AUTO-DETECTA o
-# backend (mali/fbdev + pulse/pipewire/alsa). O jogo usa o libSDL2 do PACOTE ($PKG/libs).
-export LD_LIBRARY_PATH="$PKG/libs:/usr/lib:/lib"
+# NUNCA setar SDL_VIDEODRIVER nem SDL_AUDIODRIVER -- o SDL do device AUTO-DETECTA o backend.
+#
+# SDL BACKEND com FALLBACK (portabilidade entre devices):
+#  - O MonoGame fala a API do SDL2. Empacotamos um sdl2-compat (libSDL2 -> dlopen SDL3) em
+#    $PKG/sdl3compat/, necessario em devices cujo SDL2 do SISTEMA nao tem driver de video do
+#    device (ex: nosso Mali-450: o SDL2 do sistema so tem x11/kmsdrm/wayland, sem mali/fbdev;
+#    so o SDL3 tem o driver mali). Mas a MAIORIA dos devices PortMaster tem SDL2 do sistema
+#    COM o driver deles (kmsdrm) e NAO tem SDL3 -> nesses, forcar o sdl2-compat quebra
+#    ("Failed loading SDL3 library").
+#  FALLBACK: so prependa o sdl2-compat se o device TIVER SDL3; senao usa o SDL2 REAL do sistema.
+SDL3COMPAT=""
+if [ -e /usr/lib/libSDL3.so.0 ] || [ -e /lib/libSDL3.so.0 ] || ldconfig -p 2>/dev/null | grep -q 'libSDL3\.so\.0'; then
+  SDL3COMPAT="$PKG/sdl3compat:"
+  echo "[sdl] SDL3 detectado -> usando sdl2-compat (bridge SDL2->SDL3)"
+else
+  echo "[sdl] sem SDL3 -> usando SDL2 do sistema (driver de video do proprio device)"
+fi
+export LD_LIBRARY_PATH="${SDL3COMPAT}$PKG/libs:/usr/lib:/lib"
 export SDL_NO_SIGNAL_HANDLERS=1          # OBRIGATORIO (SDL rouba SIGSEGV do CoreCLR)
 export DOTNET_EnableWriteXorExecute=0
 export DOTNET_gcServer=0
@@ -98,6 +113,11 @@ mkdir -p "$HOME" 2>/dev/null
 # real e DISPARA as transicoes interativas (selecao/loading -> fase IMEDIATO, em vez de a
 # fase ficar com a musica da cena anterior por segundos). WWISE_TICK_US maior (30Hz) alivia
 # a CPU do decode no combate; o grace alto cobre eventual corte de musica.
+# CUP_NOSIGH/CUP_GCSIG: impedem o engine Wwise (libWwise.real.so, agora roteado pela nossa
+# my_sigaction) de instalar handlers de SIGSEGV/SIGABRT/SIGBUS e de sobrescrever os sinais de
+# suspensao do GC (SIGPWR/SIGXCPU) -> o handler do .NET CoreCLR sobrevive -> sem race/crash.
+export CUP_NOSIGH=1
+export CUP_GCSIG=1
 export SOR4_AUDIO="$GAMEDIR/audioout"
 export SOR4_BANKDIR="$GAMEDIR/gameassets"
 export WWISE_REAL="$PKG/libs/libWwise.real.so"

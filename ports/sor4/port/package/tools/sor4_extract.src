@@ -86,16 +86,23 @@ cp -f "$GAMEDIR/SOR4.dll" "$PKG/SOR4.dll"
 cp -f "$TOOLS/SOR4Bridge.dll" "$PKG/SOR4Bridge.dll" 2>/dev/null
 S="$PKG/SOR4.dll"
 run_dll "$TOOLS/patchgam.dll"  "$S" "$TOOLS/SOR4Bridge.dll"        || { msgbox "Streets of Rage 4" "Falha no patch (patchgam)."; exit 1; }
-# SAVE LOCAL: NAO noopar save_save_game/save_config -- eles ja gravam ARQUIVO local
-# (bin_serialize_to_file -> Save.bin / Config.txt em get_save_file_path = $HOME). O unico
-# motivo do crash era AndroidServices::SaveCloudFile (cloud) DENTRO deles -- e o AndroidServices.*
-# ja esta noopado, entao a chamada cloud vira no-op e o write local roda -> save PERSISTE.
-# (o launcher aponta $HOME pra uma pasta gravavel/persistente do port.)
-run_dll "$TOOLS/noopm.dll"     "$S" "AndroidServices.*"
-# remove o save_save_game REDUNDANTE no startup (program.initialize): esse save dispara o
-# serialize/GC do .NET bem na init do libWwise so-loader -> race de sinais (SIGSEGV) -> crash.
-# Sem ele, o jogo boota E os saves de fim-de-fase (depois da init do audio) gravam normal.
+# SAVE LOCAL (3 fixes, descobertos 2026-06-18 por inject+SOR4_SHOT+dumpil/dumpexc):
+# (1) noopar save_config JUNTO com AndroidServices.* -- save_config FUNCIONAL QUEBRAVA O INPUT do
+#     menu (titulo "TAP ANYWHERE" nao avancava, controle morto). save_save_game fica FUNCIONAL
+#     (progresso persiste); so o save_config (settings) vira no-op.
+run_dll "$TOOLS/noopm.dll"     "$S" "AndroidServices.*" "save_config"
+# (2) remove o save_save_game do startup (program.initialize) -- ele crasha na init do audio.
+#     skipcall AGORA balanceia a pilha (pop por arg+this); save_save_game e static void => pop x0.
 run_dll "$TOOLS/skipcall.dll"  "$S" "initialize" "save_save_game"
+# (3a) o wrapper program.save_save_game tem try/catch que, no erro, chama Environment.Exit (saia
+#      graciosa estilo Windows "Controlled Folder Access"). skipcall Exit (pop x1 do arg int) engole
+#      a saida -> o jogo CONTINUA em vez de fechar. Rede de seguranca caso o save falhe.
+run_dll "$TOOLS/skipcall.dll"  "$S" "save_save_game" "Exit"
+# (3b) 🎯 RAIZ: CommonLib.platform.get_save_file_path usava Environment.GetFolderPath(Personal) que
+#      retorna VAZIO nessa runtime .NET self-contained -> path "Save.bin" SEM diretorio ->
+#      Directory.CreateDirectory("") lancava ArgumentException -> save nunca gravava. fixsavepath
+#      reescreve get_save_file_path p/ Path.Combine(getenv("HOME"), file) -> Save.bin grava + carrega.
+run_dll "$TOOLS/fixsavepath.dll" "$S"
 run_dll "$TOOLS/skipvideo.dll" "$S"
 run_dll "$TOOLS/verstub.dll"   "$S"
 run_dll "$TOOLS/noopm.dll"     "$S" "EOSManager.PollMessage"
