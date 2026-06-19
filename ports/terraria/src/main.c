@@ -3305,6 +3305,21 @@ static void ter_ctrl_feed(void) {
   g_inj_axis[1] = (aly>0.12f||aly<-0.12f) ? aly : 0.0f;   /* LeftY */
   g_inj_axis[2] = arx*cs; g_inj_axis[3] = ary*cs;          /* RightX/Y = mira (cursor) escalada */
   g_inj_axis[4]=x; g_inj_axis[5]=y;                        /* DPadX/Y = SO D-pad (nav UI/inventario) */
+  /* 🎒 BOLSA/UI in-game: o cursor e LIVRE (tela toda) mas o jogo o move DEVAGAR. Aqui o D-pad e
+     os sticks movem o cursor (eixo de mira RightX/Y) em velocidade CHEIA, SO quando ha UI in-game
+     aberta (bolsa/criacao/opcoes/mapa). No gameplay LIVRE nao mexe -> a mira nativa fica intacta.
+     Assim navega-se a bolsa apontando rapido e A clica/pega o slot. TER_INVCURSP ajusta (def 1.0). */
+  if (ter_gameplay_active() && !ter_gameplay_free()) {
+    float bsp = getenv("TER_INVCURSP") ? atof(getenv("TER_INVCURSP")) : 1.0f;
+    float ddx = g_gp_log[3] ? bsp : (g_gp_log[2] ? -bsp : 0.0f);   /* D-pad */
+    float ddy = g_gp_log[1] ? bsp : (g_gp_log[0] ? -bsp : 0.0f);
+    if (arx > 0.12f || arx < -0.12f) ddx = arx*bsp;                /* stick direito */
+    if (ary > 0.12f || ary < -0.12f) ddy = ary*bsp;
+    if (alx > 0.12f || alx < -0.12f) ddx = alx*bsp;                /* stick esquerdo tbm (na UI nao anda) */
+    if (aly > 0.12f || aly < -0.12f) ddy = aly*bsp;
+    if (ddx != 0.0f) g_inj_axis[2] = ddx;
+    if (ddy != 0.0f) g_inj_axis[3] = ddy;
+  }
   /* LTrig/RTrig: dirige o EIXO analógico E o botão. Se o gatilho está digitalmente "pressionado"
      (g_gp_log[12]/[13], inclui o input virtual e o threshold do gatilho real), força o eixo a 1.0;
      senão usa o valor analógico cru. Cobre tanto o jogo lendo trigger-como-eixo (GetAxisRaw 6/7,
