@@ -109,6 +109,14 @@ run_dll "$TOOLS/noopm.dll"     "$S" "EOSManager.PollMessage"
 run_dll "$TOOLS/rettrue.dll"   "$S" "CommonLib.platform::load_save_and_config_is_finished"
 run_dll "$TOOLS/noopm.dll"     "$S" "MoreGamesNotificationUpdate"
 run_dll "$TOOLS/noopm.dll"     "$S" "platform.video_exists"
+# CO-OP LOCAL 2/3/4P (opt-in SOR4_COOP=1): trunca CommonLib.platform::update_game_pad_state_array
+#   apos a Fase 1 -> descarta a FUSAO (slot0 |= slot1..3) e a LIMPEZA (zera slot1..3) que o build
+#   mobile faz p/ jogar tudo no Player 1. Assim cada pad fisico vira um player e o join de P2/3/4
+#   na selecao de personagem passa a funcionar. Seguro p/ 1 player (slots 1-3 ja vem desconectados
+#   da Fase 1). Default OFF ate validar na TV com 2 controles; ligar com SOR4_COOP=1.
+if [ "${SOR4_COOP:-0}" = "1" ]; then
+  run_dll "$TOOLS/coopsplit.dll" "$S"
+fi
 rm -f "$GAMEDIR/SOR4.dll"
 
 # ---------------- 3) EXTRAIR+CONVERTER os assets numa passada (1 progresso 0->100%) ----------------
