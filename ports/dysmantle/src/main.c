@@ -924,6 +924,54 @@ static void hook_createvb(void) {
 static char g_last_bmp_name[256] = "?";
 /* nome da textura sendo carregada AGORA — usado pelo cache ETC1 offline (imports.c). */
 const char *bk_last_bmp_name(void) { return g_last_bmp_name; }
+
+/* ===== conjunto de nomes ".ktx" presentes nos paks (p/ REDIRECT SELETIVO) =====
+ * Lê o índice dos paks 1× e guarda os nomes que terminam em .ktx. O redirect só troca
+ * "X.jpg" -> "X.jpg.ktx" se ESSE .ktx existir (opacas que viraram ETC1 + .ktx ETC2
+ * originais). Assim alpha sem .ktx fica como PNG (não vira branco/crash). */
+static char **g_ktxset = NULL; static long g_nktx = -1; static long g_ktxcap = 0;
+static int ktx_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+static void ktxset_add_pak(const char *path) {
+  FILE *f = fopen(path, "rb"); if (!f) return;
+  unsigned char hdr[12];
+  if (fread(hdr, 1, 12, f) != 12 || memcmp(hdr, "PAK\0V11\0", 8)) { fclose(f); return; }
+  uint32_t idx = *(uint32_t *)(hdr + 8);
+  fseek(f, 0, SEEK_END); long flen = ftell(f); long ilen = flen - idx;
+  if (ilen <= 0 || ilen > 64L*1024*1024) { fclose(f); return; }
+  unsigned char *ib = malloc(ilen); fseek(f, idx, SEEK_SET);
+  if (!ib || fread(ib, 1, ilen, f) != (size_t)ilen) { free(ib); fclose(f); return; }
+  fclose(f);
+  long p = 4;
+  while (p < ilen - 16) {
+    long e = p; while (e < ilen && ib[e]) e++;
+    if (e >= ilen || e == p || e - p > 250) break;
+    long L = e - p;
+    if (L > 4 && !memcmp(ib + e - 4, ".ktx", 4)) {
+      if (g_nktx >= g_ktxcap) { g_ktxcap = g_ktxcap ? g_ktxcap * 2 : 8192; g_ktxset = realloc(g_ktxset, g_ktxcap * sizeof(char *)); }
+      char *nm = malloc(L + 1); memcpy(nm, ib + p, L); nm[L] = 0; g_ktxset[g_nktx++] = nm;
+    }
+    p = e + 1 + 16;
+  }
+  free(ib);
+}
+static void ktxset_load(void) {
+  g_nktx = 0;
+  const char *adir = getenv("DYSMANTLE_ASSETS"); if (!adir) adir = "assets";
+  char p[512];
+  snprintf(p, sizeof p, "%s/data.pak", adir); ktxset_add_pak(p);
+  snprintf(p, sizeof p, "%s/data-gfx1200.pak", adir); ktxset_add_pak(p);
+  snprintf(p, sizeof p, "%s/data-localizations.pak", adir); ktxset_add_pak(p);
+  if (g_nktx > 0) qsort(g_ktxset, g_nktx, sizeof(char *), ktx_cmp);
+  fprintf(stderr, "[KTXSET] %ld .ktx presentes nos paks\n", g_nktx);
+}
+static int ktxset_has(const char *name) {
+  if (g_nktx < 0) ktxset_load();
+  if (g_nktx <= 0) return 0;
+  long lo = 0, hi = g_nktx - 1;
+  while (lo <= hi) { long m = (lo + hi) / 2; int c = strcmp(g_ktxset[m], name);
+    if (c == 0) return 1; if (c < 0) lo = m + 1; else hi = m - 1; }
+  return 0;
+}
 static void (*orig_setbmpname)(void *, const char *, size_t) = NULL;
 static void my_setbmpname(void *bmp, const char *p, size_t n) {
   if (p && n > 0 && n < sizeof(g_last_bmp_name)) {
@@ -945,11 +993,15 @@ static void my_setbmpname(void *bmp, const char *p, size_t n) {
       char buf[256];
       memcpy(buf, p, n);
       memcpy(buf + n, ".ktx", 4);
-      static int z = 0;
-      if (z < 6) { fprintf(stderr, "[KTXREDIR] '%.*s' -> '%.*s'\n",
-                           (int)n, p, (int)(n + 4), buf); z++; }
-      if (orig_setbmpname) orig_setbmpname(bmp, buf, n + 4);
-      return;
+      buf[n + 4] = 0;
+      /* 🔑 SELETIVO: só redireciona se o .ktx EXISTE no pak (opacas->ETC1 + .ktx ETC2
+       * originais). Alpha sem .ktx fica como PNG -> não vira branco nem crasha. */
+      if (ktxset_has(buf)) {
+        static int z = 0;
+        if (z < 6) { fprintf(stderr, "[KTXREDIR] '%.*s' -> '%s'\n", (int)n, p, buf); z++; }
+        if (orig_setbmpname) orig_setbmpname(bmp, buf, n + 4);
+        return;
+      }
     }
   }
   if (orig_setbmpname) orig_setbmpname(bmp, p, n);

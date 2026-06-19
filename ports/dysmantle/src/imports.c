@@ -402,6 +402,22 @@ static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                       const void *) = NULL;
   rgl("glCompressedTexImage2D", (void **)&real);
   static unsigned (*gerr)(void) = NULL; rgl("glGetError", (void **)&gerr);
+  /* 🔑 ETC1 DIRETO: nosso .ktx opaco = conteúdo ETC1 rotulado ETC2-RGB (0x9274/75). O
+   * Mali-450 AMOSTRA ETC1 nativo (0x8D64) -> sobe DIRETO, sem decodificar em runtime
+   * (4bpp, zero CPU). Se o GL recusar (não devia), cai pro decode. As 0x9276-0x9279
+   * (ETC2 RGBA/punchthrough = alpha) o Mali NÃO amostra -> decodifica p/ RGBA. */
+  if (px && (ifmt == 0x9274 || ifmt == 0x9275) && !getenv("DYSMANTLE_ETC1_DECODE")) {
+    if (gerr) while (gerr()) {}
+    if (real) real(tgt, lvl, 0x8D64, w, h, border, sz, px);
+    unsigned e = gerr ? gerr() : 0;
+    static int dn = 0;
+    if (dn < 8) { fprintf(stderr, "[ETC1DIRECT] 0x%x->0x8D64 %dx%d lvl=%d err=0x%x\n", ifmt, w, h, lvl, e); dn++; }
+    if (!e) return;
+    /* fallback: decodifica */
+    unsigned char *rgba = etc2_decode_rgba(0x9274, w, h, px, sz);
+    if (rgba) { my_glTexImage2D(tgt, lvl, 0x1908, w, h, border, 0x1908, 0x1401, rgba); free(rgba); }
+    return;
+  }
   /* As texturas que a engine carrega COMPRIMIDAS (ETC2) são DECODIFICADAS p/ RGBA
    * (Mali-450 não amostra ETC2). NÃO subir como ETC1 cru (modos planar/T/H do ETC2
    * viram lixo/magenta no chão liso). Caminho validado da v5. */

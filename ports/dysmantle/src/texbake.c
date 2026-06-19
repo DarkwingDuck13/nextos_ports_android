@@ -278,37 +278,95 @@ static double g_scale = 1.0;
 static int g_alpha_scan = 1;
 static int g_mode = M_ETC1;    /* default: opaca->ETC1(4bpp); alpha->5551(recorte)/4444(suave) */
 
-/* converte UM RGBA -> blob KTX(zlib) final. devolve blob + *blen, e *out_mode (modo usado). */
+/* box-downscale RGBA por 2 (cada dim /2, min 1). devolve buf novo + *ow,*oh. */
+static unsigned char *halve_rgba(const unsigned char *s, int w, int h, int *ow, int *oh) {
+  int nw = w > 1 ? w / 2 : 1, nh = h > 1 ? h / 2 : 1;
+  unsigned char *o = malloc((long)nw * nh * 4); if (!o) return NULL;
+  for (int y = 0; y < nh; y++) for (int x = 0; x < nw; x++) {
+    int x0 = x * 2, y0 = y * 2, x1 = x0 + 1 < w ? x0 + 1 : x0, y1 = y0 + 1 < h ? y0 + 1 : y0;
+    const unsigned char *a = s+((long)y0*w+x0)*4, *b = s+((long)y0*w+x1)*4,
+                        *c = s+((long)y1*w+x0)*4, *d = s+((long)y1*w+x1)*4;
+    unsigned char *p = o + ((long)y*nw+x)*4;
+    for (int k = 0; k < 4; k++) p[k] = (a[k]+b[k]+c[k]+d[k]) >> 2;
+  }
+  *ow = nw; *oh = nh; return o;
+}
+
+/* encoda 1 nível RGBA -> formato `mode`. ETC1 pad p/ múltiplo de 4. devolve buf + *sz. */
+static unsigned char *encode_level(const unsigned char *rgba, int w, int h, int mode, uint32_t *sz) {
+  if (mode == M_ETC1) {
+    int pw = (w + 3) & ~3, ph = (h + 3) & ~3;
+    const unsigned char *src = rgba; unsigned char *pad = NULL;
+    if (pw != w || ph != h) {                /* replica borda p/ completar o bloco 4x4 */
+      pad = malloc((long)pw * ph * 4); if (!pad) return NULL;
+      for (int y = 0; y < ph; y++) for (int x = 0; x < pw; x++) {
+        int sx = x < w ? x : w-1, sy = y < h ? y : h-1;
+        memcpy(pad+((long)y*pw+x)*4, rgba+((long)sy*w+sx)*4, 4);
+      }
+      src = pad;
+    }
+    *sz = (uint32_t)(pw/4) * (ph/4) * 8;
+    unsigned char *o = malloc(*sz); if (o) etc1_encode_image(src, pw, ph, 4, o);
+    free(pad); return o;
+  } else if (mode == M_RGBA4444 || mode == M_RGBA5551) {
+    *sz = (uint32_t)w * h * 2; unsigned char *o = malloc(*sz);
+    if (o) { if (mode == M_RGBA4444) pack_4444(rgba, w, h, o); else pack_5551(rgba, w, h, o); }
+    return o;
+  }
+  *sz = (uint32_t)w * h * 4; unsigned char *o = malloc(*sz);
+  if (o) memcpy(o, rgba, *sz); return o;
+}
+
+/* 🔑 KTX com CADEIA DE MIPS COMPLETA (igual os .ktx originais do jogo). O KtxImageLoader
+ * FECHADO espera numberOfMipmapLevels = log2(max(w,h))+1 e faz NULL-deref se vier só 1
+ * nível -> SIGSEGV. Gera todos os níveis (box-filter) no formato `mode`. */
+static unsigned char *build_ktx_mips(const unsigned char *rgba0, int w, int h, int mode, long *olen) {
+  int levels = 1; { int m = w > h ? w : h; while (m > 1) { m >>= 1; levels++; } }
+  if (levels > 20) levels = 20;
+  unsigned char *ld[20]; uint32_t lsz[20];
+  unsigned char *cur = (unsigned char *)rgba0; int cw = w, ch = h; unsigned char *tofree = NULL;
+  int ok = 1;
+  for (int l = 0; l < levels; l++) {
+    ld[l] = encode_level(cur, cw, ch, mode, &lsz[l]);
+    if (!ld[l]) { ok = 0; levels = l; break; }
+    if (l + 1 < levels) { int nw, nh; unsigned char *nx = halve_rgba(cur, cw, ch, &nw, &nh);
+      free(tofree); tofree = nx; cur = nx; cw = nw; ch = nh; if (!nx) { levels = l + 1; break; } }
+  }
+  free(tofree);
+  if (!ok && levels == 0) return NULL;
+  long total = 64; for (int l = 0; l < levels; l++) total += 4 + lsz[l] + ((4 - (lsz[l] & 3)) & 3);
+  unsigned char *k = calloc(1, total); if (!k) { for (int l=0;l<levels;l++) free(ld[l]); return NULL; }
+  memcpy(k, KTX_ID, 12); uint32_t *u = (uint32_t *)k; u[3] = 0x04030201;
+  if (mode == M_ETC1)        { u[4]=0; u[5]=1; u[6]=0; u[7]=0x9274; u[8]=0x1907; }
+  else if (mode == M_RGBA4444){ u[4]=0x8033; u[5]=2; u[6]=0x1908; u[7]=0x1908; u[8]=0x1908; }
+  else if (mode == M_RGBA5551){ u[4]=0x8034; u[5]=2; u[6]=0x1908; u[7]=0x1908; u[8]=0x1908; }
+  else                       { u[4]=0x1401; u[5]=1; u[6]=0x1908; u[7]=0x1908; u[8]=0x1908; }
+  u[9]=w; u[10]=h; u[11]=0; u[12]=0; u[13]=1; u[14]=levels; u[15]=0;
+  long q = 64;
+  for (int l = 0; l < levels; l++) {
+    *(uint32_t *)(k + q) = lsz[l]; q += 4;
+    memcpy(k + q, ld[l], lsz[l]); q += lsz[l];
+    q += (4 - (lsz[l] & 3)) & 3;            /* mipPadding */
+    free(ld[l]);
+  }
+  *olen = q; return k;
+}
+
+/* converte UM RGBA -> blob KTX(zlib) com MIPS. devolve blob + *blen, e *out_mode. */
 static unsigned char *rgba_to_blob(unsigned char *rgba, int w, int h, int hint_alpha,
                                    long *blen, int *out_mode) {
-  /* downscale (default 1.2) */
   int nw = w, nh = h; unsigned char *ds = downscale(rgba, w, h, g_scale, &nw, &nh);
   const unsigned char *src = ds ? ds : rgba; w = nw; h = nh;
 
-  unsigned char *img = NULL; uint32_t isz = 0; int mode = g_mode;
-  if (g_mode == M_RGBA8) {                              /* RGBA8: copia direta (rápido) */
-    isz = (uint32_t)w * h * 4;
-    img = malloc(isz); if (!img) { free(ds); return NULL; }
-    memcpy(img, src, isz);
-  } else {                                              /* M_ETC1: opaca->ETC1, alpha->5551/4444 */
+  int mode = g_mode;
+  if (g_mode != M_RGBA8) {                               /* opaca->ETC1, alpha->5551/4444 */
     int alpha = hint_alpha; if (g_alpha_scan) alpha = has_real_alpha(src, w, h);
-    if (!alpha && (w % 4) == 0 && (h % 4) == 0) {       /* ETC1 (opaca, mult de 4) */
-      isz = (uint32_t)(w / 4) * (h / 4) * 8;
-      img = malloc(isz); if (!img) { free(ds); return NULL; }
-      etc1_encode_image(src, w, h, 4, img); mode = M_ETC1;
-    } else if (is_cutout_alpha(src, w, h)) {            /* alpha de RECORTE -> 5551 (cor melhor) */
-      isz = (uint32_t)w * h * 2;
-      img = malloc(isz); if (!img) { free(ds); return NULL; }
-      pack_5551(src, w, h, img); mode = M_RGBA5551;
-    } else {                                            /* alpha SUAVE -> 4444 */
-      isz = (uint32_t)w * h * 2;
-      img = malloc(isz); if (!img) { free(ds); return NULL; }
-      pack_4444(src, w, h, img); mode = M_RGBA4444;
-    }
+    if (!alpha) mode = M_ETC1;
+    else if (is_cutout_alpha(src, w, h)) mode = M_RGBA5551;
+    else mode = M_RGBA4444;
   }
-  free(ds);
-  long klen; unsigned char *ktx = build_ktx(img, isz, w, h, mode, &klen);
-  free(img); if (!ktx) return NULL;
+  long klen; unsigned char *ktx = build_ktx_mips(src, w, h, mode, &klen);
+  free(ds); if (!ktx) return NULL;
   unsigned char *blob = deflate_buf(ktx, klen, blen);
   free(ktx);
   *out_mode = mode;
@@ -400,6 +458,12 @@ static int bake_one(const char *path) {
     unsigned char *blob = rgba_to_blob(rgba, w, h, alpha, &blen, &used_mode);
     free(rgba);
     if (!blob || blen <= 0) { free(blob); continue; }
+
+    /* 🔑 ETC1 DIRETO: só escreve o .ktx pras OPACAS (ETC1 = glType=0 comprimido, que o
+     * KtxImageLoader FECHADO aceita — estrutura idêntica ao original). Texturas com ALPHA
+     * (4444/5551 = uncompressed, glType!=0) fazem o loader dar NULL-deref/SIGSEGV; então
+     * deixamos a alpha INTACTA (PNG/JPEG original ou .ktx ETC2 original). */
+    if (used_mode != M_ETC1) { free(blob); rgban++; continue; }
 
     fwrite(blob, 1, blen, out);
     free(blob);
