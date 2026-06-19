@@ -1,7 +1,27 @@
 # SOR4 — Habilitar 2/3/4 jogadores (co-op local) — HANDOFF
 
-> Status: **PATCH ESCRITO + VERIFICADO NO IL. FALTA SÓ TESTAR NA TV COM 2 PADS.**
-> Regra: só commit no master, SEM co-autor Agente. Não abrir/fechar jogo sem matar+confirmar.
+> Status: **✅ RESOLVIDO E VALIDADO 2026-06-19 — P2 ENTRA E JOGA (Axel P1 + Blaze P2 na fase, 2 barras de vida).**
+> Validado autônomo via inject (event2=P1, event5=P2): seleção mostrou cursores P1 E P2, gameplay
+> com 2 personagens/HUD. Regra: só commit no master, SEM co-autor Agente.
+
+## A RECEITA QUE FUNCIONOU (duas camadas — AMBAS necessárias)
+O build mobile bloqueia co-op em DUAS camadas. O patch (`port/tools/coopsplit`) corrige as duas:
+
+**(A) Fusão dos pads** — `CommonLib.platform::update_game_pad_state_array` funde slot[0]|=slot[1..3]
+e zera slot[1..3]. FIX: truncar após a Fase 1 (`ret`) → pads lidos separados + ficam conectados.
+
+**(B) Handler de join NUNCA chamado** — `CharacterSelectionScreen::handle_input_handle_first_button_presses`
+(varre controladores; ao apertar `select`=A num pad não-atribuído chama `assign_controller_to_new_local_player`)
+está DEFINIDO mas com 0 referências. FIX: inserir a chamada dele em `handle_input()` com early-return.
+🔑 **PEGADINHA CRÍTICA:** o `handle_input` tem branches que saltam DIRETO pro `clear_unconnected`
+(a âncora), PULANDO o bloco inserido. Sem redirecionar esses branches, o join nunca roda (FBP-ENTER=0
+no diagnóstico). FIX: após inserir, **redirecionar os branches que apontavam pra âncora → 1ª instrução
+do join** (3 branches no caso). Aí FBP-ENTER passou a logar 358x e FBP-ASSIGN disparou → P2 entrou.
+
+Diagnóstico decisivo: `port/tools/coopdiag` instrumenta o join com Console.Error (FBP-ENTER/FBP-ASSIGN
+no log.txt) — foi o que revelou que o método não era chamado (os branches puladores).
+
+DLL final co-op (device DLL + coopsplit, SEM diag): aplicada e validada. Gate `SOR4_COOP=1` no pipeline.
 
 ## FEITO (2026-06-19, sessão de limpeza de logs)
 - **Tool Cecil `coopsplit`** criada: `port/tools/coopsplit/` (Program.cs + csproj). Localiza o `blt`
