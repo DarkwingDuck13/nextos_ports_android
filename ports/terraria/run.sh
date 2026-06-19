@@ -59,8 +59,11 @@ fi
 export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_FIXNANPART=1 CUP_NOLOGFILE=1
 # CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
 export CUP_FRAMES=999999999
-export TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_NAVMENU=1 TER_FIXSP=1 TER_NOVKBD=1
-export TER_CURSPEED=0.38 TER_GP_CURSP=420
+# CONTROLE NATIVO via InControl do Terraria: o jogo usa o SEU PROPRIO cursor de gamepad (PRESO
+# em volta do player no gameplay; ponteiro no menu) e faz pulo/ataque/troca-de-item/selecao
+# NATIVAMENTE. TER_GAMEPAD le o SDL; TER_CTRL injeta no InControl (GetKeyRaw/GetAxisRaw) e forca
+# _controllerActive; TER_CURSPEED escala o stick direito (mira).
+export TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_CURSPEED=0.38 TER_FIXSP=1 TER_NOVKBD=1
 # SOM: thread C bombeia fmodProcess->SDL (auto pulse/pipewire/alsa). TER_STREAMFALLBACK
 # refaz a MÚSICA (stream, que falha INTERNAL no so-loader) como SAMPLE -> toca. SFX já tocam.
 export TER_AUDIO=1 TER_STREAMFALLBACK=1

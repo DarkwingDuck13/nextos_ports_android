@@ -1980,21 +1980,21 @@ int ter_unity_getkeyup(int kc)   { if (ter_vkbd_blocking()) return 0; int l=ter_
    8 uints bitmask de teclas em [0..31] + 1 campo em [32]). Preenche do js0 (XNA Keys).
    Chamada via shim que faz mov x0,x8 (x8=ptr do resultado). g_gp_log vem do ter_gamepad_poll. */
 void ter_fna_keyboard_getstate(void *result) {
-  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAKB] chamado #%d\n", c); fsync(2);} }
   uint32_t *ks = (uint32_t *)result;
-  memset(ks, 0, 36);
+  memset(ks, 0, 36);   /* 8 uints bitmask (XNA Keys) + 1 campo */
   if (ter_vkbd_blocking()) return;
-  int n = 0;
-  #define TKSET(k) do { ks[(k)>>5] |= (1u << ((k)&31)); n++; } while(0)
-  if (g_gp_log[0]) TKSET(38);                 /* Up */
-  if (g_gp_log[1]) TKSET(40);                 /* Down */
-  if (g_gp_log[2]) TKSET(37);                 /* Left */
-  if (g_gp_log[3]) TKSET(39);                 /* Right */
-  if (g_gp_log[4]) { TKSET(13); TKSET(32); }  /* A -> Enter + Space (confirma) */
-  if (g_gp_log[5]) TKSET(27);                 /* B -> Escape (volta) */
-  if (g_gp_log[7]) TKSET(88);                 /* Y -> X */
-  ks[8] = 0;   /* campo [32]: 0 (IsKeyDown usa o bitmask, não este) */
-  (void)n;
+  #define TKSET(k) do { ks[(k)>>5] |= (1u << ((k)&31)); } while(0)
+  /* 🎮→⌨️ CONTROLE = TECLADO DO TERRARIA PC (XNA Keys: A=65 D=68 W=87 S=83 Space=32 Esc=27,
+     setas 37-40, Enter=13). SDL le o pad em ter_gamepad_poll -> g_gp_log[0..3]=dir, 4=A,5=B,
+     6=X,7=Y,10=L1,11=R1,12=LT,13=RT. */
+  if (g_gp_log[2]) { TKSET(65); TKSET(37); }   /* esquerda -> A + Left  */
+  if (g_gp_log[3]) { TKSET(68); TKSET(39); }   /* direita  -> D + Right */
+  if (g_gp_log[0]) { TKSET(87); TKSET(38); }   /* cima     -> W + Up    */
+  if (g_gp_log[1]) { TKSET(83); TKSET(40); }   /* baixo    -> S + Down  */
+  if (g_gp_log[6] || g_gp_log[10]) TKSET(32);  /* X ou L1 -> Espaco (pular) */
+  if (g_gp_log[5]) TKSET(27);                  /* B -> Escape (voltar/inventario) */
+  ks[8] = 0;
+  #undef TKSET
 }
 /* cursor do mouse virtual (movido pelo analógico direito). Terraria é point-and-click. */
 float g_cursor_x = 0.0f, g_cursor_y = 0.0f;
@@ -2015,15 +2015,23 @@ static int ter_gameplay_active(void);
    [12]=LeftButton [16]=Right [20]=Middle [24]=X1 [28]=X2 [32]=hScroll.
    Mouse fica para menu/UI. Ataque em gameplay passa pelo GamePad nativo. */
 void ter_fna_mouse_getstate(void *result) {
-  { static int c=0; if((c++%120)==0){ fprintf(stderr,"[FNAMOUSE] chamado #%d cur=%d,%d A=%d RB=%d gameplay=%d\n", c,(int)g_cursor_x,(int)g_cursor_y,g_gp_log[4],g_gp_log[11],ter_gameplay_active()); fsync(2);} }
+  /* XNA MouseState (ints): [0]=X [1]=Y [2]=ScrollWheel [3]=Left [4]=Middle [5]=Right ... */
   int *ms = (int *)result;
   memset(ms, 0, 36);
   if (ter_vkbd_blocking()) return;
   ter_cursor_ensure_init();
-  ms[0] = (int)g_cursor_x;            /* X */
+  ms[0] = (int)g_cursor_x;            /* X (movido pelo stick DIREITO em ter_gamepad_poll) */
   ms[1] = (int)g_cursor_y;            /* Y */
-  ms[3] = g_gp_log[4] ? 1 : 0;        /* LeftButton = A (menu/UI) */
-  ms[5] = g_gp_log[5] ? 1 : 0;        /* RightButton = B */
+  /* roda do mouse = trocar item (Terraria cicla a hotbar pela roda). L2=anterior, R2=proximo.
+     ScrollWheelValue e CUMULATIVO; muda 120 por BORDA de pressao (1 item por toque). */
+  static int scroll = 0;
+  if (g_gp_log[12] && !g_gp_log_prev[12]) scroll += 120;   /* L2 -> item anterior */
+  if (g_gp_log[13] && !g_gp_log_prev[13]) scroll -= 120;   /* R2 -> proximo item  */
+  ms[2] = scroll;
+  /* clique ESQUERDO = usar/atacar/confirmar: R1 (bater) ou A (confirmar no menu) */
+  ms[3] = (g_gp_log[11] || g_gp_log[4]) ? 1 : 0;
+  /* clique DIREITO = uso secundario: Y */
+  ms[5] = g_gp_log[7] ? 1 : 0;
 }
 
 static const char *vk_keys[] = {
@@ -3146,7 +3154,7 @@ static void ter_ctrl_force_active(void) {
 static int g_nav_idx;
 int g_cur_regions;   /* nº de itens navegáveis na tela atual (p/ auto-teste detectar troca de tela) */
 static void ter_menu_nav(void) {
-  if (!getenv("TER_NAVMENU")) return;
+  if (!getenv("TER_GAMEPAD")) return;
   if (ter_vkbd_blocking()) { g_girm_ovr = 0; g_fcmode = 0; return; }
   /* runtime: /tmp/ternonav suspende o override de hover (deixa a nav NATIVA do jogo agir —
      teste p/ dropdowns/sublistas que têm foco de controle próprio). */
@@ -3326,7 +3334,9 @@ static void ter_ctrl_feed(void) {
       }
     }
   }
-  ter_menu_nav();   /* 🎮 navegação real: up/down move o cursor entre itens, A clica */
+  /* SEM region-nav: o cursor de gamepad NATIVO do jogo cuida do menu (ponteiro) e do gameplay
+     (preso ao player). g_girm_ovr fica 0 para nao sobrepor a posicao do cursor nativo. */
+  g_girm_ovr = 0;
   if (getenv("TER_CTRLLOG")) { static int c=0; if((c++%30)==0){
     fprintf(stderr,"[CTRLLOG] getkeyraw=%lu navaxis=%lu | A=%d B=%d dpad(u%d d%d l%d r%d) nav=(%.0f,%.0f)\n",
       g_getkeyraw_calls,g_navaxis_calls,g_inj_btn[0],g_inj_btn[1],g_gp_log[0],g_gp_log[1],g_gp_log[2],g_gp_log[3],g_nav_x,g_nav_y); fsync(2);} }
@@ -3376,12 +3386,15 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_fix_singleplayer(); /* TER_FIXSP: neutraliza OldSaveSynchronise.CopyOldSaves (tela preta SP) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
-  ter_input_hook();     /* TER_GAMEPAD: sonda/hook do input FNA */
-  ter_ctrl_patch();     /* TER_CTRL: substitui GetKeyRaw/GetAxisRaw do ControllerDevice */
   ter_name_hooks_install(); /* TER_OSK: captura telas de nome p/ gravar texto real */
-  ter_navspy_install(); /* TER_NAVSPY: captura instância do navegador */
-  ter_ctrl_feed();      /* TER_CTRL: alimenta o estado injetado do js0 */
-  ter_navspy_log();     /* TER_NAVSPY: loga mudança de seleção (prova de navegação) */
+  /* 🎮 CONTROLE NATIVO: SDL -> InControl do Terraria (GetKeyRaw/GetAxisRaw) + _controllerActive.
+     O jogo usa o SEU PROPRIO cursor de gamepad — PRESO em volta do player no gameplay e ponteiro
+     no menu — e faz pulo/ataque/troca-de-item/selecao no menu NATIVAMENTE. SEM hook de
+     Mouse/Keyboard (era o que soltava o cursor na tela toda) e SEM region-nav. ter_gamepad_poll
+     (TER_GAMEPAD, no Update) le o SDL -> g_gp_log; ter_ctrl_feed mapeia -> g_inj_*; o jogo le
+     pelos hooks instalados por ter_ctrl_patch. */
+  ter_ctrl_patch();
+  ter_ctrl_feed();
   if (getenv("TER_MENU")) ter_menu_nuke_updateinput();  /* p/ não clobberar Main.mouse* */
   ter_menu_drive();     /* TER_MENU/TER_MENULOG: dirige/observa Main.mouseX/Y/Left/hasFocus */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
