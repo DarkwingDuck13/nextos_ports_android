@@ -150,6 +150,17 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
   return &fake_obj;
 }
 
+/* NewObject/NewObjectV/NewObjectA (indices 28/29/30): FJavaClassObject ctor
+ * (AndroidJava.cpp:24) faz NewObjectV e da check(LocalObject) se vier NULL -> 'Engine
+ * Preinit Failed'. Devolvemos objeto fake nao-NULL (so-loader nao roda Java; chamadas
+ * subsequentes nesse obj sao fakeadas). */
+static void *jni_NewObject(void *env, void *clazz, void *methodID, ...) {
+  (void)env; (void)clazz;
+  debugPrintf("jni_shim: NewObject(mid=%p) -> fake\n", methodID);
+  static int fake_new_obj;
+  return &fake_new_obj;
+}
+
 /* CallBooleanMethod (index 49) */
 static unsigned char jni_CallBooleanMethod(void *env, void *obj,
                                            void *methodID, ...) {
@@ -412,6 +423,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[22] = (uintptr_t)jni_DeleteGlobalRef;
   jni_env_vtable[23] = (uintptr_t)jni_DeleteLocalRef;
   jni_env_vtable[25] = (uintptr_t)jni_NewLocalRef;
+  jni_env_vtable[28] = (uintptr_t)jni_NewObject;          /* NewObject */
+  jni_env_vtable[29] = (uintptr_t)jni_NewObject;          /* NewObjectV */
+  jni_env_vtable[30] = (uintptr_t)jni_NewObject;          /* NewObjectA */
   jni_env_vtable[31] = (uintptr_t)jni_GetObjectClass;
   jni_env_vtable[33] = (uintptr_t)jni_GetMethodID;
   jni_env_vtable[34] = (uintptr_t)jni_CallObjectMethod;
