@@ -1,4 +1,3 @@
-#define _GNU_SOURCE
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -158,12 +157,12 @@ size_t __strlen_chk(const char *s, size_t max_len) {
 
 char *__strrchr_chk(const char *s, int c, size_t n) {
   (void)n;
-  return strrchr(s, c);
+  return (char *)strrchr(s, c);
 }
 
 char *__strchr_chk(const char *s, int c, size_t slen) {
   (void)slen;
-  return strchr(s, c);
+  return (char *)strchr(s, c);
 }
 
 char *__strncpy_chk2(char *dst, const char *src, size_t n, size_t dst_len,

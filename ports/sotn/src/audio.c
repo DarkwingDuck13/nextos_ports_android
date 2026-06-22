@@ -1,7 +1,6 @@
 // Audio sink for SOTN. The game's static SDL 2.0.8 uses the "android" audio
 // driver, which writes PCM via JNI (audioOpen/audioWriteShortBuffer). We route
 // that PCM to PulseAudio through a `pacat` pipe.
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,10 +38,12 @@ static void audio_write(void *data, int len_bytes) {
     return;
   fwrite(data, 1, (size_t)len_bytes, g_pa);
   fflush(g_pa);
-  static long n = 0, total = 0;
-  total += len_bytes;
-  if ((n++ % 200) == 0)
-    debugPrintf("audio_write: %ld calls, %ld KB total\n", n, total / 1024);
+  if (getenv("SOTN_VERBOSE")) {
+    static long n = 0, total = 0;
+    total += len_bytes;
+    if ((n++ % 200) == 0)
+      debugPrintf("audio_write: %ld calls, %ld KB total\n", n, total / 1024);
+  }
 }
 
 static void audio_close(void) {

@@ -48,5 +48,12 @@ Port de `com.dotemu.castlevania` (APK v1.0.6) para NextOS Amlogic-old (aarch64, 
   - **SAVES/EULA persistem**: /snapshots/→./snapshots/ mapeado (util.c). sotn.cfg salvo → boot limpo PULA a EULA, vai direto ao título.
   - **autotest** (debug): SOTN_AUTONAV="tokens" (d/u/l/r=hat, a/b/s=botões, t=touch OK, S=scroll, O=開始, 1-4=linhas do menu). SOTN_VERBOSE=1 liga logs do jogo.
   - **launcher ES**: ports_scripts/"Castlevania SOTN.sh" (cd gamedir; HOME+LD_LIBRARY_PATH; ./sotn). Sem gptokeyb (lemos evdev direto).
-- FALTA (polimento): NextOS validar na TV (jogar a fase real além do intro), confirmar mapeamento de botões in-game ao gosto, empacotar R2/PortMaster, perf.
+- s1 🎮 **CONTROLE Xbox-padrão + .gptk editável + Select+Start=sair** 2026-06-22 (validado pelo NextOS):
+  - Normalização Xbox: input.c mapeia evdev→posição Xbox (a=baixo,b=direita,x=esq,y=cima)→android keycode via config `sotn.gptk` (editável, sem recompilar).
+  - ⚠️ Ordem REAL dos botões do " USB Gamepad" (confirmada por captura BTNLOG, NÃO bate com es_input.cfg): evdev **0x120=Y, 0x121=B, 0x122=A, 0x123=X**. (es_input.cfg dava ordem errada → causou várias iterações.)
+  - Ações do jogo (SDL joystick button via keycode_to_SDL): **gameA=pular(+confirmar), gameY=esquiva, gameX=bater, gameB=especial**.
+  - gptk do NextOS: `a=a b=y x=x y=b` → A=pular, B=esquiva, X=bater, Y=especial.
+  - **Select+Start = _exit(0)** (igual Bully/SOR4). BTNLOG gated em SOTN_VERBOSE.
+  - Método p/ mapear controle novo: SOTN_VERBOSE=1, apertar A/B/X/Y, ler "BTNLOG: evdev=.. pos=.. kc=..", ajustar evdev_to_pos + gptk.
+- FALTA (polimento): mapear shoulders/select/start do controle do NextOS se algum estiver torto (capturar BTNLOG), empacotar R2/PortMaster, perf.
 </content>

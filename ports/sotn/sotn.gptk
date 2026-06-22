@@ -1,0 +1,26 @@
+# sotn.gptk — mapeamento do controle (estilo PortMaster, editável)
+#
+# ESQUERDA = botão FÍSICO no padrão Xbox/SDL:
+#   a = baixo  (PS ✕ / Xbox A)      b = direita (PS ○ / Xbox B)
+#   x = esquerda (PS □ / Xbox X)    y = cima    (PS △ / Xbox Y)
+#   l1 r1 l2 r2 select start l3 r3
+# DIREITA = botão que o JOGO recebe (a/b/x/y/l1/r1/l2/r2/select/start/l3/r3).
+#
+# Edite e relance o jogo (não precisa recompilar). Funciona com qualquer
+# controle (Xbox/PS/genérico). Atalho: SELECT + START = sair do jogo.
+#
+# Ações do jogo: A=especial  B=pular  X=esquiva  Y=bater
+# Layout desejado: ✕=pular  ○=esquiva  □=bater  △=especial
+# Ações do jogo: gameA=pular  gameY=esquiva  gameX=bater  gameB=especial
+a = a      # A (baixo)    -> pular (+confirmar no menu)
+b = y      # B (direita)  -> esquiva
+x = x      # X (esquerda) -> bater
+y = b      # Y (cima)     -> especial
+l1 = l1
+r1 = r1
+l2 = l2
+r2 = r2
+select = select
+start = start
+l3 = l3
+r3 = r3

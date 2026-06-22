@@ -110,7 +110,8 @@ static jint jni_GetVersion(void *env) {
 
 static void *jni_FindClass(void *env, const char *name) {
   (void)env;
-  debugPrintf("jni: FindClass(%s)\n", name);
+  if (getenv("SOTN_VERBOSE"))
+    debugPrintf("jni: FindClass(%s)\n", name);
   static int fake_class;
   return &fake_class;
 }
@@ -154,7 +155,8 @@ static void *jni_GetStaticMethodID(void *env, void *clazz, const char *name,
                                    const char *sig) {
   (void)env;
   (void)clazz;
-  debugPrintf("jni: GetStaticMethodID(%s, %s)\n", name, sig);
+  if (getenv("SOTN_VERBOSE"))
+    debugPrintf("jni: GetStaticMethodID(%s, %s)\n", name, sig);
   return tag_for_method(name);
 }
 
