@@ -4,6 +4,8 @@ Framework pra **portar jogos Android (ARM64, NativeActivity) pra Linux ARM64 / N
 
 Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Linux, com uma camada de shim que finge ser Android (fake JNI, OpenSL ES→SDL2, EGL→SDL2, bionic→glibc). Mesma linhagem dos so-loaders de PSVita (TheFloW), adaptada pra Linux ARM64 + SDL2.
 
+> 📜 **Licença / créditos:** **qualquer um pode compilar e usar** este framework e os ports — **desde que dê os devidos créditos** ao autor (**felc18-blip / NextOS**). Use, modifique e redistribua à vontade, só mantenha a atribuição. Os jogos em si continuam sendo dos seus donos: tudo é **BYO-data** (você fornece o `.so`/dados do APK que **possui legalmente**).
+
 > ℹ️ **Isto NÃO são ports PortMaster.** Cada jogo aqui roda a **versão ANDROID** (o `.so` do APK) via **so-loader** — não um build Linux/PC. O empacotamento aproveita o framework do PortMaster **só pra lançar** (control.txt + gptokeyb pra controle/sair), mas o que executa por dentro é o binário Android. Ports PortMaster "de verdade" (de builds Linux) desses jogos, quando existem, são projetos separados.
 
 > ✅ **Provado no Mali-450 (Utgard):** os ports de referência **Syberia** (GLES1) e **LEGO Star Wars: TCS** (GLES2) rodam perfeitos. O caminho de render (so-loader + EGL→SDL2 + GLES) está validado no Utgard.
@@ -16,10 +18,13 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 > 🥊 **DESTAQUE — STREETS OF RAGE 4 (MonoGame/.NET 9) rodando NATIVO no Mali-450 (GLES2).** Diferente dos demais, este NÃO é so-loader: o runtime **.NET 9 CoreCLR** + **MonoGame compilado em GLES2** executam o código gerenciado do jogo direto, com um host próprio (`sor4host`) no lugar da `MainActivity`. Fluxo **jogável com áudio** — menu → seleção → fases, com a **música original (Wwise)** tocada por um reimpl OpenAL leve (troca limpa entre faixas) e SFX de combate. As texturas ASTC são convertidas pra **ETC1** na 1ª execução (BYO-data via APK). Leia [`ports/sor4/README.md`](ports/sor4/).
 
+> 🩸 **DESTAQUE — CASTLEVANIA: SYMPHONY OF THE NIGHT (悪魔城ドラキュラX 月下の夜想曲, DotEmu) rodando no Mali-450 (GLES2, fbdev).** Port feito **do zero** via so-loader do `libsotn.so` Android (**SDL2 2.0.8 estático, ES2 nativo**). Fluxo **completo e jogável COM SOM**: boot → tela de título (Alucard) → menu → novo jogo (entrada de nome) → **abertura "1792" + Alucard explorando o castelo**, com controle e áudio. EULA/saves persistem (pula a EULA no 2º boot). Leia [`ports/sotn/README.md`](ports/sotn/README.md): documenta os destraves — relocação **`R_AARCH64_ABS64`** de imports indefinidos (`malloc` ia pro header ELF → SIGILL), **canário bionic no TLS** (`tpidr_el0+0x28`, fix com `_Thread_local` pad igual Bully), **stdio `__sF`** bionic→glibc (wrappers `map_sf`), **assets case-insensitive** (OBB feito em FS case-insensitive), **áudio JNI AudioTrack → `pacat`/PulseAudio** (🔑 `audioOpen` retorna **0=sucesso**), e **controle normalizado no padrão Xbox + `.gptk` editável** (SELECT+START sai). BYO-data (APK da versão JP).
+
 ## Jogos portados
 | Jogo | Engine / método | Estado | Pasta |
 |---|---|---|---|
 | **Bully: Anniversary Edition** | so-loader (`libGame.so`) | ✅ **100% jogável** (Mali-450, GLES2) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
+| **Castlevania: Symphony of the Night** (DotEmu) | so-loader (SDL2 nativo ES2) | ✅ **jogável + áudio + controle** (Mali-450) — boot→título→menu→gameplay, save persiste, `.gptk` editável | [`ports/sotn`](ports/sotn/) |
 | **GTA: Vice City** (reVC) | so-loader 2-módulos | ✅ **100% jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
 | **Sonic Mania Plus** (RSDKv5) | so-loader | ✅ **100% jogável COM SOM** — título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
 | **Streets of Rage 4** | **MonoGame/.NET 9 NATIVO** (não so-loader) | ✅ **jogável + áudio validado** (Mali-450 GLES2) — música/SFX, texturas ETC1, BYO via APK | [`ports/sor4`](ports/sor4/) |
