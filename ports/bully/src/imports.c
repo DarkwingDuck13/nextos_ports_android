@@ -11,12 +11,512 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include "so_util.h"
 #include "jni_shim.h"
 #include "zip_fs.h"
+
+/* caminho do .tex atualmente aberto (chave da sidetable ETC1; setado em nv_open).
+ * Espelho do bk_last_bmp_name do dysmantle. */
+char bully_cur_tex_path[256];
+/* g_path_fresh: o path so e valido p/ a PROXIMA textura criada apos abrir o .tex.
+ * Cada criacao de textura (Storage/SubImage/Image2D) CONSOME a frescura na entrada.
+ * Assim, RENDER TARGETS (criados sem abrir .tex -> path stale) NAO recebem ETC2/ETC1
+ * -> nao viram textura comprimida -> FBO continua COMPLETO -> cena 3D renderiza.
+ * [RAIZ R36S "mundo 3D branco": RT herdava path stale, casava cache, virava ETC2 ->
+ *  FBO incompleto -> 3D nao compunha -> branco. ES2 nao tinha (upload ETC2 e ES3-only).] */
+int g_path_fresh = 0;
+void bully_set_tex_path(const char *p) {
+  if (!p) { bully_cur_tex_path[0] = '\0'; g_path_fresh = 0; return; }
+  size_t n = strlen(p); if (n >= sizeof(bully_cur_tex_path)) n = sizeof(bully_cur_tex_path) - 1;
+  memcpy(bully_cur_tex_path, p, n); bully_cur_tex_path[n] = '\0';
+  g_path_fresh = 1;
+}
+
+/* ANTI-STUTTER (R36S 1GB): a CAUSA dos engasgos = sob pressao de RAM o kernel DESCARTA paginas de
+ * CODIGO (file-backed das .so: libMali/GLES/libGame) e re-le do SD lento -> trava 300-500ms
+ * (majflt+1768/frame, assetKB~0, provado por instrumentacao). FIX: mlock o codigo executavel ->
+ * nao pode ser descartado -> some o re-fault do SD. Orcamento BULLY_MLOCK_CAP_MB (default 48) p/
+ * nao apertar a RAM a ponto de OOM. Chamado periodicamente (catch de .so carregadas tarde). */
+void bully_mlock_code(void) {
+  static int on = -1; if (on < 0) on = getenv("BULLY_MLOCK_CODE") ? 1 : 0;
+  if (!on) return;
+  static long budget = -1; if (budget < 0) { const char *c = getenv("BULLY_MLOCK_CAP_MB"); budget = (c ? atol(c) : 48) * 1024L * 1024L; }
+  static long locked_total = 0;
+  if (locked_total >= budget) return;
+  FILE *f = fopen("/proc/self/maps", "r"); if (!f) return;
+  char line[600];
+  while (fgets(line, sizeof line, f) && locked_total < budget) {
+    unsigned long a, b; char perms[8]; char path[400];
+    path[0] = 0;
+    if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %399[^\n]", &a, &b, perms, path) < 3) continue;
+    if (perms[2] != 'x') continue;                 /* so EXECUTAVEL (codigo) */
+    const char *p = path; while (*p == ' ') p++;
+    if (*p != '/') continue;                        /* so file-backed (.so do disco) */
+    if (b - a > 64UL * 1024 * 1024) continue;       /* pula regiao gigante */
+    if (mlock((void *)a, b - a) == 0) locked_total += (long)(b - a);
+  }
+  fclose(f);
+  static int logged = 0;
+  if (!logged && locked_total > 0) { fprintf(stderr, "[mlock] codigo travado=%ldKB (anti-stutter file-fault)\n", locked_total / 1024); logged = 1; }
+}
+
+/* ===================== CACHE ETC1 OFFLINE (bakeado, embarcado) =====================
+ * O engine decodifica o .tex (formato console tiled/swizzled, fechado) e sobe RGBA/16-bit
+ * via glTexImage2D -- e ele NAO tem caminho ETC1. Entao: bakeamos o ETC1 do NOSSO lado
+ * (BULLY_BAKE=1 captura os pixels decodificados full-res e grava por nome do asset) e
+ * embarcamos o cache no pacote (a textura e identica p/ todos -- mesmo APK 1.4.311).
+ * No device do usuario: so LE ETC1 pronto e sobe GL_ETC1_RGB8_OES (4x menos VRAM ->
+ * resolve o limite de MMU do Utgard) -- ZERO conversao/encode em runtime, zero engasgo.
+ * So texturas OPACAS 565 (sem alpha); 4444/8888/luminance caem no caminho original. */
+#include "etc1_encode.h"
+#define GL_ETC1_RGB8_OES 0x8D64
+static const char *bully_etc1_dir(void) {
+  static const char *d = NULL; static int got = 0;
+  if (!got) { d = getenv("BULLY_ETC1CACHE"); got = 1; }
+  return d;
+}
+static int bully_etc1_bake(void) { static int m = -1; if (m < 0) m = getenv("BULLY_BAKE") ? 1 : 0; return m; }
+/* META-RESOLUCAO (1GB): jogo inteiro a 1/2 res. O cache (etc2cache_half) tem o ETC2 ja em meia-res;
+ * aqui pedimos a chave meia-res e ALOCAMOS metade -> 4x menos GPU/RAM nas texturas grandes (cabe no R36S).
+ * bully_halfdim (def. em etc2_halve.c) decide quais halvam (>=64 e mult-de-8); resto fica cheio. */
+extern int bully_halfdim(int w, int h, int *hw, int *hh);
+static int bully_tex_halfall(void) { static int m = -1; if (m < 0) m = getenv("BULLY_TEX_HALFALL") ? 1 : 0; return m; }
+/* BULLY_ETC1_FORCE: usar ETC1 TAMBEM no KMSDRM (devices KMSDRM <=1.2GB, ex R36S 1GB, que
+ * PRECISAM da economia de VRAM). Nesses, tratamos a textura como no fbdev: MIN_FILTER=
+ * LINEAR + SEM mipmap (o cache ETC1 so tem o nivel base). Setado pelo launcher por RAM. */
+static int bully_etc1_force(void) { static int m = -1; if (m < 0) m = getenv("BULLY_ETC1_FORCE") ? 1 : 0; return m; }
+/* BULLY_TRILINEAR: TESTE de qualidade no fbdev/Mali-450 -- DESLIGA o ETC1 e deixa o
+ * trilinear+mipmaps do jogo passar (igual kmsdrm). Custa ~2.6x VRAM -> pode OOM em 1GB. */
+static int bully_trilinear(void) { static int m = -1; if (m < 0) m = getenv("BULLY_TRILINEAR") ? 1 : 0; return m; }
+/* TESTE: ligar mipmap tb nos RECORTES (arvores/cercas) -> some a cintilacao. Risco: halo preto na borda
+ * se a arte tiver alpha com RGB preto. Gate p/ A/B sem rebuild. */
+static int bully_cutout_mip(void) { static int m = -1; if (m < 0) m = getenv("BULLY_CUTOUT_MIP") ? 1 : 0; return m; }
+static void bully_etc1_key(char *out, size_t n, const char *path, int w, int h) {
+  char san[200]; size_t j = 0;
+  for (const char *p = path; *p && j < sizeof(san) - 1; p++) san[j++] = (*p == '/' || *p == '\\') ? '_' : *p;
+  san[j] = '\0';
+  snprintf(out, n, "%s/%s_%dx%d.etc1", bully_etc1_dir(), san, w, h);
+}
+/* 565 (u16 LE) -> RGB888 */
+static void bully_expand565(const unsigned char *s, int w, int h, unsigned char *rgb) {
+  for (int i = 0; i < w * h; i++) {
+    unsigned v = s[2*i] | (s[2*i+1] << 8);
+    rgb[3*i]   = (unsigned char)((((v >> 11) & 31) * 255 + 15) / 31);
+    rgb[3*i+1] = (unsigned char)((((v >> 5) & 63) * 255 + 31) / 63);
+    rgb[3*i+2] = (unsigned char)(((v & 31) * 255 + 15) / 31);
+  }
+}
+extern unsigned char *etc2_decode_rgba(unsigned, int, int, const void *, int);
+/* VERIFICACAO DE CONTEUDO (anti-roxo): decodifica ~24 blocos do ETC1 do cache e compara
+ * com os pixels 565 que o engine ia subir. MAD alto = o cache foi salvo no nome errado
+ * (corrida no bake) -> rejeita e usa a textura original. Igual o anti-magenta do dysmantle. */
+static int bully_etc1_verify(const unsigned char *blob, int w, int h, const unsigned char *px565) {
+  int bw = w / 4, bh = h / 4; if (bw <= 0 || bh <= 0 || !px565) return -1;
+  int gx = bw < 5 ? bw : 5, gy = bh < 5 ? bh : 5; long sum = 0, cnt = 0; int sampled = 0;
+  for (int iy = 0; iy < gy; iy++) for (int ix = 0; ix < gx; ix++) {
+    int bx = (int)((long)ix * (bw - 1) / (gx > 1 ? gx - 1 : 1));
+    int by = (int)((long)iy * (bh - 1) / (gy > 1 ? gy - 1 : 1));
+    unsigned char *dec = etc2_decode_rgba(0x9274, 4, 4, blob + ((long)by * bw + bx) * 8, 8);
+    if (!dec) continue; sampled++;
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+      long p = (long)(by * 4 + j) * w + (bx * 4 + i);
+      unsigned v = px565[2 * p] | (px565[2 * p + 1] << 8);
+      int sr = (((v >> 11) & 31) * 255 + 15) / 31, sg = (((v >> 5) & 63) * 255 + 31) / 63, sb = ((v & 31) * 255 + 15) / 31;
+      const unsigned char *d = dec + (j * 4 + i) * 4;
+      int dr = d[0] - sr, dg = d[1] - sg, db = d[2] - sb;
+      sum += (dr < 0 ? -dr : dr) + (dg < 0 ? -dg : dg) + (db < 0 ? -db : db); cnt += 3;
+    }
+    free(dec);
+  }
+  if (!sampled || !cnt) return -1;
+  return (int)(sum / cnt);
+}
+static unsigned (*real_glCompressedTexImage2D2)(unsigned, int, unsigned, int, int, int, int, const void *) = NULL;
+extern int bully_is_kmsdrm(void);
+/* retorna 1 se tratou (subiu ETC1 do cache, ou pulou mip de textura ja-ETC1). */
+static int bully_try_etc1(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur_cached = 0;            /* base atual virou ETC1? -> pula seus mips */
+  if (!bully_etc1_dir()) return 0;      /* cache desligado */
+  if (bully_trilinear()) return 0;      /* TESTE trilinear: sem ETC1 (RGBA+mips) */
+  if (bully_is_kmsdrm() && !bully_etc1_force()) return 0;  /* fbdev sempre; kmsdrm so com FORCE (low-RAM) */
+  if (lvl > 0) return cur_cached;       /* pula mips da textura cacheada */
+  cur_cached = 0;
+  if (type != 0x8363 || fmt != 0x1907) return 0;          /* SO 565 opaco (RGB) */
+  if (w < 64 || h < 64 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
+  if (!bully_cur_tex_path[0]) return 0;
+  char key[300]; bully_etc1_key(key, sizeof(key), bully_cur_tex_path, w, h);
+  size_t etcsz = (size_t)(w / 4) * (h / 4) * 8;
+  if (!real_glCompressedTexImage2D2) real_glCompressedTexImage2D2 = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  FILE *f = fopen(key, "rb");
+  if (f) {                              /* RUNTIME: sobe o ETC1 pronto */
+    unsigned char *buf = malloc(etcsz);
+    size_t r = buf ? fread(buf, 1, etcsz, f) : 0; fclose(f);
+    if (buf && r == etcsz && real_glCompressedTexImage2D2) {
+      /* anti-roxo: so sobe o ETC1 se ele BATE com a textura que o engine ia subir. */
+      static int vmax = -1; if (vmax < 0) { const char *e = getenv("BULLY_VERIFY_MAX"); vmax = e ? atoi(e) : 34; }
+      int mad = (px && type == 0x8363) ? bully_etc1_verify(buf, w, h, (const unsigned char *)px) : 0;
+      if (mad > vmax) {  /* cache no nome errado (corrida do bake) -> usa a original */
+        static int rj = 0; if (rj < 12) { fprintf(stderr, "[etc1] REJEITA '%s' %dx%d mad=%d (usa original)\n", bully_cur_tex_path, w, h, mad); rj++; }
+        free(buf); return 0;
+      }
+      real_glCompressedTexImage2D2(tgt, 0, GL_ETC1_RGB8_OES, w, h, 0, (int)etcsz, buf);
+      free(buf); cur_cached = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc1] up '%s' %dx%d\n", bully_cur_tex_path, w, h); up++; }
+      return 1;
+    }
+    free(buf); return 0;
+  }
+  if (bully_etc1_bake() && px) {        /* BAKE (nosso lado): encoda full-res e grava */
+    unsigned char *rgb = malloc((size_t)w * h * 3);
+    unsigned char *etc = malloc(etcsz);
+    if (rgb && etc) {
+      bully_expand565(px, w, h, rgb);
+      etc1_encode_image(rgb, w, h, 3, etc);
+      FILE *wf = fopen(key, "wb");
+      if (wf) { fwrite(etc, 1, etcsz, wf); fclose(wf); static int bk = 0; if (bk < 12) { fprintf(stderr, "[bake] '%s' %dx%d -> %zuB\n", bully_cur_tex_path, w, h, etcsz); bk++; } }
+    }
+    free(rgb); free(etc);
+  }
+  return 0;
+}
+
+/* ===================== ETC2 (GLES3: R36S/G31 e qualquer GLES3) =====================
+ * ETC2_RGBA8_EAC (0x9278): 4x menos VRAM que RGBA8888, COM alpha (vs ETC1 = so opaco) e resolucao
+ * CHEIA. Cobre o JOGO INTEIRO (opaco+recorte). G31 sobe nativo (zero decode em runtime). Resolve o
+ * R36S (481MB nao cabe nativo). Encoder = eac_encode_image_rgba (src/eac_encode.c, reusa etc1_encode).
+ * Gate: BULLY_ETC2CACHE + contexto ES3. Bake (BULLY_BAKE) encoda+grava; runtime so LE. */
+#define GL_COMPRESSED_RGBA8_ETC2_EAC 0x9278
+extern int bully_is_es3(void);
+extern void eac_encode_image_rgba(const unsigned char *rgba, int w, int h, int channels, unsigned char *out);
+static const char *bully_etc2_dir(void) { static const char *d; static int got; if (!got) { d = getenv("BULLY_ETC2CACHE"); got = 1; } return d; }
+static void bully_etc2_key(char *out, size_t n, const char *path, int w, int h) {
+  char san[200]; size_t j = 0;
+  for (const char *p = path; *p && j < sizeof(san) - 1; p++) san[j++] = (*p == '/' || *p == '\\') ? '_' : *p;
+  san[j] = '\0'; snprintf(out, n, "%s/%s_%dx%d.etc2", bully_etc2_dir(), san, w, h);
+}
+/* converte o que o engine sobe (565/8888/4444/5551) p/ RGBA8888 (input do EAC). 0 = formato nao suportado. */
+static int bully_to_rgba8888(const unsigned char *s, int w, int h, unsigned fmt, unsigned type, unsigned char *out) {
+  int n = w * h;
+  if (type == 0x1401 && fmt == 0x1908) { memcpy(out, s, (size_t)n * 4); return 1; }          /* RGBA8888 */
+  if (type == 0x8363) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8);  /* 565 RGB (alpha=255) */
+      out[4*i]=(((v>>11)&31)*255+15)/31; out[4*i+1]=(((v>>5)&63)*255+31)/63; out[4*i+2]=((v&31)*255+15)/31; out[4*i+3]=255; } return 1; }
+  if (type == 0x8033 && fmt == 0x1908) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8); /* 4444 */
+      out[4*i]=(((v>>12)&15)*255+7)/15; out[4*i+1]=(((v>>8)&15)*255+7)/15; out[4*i+2]=(((v>>4)&15)*255+7)/15; out[4*i+3]=((v&15)*255+7)/15; } return 1; }
+  if (type == 0x8034 && fmt == 0x1908) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8); /* 5551 */
+      out[4*i]=(((v>>11)&31)*255+15)/31; out[4*i+1]=(((v>>6)&31)*255+15)/31; out[4*i+2]=(((v>>1)&31)*255+15)/31; out[4*i+3]=(v&1)?255:0; } return 1; }
+  return 0;
+}
+static int bully_try_etc2(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur_cached = 0;
+  if (!bully_etc2_dir()) return 0;                     /* encode roda em qualquer GLES (CPU); upload exige ES3 */
+  if (lvl > 0) return cur_cached;                      /* pula mips da textura cacheada */
+  cur_cached = 0;
+  if (w < 8 || h < 8 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
+  if (!bully_cur_tex_path[0]) return 0;
+  char key[300]; bully_etc2_key(key, sizeof key, bully_cur_tex_path, w, h);
+  size_t sz = (size_t)(w / 4) * (h / 4) * 16;
+  static unsigned (*rCompr)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
+  static void (*rParam)(unsigned,unsigned,int) = NULL;
+  if (!rCompr) rCompr = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  if (!rParam) rParam = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  FILE *f = bully_is_es3() ? fopen(key, "rb") : NULL;  /* RUNTIME upload: SO em ES3 (GLES2 nao sobe ETC2) */
+  if (f) {                                             /* RUNTIME: sobe o ETC2 pronto */
+    unsigned char *buf = malloc(sz); size_t r = buf ? fread(buf, 1, sz, f) : 0; fclose(f);
+    if (buf && r == sz && rCompr) {
+      rCompr(tgt, 0, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, (int)sz, buf);
+      if (rParam) { rParam(tgt, 0x2801, 0x2601); rParam(tgt, 0x2800, 0x2601); } /* LINEAR */
+      free(buf); cur_cached = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc2] up '%s' %dx%d\n", bully_cur_tex_path, w, h); up++; }
+      return 1;
+    }
+    free(buf); return 0;
+  }
+  if (bully_is_es3() && !bully_etc1_bake()) {           /* DIAG: por que o mundo nao casa o cache? */
+    static int ms = 0; if (ms < 40) { fprintf(stderr, "[etc2] MISS '%s' %dx%d key=%s\n", bully_cur_tex_path, w, h, key); ms++; }
+  }
+  if (bully_etc1_bake() && px) {                        /* BAKE: encoda ETC2 (RGBA8/EAC) e grava */
+    unsigned char *rgba = malloc((size_t)w * h * 4);
+    unsigned char *etc = malloc(sz);
+    if (rgba && etc && bully_to_rgba8888(px, w, h, fmt, type, rgba)) {
+      eac_encode_image_rgba(rgba, w, h, 4, etc);
+      FILE *wf = fopen(key, "wb");
+      if (wf) { fwrite(etc, 1, sz, wf); fclose(wf); static int bk = 0; if (bk < 12) { fprintf(stderr, "[etc2-bake] '%s' %dx%d -> %zuB\n", bully_cur_tex_path, w, h, sz); bk++; } }
+    }
+    free(rgba); free(etc);
+  }
+  return 0;
+}
+
+/* ===================== PAGINACAO DE TEXTURA (resident-set / VM de textura) =====================
+ * O motor do Bully NUNCA despeja textura (provado: gen=1386 del=1). Na UMA do Mali, textura GL =
+ * RAM. Entao implementamos o despejo NOS: cada textura cacheada/swap vira "pageavel". A FONTE fica
+ * no SD (etc1cache/etc2cache/texswap). Acima do orcamento, despejamos a mais FRIA (re-define 1x1 ->
+ * libera a RAM, o id continua valido). Quando o motor RE-BINDA uma despejada (page fault), re-subimos.
+ * Gate: BULLY_PAGE=1 ; orcamento: BULLY_PAGE_CAP_MB (default 220). Diag: BULLY_PAGELOG=1. */
+extern long long g_texbytes_live;
+unsigned bully_g_texbytes(unsigned id);            /* fwd (def. junto do array g_texbytes) */
+void     bully_g_texbytes_set(unsigned id, unsigned b);
+static int bpp_of(unsigned fmt, unsigned type);    /* fwd (def. perto do my_glTexImage2D) */
+static char         *g_page_name[262144];   /* strdup do asset cacheado (kind=1/3) ~2MB */
+static unsigned char  g_page_kind[262144];  /* 0=nao-pageavel, 1=ETC1, 2=SWAP, 3=ETC2 */
+static unsigned short g_page_w[262144], g_page_h[262144];
+static unsigned char  g_page_present[262144];/* 1 = textura cheia carregada; 0 = despejada (1x1) */
+static unsigned       g_page_use[262144];   /* relogio LRU */
+static unsigned       g_page_clock = 0;
+static long long      g_page_resident = 0;  /* bytes PRESENTES (pageaveis) */
+static unsigned       g_page_list[40000]; static int g_page_n = 0; /* lista compacta de ids pageaveis */
+static long g_pf = 0, g_ev = 0;              /* contadores: page-faults / evicts */
+/* cabecalho do arquivo de swap (kind=2): re-upload precisa de w/h/formato */
+struct bully_swap_hdr { unsigned magic; int w, h, ifmt; unsigned ufmt, utype, bytes; };
+#define BULLY_SWAP_MAGIC 0xB0115A91u
+static const char *bully_swapdir(void){ static const char*d; static int got; if(!got){ d=getenv("BULLY_PAGE_SWAP"); got=1; } return d; }
+static int bully_paging(void){ static int m=-1; if(m<0)m=getenv("BULLY_PAGE")?1:0; return m; }
+static long long bully_page_cap(void){ static long long c=-1; if(c<0){ const char*e=getenv("BULLY_PAGE_CAP_MB"); c=(long long)(e?atoll(e):220)*1024*1024; } return c; }
+extern unsigned bully_g_texbytes(unsigned id);          /* getter (def. junto do array) */
+extern void     bully_g_texbytes_set(unsigned id, unsigned b);
+static void bully_texbytes_account(unsigned id, unsigned bytes) {
+  if (id >= 262144) return;
+  g_texbytes_live += (long long)bytes - bully_g_texbytes(id);
+  bully_g_texbytes_set(id, bytes);
+}
+static void bully_page_set_name(unsigned id, const char *name) {
+  if (!name || !name[0]) return;
+  if (!g_page_name[id] || strcmp(g_page_name[id], name) != 0) {
+    free(g_page_name[id]);
+    g_page_name[id] = strdup(name);
+  }
+}
+static void bully_page_register_cached(unsigned id, unsigned char kind, const char *name, int w, int h, unsigned bytes) {
+  if (!bully_paging() || id >= 262144 || !name || !name[0] || !bytes) return;
+  if (!g_page_kind[id] && g_page_n < 40000) g_page_list[g_page_n++] = id;  /* 1a vez na lista */
+  if (g_page_kind[id] == 2 && kind != 2 && bully_swapdir()) {
+    char p[320]; snprintf(p, sizeof p, "%s/%u.tx", bully_swapdir(), id); remove(p);
+  }
+  unsigned old = bully_g_texbytes(id);
+  int was_present = g_page_kind[id] && g_page_present[id];
+  bully_page_set_name(id, name);
+  g_page_kind[id] = kind;
+  g_page_w[id] = (unsigned short)w; g_page_h[id] = (unsigned short)h; g_page_use[id] = ++g_page_clock;
+  bully_texbytes_account(id, bytes);
+  g_page_resident += was_present ? (long long)bytes - old : (long long)bytes;
+  g_page_present[id] = 1;
+}
+/* registra uma textura ETC1 recem-subida como pageavel */
+static void bully_page_register(unsigned id, const char *name, int w, int h, unsigned etcsz) {
+  bully_page_register_cached(id, 1, name, w, h, etcsz);
+}
+/* registra uma textura ETC2 recem-subida como pageavel; sem paging, ao menos corrige o contador. */
+static void bully_page_register_etc2(unsigned id, const char *name, int w, int h, unsigned etcsz) {
+  if (bully_paging()) bully_page_register_cached(id, 3, name, w, h, etcsz);
+  else bully_texbytes_account(id, etcsz);
+}
+/* registra uma textura NAO-ETC1 (alpha/RGBA) como pageavel: grava os pixels num arquivo de swap no SD
+ * (fonte p/ re-upload) e marca kind=2. Render targets (px=NULL) e pequenas sao puladas pelo chamador. */
+static void bully_page_write_swap(unsigned id, int ifmt, int w, int h, unsigned ufmt, unsigned utype, const void *data) {
+  if (!bully_paging() || !bully_swapdir() || id >= 262144 || !data) return;
+  if (g_page_kind[id] == 1 || g_page_kind[id] == 3) return;  /* cache comprimido ja cuida */
+  int bpp = bpp_of(ufmt, utype); if (bpp <= 0) return;
+  size_t bytes = (size_t)w * h * bpp;
+  if (bytes < 96 * 1024) return;               /* pula texturas pequenas (<96KB) -- nao vale paginar */
+  char path[320]; snprintf(path, sizeof path, "%s/%u.tx", bully_swapdir(), id);
+  if (g_page_kind[id] != 2) {                  /* 1a vez: grava o swap (write-once) + entra na lista */
+    FILE *f = fopen(path, "wb");
+    if (f) { struct bully_swap_hdr hd = { BULLY_SWAP_MAGIC, w, h, ifmt, ufmt, utype, (unsigned)bytes };
+      fwrite(&hd, sizeof hd, 1, f); fwrite(data, 1, bytes, f); fclose(f); }
+    if (g_page_n < 40000) g_page_list[g_page_n++] = id;
+    g_page_kind[id] = 2;
+  }
+  g_page_w[id] = (unsigned short)w; g_page_h[id] = (unsigned short)h; g_page_use[id] = ++g_page_clock;
+  if (!g_page_present[id]) { g_page_present[id] = 1; g_page_resident += bully_g_texbytes(id); }
+}
+/* despeja as mais FRIAS ate voltar ao orcamento. 'keep'/'target' = a textura sendo usada agora
+ * (nao despejar; re-bindar no fim). Re-define 1x1 -> libera a RAM da textura grande. */
+static void bully_page_evict(unsigned target, unsigned keep) {
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (!rTexImg || !rBind) return;
+  static const unsigned char black[4] = {0,0,0,0};
+  int guard = 0;
+  while (g_page_resident > bully_page_cap() && guard++ < 4096) {
+    unsigned best = 0; unsigned bu = 0xffffffffu; int fi = -1;
+    for (int i = 0; i < g_page_n; i++) { unsigned id = g_page_list[i];
+      if (id == keep || !g_page_present[id] || bully_g_texbytes(id) == 0) continue; /* pula a atual e as JA-despejadas (1x1) -- senao thrash em "cadaveres" de 3 bytes */
+      if (g_page_use[id] < bu) { bu = g_page_use[id]; best = id; fi = i; } }
+    if (fi < 0) break;                                            /* nada pra despejar */
+    long long b = bully_g_texbytes(best);                         /* bytes residentes (ETC1 ou SWAP) */
+    rBind(0x0DE1, best);
+    rTexImg(0x0DE1, 0, 0x1907, 1, 1, 0, 0x1907, 0x1401, black);   /* RGB 1x1 -> libera a grande */
+    g_texbytes_live += 3 - b; bully_g_texbytes_set(best, 3);      /* agora ocupa ~3 bytes */
+    g_page_resident -= b; g_page_present[best] = 0; g_ev++;       /* despejada */
+  }
+  rBind(target, keep);                                            /* restaura o bind do motor */
+}
+/* ===================== STREAMING ASSINCRONO (estilo GTA: pop-in, sem freeze) =====================
+ * O re-upload SINCRONO do SD (ler arquivo no meio do frame) CONGELA com cap agressivo. Solucao: uma
+ * thread de fundo le o SD (ZERO GL -- so file I/O) e enfileira o buffer pronto; a render thread sobe
+ * o GL no proximo bind (pop-in de 1-2 frames). GL SO na render thread (contexto unico).
+ * Gate: BULLY_PAGE_ASYNC=1. Sem ele, cai no caminho sincrono (fallback abaixo).
+ * forward p/ o bind corrente do motor (def. real mais adiante, mesmo objeto de linkage interno). */
+static unsigned g_cur_tex2d;
+static unsigned char g_tex_alpha[262144]; /* forward: textura tem ALPHA/recorte (def. real adiante) -> trilinear=LINEAR */
+/* pedido (render->worker): snapshot dos metadados sob lock p/ o worker NAO tocar globais compartilhados
+ * (g_page_name pode ser free()ado pelo my_glDeleteTextures na render thread). */
+struct page_req   { unsigned id; unsigned char kind; int w, h; char name[256]; };
+/* buffer pronto (worker->render): pixels lidos do SD, prontos p/ subir no GL. */
+struct page_ready { unsigned id; unsigned char *buf; int w, h; int ifmt; unsigned ufmt, utype, bytes; unsigned char kind; };
+#define PAGE_RING 4096
+static struct page_req   g_req_ring[PAGE_RING]; static int g_req_head = 0, g_req_tail = 0; /* tail=produz, head=consome */
+static struct page_ready g_ready[PAGE_RING];    static int g_ready_n = 0;
+static unsigned char     g_page_req[262144];    /* 1 = pedido em voo (enfileirado/lendo/pronto) -- nao duplicar */
+static struct page_ready g_drain_buf[PAGE_RING];/* copia-out da drenagem (render thread, single-thread) */
+static pthread_mutex_t g_page_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_page_cv  = PTHREAD_COND_INITIALIZER;
+static pthread_t g_page_thr; static int g_page_thr_on = 0;        /* 0=nao iniciado, 1=rodando, -1=falhou(sync) */
+static int bully_async(void){ static int m=-1; if(m<0)m=getenv("BULLY_PAGE_ASYNC")?1:0; return m; }
+
+/* === SO I/O (pode rodar no worker) === le o arquivo do SD pro buffer. Devolve 1 + out preenchido (buf malloc). */
+static int page_req_read(const struct page_req *rq, struct page_ready *out) {
+  if (rq->kind == 1 || rq->kind == 3) {                          /* ETC1/ETC2 (cache por nome) */
+    char key[300];
+    size_t sz;
+    if (rq->kind == 1) { bully_etc1_key(key, sizeof key, rq->name, rq->w, rq->h); sz = (size_t)(rq->w/4) * (rq->h/4) * 8; }
+    else { if (!bully_etc2_dir()) return 0; bully_etc2_key(key, sizeof key, rq->name, rq->w, rq->h); sz = (size_t)(rq->w/4) * (rq->h/4) * 16; }
+    FILE *f = fopen(key, "rb"); if (!f) return 0;
+    unsigned char *buf = malloc(sz); size_t r = buf ? fread(buf, 1, sz, f) : 0; fclose(f);
+    if (!buf || r != sz) { free(buf); return 0; }
+    out->id=rq->id; out->buf=buf; out->w=rq->w; out->h=rq->h; out->ifmt=0; out->ufmt=0; out->utype=0; out->bytes=(unsigned)sz; out->kind=rq->kind;
+    return 1;
+  } else if (rq->kind == 2 && bully_swapdir()) {                 /* SWAP cru (arquivo por id, com cabecalho) */
+    char path[320]; snprintf(path, sizeof path, "%s/%u.tx", bully_swapdir(), rq->id);
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    struct bully_swap_hdr hd; if (fread(&hd, sizeof hd, 1, f) != 1 || hd.magic != BULLY_SWAP_MAGIC) { fclose(f); return 0; }
+    unsigned char *buf = malloc(hd.bytes); size_t r = buf ? fread(buf, 1, hd.bytes, f) : 0; fclose(f);
+    if (!buf || r != hd.bytes) { free(buf); return 0; }
+    out->id=rq->id; out->buf=buf; out->w=hd.w; out->h=hd.h; out->ifmt=hd.ifmt; out->ufmt=hd.ufmt; out->utype=hd.utype; out->bytes=hd.bytes; out->kind=2;
+    return 1;
+  }
+  return 0;
+}
+/* === SO GL (render thread) === sobe o buffer pronto no GL. Binda o id, sobe, filtro LINEAR, contabiliza. */
+static void page_upload(const struct page_ready *pr) {
+  static unsigned (*rCompr)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rParam)(unsigned,unsigned,int) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rCompr)  rCompr  = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rParam)  rParam  = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  unsigned id = pr->id;
+  if (rBind) rBind(0x0DE1, id);
+  if (pr->kind == 1 || pr->kind == 3) {
+    unsigned cf = (pr->kind == 3) ? GL_COMPRESSED_RGBA8_ETC2_EAC : 0x8D64;
+    if (rCompr) rCompr(0x0DE1, 0, cf, pr->w, pr->h, 0, (int)pr->bytes, pr->buf);
+  } else {
+    if (rTexImg) rTexImg(0x0DE1, 0, pr->ifmt, pr->w, pr->h, 0, pr->ufmt, pr->utype, pr->buf);
+  }
+  /* re-upload subiu so o nivel 0. Se TRILINEAR (e nao for recorte/alpha), REGENERA a cadeia de
+   * mip + filtro trilinear -- senao GLES amostra niveis inexistentes = PRETO. kind=2 (nativo) so. */
+  int trimip = (pr->kind == 2) && bully_trilinear() && (bully_cutout_mip() || !(id < 262144 && g_tex_alpha[id]));
+  if (trimip) {
+    static void (*rGenMip)(unsigned) = NULL;
+    if (!rGenMip) rGenMip = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+    if (rGenMip) rGenMip(0x0DE1);
+    if (rParam) { rParam(0x0DE1, 0x2801, 0x2703); rParam(0x0DE1, 0x2800, 0x2601); } /* min=LINEAR_MIPMAP_LINEAR mag=LINEAR */
+  } else if (rParam) { rParam(0x0DE1, 0x2801, 0x2601); rParam(0x0DE1, 0x2800, 0x2601); } /* LINEAR (sem mip) */
+  g_texbytes_live += (long long)pr->bytes - bully_g_texbytes(id); bully_g_texbytes_set(id, pr->bytes);
+  g_page_resident += pr->bytes; g_page_present[id] = 1; g_pf++;
+}
+/* page fault SINCRONO (fallback async OFF): le + sobe na hora (BINDADA agora; target sempre GL_TEXTURE_2D). */
+static void bully_page_fault(unsigned target, unsigned id) {
+  (void)target;
+  struct page_req rq; rq.id = id; rq.kind = g_page_kind[id]; rq.w = g_page_w[id]; rq.h = g_page_h[id];
+  if ((rq.kind == 1 || rq.kind == 3) && g_page_name[id]) { strncpy(rq.name, g_page_name[id], sizeof rq.name - 1); rq.name[sizeof rq.name - 1] = '\0'; }
+  else rq.name[0] = '\0';
+  struct page_ready pr;
+  if (page_req_read(&rq, &pr)) { page_upload(&pr); free(pr.buf); }  /* binda id e o deixa bindado (== o motor acabou de bindar) */
+}
+/* worker: dorme no cond; acorda, tira um pedido, LE o arquivo (so I/O), poe na lista pronto. Nunca toca GL. */
+static void *page_worker(void *arg) {
+  (void)arg;
+  for (;;) {
+    struct page_req rq;
+    pthread_mutex_lock(&g_page_mtx);
+    while (g_req_head == g_req_tail) pthread_cond_wait(&g_page_cv, &g_page_mtx);
+    rq = g_req_ring[g_req_head]; g_req_head = (g_req_head + 1) % PAGE_RING;
+    pthread_mutex_unlock(&g_page_mtx);
+    struct page_ready pr;
+    if (page_req_read(&rq, &pr)) {
+      pthread_mutex_lock(&g_page_mtx);
+      if (g_ready_n < PAGE_RING) g_ready[g_ready_n++] = pr; else free(pr.buf); /* lista cheia: descarta (re-pedido depois) */
+      pthread_mutex_unlock(&g_page_mtx);
+    } else {                                                      /* leitura falhou (arquivo sumiu/delete) -> libera p/ re-pedir */
+      pthread_mutex_lock(&g_page_mtx);
+      if (rq.id < 262144) g_page_req[rq.id] = 0;
+      pthread_mutex_unlock(&g_page_mtx);
+    }
+  }
+  return NULL;
+}
+/* render thread: enfileira um pedido (snapshot dos metadados sob lock) e sinaliza o worker. */
+static void page_enqueue(unsigned id) {
+  pthread_mutex_lock(&g_page_mtx);
+  if (!g_page_req[id]) {
+    int nt = (g_req_tail + 1) % PAGE_RING;
+    if (nt != g_req_head) {                                      /* ring nao cheio */
+      struct page_req *rq = &g_req_ring[g_req_tail];
+      rq->id = id; rq->kind = g_page_kind[id]; rq->w = g_page_w[id]; rq->h = g_page_h[id];
+      if ((rq->kind == 1 || rq->kind == 3) && g_page_name[id]) { strncpy(rq->name, g_page_name[id], sizeof rq->name - 1); rq->name[sizeof rq->name - 1] = '\0'; }
+      else rq->name[0] = '\0';
+      g_req_tail = nt; g_page_req[id] = 1;
+      pthread_cond_signal(&g_page_cv);
+    }
+  }
+  pthread_mutex_unlock(&g_page_mtx);
+}
+/* render thread: sobe no GL tudo que o worker ja leu. So sobe se ainda valido (kind bate) e despejado. */
+static void page_drain(void) {
+  int n;
+  pthread_mutex_lock(&g_page_mtx);
+  n = g_ready_n; for (int i = 0; i < n; i++) g_drain_buf[i] = g_ready[i]; g_ready_n = 0;
+  pthread_mutex_unlock(&g_page_mtx);
+  if (!n) return;
+  unsigned saved = g_cur_tex2d;
+  for (int i = 0; i < n; i++) {
+    struct page_ready *pr = &g_drain_buf[i]; unsigned id = pr->id;
+    if (id < 262144 && g_page_kind[id] == pr->kind && !g_page_present[id]) page_upload(pr); /* motor pode ter deletado/reusado/ja-subido */
+    free(pr->buf);
+  }
+  pthread_mutex_lock(&g_page_mtx);
+  for (int i = 0; i < n; i++) if (g_drain_buf[i].id < 262144) g_page_req[g_drain_buf[i].id] = 0; /* pedido concluido */
+  pthread_mutex_unlock(&g_page_mtx);
+  static void (*rBind)(unsigned,unsigned) = NULL; if (!rBind) rBind = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (rBind) rBind(0x0DE1, saved);                              /* restaura o bind do motor */
+}
+/* chamado do my_glBindTexture: toca o LRU, atende page fault (async ou sync), e despeja se acima do orcamento. */
+void bully_page_on_bind(unsigned target, unsigned id) {
+  if (!bully_paging() || target != 0x0DE1 || id >= 262144 || !g_page_kind[id]) return;
+  g_page_use[id] = ++g_page_clock;
+  if (bully_async()) {
+    if (g_page_thr_on == 0) g_page_thr_on = (pthread_create(&g_page_thr, NULL, page_worker, NULL) == 0) ? 1 : -1;
+    if (g_page_thr_on == 1) {
+      if (!g_page_present[id]) page_enqueue(id);                 /* pop-in: NAO sobe agora -- fica 1x1 ate o worker ler */
+      page_drain();                                             /* sobe o que o worker ja leu */
+    } else if (!g_page_present[id]) bully_page_fault(target, id);/* thread falhou -> sincrono */
+  } else if (!g_page_present[id]) bully_page_fault(target, id);  /* async OFF -> sincrono (comportamento antigo) */
+  if (g_page_resident > bully_page_cap()) bully_page_evict(target, id);
+  if (getenv("BULLY_PAGELOG")) { static long c=0; if ((c++ % 600)==0)
+    fprintf(stderr, "[page] resident=%lldMB cap=%lldMB pf=%ld ev=%ld pageaveis=%d ready=%d\n",
+            g_page_resident/(1024*1024), bully_page_cap()/(1024*1024), g_pf, g_ev, g_page_n, g_ready_n); }
+}
 
 /* ---- bionic libc bridges ---- */
 static int *bionic___errno(void) { extern int *__errno_location(void); return __errno_location(); }
@@ -209,13 +709,27 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str, co
   if (real_glShaderSource) real_glShaderSource(sh, 1, &one, NULL);
   free(s1);
 }
+/* forward (defs reais mais adiante): usados aqui no my_glTexParameteri */
+#define RESMAP 262144
+static unsigned char g_tex_alpha[RESMAP];   /* textura tem ALPHA (recorte) -> trilinear=LINEAR (sem halo preto) */
+static unsigned char g_tex_emul[RESMAP];    /* fwd: 1 = alocada via glTexStorage2D emulado (SO nivel 0, sem mips) */
+static unsigned g_cur_tex2d;
 static void (*real_glTexParameteri)(unsigned, unsigned, int) = NULL;
 static void my_glTexParameteri(unsigned target, unsigned pname, int param) {
   if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
   if (pname == 0x813D) return;                                  /* GL_TEXTURE_MAX_LEVEL: inexistente em GLES2 */
   /* fbdev (Mali-450): mipmap filter -> GL_LINEAR (Utgard sem mipmap = preto).
    * kmsdrm (G310): deixa o trilinear do jogo passar (mipmaps gerados no glTexImage2D). */
-  if (!bully_is_kmsdrm() && (pname == 0x2801 || pname == 0x2800) && param >= 0x2700 && param <= 0x2703)
+  int fl = 0;
+  if (!bully_trilinear()) { if (!bully_is_kmsdrm() || bully_etc1_force()) fl = 1; }       /* fbdev/etc1: sempre LINEAR */
+  else if (g_cur_tex2d < RESMAP && g_tex_alpha[g_cur_tex2d] && !bully_cutout_mip()) fl = 1; /* trilinear: recorte = LINEAR (a menos que CUTOUT_MIP) */
+  /* GLES3 (R36S/kmsdrm): texturas emuladas via glTexStorage2D so tem o NIVEL 0 (a emulacao
+   * nao gera mips; ETC2 comprimido nem pode). O motor seta MIN_FILTER mipmapado nas opacas
+   * 3D (personagens/mundo) -> textura INCOMPLETA -> amostra BRANCO. Forca LINEAR nelas.
+   * (O comentario antigo "kmsdrm: mips gerados no glTexImage2D" so vale p/ o path glTexImage2D,
+   *  NAO p/ a emulacao glTexStorage2D do R36S -> era a RAIZ do "personagens/mundo brancos".) */
+  if (g_cur_tex2d < RESMAP && g_tex_emul[g_cur_tex2d]) fl = 1;
+  if (fl && (pname == 0x2801 || pname == 0x2800) && param >= 0x2700 && param <= 0x2703)
     param = 0x2601;
   if (real_glTexParameteri) real_glTexParameteri(target, pname, param);
 }
@@ -288,8 +802,10 @@ long long g_texbytes_live = 0;
 /* medicao p/ decidir halving SELETIVO: full-bytes (em res cheia) das texturas que
  * o TEX_HALF reduz, separadas por classe. delta de manter 512 cheias = 3/4 do full. */
 long long g_half512_full = 0, g_half1024_full = 0; long g_half512_cnt = 0, g_half1024_cnt = 0;
-#define RESMAP 262144
+/* RESMAP + g_tex_alpha declarados acima (antes do my_glTexParameteri) */
 static unsigned g_texbytes[RESMAP];   /* bytes correntes por id de textura */
+unsigned bully_g_texbytes(unsigned id) { return id < RESMAP ? g_texbytes[id] : 0; }
+void bully_g_texbytes_set(unsigned id, unsigned b) { if (id < RESMAP) g_texbytes[id] = b; }
 static unsigned g_rbbytes[RESMAP];    /* idem renderbuffer */
 static unsigned char g_half_seen[RESMAP]; /* medicao: id ja contado no tally do halving */
 static unsigned g_cur_tex2d = 0, g_cur_rb = 0;
@@ -310,10 +826,12 @@ static long tex_chain_bytes(unsigned ifmt, int w, int h, int levels) {
   return t;
 }
 static void (*real_glBindTexture)(unsigned, unsigned) = NULL;
+extern void bully_page_on_bind(unsigned target, unsigned id);
 static void my_glBindTexture(unsigned target, unsigned tex) {
   if (target == 0x0DE1) g_cur_tex2d = tex;   /* GL_TEXTURE_2D */
   if (!real_glBindTexture) real_glBindTexture = dlsym(RTLD_DEFAULT, "glBindTexture");
   if (real_glBindTexture) real_glBindTexture(target, tex);
+  bully_page_on_bind(target, tex);           /* PAGINACAO: LRU + page-fault + despejo (gated BULLY_PAGE) */
 }
 static void (*real_glGenTextures)(int, unsigned*) = NULL;
 static void my_glGenTextures(int n, unsigned *ids) {
@@ -324,7 +842,16 @@ static void my_glGenTextures(int n, unsigned *ids) {
 static void (*real_glDeleteTextures)(int, const unsigned*) = NULL;
 static void my_glDeleteTextures(int n, const unsigned *ids) {
   for (int i = 0; ids && i < n; i++) { unsigned id = ids[i];
-    if (id < RESMAP) { g_texbytes_live -= g_texbytes[id]; g_texbytes[id] = 0; } }
+    if (id < RESMAP) {
+      if (g_page_kind[id]) {   /* PAGINACAO: motor deletou uma pageavel -> limpa estado (id pode ser reusado) */
+        if (g_page_present[id]) g_page_resident -= (long long)bully_g_texbytes(id);
+        if (g_page_kind[id] == 2 && bully_swapdir()) {   /* apaga o arquivo de swap (id sera reusado) */
+          char p[320]; snprintf(p, sizeof p, "%s/%u.tx", bully_swapdir(), id); remove(p);
+        }
+        if (g_page_name[id]) { free(g_page_name[id]); g_page_name[id] = NULL; }
+        g_page_kind[id] = 0; g_page_present[id] = 0; g_page_req[id] = 0; /* async: pedido em voo se auto-descarta no drain (kind!=) */
+      }
+      g_texbytes_live -= g_texbytes[id]; g_texbytes[id] = 0; } }
   if (!real_glDeleteTextures) real_glDeleteTextures = dlsym(RTLD_DEFAULT, "glDeleteTextures");
   if (real_glDeleteTextures) real_glDeleteTextures(n, ids);
   g_tex_live -= n; g_tex_del += n;
@@ -379,22 +906,79 @@ void bully_resource_report(void) {
           g_half1024_cnt, g_half1024_full/(1024*1024), (g_half1024_full*3/4)/(1024*1024));
 }
 
-/* glTexStorage2D (GLES3) — a camisa do Jimmy pode vir por aqui (não pelo
- * glTexImage2D). Loga formato/níveis. */
+/* ES3 (R36S/G31): o motor usa glTexStorage2D (IMUTAVEL) + glTexSubImage2D em vez de glTexImage2D.
+ * Pra o pipeline (ETC2/streaming/despejo) funcionar no R36S, EMULAMOS o storage com glTexImage2D
+ * (MUTAVEL, nivel 0) -> a textura vira EVICTAVEL (re-spec 1x1) + encodavel (ETC2). Sem isso as
+ * texturas acumulam na GPU -> Mali GPU OOM (can_alloc_page) -> bully morre. [RAIZ R36S 2026-06-21] */
+static unsigned char g_tex_emul[RESMAP];        /* 1 = alocada via glTexStorage2D emulado (mutavel) */
+static unsigned char g_tex_etc2[RESMAP];        /* 1 = ja subiu ETC2 do cache no storage -> ignora o SubImage RGBA */
+static int g_tex_emul_ifmt[RESMAP];             /* internalformat do glTexImage2D (p/ re-upload do paging) */
+/* mapeia internalformat SIZED (ES3) -> (internalformat, fmt, type) do glTexImage2D. 0 = desconhecido. */
+static int bully_sized_to_fmt(unsigned s, int *gli, unsigned *fmt, unsigned *type) {
+  switch (s) {
+    case 0x8058: *gli=0x1908; *fmt=0x1908; *type=0x1401; return 1; /* RGBA8 -> RGBA/UBYTE */
+    case 0x8051: *gli=0x1907; *fmt=0x1907; *type=0x1401; return 1; /* RGB8 -> RGB/UBYTE */
+    case 0x8056: *gli=0x1908; *fmt=0x1908; *type=0x8033; return 1; /* RGBA4 -> RGBA/4444 */
+    case 0x8057: *gli=0x1908; *fmt=0x1908; *type=0x8034; return 1; /* RGB5_A1 -> RGBA/5551 */
+    case 0x8d62: *gli=0x1907; *fmt=0x1907; *type=0x8363; return 1; /* RGB565 -> RGB/565 */
+    default: return 0;
+  }
+}
 static void (*real_glTexStorage2D)(unsigned, int, unsigned, int, int) = NULL;
 static void my_glTexStorage2D(unsigned t, int levels, unsigned ifmt, int w, int h) {
   if (!real_glTexStorage2D) real_glTexStorage2D = dlsym(RTLD_DEFAULT, "glTexStorage2D");
-  static int n = 0;
-  if (n < 30) { fprintf(stderr, "[tex] STORAGE levels=%d ifmt=0x%x %dx%d\n", levels, ifmt, w, h); n++; }
-  { long b = tex_chain_bytes(ifmt, w, h, levels);
-    if (g_cur_tex2d < RESMAP) { g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b; } }
+  int pf = g_path_fresh; g_path_fresh = 0;   /* consome a frescura: so a 1a textura apos o .tex e asset; RT = pf 0 */
+  static int n = 0; if (n < 8) { fprintf(stderr, "[tex] STORAGE levels=%d ifmt=0x%x %dx%d\n", levels, ifmt, w, h); n++; }
+  int gli; unsigned fmt, type;
+  if (t == 0x0DE1 && g_cur_tex2d < RESMAP && w >= 4 && h >= 4 && bully_sized_to_fmt(ifmt, &gli, &fmt, &type)) {
+    /* RUNTIME: se tem ETC2 no cache, sobe ETC2 JÁ AQUI (alocação PEQUENA desde o início, sem rajada RGBA8
+     * que estoura a GPU). No bake o .etc2 ainda não existe -> cai no RGBA8 mutável + encoda no SubImage.
+     * pf=0 (render target / path stale) -> NUNCA ETC2 aqui -> RT continua renderavel (FBO completo). */
+    int hw = w, hh = h;
+    if (pf && bully_tex_halfall()) bully_halfdim(w, h, &hw, &hh);  /* 1GB: aloca metade (ETC2 meia-res do cache half) */
+    if (pf && bully_try_etc2(t, 0, hw, hh, 0, 0, NULL)) {
+      g_tex_emul[g_cur_tex2d] = 1; g_tex_etc2[g_cur_tex2d] = 1;
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, hw, hh, (unsigned)((size_t)(hw/4)*(hh/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+      return;
+    }
+    if (bully_paging() && g_page_resident > bully_page_cap())  /* despeja ANTES de alocar (libera GPU p/ a nova) */
+      bully_page_evict(t, g_cur_tex2d);
+    static void (*rImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+    if (!rImg) rImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+    if (rImg) rImg(t, 0, gli, w, h, 0, fmt, type, NULL); /* MUTAVEL nivel 0 */
+    g_tex_emul[g_cur_tex2d] = 1; g_tex_etc2[g_cur_tex2d] = 0; g_tex_emul_ifmt[g_cur_tex2d] = gli;
+    { static void(*rP)(unsigned,unsigned,int)=NULL; if(!rP)rP=dlsym(RTLD_DEFAULT,"glTexParameteri");
+      if(rP){ rP(t,0x2801,0x2601); rP(t,0x2800,0x2601); } } /* LINEAR (sem mip) */
+    int bb = bpp_of(fmt,type); long b = bb>0 ? (long)w*h*bb : 0;
+    if (b>0) { g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d]=b; }
+    return;
+  }
+  if (g_cur_tex2d < RESMAP) { g_tex_emul[g_cur_tex2d] = 0; g_tex_etc2[g_cur_tex2d] = 0;
+    long b = tex_chain_bytes(ifmt, w, h, levels); g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b; }
   if (real_glTexStorage2D) real_glTexStorage2D(t, levels, ifmt, w, h);
 }
 static void (*real_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
 static void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsigned fmt,unsigned type,const void*px) {
   if (!real_glTexSubImage2D) real_glTexSubImage2D = dlsym(RTLD_DEFAULT, "glTexSubImage2D");
-  static int n = 0;
-  if (n < 30 && l == 0) { fprintf(stderr, "[tex] SUB fmt=0x%x type=0x%x %dx%d\n", fmt, type, w, h); n++; }
+  int pf = (l == 0) ? g_path_fresh : 0; if (l == 0) g_path_fresh = 0;  /* consome a frescura no nivel 0 */
+  static int n = 0; if (n < 8 && l == 0) { fprintf(stderr, "[tex] SUB fmt=0x%x type=0x%x %dx%d\n", fmt, type, w, h); n++; }
+  if (t == 0x0DE1 && g_cur_tex2d < RESMAP && g_tex_etc2[g_cur_tex2d]) return; /* ja e ETC2 (subido no storage) -> ignora os pixels RGBA */
+  /* textura EMULADA (mutavel) + nivel 0 + imagem inteira -> ROTA PELO PIPELINE (ETC2 + streaming) */
+  if (t == 0x0DE1 && l == 0 && xo == 0 && yo == 0 && g_cur_tex2d < RESMAP && g_tex_emul[g_cur_tex2d] && px) {
+    if (pf && bully_try_etc2(t, 0, w, h, fmt, type, px)) {       /* runtime: re-spec p/ ETC2 (mutavel) e pula; pf=0 RT -> nao ETC2 */
+      g_tex_etc2[g_cur_tex2d] = 1;
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+      return;
+    }
+    if (real_glTexSubImage2D) real_glTexSubImage2D(t, l, xo, yo, w, h, fmt, type, px); /* bake: sobe RGBA na mutavel */
+    bully_page_write_swap(g_cur_tex2d, g_tex_emul_ifmt[g_cur_tex2d], w, h, fmt, type, px); /* registra p/ despejo */
+    if (bully_paging() && g_page_resident > bully_page_cap())  /* DESPEJA NA HORA (rajada do boot enche a GPU antes do bind) */
+      bully_page_evict(t, g_cur_tex2d);
+    return;
+  }
+  if (g_cur_tex2d < RESMAP && l > 0 && g_tex_emul[g_cur_tex2d]) return; /* emulada=so nivel 0 (LINEAR); pula mips */
   if (real_glTexSubImage2D) real_glTexSubImage2D(t,l,xo,yo,w,h,fmt,type,px);
 }
 /* status do FBO (render-to-texture da roupa) — se INCOMPLETO no Mali, a textura
@@ -497,13 +1081,60 @@ static void (*real_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, un
 static void (*real_glGenerateMipmap)(unsigned) = NULL;
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int bord, unsigned fmt, unsigned type, const void *px) {
   if (!real_glTexImage2D) real_glTexImage2D = dlsym(RTLD_DEFAULT, "glTexImage2D");
-  if (g_tex_half < 0) g_tex_half = getenv("BULLY_TEX_HALF") ? 1 : 0;
+  int pf = (lvl == 0) ? g_path_fresh : 0; if (lvl == 0) g_path_fresh = 0; /* consome frescura: RT (px=NULL, path stale) -> pf=0 -> sem ETC2/ETC1 */
+  if (g_tex_half < 0) g_tex_half = (getenv("BULLY_TEX_HALF") && !bully_paging()) ? 1 : 0; /* FASE 2: paginando = NATIVO full-res (sem downscale) */
+  /* GROUND-TRUTH p/ a sidetable ETC1: casa nome do .tex <-> upload real. */
+  if (getenv("BULLY_TEXDIAG")) {
+    static int td = 0;
+    if (td < 400) { fprintf(stderr, "[texdiag] '%s' lvl=%d %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%d\n",
+        bully_cur_tex_path[0] ? bully_cur_tex_path : "(none)", lvl, w, h, ifmt, fmt, type, px ? 1 : 0); td++; }
+  }
+  /* DUMP os pixels DECODIFICADOS pelo engine (ground-truth p/ crackear o .tex offline).
+   * BULLY_DUMPTEX=substring -> grava /tmp/bullydump/<basename>_L<lvl>_<w>x<h>_t<type>.bin */
+  { const char *want = getenv("BULLY_DUMPTEX");
+    if (want && want[0] && px && bully_cur_tex_path[0] && strstr(bully_cur_tex_path, want)) {
+      int bb = bpp_of(fmt, type); if (bb <= 0) bb = 4;
+      const char *bn = strrchr(bully_cur_tex_path, '/'); bn = bn ? bn+1 : bully_cur_tex_path;
+      char fn[256]; snprintf(fn, sizeof(fn), "/tmp/bullydump/%s_L%d_%dx%d_t%x.bin", bn, lvl, w, h, type);
+      mkdir("/tmp/bullydump", 0777);
+      FILE *df = fopen(fn, "wb");
+      if (df) { fwrite(px, 1, (size_t)w*h*bb, df); fclose(df); fprintf(stderr, "[dumptex] %s (%d bytes)\n", fn, w*h*bb); }
+    }
+  }
   /* leak-track: bytes do nível 0 da textura 2D corrente (RTT geralmente vem por aqui c/ px=NULL) */
   if (lvl == 0 && g_cur_tex2d < RESMAP) {
     int bb = bpp_of(fmt, type); if (bb <= 0) bb = 4;
     long b = (long)(w > 0 ? w : 1) * (h > 0 ? h : 1) * bb;
     g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b;
   }
+  /* ETC2 (GLES3): cobre o JOGO INTEIRO (opaco+alpha), 4x menos VRAM, full-res. ANTES do ETC1.
+   * Runtime: sobe ETC2 e PULA o resto. Bake: encoda+grava e segue normal (renderiza p/ force-render). */
+  int hw2 = w, hh2 = h;
+  if (lvl == 0 && pf && bully_tex_halfall()) bully_halfdim(w, h, &hw2, &hh2);  /* 1GB: meia-res */
+  if ((lvl > 0 || pf) && bully_try_etc2(tgt, lvl, hw2, hh2, fmt, type, px)) {  /* lvl>0 = skip-mip normal; lvl0 so com path fresco (RT nao) */
+    if (lvl == 0 && g_cur_tex2d < RESMAP) {
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, hw2, hh2, (unsigned)((size_t)(hw2/4)*(hh2/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(tgt, g_cur_tex2d);
+    }
+    return;
+  }
+  /* CACHE ETC1 offline: textura opaca 565 com ETC1 bakeado -> sobe ETC1 (4x menos VRAM)
+   * e PULA o resto (conversoes/halving/mips). No bake, grava e segue o caminho normal. */
+  if ((lvl > 0 || pf) && !bully_paging() && bully_try_etc1(tgt, lvl, w, h, fmt, type, px)) { /* FASE 2: paginando = NATIVO (sem ETC1 lossy); textura cai no swap kind=2 */
+    if (lvl == 0 && g_cur_tex2d < RESMAP)   /* registra a textura ETC1 como pageavel */
+      bully_page_register(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*8));
+    return;
+  }
+  /* BAKE-ALL: ja encodamos o ETC1 (565) acima; agora sobe um STUB 1x1 em vez da textura
+   * cheia -> a GL fica minuscula (sem estourar a MMU) e NAO precisamos deletar GL textures
+   * (era o que crashava por use-after-free no wrap do ring). O sprite desenha 1x1 (lixo,
+   * tanto faz: e so um passe de conversao). */
+  { static int g_bakeall = -1; if (g_bakeall < 0) g_bakeall = getenv("BULLY_BAKEALL") ? 1 : 0;
+    if (g_bakeall) {
+      if (lvl == 0) { static const unsigned char stub[4] = {0,0,0,255};
+        if (real_glTexImage2D) real_glTexImage2D(tgt, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, stub); }
+      return;
+    } }
   if (ifmt == 0x8058) ifmt = 0x1908;       /* GL_RGBA8 -> GL_RGBA (GLES2 não aceita sized) */
   else if (ifmt == 0x8051) ifmt = 0x1907;  /* GL_RGB8 -> GL_RGB */
   /* pula mipmaps: como forço MIN_FILTER=LINEAR, os níveis >0 nunca são usados ->
@@ -536,6 +1167,62 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
    * mundo mais nitido. Custo ~+42MB (cabe na folga; despejo segura excursoes).
    * Antes era >=512 (tudo reduzido). UV normalizado -> reduzir nao quebra coords.
    * Override: BULLY_TEX_HALF_MIN (default 1024; 512 = comportamento antigo). */
+  /* TRILINEAR: detecta textura de RECORTE (alpha vazado: folhas/cercas/portoes/corrimaos).
+   * Recorte NAO pode ter mipmap (o mip mistura o RGB preto dos texels transparentes -> HALO
+   * PRETO FORTE). Detecta por SCAN do alpha (so recortes REAIS, nao todo RGBA -> nao quebra
+   * o resto). is_cutout -> LINEAR (sem mip), setado AQUI no upload E no glTexParameteri
+   * (robusto a ordem param/upload -- foi o que quebrou antes). [2026-06-20] */
+  int is_cutout = 0;
+  if (bully_trilinear() && lvl == 0 && data) {
+    if (utype == 0x8033 || utype == 0x8034) is_cutout = 1;          /* 4444/5551 = formato com alpha */
+    else if (ufmt == 0x1908 && utype == 0x1401 && w > 0 && h > 0) { /* RGBA8888: scaneia o alpha */
+      int n = w * h, step = n > 4096 ? n / 4096 : 1, tr = 0;
+      for (int i = 0; i < n; i += step) if (((const unsigned char *)data)[(size_t)i*4+3] < 250) { if (++tr > 8) break; }
+      is_cutout = (tr > 8);
+    }
+  }
+  if (lvl == 0 && g_cur_tex2d < RESMAP) g_tex_alpha[g_cur_tex2d] = is_cutout ? 1 : 0;
+  /* DIAG (BULLY_TEXLOG): lista texturas com alpha -> achar as folhas/papeis do chao e ver
+   * se sao detectadas como recorte. So qdo o env liga (sem custo no normal). */
+  if (getenv("BULLY_TEXLOG") && lvl == 0 && data && (ufmt == 0x1908 || utype == 0x8033 || utype == 0x8034)) {
+    static int lg = 0; if (lg < 300) { fprintf(stderr, "[texlog] %s %dx%d ufmt=%x type=%x cutout=%d\n",
+      bully_cur_tex_path[0]?bully_cur_tex_path:"?", w, h, ufmt, utype, is_cutout); lg++; }
+  }
+  /* ALPHA BLEED: nos recortes (folhas/trepadeiras) os texels transparentes tem RGB PRETO;
+   * o bilinear na borda mistura esse preto na parte visivel = CONTORNO PRETO FORTE. Preenche
+   * o RGB dos transparentes com o do vizinho opaco (2 passes = 2 aneis). So muda RGB, alpha
+   * intacto (alpha-test inalterado). RGBA8888 recorte. [2026-06-20] */
+  if (is_cutout && data && w >= 2 && h >= 2 && lvl == 0) {
+    int W = w, H = h;
+    if (ufmt == 0x1908 && utype == 0x1401) {            /* RGBA8888 (4 bytes/texel) */
+      unsigned char *d = malloc((size_t)W * H * 4);
+      if (d) { memcpy(d, data, (size_t)W * H * 4);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = ((size_t)y * W + x) * 4;  if (d[o+3] >= 128) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = ((size_t)ny[k]*W+nx[k])*4;
+            if (d[n+3] >= 128) { d[o]=d[n]; d[o+1]=d[n+1]; d[o+2]=d[n+2]; break; } } }
+        if (conv) free(conv); conv = d; data = d; }
+    } else if (utype == 0x8033) {                        /* RGBA4444: u16, alpha=val&0xF, rgb=val&0xFFF0 */
+      unsigned short *d = malloc((size_t)W * H * 2);
+      if (d) { memcpy(d, data, (size_t)W * H * 2);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = (size_t)y * W + x;  if ((d[o] & 0xF) >= 8) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = (size_t)ny[k]*W+nx[k];
+            if ((d[n] & 0xF) >= 8) { d[o] = (unsigned short)((d[n] & 0xFFF0) | (d[o] & 0xF)); break; } } }
+        if (conv) free(conv); conv = (unsigned char*)d; data = (unsigned char*)d; }
+    } else if (utype == 0x8034) {                        /* RGBA5551: u16, alpha=val&1, rgb=val&0xFFFE */
+      unsigned short *d = malloc((size_t)W * H * 2);
+      if (d) { memcpy(d, data, (size_t)W * H * 2);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = (size_t)y * W + x;  if (d[o] & 1) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = (size_t)ny[k]*W+nx[k];
+            if (d[n] & 1) { d[o] = (unsigned short)((d[n] & 0xFFFE) | (d[o] & 1)); break; } } }
+        if (conv) free(conv); conv = (unsigned char*)d; data = (unsigned char*)d; }
+    }
+  }
   int bpp = bpp_of(ufmt, utype);
   static int half_min = -1;
   if (half_min < 0) { const char *e = getenv("BULLY_TEX_HALF_MIN"); half_min = e ? atoi(e) : 1024; if (half_min < 256) half_min = 256; }
@@ -557,16 +1244,37 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
         for (int x = 0; x < nw; x++)
           memcpy(sm + ((size_t)y * nw + x) * bpp, data + ((size_t)(y*2) * w + x*2) * bpp, bpp);
       if (real_glTexImage2D) real_glTexImage2D(tgt, lvl, ifmt, nw, nh, bord, ufmt, utype, sm);
+      if (lvl == 0 && g_cur_tex2d < RESMAP)   /* PAGINACAO: swap da versao halved */
+        bully_page_write_swap(g_cur_tex2d, ifmt, nw, nh, ufmt, utype, sm);
       free(sm); free(conv);
+      /* TRILINEAR: a textura halved tb precisa de mipmap, senao trilinear amostra niveis
+       * que nao existem -> PRETO (era por isso que os personagens (atlas >=768, halved)
+       * ficavam pretos e o mundo (tiles <768, nao-halved) ficava nitido). [teste 2026-06-20] */
+      if (lvl == 0 && bully_trilinear()) {
+        if (is_cutout) {  /* recorte: LINEAR (sem mip = sem halo preto) */
+          if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+          if (real_glTexParameteri) real_glTexParameteri(tgt, 0x2801, 0x2601);
+        } else {          /* opaca: trilinear+mip */
+          if (!real_glGenerateMipmap) real_glGenerateMipmap = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+          if (real_glGenerateMipmap) real_glGenerateMipmap(tgt);
+        }
+      }
       return;
     }
   }
   if (real_glTexImage2D) real_glTexImage2D(tgt, lvl, ifmt, w, h, bord, ufmt, utype, data);
+  if (lvl == 0 && g_cur_tex2d < RESMAP)   /* PAGINACAO: swap da textura cheia (alpha/RGBA; RT px=NULL e pulado) */
+    bully_page_write_swap(g_cur_tex2d, ifmt, w, h, ufmt, utype, data);
   /* kmsdrm (G310): gera a cadeia de mipmap completa p/ o trilinear funcionar (sem
    * isso, MIN_FILTER mipmap -> textura preta). So no nivel 0 com dados reais. */
-  if (lvl == 0 && data && bully_is_kmsdrm()) {
-    if (!real_glGenerateMipmap) real_glGenerateMipmap = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
-    if (real_glGenerateMipmap) real_glGenerateMipmap(tgt);
+  if (lvl == 0 && data && ((bully_is_kmsdrm() && !bully_etc1_force()) || bully_trilinear())) {
+    if (bully_trilinear() && is_cutout && !bully_cutout_mip()) {  /* recorte: LINEAR (sem mip = sem halo preto) */
+      if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+      if (real_glTexParameteri) real_glTexParameteri(tgt, 0x2801, 0x2601);
+    } else {                                /* opaca, ou recorte c/ CUTOUT_MIP, ou kmsdrm: trilinear+mip */
+      if (!real_glGenerateMipmap) real_glGenerateMipmap = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+      if (real_glGenerateMipmap) real_glGenerateMipmap(tgt);
+    }
   }
   free(conv);
 }
@@ -597,7 +1305,12 @@ extern void bully_swap_buffers(void);
 extern int  bully_is_kmsdrm(void);
 static unsigned (*real_eglSwapBuffers)(void*, void*) = NULL;
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  /* durante o bake: pinta a tela "Convertendo texturas (PT/EN/RU) + barra/contador"
+   * por cima, ANTES do swap -> some o jogo cru/preto, fica um loading limpo. */
+  { extern int bully_bake_active, bully_bake_cur, bully_bake_total; extern void bully_bake_ui(int, int);
+    if (bully_bake_active) { static int n=0; if(n<3){fprintf(stderr,"[swap] via my_eglSwapBuffers (bake)\n");n++;} bully_bake_ui(bully_bake_cur, bully_bake_total); } }
   if (bully_is_kmsdrm()) { bully_swap_buffers(); return 1; }
+  { extern void bully_maybe_screenshot(void); bully_maybe_screenshot(); } /* fbdev: screenshot sob demanda (gameplay presenta por aqui) */
   if (!real_eglSwapBuffers) real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
 }

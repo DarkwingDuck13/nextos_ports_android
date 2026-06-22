@@ -527,6 +527,32 @@ static AssetHandle *open_img_pack_asset(const char *path, const char *normalized
                                  fallback_entry->block_count * IMG_BLOCK_SIZE);
 }
 
+/* ---- lista de nomes de textura p/ o bake-all (force-render) ---- */
+/* Forma do engine (o que MadNoRwTextureRead aceita): sem prefixo "bully/" e sem ".tex".
+ * Dedupe: uso so as entradas que comecam com "bully/" (cada .tex tem essa + a alias). */
+static char **g_texnames = NULL;
+static size_t g_texname_count = 0;
+static void build_texname_list(void)
+{
+  if (g_texnames || g_zip_entry_count == 0) return;
+  g_texnames = malloc(sizeof(char *) * g_zip_entry_count);
+  if (!g_texnames) return;
+  for (size_t i = 0; i < g_zip_entry_count; i++) {
+    const char *p = g_zip_entries[i].path;
+    size_t n = strlen(p);
+    if (n < 11 || strcmp(p + n - 4, ".tex") != 0) continue;     /* termina em .tex */
+    if (strncmp(p, "bully/", 6) != 0) continue;                 /* so a forma "bully/..." */
+    const char *base = p + 6;                                   /* tira "bully/" */
+    size_t bl = strlen(base) - 4;                               /* tira ".tex" */
+    char *nm = malloc(bl + 1);
+    if (!nm) continue;
+    memcpy(nm, base, bl); nm[bl] = '\0';
+    g_texnames[g_texname_count++] = nm;
+  }
+}
+int bully_texname_count(void) { asset_archive_init(); build_texname_list(); return (int)g_texname_count; }
+const char *bully_texname(int i) { return (i >= 0 && i < (int)g_texname_count) ? g_texnames[i] : NULL; }
+
 void *asset_open(const char *path)
 {
   AssetHandle *handle;
@@ -570,8 +596,11 @@ size_t asset_read(void *buf, size_t size, size_t nmemb, void *opaque)
   if (!handle || handle->magic != HANDLE_MAGIC || !buf || size == 0 || nmemb == 0)
     return 0;
 
-  if (handle->kind == ASSET_HANDLE_FILE)
-    return fread(buf, size, nmemb, handle->fp);
+  if (handle->kind == ASSET_HANDLE_FILE) {
+    size_t r = fread(buf, size, nmemb, handle->fp);
+    extern volatile long g_asset_bytes_frame; g_asset_bytes_frame += (long)(r * size); /* diag stutter */
+    return r;
+  }
 
   if (handle->pos >= handle->size)
     return 0;
@@ -586,6 +615,7 @@ size_t asset_read(void *buf, size_t size, size_t nmemb, void *opaque)
       return 0;
 
     bytes_read = fread(buf, 1, to_read, handle->fp);
+    { extern volatile long g_asset_bytes_frame; g_asset_bytes_frame += (long)bytes_read; } /* diag stutter */
     handle->pos += (long)bytes_read;
     return bytes_read / size;
   }

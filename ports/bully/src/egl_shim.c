@@ -7,16 +7,21 @@
 #include <SDL2/SDL.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
+#include <string.h>
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext g_ctx = NULL;
 static int g_w = 1280, g_h = 720;
 static int g_is_kmsdrm = 0;
 int bully_is_kmsdrm(void) { return g_is_kmsdrm; }
+static int g_es3 = 0;                       /* contexto ES3 obtido (GLES3 device) -> habilita ETC2 */
+int bully_is_es3(void) { return g_es3; }
 
 int bully_screen_w(void) { return g_w; }
 int bully_screen_h(void) { return g_h; }
@@ -52,10 +57,11 @@ int bully_init_gl(void) {
   int msaa_try[2] = {0, 0}, nmsaa = 1;
   if (msaa > 0) { msaa_try[0] = msaa; msaa_try[1] = 0; nmsaa = 2; }
   int got_msaa = 0;
+  int want_major = getenv("BULLY_GLES3") ? 3 : 2;   /* GLES3 device (R36S/G31): pede ES3 -> habilita ETC2 */
   for (int j = 0; j < nmsaa && !g_win; j++)
    for (int i = 0; i < 2 && !g_win; i++) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, want_major);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
@@ -82,10 +88,17 @@ int bully_init_gl(void) {
     g_is_kmsdrm = (drv && SDL_strcmp(drv, "mali") != 0) ? 1 : 0;   /* kmsdrm/wayland precisam SDL_GL_SwapWindow p/ page-flip */
     fprintf(stderr, "[gl] backend video='%s' kmsdrm=%d\n", drv?drv:"?", g_is_kmsdrm); }
   g_ctx = SDL_GL_CreateContext(g_win);
+  if (!g_ctx && want_major == 3) {                 /* ES3 recusado -> cai p/ ES2 (sem ETC2) */
+    fprintf(stderr, "[gl] contexto ES3 falhou (%s) -> tenta ES2\n", SDL_GetError());
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    g_ctx = SDL_GL_CreateContext(g_win);
+  }
   if (!g_ctx) { fprintf(stderr, "[sdl] GL_CreateContext: %s\n", SDL_GetError()); return 0; }
   SDL_GL_MakeCurrent(g_win, g_ctx);
 
   const GLubyte *r = glGetString(GL_RENDERER), *v = glGetString(GL_VERSION);
+  if (v && strstr((const char*)v, "ES 3")) g_es3 = 1;  /* "OpenGL ES 3.x" -> ETC2_RGBA8 disponivel */
+  fprintf(stderr, "[gl] ES3=%d (pedido major=%d)\n", g_es3, want_major);
   fprintf(stderr, "[gl] SDL2 GLES2 %dx%d | EGL dpy=%p surf=%p ctx=%p | %s / %s\n",
           g_w, g_h, (void*)eglGetCurrentDisplay(), (void*)eglGetCurrentSurface(EGL_DRAW),
           (void*)eglGetCurrentContext(), r ? (const char*)r : "?", v ? (const char*)v : "?");
@@ -115,7 +128,7 @@ void bully_release_current(void) { SDL_GL_MakeCurrent(g_win, NULL); }
 /* screenshot sob demanda: `touch /dev/shm/bully_shot` -> salva RGBA cru do
  * backbuffer (antes do flip) em /dev/shm/bully_shot.raw + .txt com WxH.
  * Roda na thread de render (contexto GL correto). */
-static void bully_maybe_screenshot(void) {
+void bully_maybe_screenshot(void) {
   static int chk = 0;
   if (++chk % 15) return;
   if (access("/dev/shm/bully_shot", F_OK) != 0) return;
@@ -134,4 +147,46 @@ static void bully_maybe_screenshot(void) {
   free(buf);
   fprintf(stderr, "[shot] %dx%d salvo em /dev/shm/bully_shot.raw\n", w, h);
 }
-void bully_swap_buffers(void) { if (g_win) { bully_maybe_screenshot(); SDL_GL_SwapWindow(g_win); } }
+/* DIAG STUTTER: contador de bytes de asset lidos no frame corrente (asset_archive.c soma). */
+volatile long g_asset_bytes_frame = 0;
+static long bully_read_majflt(void) {
+  FILE *f = fopen("/proc/self/stat", "r"); if (!f) return -1;
+  char b[600]; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); if (!n) return -1; b[n] = 0;
+  char *p = strrchr(b, ')'); if (!p) return -1; p++;            /* pula "(comm)" */
+  long v = -1; int idx = 0; char *t = strtok(p, " ");
+  while (t) { if (idx == 9) { v = atol(t); break; } idx++; t = strtok(NULL, " "); } /* token9 apos comm = majflt (campo 12) */
+  return v;
+}
+void bully_swap_buffers(void) {
+  if (!g_win) return;
+  /* mede o frame REAL (entre presents). Stutter (>=50ms) -> loga a CAUSA: assetKB lido (streaming
+   * sincrono do SD?) + delta de major-faults (swap-in?). Gate BULLY_STUTTERLOG. */
+  { static int slog = -1; if (slog < 0) slog = getenv("BULLY_STUTTERLOG") ? 1 : 0;
+    if (slog) {
+      static int have = 0; static struct timespec prev; static long pmf = 0;
+      struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+      long mf = bully_read_majflt();
+      if (have) {
+        long ms = (now.tv_sec - prev.tv_sec) * 1000L + (now.tv_nsec - prev.tv_nsec) / 1000000L;
+        if (ms >= 50) fprintf(stderr, "[stutter] %ldms assetKB=%ld majflt+%ld\n",
+                              ms, g_asset_bytes_frame / 1024, (mf >= 0 && pmf >= 0) ? mf - pmf : -1L);
+      }
+      g_asset_bytes_frame = 0; prev = now; pmf = mf; have = 1;
+    }
+  }
+  { extern void bully_bakeall_tick(void); bully_bakeall_tick(); } /* dirige o bake POR-FRAME (varre no menu, GL thread) */
+  { extern int bully_bake_active, bully_bake_cur, bully_bake_total; extern void bully_bake_ui(int, int);
+    if (bully_bake_active) { static int n=0; if(n<3){fprintf(stderr,"[swap] via SDL_GL_SwapWindow (bake)\n");n++;} bully_bake_ui(bully_bake_cur, bully_bake_total); } }
+  bully_maybe_screenshot();
+  /* fbdev/mali (NAO kmsdrm): PRESENTA via eglSwapBuffers CRU no surface atual -- mesmo
+   * caminho que o jogo usa e que CHEGA no /dev/fb0. O SDL_GL_SwapWindow no modo splash
+   * standalone NAO estava presentando no fb0 (tela preta na extracao). KMSDRM precisa
+   * do page-flip do SDL, entao la mantemos SDL_GL_SwapWindow. */
+  if (!g_is_kmsdrm) {
+    static unsigned (*raw_swap)(void*, void*) = NULL;
+    if (!raw_swap) raw_swap = (unsigned(*)(void*,void*))dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+    EGLDisplay d = eglGetCurrentDisplay(); EGLSurface s = eglGetCurrentSurface(EGL_DRAW);
+    if (raw_swap && d != EGL_NO_DISPLAY && s != EGL_NO_SURFACE) { raw_swap(d, s); return; }
+  }
+  SDL_GL_SwapWindow(g_win);
+}

@@ -116,6 +116,30 @@ static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int 
   fprintf(stderr, "== %s: text=%p+%zu data=%p+%zu ==\n", name, text_base, text_size, data_base, data_size);
 }
 
+/* ---- modo SPLASH de setup: tela GLES2 propria (extração/sem-APK) lendo o progresso
+ * de um arquivo (o launcher atualiza enquanto faz o unzip). NAO carrega o libGame ->
+ * standalone, roda em qualquer display/resolucao. Gate BULLY_SETUPSPLASH. ---- */
+extern int bully_init_gl(void);
+extern void bully_swap_buffers(void);
+extern void bully_setup_draw(int phase, const char *status, int cur, int total);
+static void run_setup_splash(void) {
+  if (!bully_init_gl()) { fprintf(stderr, "[splash] sem GL\n"); return; }
+  const char *pf = getenv("BULLY_SETUP_FILE"); if (!pf) pf = "/tmp/bully_setup.txt";
+  const char *sf = getenv("BULLY_SETUP_STOP"); if (!sf) sf = "/tmp/bully_setup_stop";
+  for (;;) {
+    int phase = 1, cur = 0, total = 0; char status[192] = "";
+    FILE *f = fopen(pf, "r");
+    if (f) { if (fscanf(f, "%d %d %d ", &phase, &cur, &total) < 1) phase = 1;
+             if (fgets(status, sizeof(status), f)) { size_t L = strlen(status); if (L && status[L-1]=='\n') status[L-1]='\0'; }
+             fclose(f); }
+    bully_setup_draw(phase, status[0] ? status : NULL, cur, total);
+    bully_swap_buffers();
+    if (access(sf, F_OK) == 0) break;
+    usleep(60000);
+  }
+  fprintf(stderr, "[splash] fim\n");
+}
+
 int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
   { volatile char c = g_bionic_guard_pad[0]; (void)c; } /* ancora o TLS pad (nunca escreve) */
@@ -124,6 +148,8 @@ int main(int argc, char *argv[]) {
 
   bully_imports_init();
   preload_device_libs();
+  if (getenv("BULLY_SETUPSPLASH")) { run_setup_splash(); return 0; } /* tela de setup standalone */
+  if (getenv("BULLY_HALVEBAKE")) { extern void bully_halve_cache(void); bully_halve_cache(); return 0; } /* re-encoda cache ETC2 a 1/2 res (1GB) */
   build_base_table();
 
   /* Módulo A: libc++_shared.so */

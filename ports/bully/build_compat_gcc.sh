@@ -37,7 +37,7 @@ $CC -shared -fPIC -nostdlib -Wl,-soname,libGLESv2.so     "$STUB/gles.c" -o "$STU
 
 # 3) build do compat (PIE, dinamico, glibc do container)
 SRCS="src/main.c src/so_util.c src/jni_shim.c src/imports.c src/egl_shim.c \
-      src/asset_archive.c src/zip_fs.c src/pthread_bridge.c src/util.c src/error.c"
+      src/asset_archive.c src/zip_fs.c src/pthread_bridge.c src/util.c src/error.c src/etc1_encode.c src/etc2_decode.c src/eac_encode.c src/etc2_halve.c src/bake_ui.c"
 $CC -fPIE -pie -I src -I "$HDR" -O2 -fPIC -D_GNU_SOURCE \
     -Wno-unused-parameter -Wno-unused-function \
     -Wno-incompatible-pointer-types -Wno-int-conversion \

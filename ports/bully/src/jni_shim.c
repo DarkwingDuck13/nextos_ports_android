@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "so_util_x64.h"
@@ -18,6 +19,29 @@
 #include "zip_fs.h"
 
 extern Module mod_game;
+/* TUNE STREAMING (opcao 1 anti-stutter/RAM): reduz a distancia de streaming dos objetos do mundo
+ * (Loading::IplStreamingDist) + LOD de ped/veiculo por BULLY_STREAM_MULT (<1 = menos mundo residente
+ * -> menos RAM -> menos file-fault/OOM). Motor GTA/RenderWare. Idempotente (guarda os originais). */
+static void bully_tune_stream(void) {
+  static int resolved = 0; static float mult = -1;
+  static float *p_ipl = 0, *p_ped = 0, *p_veh = 0; static float o_ipl = 0, o_ped = 0, o_veh = 0;
+  if (mult < 0) { const char *e = getenv("BULLY_STREAM_MULT"); mult = e ? (float)atof(e) : 1.0f; if (mult <= 0.05f) mult = 1.0f; }
+  if (mult == 1.0f) return;
+  if (!resolved) {
+    p_ipl = (float *)so_symbol(&mod_game, "_ZN7Loading16IplStreamingDistE");
+    p_ped = (float *)so_symbol(&mod_game, "_ZN18CVisibilityPlugins13ms_pedLodDistE");
+    p_veh = (float *)so_symbol(&mod_game, "_ZN18CVisibilityPlugins18ms_vehicleLod0DistE");
+    fprintf(stderr, "[stream] mult=%.2f symbols ipl=%p ped=%p veh=%p\n", mult, (void *)p_ipl, (void *)p_ped, (void *)p_veh);
+    resolved = 1;
+  }
+  /* captura o ORIGINAL lazy (so quando o motor ja inicializou: valor > 1) */
+  if (p_ipl && o_ipl <= 1 && *p_ipl > 1) { o_ipl = *p_ipl; fprintf(stderr, "[stream] ipl orig=%.1f -> %.1f\n", o_ipl, o_ipl * mult); }
+  if (p_ped && o_ped <= 1 && *p_ped > 1) { o_ped = *p_ped; fprintf(stderr, "[stream] ped orig=%.1f -> %.1f\n", o_ped, o_ped * mult); }
+  if (p_veh && o_veh <= 1 && *p_veh > 1) o_veh = *p_veh;
+  if (p_ipl && o_ipl > 1) *p_ipl = o_ipl * mult;
+  if (p_ped && o_ped > 1) *p_ped = o_ped * mult;
+  if (p_veh && o_veh > 1) *p_veh = o_veh * mult;
+}
 extern void bully_swap_buffers(void);  /* egl_shim */
 extern int bully_screen_w(void);
 extern int bully_screen_h(void);
@@ -281,6 +305,26 @@ static void pump_gptk(void) {
         int b = -1; if (fscanf(pf, "%d", &b) != 1) b = -1; fclose(pf);
         unlink("/dev/shm/bully_btn");
         if (b >= 0 && b < 20) { pbtn = b; if (down) down(fake_env, NULL, 0, b); fprintf(stderr, "[probe] enum %d DOWN\n", b); phold = 30; }
+      }
+    }
+  }
+  /* INJECAO DE MOVIMENTO SUSTENTADO (teste autonomo, sem pad fisico): escrever as teclas a
+   * SEGURAR neste frame em /dev/shm/bully_hold -> ex `echo wd > /dev/shm/bully_hold` anda+vira.
+   * Arquivo PRESENTE = autoritativo sobre as teclas injetaveis (ausente = controle manual).
+   * Parar = `echo > bully_hold` (esvazia) ou `rm`. Cobre roaming p/ stress de streaming. */
+  {
+    static int hframes = 0;
+    if (++hframes % 2 == 0) {
+      static const struct { char ch; int sc; } hmap[] = {
+        {'w',SDL_SCANCODE_W},{'s',SDL_SCANCODE_S},{'a',SDL_SCANCODE_A},{'d',SDL_SCANCODE_D},
+        {'x',SDL_SCANCODE_X},{'c',SDL_SCANCODE_C},{'r',SDL_SCANCODE_RETURN},{'e',SDL_SCANCODE_ESCAPE},
+        {'1',SDL_SCANCODE_UP},{'2',SDL_SCANCODE_DOWN},{'3',SDL_SCANCODE_LEFT},{'4',SDL_SCANCODE_RIGHT},
+      };
+      FILE *hf = fopen("/dev/shm/bully_hold", "r");
+      if (hf) {
+        char buf[32]; size_t n = fread(buf, 1, sizeof buf - 1, hf); buf[n] = '\0'; fclose(hf);
+        for (unsigned i = 0; i < sizeof(hmap)/sizeof(hmap[0]); i++)
+          g_kb[hmap[i].sc] = strchr(buf, hmap[i].ch) ? 1 : 0;
       }
     }
   }
@@ -555,6 +599,8 @@ static void *nv_open(const char *p) {
     if (n < 6) { fprintf(stderr, "[nvapk] SKIP detalhe \"%s\" (TEX_LIGHT)\n", p); n++; }
     return NULL;
   }
+  /* registra o .tex corrente p/ a sidetable ETC1 (chave = caminho do asset). */
+  if (p && ends_with(p, ".tex")) { extern void bully_set_tex_path(const char *); bully_set_tex_path(p); }
   void *h = asset_open(p);
   if (!h) fprintf(stderr, "[nvapk] MISS \"%s\"\n", p ? p : "(null)");
   return h;
@@ -603,6 +649,144 @@ static void os_thread_unmakecurrent(void) {
   bully_release_current();
   if (g_mc_log < 30) { fprintf(stderr, "[gl] OS_ThreadUnmakeCurrent tid=%lu -> released\n",
           (unsigned long)pthread_self()); g_mc_log++; }
+}
+
+/* ===== FORCE-RENDER (bake completo): captura a RenderScene ativa ===== */
+/* Texturas so decodificam+sobem quando DESENHADAS. Pra bakear TODAS sem jogar, eu
+ * desenho cada uma via RenderScene::CreateSpriteComponent. Preciso do ponteiro da
+ * cena ativa -> capturo no 1o AddToRenderList (hook que se auto-cura e chama o real). */
+void *g_render_scene = NULL;
+/* detour PERMANENTE (sem reescrever text em runtime = sem race com a render thread):
+ * trampoline = [1a instr original (sub sp,sp,#N, relocavel)] + LDR X17/BR X17 -> addr+4.
+ * my_fn captura a cena 1x e chama o original VIA trampoline. */
+static void *make_callthrough(uintptr_t addr) {
+  unsigned int *t = mmap(NULL, 32, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (t == MAP_FAILED) return NULL;
+  t[0] = *(unsigned int *)addr;     /* sub sp,sp,#N (a 1a instr, PC-independente) */
+  t[1] = 0x58000051u;               /* LDR X17, #8  -> le o literal em t[3] (PC+8) */
+  t[2] = 0xd61f0220u;               /* BR X17 */
+  *(unsigned long long *)(t + 3) = (unsigned long long)(addr + 4); /* literal: resto da func */
+  __builtin___clear_cache((char *)t, (char *)t + 32);
+  return t;
+}
+/* UM passo do bake-all, RODANDO NA RENDER THREAD (chamado de dentro do Synchronize).
+ * Cria o sprite de uma textura -> entra na render-list -> desenhada -> meu hook bakeia
+ * o ETC1. Pipeline de 3 frames + DeleteGL pra nao estourar a MMU. */
+/* UM sprite reusado: cada passo troca a textura dele (SpriteComponent::Setup) -> ela e
+ * desenhada -> meu hook bakeia o ETC1. SEM criar/deletar 14k sprites (era o que crashava
+ * por use-after-free no DeleteComponent). Resume via .bake_next. */
+static void bakeall_step(void *scene) {
+  static int inited = 0, bi = 0, total = 0, donef = 0;
+  static void *(*TexRead)(const char *, const char *) = NULL;
+  static void *(*CreateSprite)(void *, void *, float, unsigned int) = NULL;
+  static void (*Setup)(void *, void *, float, unsigned int) = NULL;
+  static void *g_sprite = NULL;
+  static char progpath[300];
+  extern int bully_texname_count(void); extern const char *bully_texname(int);
+  if (!inited) {
+    inited = 1;
+    TexRead = (void *)so_symbol(&mod_game, "_Z18MadNoRwTextureReadPKcS0_");
+    CreateSprite = (void *)so_symbol(&mod_game, "_ZN11RenderScene21CreateSpriteComponentEP9Texture2Df5color");
+    Setup = (void *)so_symbol(&mod_game, "_ZN15SpriteComponent5SetupEP9Texture2Df5color");
+    total = bully_texname_count();
+    const char *cd = getenv("BULLY_ETC1CACHE"); snprintf(progpath, sizeof(progpath), "%s/.bake_next", cd ? cd : ".");
+    FILE *pf = fopen(progpath, "r"); if (pf) { if (fscanf(pf, "%d", &bi) != 1) bi = 0; fclose(pf); }
+    if (bi < 0) bi = 0;
+    fprintf(stderr, "[bakeall] START %d texturas tid=%lu resume@%d Setup=%p\n",
+            total, (unsigned long)pthread_self(), bi, (void *)Setup);
+  }
+  extern int bully_bake_active, bully_bake_cur, bully_bake_total;
+  static int runc = 0, chunk = -1, batch = -1; /* FRAÇÃO: texturas/run (sai+resume); LOTE: texturas/frame (rapidez) */
+  if (chunk < 0) { const char *e = getenv("BULLY_BAKE_CHUNK"); chunk = e ? atoi(e) : 400; }
+  if (batch < 0) { const char *e = getenv("BULLY_BAKE_BATCH"); batch = e ? atoi(e) : 24; }
+  if (bi < total && TexRead && CreateSprite && Setup) {
+    bully_bake_active = 1;
+    for (int k = 0; k < batch && bi < total; k++) {  /* LOTE por frame: o despejo (em glTexSubImage2D) bounda a GPU */
+      bully_bake_cur = bi; bully_bake_total = total;
+      FILE *pf = fopen(progpath, "w"); if (pf) { fprintf(pf, "%d\n", bi + 1); fclose(pf); } /* resume pula o ruim */
+      const char *nm = bully_texname(bi++);
+      void *t = nm ? TexRead(nm, NULL) : NULL;
+      if (t) {
+        if (!g_sprite) g_sprite = CreateSprite(scene, t, 1.0f, 0xFFFFFFFFu); /* cria 1 sprite */
+        else Setup(g_sprite, t, 1.0f, 0xFFFFFFFFu);                          /* REUSA: troca a textura */
+      }
+      if (bi % 250 == 0) fprintf(stderr, "[bakeall] %d/%d\n", bi, total);
+      if (chunk > 0 && ++runc >= chunk) {   /* FRAÇÃO concluída -> SAI limpo (libera GPU/RAM); o loop resume @bi */
+        fprintf(stderr, "[bakeall] fracao %d texturas (bi=%d/%d) -> SAINDO p/ resume\n", runc, bi, total);
+        fflush(NULL); sync(); _exit(0);
+      }
+    }
+  } else if (!donef && bi >= total && total > 0) {
+    donef = 1;
+    bully_bake_active = 0;
+    char dp[300]; const char *cd = getenv("BULLY_ETC1CACHE");
+    snprintf(dp, sizeof(dp), "%s/.bake_done", cd ? cd : "."); FILE *df = fopen(dp, "w"); if (df) fclose(df);
+    /* CRITICO: o processo de BAKE tem que SAIR aqui. Se ele continua rodando, fica PRETO
+     * (nao e um jogo jogavel, era so o force-render) e o launcher fica preso no
+     * `timeout 1500 ./bully` por 25 min sem nunca abrir o jogo de verdade ("acaba tudo
+     * e fica preto"). Saindo: o timeout retorna -> o loop ve .bake_done -> abre o jogo
+     * NORMAL (linha 238 do Bully.sh), que renderiza. [fix 2026-06-20] */
+    fprintf(stderr, "[bakeall] FIM (%d texturas) -> SAINDO p/ o launcher abrir o jogo\n", total);
+    fflush(NULL); sync();
+    _exit(0);
+  }
+}
+/* dirige o bake POR-FRAME (chamado do present, na GL thread) -> varre as texturas mesmo no MENU
+ * (sem cena 3D contínua / sem precisar de input). Reusa a g_render_scene que o Synchronize setou 1x. */
+void bully_bakeall_tick(void) {
+  static int on = -1; if (on < 0) on = getenv("BULLY_BAKEALL") ? 1 : 0;
+  if (on && g_render_scene) bakeall_step(g_render_scene);
+}
+static void (*tramp_sync)(void *) = NULL;
+static void my_Synchronize(void *scene) {
+  if (!g_render_scene && scene) { g_render_scene = scene; fprintf(stderr, "[render] scene=%p tid=%lu (Synchronize)\n", scene, (unsigned long)pthread_self()); }
+  tramp_sync(scene);                                       /* handoff original (na render thread) */
+  if (scene && getenv("BULLY_BAKEALL")) bakeall_step(scene); /* bake na MESMA thread = seguro */
+}
+static void hook_render(void) {
+  uintptr_t addr = (uintptr_t)so_symbol(&mod_game, "_ZN11RenderScene11SynchronizeEv");
+  if (!addr) { fprintf(stderr, "[render] Synchronize NAO achado\n"); return; }
+  tramp_sync = (void (*)(void *))make_callthrough(addr);
+  hook_x64(addr, (uintptr_t)my_Synchronize);
+  fprintf(stderr, "[render] hook Synchronize @%p tramp=%p\n", (void *)addr, (void *)tramp_sync);
+}
+
+/* ===== EXPERIMENTO: religar o DESPEJO de streaming (igual GTA SA) =====
+ * Descoberta (estudo 2026-06-21): Bully = mesmo motor GTA/RenderWare, mas o despejo de
+ * textura esta STUBADO (CStreaming::MakeSpaceFor com 0 call-sites, GetTotalGraphicsMemory
+ * = 512MB fixo, 0 ref-count de TXD). Por isso acumula textura e estoura no 1GB, enquanto o
+ * GTA SA despeja por area e segura no full. Aqui hookamos LoadScene (chamado na troca de
+ * area) e chamamos RemoveUnusedModelsInLoadedList() (despejo GENTIL: so o que nao esta em
+ * uso -> seguro contra "mundo preto"). Mede a memoria de textura antes/depois.
+ * Gate: BULLY_EVICT=1 (nao afeta o build estavel). */
+extern long long g_texbytes_live;
+extern long g_tex_gen, g_tex_del;     /* contadores de glGen/glDelete (imports.c) */
+static void (*tramp_loadscene)(void *) = NULL;
+static void (*g_RemoveUnused)(void) = NULL;
+static void (*g_MakeSpaceFor)(int)  = NULL;
+static void (*g_RemoveIslands)(int) = NULL;
+static int  (*g_GetTexMemUsed)(void) = NULL;
+static void my_LoadScene(void *vec) {
+  long long before = g_texbytes_live; long del0 = g_tex_del;
+  tramp_loadscene(vec);                 /* LoadScene original (carrega a area nova) */
+  if (g_RemoveUnused)  g_RemoveUnused();        /* (1) despejo gentil */
+  if (g_RemoveIslands) g_RemoveIslands(0);      /* (2) remove ilhas/setores nao usados */
+  if (g_MakeSpaceFor)  g_MakeSpaceFor(0x4000000); /* (3) FORCA liberar ~64MB do buffer de streaming */
+  fprintf(stderr, "[evict] LoadScene: tex %lld->%lld MB | glDelete +%ld (total gen=%ld del=%ld)\n",
+          before/(1024*1024), g_texbytes_live/(1024*1024),
+          g_tex_del - del0, g_tex_gen, g_tex_del);
+}
+static void hook_evict(void) {
+  uintptr_t ls = (uintptr_t)so_symbol(&mod_game, "_ZN10CStreaming9LoadSceneERK7CVector");
+  g_RemoveUnused  = (void(*)(void))so_symbol(&mod_game, "_ZN10CStreaming30RemoveUnusedModelsInLoadedListEv");
+  g_MakeSpaceFor  = (void(*)(int)) so_symbol(&mod_game, "_ZN10CStreaming12MakeSpaceForEi");
+  g_RemoveIslands = (void(*)(int)) so_symbol(&mod_game, "_ZN10CStreaming20RemoveIslandsNotUsedEi");
+  g_GetTexMemUsed = (int(*)(void)) so_symbol(&mod_game, "_ZN17TextureHeapHelper27GetCurrentTextureMemoryUsedEv");
+  if (!ls) { fprintf(stderr, "[evict] LoadScene NAO achado\n"); return; }
+  tramp_loadscene = (void(*)(void*))make_callthrough(ls);
+  hook_x64(ls, (uintptr_t)my_LoadScene);
+  fprintf(stderr, "[evict] hook LoadScene @%p -> RemoveUnused+RemoveIslands+MakeSpaceFor(64MB) | rm=%p island=%p msf=%p\n",
+          (void*)ls, (void*)g_RemoveUnused, (void*)g_RemoveIslands, (void*)g_MakeSpaceFor);
 }
 
 static void hook_egl(void) {
@@ -815,6 +999,8 @@ void jni_load(void) {
   hook_screen();  /* OS_ScreenGetWidth/Height + render gates como função */
   hook_cxa();     /* __cxa_guard simples -> statics C++ (whitetexture?) inicializam */
   hook_clarity(); /* GetResolutionDefault -> RS_High (engine sempre poe Low em 1GB) */
+  if (getenv("BULLY_BAKEALL")) hook_render(); /* captura a cena ativa p/ o force-render */
+  if (getenv("BULLY_EVICT")) hook_evict();    /* EXPERIMENTO: religa o despejo de streaming (estilo GTA SA) */
   so_make_text_executable();
   so_flush_caches();
   asset_archive_init();
@@ -909,29 +1095,11 @@ void jni_load(void) {
   void (*OS_AppEvent)(int,void*) = (void*)so_symbol(&mod_game, "_Z19OS_ApplicationEvent11OSEventTypePv");
   void (*OnRkSetup)(void*,void*,void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnRockstarSetup");
 
-  /* ANTI-OOM: a engine so despeja textura de streaming quando recebe
-   * onLowMemory (no Android vem do SO). Nosso port nunca enviava -> as texturas
-   * do mundo acumulavam (del~0) ate OOM (~30min no R36S 1GB). Resolvemos
-   * disparando implOnLowMemory quando passa de um TETO de memoria de textura
-   * viva -> a engine roda o proprio despejo (libera com seguranca, chama
-   * glDeleteTextures). Teto via BULLY_TEX_BUDGET_MB (0=desliga). */
-  void (*OnLowMemory)(void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnLowMemory");
-  /* v8.3: o gatilho do despejo passou a ser PRESSAO REAL de RAM (MemAvailable),
-   * nao teto fixo de textura. O teto antigo (200MB no Mali-450) era MENOR que o
-   * working-set normal (~200MB) mesmo com 220MB+ ainda LIVRES -> disparava a cada
-   * 2s SEM pressao real, e cada implOnLowMemory trava a render thread (sweep
-   * sincrono de glDeleteTextures) -> estourava o audio no A53. Agora so despeja
-   * quando MemAvailable cai abaixo do piso (raro) -> audio limpo + anti-OOM.
-   * Piso via BULLY_LOWMEM_MB (default 96; 0=desliga). Se o kernel nao tiver
-   * MemAvailable (<3.14), cai no teto de textura antigo (BULLY_TEX_BUDGET_MB). */
-  long lowmem_floor_mb = getenv("BULLY_LOWMEM_MB") ? atol(getenv("BULLY_LOWMEM_MB")) : 150;
-  long tex_budget_mb = getenv("BULLY_TEX_BUDGET_MB") ? atol(getenv("BULLY_TEX_BUDGET_MB")) : 300;
-  extern long long g_texbytes_live; int lowmem_cd = 0;
-  long long lowmem_pre = 0; int lowmem_stuck = 0; /* anti-churn: detecta piso da engine */
-  int lowmem_have_avail = (bully_memavail_mb() > 0); /* kernel expoe MemAvailable? */
-  fprintf(stderr, "[lowmem] OnLowMemory=%p modo=%s piso=%ld MB (teto-textura fallback=%ld MB)\n",
-          (void*)OnLowMemory, lowmem_have_avail ? "MemAvailable" : "teto-textura",
-          lowmem_floor_mb, tex_budget_mb);
+  /* REMOVIDO (2026-06-19): o despejo implOnLowMemory + anti-churn. Era um corte
+   * agressivo que, em devices compat/glibc-velha, despejava texturas/render-targets
+   * EM USO -> mundo 3D PRETO dentro do jogo (regressao do v9.5). A solucao certa de
+   * memoria e ETC1 offline/cache (4x menos memoria de textura), nao despejar a quente.
+   * No Mali-450 (Utgard) o limite e a MMU de textura, resolvido pelo ETC1. */
 
   /* loop de render */
   fprintf(stderr, "[drv] -- loop implOnDrawFrame --\n");
@@ -962,36 +1130,13 @@ void jni_load(void) {
     }
     if (rk_signin && f > 45) { rk_signin = 0; if (OS_SignInComplete) OS_SignInComplete(); }
 
-    /* anti-OOM v8.3: DOIS gatilhos, pra nao travar (escola/mapa pesados) E nao
-     * estourar o audio (disparo a toa). (1) TETO DE TEXTURA proativo, checado
-     * todo frame -- mas ACIMA do working-set normal (~180MB) pra so disparar em
-     * area pesada (escola), trimando a streaming cache ANTES de esgotar a RAM;
-     * (2) PRESSAO REAL de RAM (MemAvailable) como rede de seguranca, a cada 10
-     * frames. O teto antigo (200MB == working-set) disparava a cada 2s mesmo com
-     * RAM livre -> estourava o audio; o teto novo (300MB) so dispara no pico.
-     * ANTI-CHURN: se o despejo nao reduziu a memoria, recua o cooldown p/ ~30s. */
-    if (lowmem_cd > 0) lowmem_cd--;
-    if (OnLowMemory && lowmem_cd == 0 && f > 300) {
-      int over = 0; long avail = -1;
-      if (tex_budget_mb > 0 && g_texbytes_live > (long long)tex_budget_mb * 1024 * 1024)
-        over = 1;                                       /* (1) teto de textura (todo frame) */
-      if (!over && lowmem_have_avail && lowmem_floor_mb > 0 && (f % 10 == 0)) {
-        avail = bully_memavail_mb();                    /* (2) pressao de RAM (a cada 10 frames) */
-        if (avail >= 0 && avail < lowmem_floor_mb) over = 1;
-      }
-      if (over) {
-        if (lowmem_pre > 0 && g_texbytes_live >= lowmem_pre - 4LL*1024*1024) {
-          if (lowmem_stuck < 3) lowmem_stuck++;        /* nao caiu desde o ultimo -> piso */
-        } else lowmem_stuck = 0;                        /* caiu -> despejo ajudou */
-        lowmem_pre = g_texbytes_live;
-        OnLowMemory(fake_env, NULL);
-        fprintf(stderr, "[lowmem] disparado: avail=%ld MB (piso %ld) tex=%lld MB stuck=%d\n",
-                avail, lowmem_floor_mb, g_texbytes_live/(1024*1024), lowmem_stuck);
-        lowmem_cd = (lowmem_stuck >= 2) ? 1800 : 120;  /* piso: ~30s; normal: ~2s */
-      }
-    }
+    /* (bake-all roda na render thread, dentro de my_Synchronize -- ver hook_render) */
+
+    /* (despejo implOnLowMemory removido -- ver comentario acima) */
 
     OnDrawFrame(fake_env, NULL, 1.0f/60.0f);  /* heartbeat; GL real ocorre na render thread do jogo */
+    if (f == 90 || (f % 600 == 0 && f > 0)) { extern void bully_mlock_code(void); bully_mlock_code(); } /* anti-stutter: trava codigo (file-fault) */
+    if (f > 60 && f % 20 == 0) bully_tune_stream();  /* opcao 1: reduz distancia de streaming -> menos RAM */
     if (f < 5 || f % 120 == 0) { extern unsigned long g_fbo_binds; fprintf(stderr, "[drv] frame %d (RTT binds=%lu)\n", f, g_fbo_binds);
       extern void bully_resource_report(void); bully_resource_report(); }
     SDL_Delay(16);
