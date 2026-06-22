@@ -692,6 +692,14 @@ struct android_app *android_shim_init(void) {
   }
   debugPrintf("android_shim: SDL initialized\n");
 
+  // 🔑 Cria a janela SDL + contexto GL share-root AGORA. Sem isso egl_window=NULL e o
+  // eglCreateContext do RHI falha "Invalid window" -> GL_VENDOR/VERSION=null, GL_MAX_*=0.
+  // (egl_shim_create_window estava definida mas nunca era chamada.)
+  {
+    extern void egl_shim_create_window(void);
+    egl_shim_create_window();
+  }
+
   // Try to open a gamepad early
   init_gamecontroller();
 
