@@ -1,5 +1,25 @@
 # Bully R36S (GLES3/ETC2) — CAUSA-RAIZ do "personagens/mundo BRANCOS" achada + corrigida — 2026-06-21 (noite)
 
+## ⭐ ESTADO FINAL 2026-06-22 (ponto de partida p/ amanha) — LER PRIMEIRO
+- ✅ **Mundo branco no gameplay: RESOLVIDO + confirmado** (fix g_path_fresh; FBO INCOMPLETO=0). Commit 8f9f038 (master).
+- ✅ **Meia-resolucao automatica p/ 1GB** funcionando (etc2_halve.c; GPU 129->27MB). Cache etc2cache_half no device.
+- 🔴 **Stutter no R36S = MURO DE RAM, SEM fix viavel em 480MB.** PROVADO: motor RenderWare do Bully (~700MB) nao cabe
+  nos 480MB; build mobile teve o gerenciamento de memoria de streaming GUTADO (despejo sem ref-count -> nao libera).
+  Confirmacao do NextOS: **roda LISO no Mali-450 (832MB)** -> e RAM, nao GPU. Tentativas que FALHARAM (todas no muro):
+  cap256(mais pesado, OOM), mlock(OOM no load), swappiness 10/200(stutter/OOM), BULLY_STREAM_MULT(IplStreamingDist=0),
+  BULLY_EVICT(despejo gutado libera zero). 
+- 🎯 **VEREDITO: o Bully e jogo de Mali-450 832MB+ / 1GB+ usavel** (la roda liso, e o port esta pronto+melhor com os
+  fixes de hoje). No R36S 480MB nao da sem RE massiva (reconstruir o ref-count do streaming = incerto).
+- **AMANHA, 2 caminhos:** (A) EMPACOTAR o port pra Mali-450/1GB+ (PortMaster zip) — caminho recomendado, o trabalho
+  ja rende; (B) se insistir no R36S: RE do CStreaming pra reconstruir deletable-flags/ref-count e religar o despejo
+  (BULLY_EVICT ja tem a estrutura do hook em jni_shim:779, falta a maquinaria de baixo) — dificil/incerto.
+- **Device** (R36S, link-local): `~/Área de trabalho/TRABALHO AGENTE CODE/r36s-net.sh` ANTES; `sshpass -p archr ssh
+  root@169.254.170.2`. Estado deixado: 0 bully, binario 5725d864 (=repo), launcher meia-res sem flags experimentais,
+  swappiness 60. Caches no device: etc2cache(full 873M), etc2cache_half(meia-res, ATIVO), etc2cache_lo(cap256 orfao,
+  pode apagar). ⚠️SEMPRE matar bully por /proc/*/exe (pkill-x deixa zumbi); NUNCA swapfile no SD (trava).
+- **Flags do binario** (todas opt-in, OFF no launcher): BULLY_STUTTERLOG, BULLY_MLOCK_CODE/CAP_MB, BULLY_STREAM_MULT,
+  BULLY_TEX_MAXDIM (cap extra na meia-res), BULLY_EVICT, BULLY_NO_HALF (desliga meia-res).
+
 ## ATUALIZACAO 2026-06-22 — BRANCO RESOLVIDO+CONFIRMADO + MEIA-RESOLUCAO (1GB)
 - **Branco do gameplay RESOLVIDO** (NextOS "imagem apareceu" + `[fbo] ATTACH status=0x8cd5 OK`, INCOMPLETO=0).
   RAIZ REAL (≠ a do filtro mipmap, que foi pista falsa — incompleta dá PRETO): o **render-target da cena 3D**
