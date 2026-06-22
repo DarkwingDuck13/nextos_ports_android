@@ -121,6 +121,23 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
           (unsigned long)uc->uc_mcontext.regs[2], (unsigned long)uc->uc_mcontext.regs[3],
           (unsigned long)uc->uc_mcontext.regs[4], (unsigned long)uc->uc_mcontext.regs[8]);
 
+  /* 🔬 dump dos globais de feature-level (p/ achar valores ES3.1 a forcar) */
+  if (tb) {
+    int fd2 = open("/proc/self/mem", 0);
+    if (fd2 >= 0) {
+      int fl = -1, sp = -1, glmaj = -1; int spfl[4] = {-1,-1,-1,-1};
+      pread(fd2, &fl,   4, (off_t)(tb + 0xaef5a30)); /* GMaxRHIFeatureLevel */
+      pread(fd2, &sp,   4, (off_t)(tb + 0xb02ab3c)); /* GMaxRHIShaderPlatform */
+      pread(fd2, spfl, 16, (off_t)(tb + 0xaef5a78)); /* GShaderPlatformForFeatureLevel[4] */
+      pread(fd2, &glmaj,4, (off_t)(tb + 0xb180838)); /* FAndroidOpenGL::GLMajorVerion */
+      fprintf(stderr, "  [RHI] GMaxRHIFeatureLevel=%d GMaxRHIShaderPlatform=%d GLMajorVer=%d\n", fl, sp, glmaj);
+      fprintf(stderr, "  [RHI] GShaderPlatformForFeatureLevel[ES2,ES3_1,SM4,SM5]=%d,%d,%d,%d\n",
+              spfl[0], spfl[1], spfl[2], spfl[3]);
+      close(fd2);
+    }
+    fflush(stderr);
+  }
+
   /* 🔬 DIAGNOSTICO TSet::EmplaceImpl (camada 16): no crash @libUE4+0x445d294 dumpa o
    * objeto TSet (x21=this) p/ ver se o problema e' hash-ptr NULL, HashSize, ou Elements.Data.
    * Leitura via /proc/self/mem (pread) p/ nunca re-faltar dentro do handler. */

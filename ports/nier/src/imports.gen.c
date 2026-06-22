@@ -333,9 +333,52 @@ int nier_ComputeScreenDensity(int *out_density) {
 // shader map ES2 que nao existe). Inicia a fase do compat-layer ES3.1->ES2. ----
 #include <GLES2/gl2.h>
 static const unsigned char *(*real_glGetString)(unsigned int) = 0;
+/* ===== COMPAT-LAYER ES3→ES2: emulacao de entrypoints ES3 que o Mali-450 nao tem ===== */
+static void (*real_glTexImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = 0;
+/* mapeia internalformat SIZED (ES3) -> (format, type) UNSIZED (ES2) */
+static void map_sized_fmt(unsigned ifmt, unsigned *fmt, unsigned *type) {
+  switch (ifmt) {
+    case 0x8058: *fmt=0x1908; *type=0x1401; break;       /* GL_RGBA8 -> RGBA, UNSIGNED_BYTE */
+    case 0x8051: *fmt=0x1907; *type=0x1401; break;       /* GL_RGB8  -> RGB, UB */
+    case 0x8229: *fmt=0x1909; *type=0x1401; break;       /* GL_R8 -> LUMINANCE(0x1909), UB */
+    case 0x822B: *fmt=0x190A; *type=0x1401; break;       /* GL_RG8 -> LUMINANCE_ALPHA, UB */
+    case 0x881A: *fmt=0x1908; *type=0x140B; break;       /* GL_RGBA16F -> RGBA, HALF_FLOAT_OES */
+    case 0x881B: *fmt=0x1907; *type=0x140B; break;       /* GL_RGB16F -> RGB, HALF_FLOAT_OES */
+    case 0x8C43: *fmt=0x1908; *type=0x1401; break;       /* SRGB8_ALPHA8 -> RGBA, UB */
+    case 0x81A5: *fmt=0x1902; *type=0x1405; break;       /* DEPTH_COMPONENT16/24 -> DEPTH_COMPONENT, UINT */
+    case 0x81A6: *fmt=0x1902; *type=0x1405; break;       /* DEPTH_COMPONENT24 */
+    case 0x88F0: *fmt=0x84F9; *type=0x84FA; break;       /* DEPTH24_STENCIL8 -> DEPTH_STENCIL_OES, UNSIGNED_INT_24_8_OES */
+    default:     *fmt=0x1908; *type=0x1401; break;       /* fallback RGBA8 */
+  }
+}
+void nier_glTexStorage2D(unsigned target, int levels, unsigned ifmt, int w, int h) {
+  if (!real_glTexImage2D) real_glTexImage2D = (void *)dlsym(RTLD_DEFAULT, "glTexImage2D");
+  unsigned fmt, type; map_sized_fmt(ifmt, &fmt, &type);
+  for (int l = 0; l < levels; l++) {
+    int lw = w >> l, lh = h >> l; if (lw < 1) lw = 1; if (lh < 1) lh = 1;
+    if (real_glTexImage2D) real_glTexImage2D(target, l, (int)fmt, lw, lh, 0, fmt, type, (void *)0);
+  }
+}
+void nier_glTexStorage3D(unsigned target, int levels, unsigned ifmt, int w, int h, int d) {
+  (void)d; nier_glTexStorage2D(target, levels, ifmt, w, h); /* sem texture arrays em ES2: aprox 2D */
+}
+
+static int g_force_es31 = -1;
 const unsigned char *nier_glGetString(unsigned int name) {
   if (!real_glGetString) real_glGetString = (void *)dlsym(RTLD_DEFAULT, "glGetString");
-  if (getenv("NIER_FORCE_ES31")) {
+  if (g_force_es31 < 0) g_force_es31 = getenv("NIER_FORCE_ES31") ? 1 : 0;
+  if (g_force_es31) {
+    /* força os globais de feature-level p/ ES3.1 (ProcessExtensions os seta p/ ES2/8 baseado
+     * no contexto EGL ES2; aqui sobrescrevemos p/ a engine carregar os shaders ES3_1 do pak).
+     * SP_OPENGL_ES3_1_ANDROID=15, ERHIFeatureLevel::ES3_1=1. glGetString e' chamado durante
+     * init e compilacao de shader -> pega a janela antes do CompileGlobalShaderMap. */
+    uintptr_t tb = (uintptr_t)text_base;
+    *(volatile int *)(tb + 0xaef5a30) = 1;   /* GMaxRHIFeatureLevel = ES3_1 */
+    *(volatile int *)(tb + 0xb02ab3c) = 15;  /* GMaxRHIShaderPlatform = SP_OPENGL_ES3_1_ANDROID */
+    *(volatile int *)(tb + 0xb180838) = 3;   /* FAndroidOpenGL::GLMajorVerion = 3 */
+    /* popula ponteiros de funcao ES3 que ProcessExtensions (modo ES2) deixou NULL */
+    *(void **)(tb + 0xb180698) = (void *)&nier_glTexStorage2D;
+    *(void **)(tb + 0xb1806a0) = (void *)&nier_glTexStorage3D;
     if (name == 0x1F02) return (const unsigned char *)"OpenGL ES 3.1";          /* GL_VERSION */
     if (name == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.10"; /* GL_SHADING_LANGUAGE_VERSION */
   }
@@ -526,7 +569,7 @@ DynLibFunction dynlib_functions[] = {
   {"glGetShaderInfoLog", (uintptr_t)&glGetShaderInfoLog},  // gles
   {"glGetShaderiv", (uintptr_t)&glGetShaderiv},  // gles
   {"glGetShaderPrecisionFormat", (uintptr_t)&glGetShaderPrecisionFormat},  // gles
-  {"glGetString", (uintptr_t)&glGetString},  // gles
+  {"glGetString", (uintptr_t)&nier_glGetString},  // gles (spoof ES3.1 gated por NIER_FORCE_ES31)
   {"glGetUniformLocation", (uintptr_t)&glGetUniformLocation},  // gles
   {"glIsEnabled", (uintptr_t)&glIsEnabled},  // gles
   {"glLinkProgram", (uintptr_t)&glLinkProgram},  // gles
@@ -1040,7 +1083,6 @@ DynLibFunction dynlib_functions[] = {
   {"openat", (uintptr_t)&nier_openat},
   {"fopen", (uintptr_t)&nier_fopen},
   {"access", (uintptr_t)&nier_access},
-  {"glGetString", (uintptr_t)&nier_glGetString},
   {"opendir", (uintptr_t)&nier_opendir},
   {"stat", (uintptr_t)&nier_stat},
   {"lstat", (uintptr_t)&nier_lstat},
