@@ -249,6 +249,16 @@ static void patch_kill_trace(void) {
       fprintf(stderr, "[patch] FAndroidPlatformInput::GetKeyMap @ %p -> 0\n", (void *)km);
     }
 
+    /* BYPASS (NIER_FORCE_ES31): pula o fatal de UBO layout em CompileGlobalShaderMap
+     * (Resources==TexExpr*2; mismatch estrutural sampler ES3.1-vs-ES2). NOP nos branches
+     * que entram no bloco fatal (0x755f0ac). */
+    if (getenv("NIER_FORCE_ES31")) {
+      *(uint32_t *)((uintptr_t)text_base + 0x755f058) = 0xd503201fu; /* cbz x22 -> nop */
+      *(uint32_t *)((uintptr_t)text_base + 0x755f070) = 0xd503201fu; /* b.ne fatal -> nop */
+      *(uint32_t *)((uintptr_t)text_base + 0x755f098) = 0xd503201fu; /* b.ne fatal -> nop */
+      fprintf(stderr, "[patch] UBO-layout fatal bypass (CompileGlobalShaderMap)\n");
+    }
+
     /* ComputePhysicalScreenDensity -> DPI fixo (string de device vazia crasha no FSlateApplication) */
     {
       uintptr_t cd = (uintptr_t)text_base + 0x513717c;
