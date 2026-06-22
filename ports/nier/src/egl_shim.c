@@ -305,6 +305,12 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
 
 void *egl_shim_GetProcAddress(const char *procname) {
+  /* a engine resolve glGetString via eglGetProcAddress (nao pelo simbolo importado) ->
+   * interceptamos aqui p/ o spoof de versao ES3.1 (NIER_FORCE_ES31) pegar. */
+  if (procname && strcmp(procname, "glGetString") == 0) {
+    extern const unsigned char *nier_glGetString(unsigned int);
+    return (void *)&nier_glGetString;
+  }
   void *ptr = SDL_GL_GetProcAddress(procname);
   if (ptr) return ptr;
 

@@ -328,6 +328,20 @@ int nier_ComputeScreenDensity(int *out_density) {
   return 320;
 }
 
+// ---- 🧪 FORCAR ES3.1 (NIER_FORCE_ES31): spoof glGetString(GL_VERSION/GLSL) p/ a engine
+// escolher FeatureLevel ES3.1 e carregar os shaders ES3_1 do pak (em vez de morrer no global
+// shader map ES2 que nao existe). Inicia a fase do compat-layer ES3.1->ES2. ----
+#include <GLES2/gl2.h>
+static const unsigned char *(*real_glGetString)(unsigned int) = 0;
+const unsigned char *nier_glGetString(unsigned int name) {
+  if (!real_glGetString) real_glGetString = (void *)dlsym(RTLD_DEFAULT, "glGetString");
+  if (getenv("NIER_FORCE_ES31")) {
+    if (name == 0x1F02) return (const unsigned char *)"OpenGL ES 3.1";          /* GL_VERSION */
+    if (name == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.10"; /* GL_SHADING_LANGUAGE_VERSION */
+  }
+  return real_glGetString ? real_glGetString(name) : (const unsigned char *)"";
+}
+
 // ---- Stats: FStatGroupEnableManager::GetHighPerformanceEnableForStat faz sondagem de
 // hash num mapa VAZIO (HashCount=0 -> and com -1 -> OOB -> loop infinito) no init[267].
 // no-op: retorna um TStatIdData* estatico ZERADO (Name=0 => stat invalido/ignorado). ----
@@ -1026,6 +1040,7 @@ DynLibFunction dynlib_functions[] = {
   {"openat", (uintptr_t)&nier_openat},
   {"fopen", (uintptr_t)&nier_fopen},
   {"access", (uintptr_t)&nier_access},
+  {"glGetString", (uintptr_t)&nier_glGetString},
   {"opendir", (uintptr_t)&nier_opendir},
   {"stat", (uintptr_t)&nier_stat},
   {"lstat", (uintptr_t)&nier_lstat},
