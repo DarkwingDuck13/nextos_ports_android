@@ -2,6 +2,59 @@
 
 ---
 
+## v10 — 2026-06-19 — ETC1 OFFLINE (texturas pré-convertidas) + BINÁRIO ÚNICO + fim dos cortes a quente
+
+> Reescrita da estratégia de textura/memória. As texturas opacas agora são **ETC1 pré-convertido
+> embarcado no pacote** (`etc1cache/`): o jogo só **lê** ETC1 pronto e sobe `GL_ETC1_RGB8_OES`
+> (~4× menos memória de textura) — **zero conversão/encode em runtime, zero engasgo**. Validado
+> no **Mali-450** (.164): título + cutscene de Bullworth renderizando com cor, RAM saudável,
+> frames constantes. Binário **único GLIBC_2.17** (roda em qualquer device ≥ 2.17).
+
+### 🧊 ETC1 offline (o "principal")
+- O engine RenderWare do Bully **não tem formato ETC1** e o `.tex` é um container de console
+  (tiled/swizzled) fechado — então NÃO dá pra reescrever o `.tex` nem o engine subir ETC1 sozinho.
+- Solução: como a textura é **idêntica p/ todos** (mesmo APK 1.4.311), **bakeamos o ETC1 do nosso
+  lado** capturando os pixels que o engine decodifica (full-res), e **embarcamos `etc1cache/`** no
+  pacote. No device: o hook do `glTexImage2D` lê o ETC1 pronto e sobe comprimido. **Nada é
+  convertido durante o jogo.** Só texturas opacas (565); com-alpha/normal caem no caminho original.
+- ETC1 = 0,5 byte/px (vs 16-bit) → resolve o **limite de MMU de textura do Utgard** (causa real do
+  travamento da escola) SEM borrar com `TEX_HALF` nas cacheadas (ficam em RES CHEIA).
+- Para estender a cobertura: rodar com `BULLY_BAKE=1 BULLY_ETC1CACHE=<dir>` (encoda na hora — é o
+  passo OFFLINE, feito do nosso lado; gera os `.etc1` por nome de asset).
+
+### 🩹 Preto do v9.5 RESOLVIDO + binário único
+- **Removido** o despejo `implOnLowMemory` + anti-churn: em devices de glibc-velha ele deletava
+  textura/render-target **em uso** → mundo 3D **PRETO** dentro do jogo. ETC1 é a economia certa.
+- **Binário único** GLIBC_2.17 (Docker `debian:bullseye`, gcc-10): acabou o dual `bully`/`bully.compat`
+  e a escolha por glibc no launcher.
+- `TEX_HALF/TEX_LIGHT` mantidos só como **fallback** das texturas NÃO-cacheadas (em ~1GB).
+
+### 🧊🏆 FORCE-RENDER: o JOGO INTEIRO convertido (não só a attract-demo)
+- O `.tex` só decodifica+sobe quando é DESENHADO. Pra converter TUDO offline sem jogar, o
+  progressor faz **force-render**: hooka `RenderScene::Synchronize` (roda na render thread),
+  reusa **UM** `SpriteComponent` e troca a textura dele a cada frame (`SpriteComponent::Setup`)
+  varrendo **as ~14.064 texturas** do índice; cada uma é desenhada → o hook bakeia o ETC1.
+- 3 muros resolvidos: (1) cross-thread → rodar na render thread via Synchronize; (2) use-after-free
+  do `DeleteComponent` → reusar 1 sprite (sem criar/deletar); (3) MMU → subir **stub 1×1** no GL
+  durante o bake (só preciso dos pixels-CPU). Resume via `.bake_next`/`.bake_done`.
+- **Validado no .164: 14.064 texturas processadas → 8.577 em ETC1 (~407 MB) num passe, SEM CRASH,
+  RAM estável** (nunca OOM). Rodada normal lê o cache completo, `bake=0`, lisa.
+- **Anti-roxo (verificação de conteúdo):** no bake, ~12 texturas (0,14%) foram salvas no nome errado
+  (corrida com a attract-demo) → ficavam roxas. Fix: no runtime, decodifica a ETC1 do cache e compara
+  (MAD) com os pixels que o engine ia subir; se não bate (`BULLY_VERIFY_MAX`, default 34) → ignora e
+  usa a original. Pega TODAS as erradas automaticamente, sem re-bakear. (igual anti-magenta do dysmantle)
+
+### 🪟 Launcher: o PROGRESSOR converte tudo no 1º boot (script universal, sem mexer na ES)
+- **Auto-bake-all no 1º boot:** sem `etc1cache/.bake_done`, o launcher roda o force-render
+  (`BULLY_BAKEALL`) em loop-até-`.bake_done` (~20 min, 1×), mensagem "convertendo TODAS as
+  texturas". Só Utgard/fbdev. Depois roda normal só LENDO (zero conversão, liso). Validado do zero.
+- A ES é tratada pelo **PortMaster/runemu** (igual v9.0) — o script NÃO mata a ES (universal).
+- Fix: re-exporta `BULLY_ETC1CACHE` DEPOIS do bake (senão a rodada normal não lia o ETC1).
+- Binário/libs conferidos: `bully` aarch64 GLIBC_2.17; libs do device OK (`libGLESv2.so`/`libEGL.so`
+  → `libMali.m450.so` 64-bit; SDL2/openal/mpg123/libc presentes; todos os preloads OK).
+
+---
+
 ## v9.0 FINAL — 2026-06-14 (noite) — JANELA DE EXTRAÇÃO na tela + CLARITY HIGH automática
 
 > Atualização grande do v9.0: novo sistema de instalação **BYO-DATA com janela e
