@@ -51,10 +51,13 @@ extern void nier_set_gmalloc_var(void **v);
 extern void *nier_FMemory_Malloc(unsigned long long count, unsigned int align);
 extern void *nier_FMemory_Realloc(void *ptr, unsigned long long count, unsigned int align);
 extern void nier_FMemory_Free(void *ptr);
+extern unsigned long long nier_FMemory_GetAllocSize(void *ptr);
+extern unsigned long long nier_FMemory_QuantizeSize(unsigned long long count, unsigned int align);
 extern int nier_CheckVerifyFailed(const char *expr, const char *file, int line, const unsigned short *fmt);
 extern void *nier_GetHighPerfStat(void);
 extern void *nier_GetHardwareWindow(void);
 extern int nier_GetKeyMap(void *keys, void *names, unsigned max);
+extern int nier_ComputeScreenDensity(int *out_density);
 
 /* ---------------- crash handler (offset relativo ao libUE4) ---------------- */
 /* atribui um endereço a uma região de /proc/self/maps (lib + offset no arquivo) */
@@ -211,6 +214,8 @@ static void patch_kill_trace(void) {
         {"_ZN7FMemory6MallocEyj",     (void *)&nier_FMemory_Malloc},
         {"_ZN7FMemory7ReallocEPvyj",  (void *)&nier_FMemory_Realloc},
         {"_ZN7FMemory4FreeEPv",       (void *)&nier_FMemory_Free},
+        {"_ZN7FMemory12GetAllocSizeEPv", (void *)&nier_FMemory_GetAllocSize},
+        {"_ZN7FMemory12QuantizeSizeEyj", (void *)&nier_FMemory_QuantizeSize},
     };
     for (unsigned i = 0; i < sizeof(H)/sizeof(H[0]); i++) {
       uintptr_t a = so_find_addr(H[i].sym);
@@ -225,6 +230,13 @@ static void patch_kill_trace(void) {
       uintptr_t km = (uintptr_t)text_base + 0x51058ac;
       hook_arm64(km, (uintptr_t)&nier_GetKeyMap);
       fprintf(stderr, "[patch] FAndroidPlatformInput::GetKeyMap @ %p -> 0\n", (void *)km);
+    }
+
+    /* ComputePhysicalScreenDensity -> DPI fixo (string de device vazia crasha no FSlateApplication) */
+    {
+      uintptr_t cd = (uintptr_t)text_base + 0x513717c;
+      hook_arm64(cd, (uintptr_t)&nier_ComputeScreenDensity);
+      fprintf(stderr, "[patch] ComputePhysicalScreenDensity @ %p -> DPI 320\n", (void *)cd);
     }
 
     /* GetHardwareWindow_EventThread -> ponteiro fake nao-null p/ o RHI nao travar esperando janela */

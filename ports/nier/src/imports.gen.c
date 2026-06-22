@@ -98,6 +98,84 @@ int nier_munmap(void *addr, size_t len) {
   munmap(addr, len);  /* tenta; ignora resultado (trim de alinhamento e' best-effort) */
   return 0;
 }
+
+// ---- redirect do filesystem virtual do UE4 + log das buscas (pak/ini/uproject) ----
+// UE4 Android monta paths como "/UE4Game/<Projeto>/..." (raiz nao-gravavel). Redirecionamos
+// p/ NIER_GAMEFS (default /storage/roms/ports/nier/gamefs) onde colocamos o pak. Tambem pega
+// escritas (saves/config/log) -> tudo no lugar gravavel. ----
+#include <stdarg.h>
+static int g_open_logs = 0;
+static const char *gamefs_base(void) {
+  const char *b = getenv("NIER_GAMEFS");
+  return b ? b : "/storage/roms/ports/nier/gamefs";
+}
+static const char *redir(const char *path, char *buf, size_t bufsz) {
+  if (path && path[0] == '/' && strncmp(path, "/UE4Game/", 9) == 0) {
+    snprintf(buf, bufsz, "%s%s", gamefs_base(), path);
+    return buf;
+  }
+  return path;
+}
+static void log_open(const char *fn, const char *path, int rc) {
+  if (g_open_logs < 600) {
+    fprintf(stderr, "[%s] '%s' -> %d%s\n", fn, path ? path : "(null)", rc, rc < 0 ? " FAIL" : "");
+    fflush(stderr); g_open_logs++;
+  }
+}
+int nier_open(const char *path, int flags, ...) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  mode_t mode = 0;
+  if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+  int fd = open(p, flags, mode);
+  log_open("open", p, fd);
+  return fd;
+}
+int nier_openat(int dfd, const char *path, int flags, ...) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  mode_t mode = 0;
+  if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+  int fd = openat(dfd, p, flags, mode);
+  log_open("openat", p, fd);
+  return fd;
+}
+FILE *nier_fopen(const char *path, const char *mode) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  FILE *f = fopen(p, mode);
+  log_open("fopen", p, f ? 0 : -1);
+  return f;
+}
+int nier_access(const char *path, int amode) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  int r = access(p, amode);
+  log_open("access", p, r);
+  return r;
+}
+#include <dirent.h>
+#include <sys/stat.h>
+DIR *nier_opendir(const char *path) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  DIR *d = opendir(p);
+  log_open("opendir", p, d ? 0 : -1);
+  return d;
+}
+int nier_stat(const char *path, struct stat *st) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  int r = stat(p, st);
+  log_open("stat", p, r);
+  return r;
+}
+int nier_lstat(const char *path, struct stat *st) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  int r = lstat(p, st);
+  return r;
+}
+int nier_xstat(int ver, const char *path, struct stat *st) {
+  char b[1024]; const char *p = redir(path, b, sizeof(b));
+  extern int __xstat(int, const char *, struct stat *);
+  int r = __xstat(ver, p, st);
+  log_open("__xstat", p, r);
+  return r;
+}
 long nier_sysconf(int name) {
   long r = sysconf(name);
   fprintf(stderr, "[sysconf %d] -> %ld\n", name, r); fflush(stderr);
@@ -212,6 +290,24 @@ void *nier_FMemory_Realloc(void *ptr, unsigned long long count, unsigned int ali
   void *(*fn)(void *, void *, unsigned long long, unsigned int) = (void *)vt[4]; /* +32 Realloc */
   return fn(gm, ptr, count, align);
 }
+/* FMemory::GetAllocSize/QuantizeSize tambem roteiam pro GMalloc (FMallocBinned2) que NAO
+ * reconhece ponteiro do glibc -> CanaryFail (heap corrompido) fatal. Com use_glibc, GetAllocSize
+ * = malloc_usable_size; QuantizeSize = o proprio tamanho pedido (alinhado). */
+unsigned long long nier_FMemory_GetAllocSize(void *ptr) {
+  if (use_glibc()) return ptr ? (unsigned long long)malloc_usable_size(ptr) : 0;
+  void *gm = gmalloc(); if (!gm || !ptr) return 0;
+  void **vt = *(void ***)gm;
+  unsigned long long (*fn)(void *, void *) = (void *)vt[7]; /* GetAllocationSizeExternal +56 */
+  return fn(gm, ptr);
+}
+unsigned long long nier_FMemory_QuantizeSize(unsigned long long count, unsigned int align) {
+  if (use_glibc()) { if (align < 16) align = 16; return (count + align - 1) & ~(unsigned long long)(align - 1); }
+  void *gm = gmalloc(); if (!gm) return count;
+  void **vt = *(void ***)gm;
+  unsigned long long (*fn)(void *, unsigned long long, unsigned int) = (void *)vt[6]; /* QuantizeSize +48 */
+  return fn(gm, count, align);
+}
+
 void nier_FMemory_Free(void *ptr) {
   if (!ptr) return;
   if (use_glibc()) { free(ptr); return; }
@@ -222,6 +318,14 @@ void nier_FMemory_Free(void *ptr) {
   void **vt = *(void ***)gm;
   void (*fn)(void *, void *) = (void *)vt[5]; /* +40 Free */
   fn(gm, ptr);
+}
+
+// ---- FAndroidApplicationMisc::ComputePhysicalScreenDensity(int&): parseia uma string de
+// device (DPI/tela) vinda do JNI que vem VAZIA nos nossos stubs -> ParseIntoArray array vazio
+// -> array[0] = NULL+8 crash (no ctor do FSlateApplication). Stub: DPI fixo razoavel. ----
+int nier_ComputeScreenDensity(int *out_density) {
+  if (out_density) *out_density = 320;  /* DPI tipico de telefone */
+  return 320;
 }
 
 // ---- Stats: FStatGroupEnableManager::GetHighPerformanceEnableForStat faz sondagem de
@@ -918,6 +1022,14 @@ DynLibFunction dynlib_functions[] = {
   // ---- bionic internos + TLS ----
   {"mmap", (uintptr_t)&nier_mmap},
   {"munmap", (uintptr_t)&nier_munmap},
+  {"open", (uintptr_t)&nier_open},
+  {"openat", (uintptr_t)&nier_openat},
+  {"fopen", (uintptr_t)&nier_fopen},
+  {"access", (uintptr_t)&nier_access},
+  {"opendir", (uintptr_t)&nier_opendir},
+  {"stat", (uintptr_t)&nier_stat},
+  {"lstat", (uintptr_t)&nier_lstat},
+  {"__xstat", (uintptr_t)&nier_xstat},
   {"sysconf", (uintptr_t)&nier_sysconf},
   {"pthread_create", (uintptr_t)&nier_pthread_create},
   {"syscall", (uintptr_t)&nier_syscall},
