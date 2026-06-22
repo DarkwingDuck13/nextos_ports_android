@@ -439,6 +439,13 @@ const unsigned char *nier_glGetString(unsigned int name) {
     *(volatile int *)(tb + 0xaef5a30) = 1;   /* GMaxRHIFeatureLevel = ES3_1 */
     *(volatile int *)(tb + 0xb02ab3c) = 15;  /* GMaxRHIShaderPlatform = SP_OPENGL_ES3_1_ANDROID */
     *(volatile int *)(tb + 0xb180838) = 3;   /* FAndroidOpenGL::GLMajorVerion = 3 */
+    /* flags FAndroidOpenGL do modelo ES3.1 (sampler separado=*2, UBO) — forcar consistente
+     * evita o mismatch do UniformBuffer layout (Resources==TexExpr*2) no material-system. */
+    *(volatile char *)(tb + 0xb1808da) = 1;  /* bUseES30ShadingLanguage */
+    *(volatile char *)(tb + 0xb1808db) = 1;  /* bES30Support */
+    *(volatile char *)(tb + 0xb1808dc) = 1;  /* bES31Support */
+    *(volatile char *)(tb + 0xb1808dd) = 1;  /* bSupportsInstancing */
+    *(volatile char *)(tb + 0xaef5a50) = 1;  /* GSupportsResourceView (passa SRV creation) */
     populate_es3_fns(tb);                     /* popula ponteiros de funcao ES3/EXT NULL */
     if (name == 0x1F02) return (const unsigned char *)"OpenGL ES 3.1";          /* GL_VERSION */
     if (name == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.10"; /* GL_SHADING_LANGUAGE_VERSION */
