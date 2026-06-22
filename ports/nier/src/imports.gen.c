@@ -363,6 +363,40 @@ void nier_glTexStorage3D(unsigned target, int levels, unsigned ifmt, int w, int 
   (void)d; nier_glTexStorage2D(target, levels, ifmt, w, h); /* sem texture arrays em ES2: aprox 2D */
 }
 
+static void gl_noop(void) {}
+extern void *SDL_GL_GetProcAddress(const char *);
+/* popula os ponteiros de funcao ES3/EXT que ProcessExtensions(modo ES2) deixou NULL:
+ * real (SDL_GL_GetProcAddress pega OES/EXT do driver) > emulacao nossa > no-op. */
+static void populate_es3_fns(uintptr_t tb) {
+  static const struct { unsigned off; const char *name; } T[] = {
+    {0xb180600,"glGenQueriesEXT"},{0xb180608,"glDeleteQueriesEXT"},{0xb180610,"glIsQueryEXT"},
+    {0xb180618,"glBeginQueryEXT"},{0xb180620,"glEndQueryEXT"},{0xb180628,"glGetQueryivEXT"},
+    {0xb180630,"glGetQueryObjectuivEXT"},{0xb180638,"glQueryCounterEXT"},{0xb180640,"glGetQueryObjectui64vEXT"},
+    {0xb180648,"glBlitFramebufferNV"},{0xb180650,"glDiscardFramebufferEXT"},
+    {0xb180688,"glMapBufferOES"},{0xb180690,"glUnmapBufferOES"},
+    {0xb180700,"glDrawElementsInstanced"},{0xb180708,"glDrawArraysInstanced"},{0xb180710,"glVertexAttribDivisor"},
+    {0xb180718,"glUniform4uiv"},{0xb180720,"glTexImage3D"},{0xb180728,"glTexSubImage3D"},
+    {0xb180730,"glCompressedTexImage3D"},{0xb180738,"glCompressedTexSubImage3D"},{0xb180740,"glCopyTexSubImage3D"},
+    {0xb180748,"glClearBufferfi"},{0xb180750,"glClearBufferfv"},{0xb180758,"glClearBufferiv"},
+    {0xb180760,"glClearBufferuiv"},{0xb180768,"glDrawBuffers"},{0xb180770,"glTexBufferEXT"},
+    {0xb180778,"glCopyImageSubData"},{0xb180780,"glGetProgramBinary"},{0xb180788,"glProgramBinary"},
+    {0xb180790,"glBindBufferRange"},{0xb180798,"glBindBufferBase"},{0xb1807a0,"glGetUniformBlockIndex"},
+    {0xb1807a8,"glUniformBlockBinding"},{0xb1807b0,"glVertexAttribIPointer"},{0xb1807b8,"glBlitFramebuffer"},
+    {0xb1807c0,"glGenSamplers"},{0xb1807c8,"glDeleteSamplers"},{0xb1807d0,"glSamplerParameteri"},
+    {0xb1807d8,"glBindSampler"},{0xb1807e0,"glProgramParameteri"},{0xb1807e8,"glMemoryBarrier"},
+    {0xb1807f0,"glDispatchCompute"},{0xb1807f8,"glDispatchComputeIndirect"},{0xb180800,"glBindImageTexture"},
+  };
+  for (unsigned i = 0; i < sizeof(T)/sizeof(T[0]); i++) {
+    void **slot = (void **)(tb + T[i].off);
+    if (*slot) continue;                          /* ja' setado (driver tem) */
+    void *p = SDL_GL_GetProcAddress(T[i].name);   /* tenta real (OES/EXT do driver) */
+    *slot = p ? p : (void *)&gl_noop;             /* senao no-op (compute/UAV/UBO inexistentes) */
+  }
+  /* emulacoes nossas (sobrescrevem o no-op) */
+  *(void **)(tb + 0xb180698) = (void *)&nier_glTexStorage2D;
+  *(void **)(tb + 0xb1806a0) = (void *)&nier_glTexStorage3D;
+}
+
 static int g_force_es31 = -1;
 const unsigned char *nier_glGetString(unsigned int name) {
   if (!real_glGetString) real_glGetString = (void *)dlsym(RTLD_DEFAULT, "glGetString");
@@ -376,9 +410,8 @@ const unsigned char *nier_glGetString(unsigned int name) {
     *(volatile int *)(tb + 0xaef5a30) = 1;   /* GMaxRHIFeatureLevel = ES3_1 */
     *(volatile int *)(tb + 0xb02ab3c) = 15;  /* GMaxRHIShaderPlatform = SP_OPENGL_ES3_1_ANDROID */
     *(volatile int *)(tb + 0xb180838) = 3;   /* FAndroidOpenGL::GLMajorVerion = 3 */
-    /* popula ponteiros de funcao ES3 que ProcessExtensions (modo ES2) deixou NULL */
-    *(void **)(tb + 0xb180698) = (void *)&nier_glTexStorage2D;
-    *(void **)(tb + 0xb1806a0) = (void *)&nier_glTexStorage3D;
+    populate_es3_fns(tb);                     /* popula ponteiros de funcao ES3/EXT NULL */
+    *(volatile char *)(tb + 0xaef5a50) = 1;   /* GSupportsResourceView=1 (ES3.1 exige; check assert) */
     if (name == 0x1F02) return (const unsigned char *)"OpenGL ES 3.1";          /* GL_VERSION */
     if (name == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.10"; /* GL_SHADING_LANGUAGE_VERSION */
   }
