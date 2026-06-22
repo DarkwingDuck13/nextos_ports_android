@@ -37,6 +37,7 @@
 #include <GLES2/gl2.h>
 #include <SDL2/SDL.h>
 
+#include "egl_shim.h"
 #include "imports.h"
 #include "so_util.h"
 #include "util.h"
@@ -516,12 +517,64 @@ static int ANativeWindow_setBuffersGeometry_fake(void *w, int width, int height,
 // against the loaded blob. Other libs (libEGL/libGLESv2...) pass through to
 // the real loader so SDL's SDL_EGL_LoadLibrary finds Mali.
 #define SOTN_SELF_HANDLE ((void *)0x50754E)
+// libEGL -> our egl_shim (EGL backed by the device SDL2). The game's static SDL
+// renders through whatever backend the device SDL2 picks (fbdev on Mali-450,
+// KMSDRM/Wayland on R36S). Same idea Bully/Dysmantle use.
+#define SOTN_EGL_HANDLE ((void *)0x50754F)
+
+// Tiny EGL stubs for functions SDL 2.0.8 REQUIRES but egl_shim doesn't model
+// (SDL fails LoadLibrary if any is NULL). Harmless no-ops.
+static unsigned eglstub_true(void) { return 1; }            // EGL_TRUE
+static unsigned eglstub_queryapi(void) { return 0x30A0; }   // EGL_OPENGL_ES_API
+static void *eglstub_curdisplay(void) { return (void *)"display"; }
+
+static void *egl_shim_lookup(const char *name) {
+  static const struct {
+    const char *n;
+    void *f;
+  } map[] = {
+      {"eglWaitNative", (void *)eglstub_true},
+      {"eglWaitGL", (void *)eglstub_true},
+      {"eglQueryAPI", (void *)eglstub_queryapi},
+      {"eglGetCurrentDisplay", (void *)eglstub_curdisplay},
+      {"eglReleaseThread", (void *)eglstub_true},
+      {"eglGetDisplay", (void *)egl_shim_GetDisplay},
+      {"eglInitialize", (void *)egl_shim_Initialize},
+      {"eglTerminate", (void *)egl_shim_Terminate},
+      {"eglChooseConfig", (void *)egl_shim_ChooseConfig},
+      {"eglCreateWindowSurface", (void *)egl_shim_CreateWindowSurface},
+      {"eglCreatePbufferSurface", (void *)egl_shim_CreatePbufferSurface},
+      {"eglCreateContext", (void *)egl_shim_CreateContext},
+      {"eglMakeCurrent", (void *)egl_shim_MakeCurrent},
+      {"eglSwapBuffers", (void *)egl_shim_SwapBuffers},
+      {"eglDestroySurface", (void *)egl_shim_DestroySurface},
+      {"eglDestroyContext", (void *)egl_shim_DestroyContext},
+      {"eglQuerySurface", (void *)egl_shim_QuerySurface},
+      {"eglGetConfigAttrib", (void *)egl_shim_GetConfigAttrib},
+      {"eglGetError", (void *)egl_shim_GetError},
+      {"eglGetProcAddress", (void *)egl_shim_GetProcAddress},
+      {"eglBindAPI", (void *)egl_shim_BindAPI},
+      {"eglQueryString", (void *)egl_shim_QueryString},
+      {"eglSwapInterval", (void *)egl_shim_SwapInterval},
+      {"eglGetCurrentContext", (void *)egl_shim_GetCurrentContext},
+      {"eglGetCurrentSurface", (void *)egl_shim_GetCurrentSurface},
+      {"eglSurfaceAttrib", (void *)egl_shim_SurfaceAttrib},
+  };
+  for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+    if (strcmp(name, map[i].n) == 0)
+      return map[i].f;
+  return NULL;
+}
 
 static void *my_dlopen(const char *name, int flag) {
   if (!name)
     return dlopen(NULL, flag ? flag : RTLD_NOW);
+  if (getenv("SOTN_VERBOSE"))
+    debugPrintf("my_dlopen(\"%s\")\n", name);
   if (strstr(name, "libsotn"))
     return SOTN_SELF_HANDLE;
+  if (strstr(name, "libEGL"))
+    return SOTN_EGL_HANDLE;
   void *h = dlopen(name, flag ? flag : (RTLD_NOW | RTLD_GLOBAL));
   if (h)
     return h;
@@ -531,6 +584,10 @@ static void *my_dlopen(const char *name, int flag) {
 }
 
 static void *my_dlsym(void *handle, const char *name) {
+  if (handle == SOTN_EGL_HANDLE) {
+    void *f = egl_shim_lookup(name);
+    return f; // unknown egl* (eglWaitGL/...) -> NULL (harmless)
+  }
   if (handle == SOTN_SELF_HANDLE) {
     uintptr_t a = so_find_addr_safe(name);
     if (a)
@@ -541,7 +598,12 @@ static void *my_dlsym(void *handle, const char *name) {
 }
 
 static int my_dlclose(void *handle) {
-  if (handle == SOTN_SELF_HANDLE)
+  if (getenv("SOTN_VERBOSE"))
+    debugPrintf("my_dlclose(%p)\n", handle);
+  if (handle == SOTN_SELF_HANDLE || handle == SOTN_EGL_HANDLE)
+    return 0; // fake handles: no-op (dlclose on them would crash ld.so)
+  // Defensive: never dlclose a non-heap pointer (would crash ld.so).
+  if ((uintptr_t)handle < 0x10000)
     return 0;
   return dlclose(handle);
 }
@@ -746,7 +808,7 @@ DynLibFunction dynlib_functions[] = {
     {"__ctype_get_mb_cur_max", (uintptr_t)&__ctype_get_mb_cur_max_fake},
     {"__cxa_atexit", (uintptr_t)&__cxa_atexit},
     {"__cxa_finalize", (uintptr_t)&__cxa_finalize},
-    {"dlclose", (uintptr_t)&dlclose},
+    {"dlclose", (uintptr_t)&my_dlclose},
     {"dlerror", (uintptr_t)&dlerror},
     {"dl_iterate_phdr", (uintptr_t)&dl_iterate_phdr_fake},
     {"dlopen", (uintptr_t)&my_dlopen},

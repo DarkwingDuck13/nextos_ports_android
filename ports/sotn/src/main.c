@@ -8,12 +8,17 @@
 // game's static SDL "android" video driver + our ANativeWindow->fbdev_window
 // shim and dlopen()->libEGL passthrough.
 #include <dlfcn.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <ucontext.h>
 #include <unistd.h>
 
+#include <SDL2/SDL.h>
+
+#include "egl_shim.h"
 #include "error.h"
 #include "imports.h"
 #include "jni_shim.h"
@@ -50,34 +55,75 @@ static jint (*p_nativeRunMain)(void *env, void *cls, void *library,
  * `used` keeps the linker from dropping it; anchored by a volatile read. */
 __attribute__((used, aligned(16))) _Thread_local char g_bionic_guard_pad[256];
 
+static void crash_handler(int sig, siginfo_t *info, void *uc) {
+  uintptr_t fault = (uintptr_t)info->si_addr;
+  uintptr_t tb = (uintptr_t)text_base;
+  debugPrintf("\n=== CRASH sig=%d addr=%p ===\n", sig, info->si_addr);
+  if (tb && fault >= tb && fault < tb + text_size)
+    debugPrintf("  fault = libsotn+0x%lx\n", (unsigned long)(fault - tb));
+#if defined(__aarch64__)
+  ucontext_t *u = (ucontext_t *)uc;
+  uintptr_t pc = u->uc_mcontext.pc;
+  uintptr_t lr = u->uc_mcontext.regs[30];
+  debugPrintf("  PC=%p%s\n", (void *)pc,
+              (tb && pc >= tb && pc < tb + text_size) ? "" : " (fora de libsotn)");
+  if (tb && pc >= tb && pc < tb + text_size)
+    debugPrintf("  PC = libsotn+0x%lx\n", (unsigned long)(pc - tb));
+  if (tb && lr >= tb && lr < tb + text_size)
+    debugPrintf("  LR = libsotn+0x%lx\n", (unsigned long)(lr - tb));
+  else
+    debugPrintf("  LR=%p\n", (void *)lr);
+#endif
+  _exit(128 + sig);
+}
+
+static void install_crash_handler(void) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = crash_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGILL, &sa, NULL);
+}
+
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
   { volatile char c = g_bionic_guard_pad[0]; (void)c; } // anchor TLS pad
+  install_crash_handler();
   debugPrintf("=== Castlevania SOTN so-loader (Mali-450) ===\n");
 
-  const char *ws = getenv("SOTN_W");
-  const char *hs = getenv("SOTN_H");
-  if (ws)
-    g_sotn_screen_w = atoi(ws);
-  if (hs)
-    g_sotn_screen_h = atoi(hs);
-  if (g_sotn_screen_w <= 0)
-    g_sotn_screen_w = 1280;
-  if (g_sotn_screen_h <= 0)
-    g_sotn_screen_h = 720;
-  debugPrintf("Screen: %dx%d\n", g_sotn_screen_w, g_sotn_screen_h);
+  // Video via the DEVICE's SDL2 (egl_shim): it auto-picks the backend — fbdev on
+  // Mali-450, KMSDRM/Wayland on R36S — and gives the NATIVE resolution. The
+  // game's static SDL renders through our egl_shim (dlopen libEGL -> egl_shim)
+  // into this window. One binary works on any device. No hardcoded 720p.
+  if (SDL_Init(SDL_INIT_VIDEO) != 0)
+    fatal_error("device SDL_Init(VIDEO) failed: %s", SDL_GetError());
+  egl_shim_create_window(); // sets sotn_screen_w/h to native + creates window
+  extern int sotn_screen_w, sotn_screen_h;
+  g_sotn_screen_w = sotn_screen_w;
+  g_sotn_screen_h = sotn_screen_h;
+  debugPrintf("Screen: %dx%d (via device SDL2)\n", g_sotn_screen_w,
+              g_sotn_screen_h);
 
-  // Make SDL pick the "android" video + audio drivers (audio -> JNI -> our
-  // pacat sink). Don't force dummy.
+  // PortMaster's control.txt exports SDL_VIDEODRIVER=wayland / SDL_AUDIODRIVER=
+  // pulseaudio for the DEVICE SDL2 — which already initialized above and grabbed
+  // the right backend (wayland/kmsdrm on R36S, fbdev on Mali-450). The game's
+  // STATIC SDL, however, only has the "android" backends; with those env vars it
+  // would look for wayland/pulseaudio drivers it doesn't have and SDL_Init would
+  // fail ("failed to initialize SDL subsystem" -> NULL deref crash). Force the
+  // game's SDL to "android" now that the device window exists. Device-agnostic:
+  // the device SDL2 keeps whatever it already picked.
   setenv("SDL_VIDEODRIVER", "android", 1);
+  setenv("SDL_AUDIODRIVER", "android", 1);
   extern void sotn_audio_init(void);
   sotn_audio_init();
 
   // Pull libz (and GLES/EGL) into the global symbol scope so so_resolve's
   // dlsym(RTLD_DEFAULT) fallback can resolve inflate/crc32/gl*/egl* etc.
-  const char *globlibs[] = {"libz.so.1",      "libz.so",  "libGLESv2.so",
-                            "libGLESv1_CM.so", "libEGL.so", NULL};
+  const char *globlibs[] = {"libz.so.1", "libz.so", "libGLESv2.so",
+                            "libGLESv1_CM.so", NULL};
   for (int i = 0; globlibs[i]; i++)
     dlopen(globlibs[i], RTLD_NOW | RTLD_GLOBAL);
 
