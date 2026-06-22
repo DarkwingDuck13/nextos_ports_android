@@ -365,6 +365,35 @@ void nier_glTexStorage3D(unsigned target, int levels, unsigned ifmt, int w, int 
 
 static void gl_noop(void) {}
 extern void *SDL_GL_GetProcAddress(const char *);
+
+/* ===== shader: log da fonte ES3.1 + status de compilacao (entrada do rewriter) ===== */
+static void (*real_glShaderSource)(unsigned,int,const char*const*,const int*) = 0;
+static void (*real_glCompileShader)(unsigned) = 0;
+static void (*real_glGetShaderiv)(unsigned,unsigned,int*) = 0;
+static void (*real_glGetShaderInfoLog)(unsigned,int,int*,char*) = 0;
+static int g_sh_logs = 0;
+void nier_glShaderSource(unsigned sh, int count, const char *const *str, const int *len) {
+  if (!real_glShaderSource) real_glShaderSource = (void *)dlsym(RTLD_DEFAULT, "glShaderSource");
+  if (g_sh_logs < 3 && count > 0 && str && str[0]) {
+    fprintf(stderr, "=== SHADER sh=%u src ===\n%.1400s\n=== /SHADER ===\n", sh, str[0]);
+    fflush(stderr); g_sh_logs++;
+  }
+  if (real_glShaderSource) real_glShaderSource(sh, count, str, len);
+}
+void nier_glCompileShader(unsigned sh) {
+  if (!real_glCompileShader) real_glCompileShader = (void *)dlsym(RTLD_DEFAULT, "glCompileShader");
+  if (!real_glGetShaderiv) real_glGetShaderiv = (void *)dlsym(RTLD_DEFAULT, "glGetShaderiv");
+  if (!real_glGetShaderInfoLog) real_glGetShaderInfoLog = (void *)dlsym(RTLD_DEFAULT, "glGetShaderInfoLog");
+  if (real_glCompileShader) real_glCompileShader(sh);
+  int ok = 1;
+  if (real_glGetShaderiv) real_glGetShaderiv(sh, 0x8B81 /*COMPILE_STATUS*/, &ok);
+  if (!ok) {
+    char log[512]; log[0] = 0;
+    if (real_glGetShaderInfoLog) real_glGetShaderInfoLog(sh, sizeof(log), 0, log);
+    fprintf(stderr, "[SHADER COMPILE FAIL sh=%u] %.400s\n", sh, log);
+    fflush(stderr);
+  }
+}
 /* popula os ponteiros de funcao ES3/EXT que ProcessExtensions(modo ES2) deixou NULL:
  * real (SDL_GL_GetProcAddress pega OES/EXT do driver) > emulacao nossa > no-op. */
 static void populate_es3_fns(uintptr_t tb) {
@@ -411,7 +440,6 @@ const unsigned char *nier_glGetString(unsigned int name) {
     *(volatile int *)(tb + 0xb02ab3c) = 15;  /* GMaxRHIShaderPlatform = SP_OPENGL_ES3_1_ANDROID */
     *(volatile int *)(tb + 0xb180838) = 3;   /* FAndroidOpenGL::GLMajorVerion = 3 */
     populate_es3_fns(tb);                     /* popula ponteiros de funcao ES3/EXT NULL */
-    *(volatile char *)(tb + 0xaef5a50) = 1;   /* GSupportsResourceView=1 (ES3.1 exige; check assert) */
     if (name == 0x1F02) return (const unsigned char *)"OpenGL ES 3.1";          /* GL_VERSION */
     if (name == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.10"; /* GL_SHADING_LANGUAGE_VERSION */
   }
@@ -565,7 +593,7 @@ DynLibFunction dynlib_functions[] = {
   {"glClearDepthf", (uintptr_t)&glClearDepthf},  // gles
   {"glClearStencil", (uintptr_t)&glClearStencil},  // gles
   {"glColorMask", (uintptr_t)&glColorMask},  // gles
-  {"glCompileShader", (uintptr_t)&glCompileShader},  // gles
+  {"glCompileShader", (uintptr_t)&nier_glCompileShader},  // gles (log compile fail)
   {"glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D},  // gles
   {"glCompressedTexSubImage2D", (uintptr_t)&glCompressedTexSubImage2D},  // gles
   {"glCopyTexSubImage2D", (uintptr_t)&glCopyTexSubImage2D},  // gles
@@ -611,7 +639,7 @@ DynLibFunction dynlib_functions[] = {
   {"glReadPixels", (uintptr_t)&glReadPixels},  // gles
   {"glRenderbufferStorage", (uintptr_t)&glRenderbufferStorage},  // gles
   {"glScissor", (uintptr_t)&glScissor},  // gles
-  {"glShaderSource", (uintptr_t)&glShaderSource},  // gles
+  {"glShaderSource", (uintptr_t)&nier_glShaderSource},  // gles (log+rewriter)
   {"glStencilFunc", (uintptr_t)&glStencilFunc},  // gles
   {"glStencilFuncSeparate", (uintptr_t)&glStencilFuncSeparate},  // gles
   {"glStencilMask", (uintptr_t)&glStencilMask},  // gles
