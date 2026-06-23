@@ -65,3 +65,7 @@ ports/crazytaxi/
 ports/sor4/port/tools/*/bin/
 ports/sor4/port/tools/*/obj/
 *.pdb
+
+# game payloads (conteudo de jogo extraido — nunca commitar)
+ports/*/payload/
+*.orig
