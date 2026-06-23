@@ -1,0 +1,10 @@
+# build artifact (binary not versioned — rule)
+ducktales
+# extracted APK (libs + 560MB assets) — not versioned
+payload/
+# runtime data
+userdata/
+logs/
+*.raw
+fb_*.png
+*.o
