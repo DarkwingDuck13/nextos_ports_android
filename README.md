@@ -4,7 +4,7 @@ Framework pra **portar jogos Android (ARM64, NativeActivity) pra Linux ARM64 / N
 
 Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Linux, com uma camada de shim que finge ser Android (fake JNI, OpenSL ES→SDL2, EGL→SDL2, bionic→glibc). Mesma linhagem dos so-loaders de PSVita (TheFloW), adaptada pra Linux ARM64 + SDL2.
 
-> 📜 **Licença / créditos:** **qualquer um pode compilar e usar** este framework e os ports — **desde que dê os devidos créditos** ao autor (**felc18-blip / NextOS**). Use, modifique e redistribua à vontade, só mantenha a atribuição. Os jogos em si continuam sendo dos seus donos: tudo é **BYO-data** (você fornece o `.so`/dados do APK que **possui legalmente**).
+> 📜 **Licença / créditos:** **qualquer um pode compilar e usar** este framework e os ports — **desde que dê os devidos créditos** ao projeto (**NextOS**). Use, modifique e redistribua à vontade, só mantenha a atribuição. Os jogos em si continuam sendo dos seus donos: tudo é **BYO-data** (você fornece o `.so`/dados do APK que **possui legalmente**).
 
 > ℹ️ **Isto NÃO são ports PortMaster.** Cada jogo aqui roda a **versão ANDROID** (o `.so` do APK) via **so-loader** — não um build Linux/PC. O empacotamento aproveita o framework do PortMaster **só pra lançar** (control.txt + gptokeyb pra controle/sair), mas o que executa por dentro é o binário Android. Ports PortMaster "de verdade" (de builds Linux) desses jogos, quando existem, são projetos separados.
 
@@ -30,6 +30,7 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 | **Streets of Rage 4** | **MonoGame/.NET 9 NATIVO** (não so-loader) | ✅ **jogável + áudio validado** (Mali-450 GLES2) — música/SFX, texturas ETC1, BYO via APK | [`ports/sor4`](ports/sor4/) |
 | **DYSMANTLE** | so-loader (GameActivity) | ✅ **jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
 | **Terraria** (Unity IL2CPP) | so-loader | ✅ **jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
+| **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | ✅ **jogável** (Mali-450) — render, **controle físico (padrão Xbox)**, áudio, texto em inglês | [`ports/chrono`](ports/chrono/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | 🟡 gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity) | so-loader | 🔴 demo — menu + entrada Cap.1 OK; **andar congela** (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | 🟢 cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
