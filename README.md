@@ -31,13 +31,13 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 | **DYSMANTLE** | so-loader (GameActivity) | ✅ **jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
 | **Terraria** (Unity IL2CPP) | so-loader | ✅ **jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | ✅ **jogável** (Mali-450) — render, **controle físico (padrão Xbox)**, áudio, texto em inglês | [`ports/chrono`](ports/chrono/) |
-| **Crazy Taxi Classic** (so-loader) | loader de **initdream**, adaptado p/ Mali-450 | ✅ **jogável** (Mali-450 GLES2 1280x720 30fps) — render + áudio + controle via **gptokeyb** | [`ports/crazytaxi`](ports/crazytaxi/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | 🟡 gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity) | so-loader | 🔴 demo — menu + entrada Cap.1 OK; **andar congela** (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | 🟢 cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
 | **Cuphead** (Unity IL2CPP) | so-loader | 🔬 WIP | [`ports/cuphead`](ports/cuphead/) |
 | **Hollow Knight** (Unity IL2CPP) | so-loader | 🔬 pesquisa — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
-| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | so-loader (ref. **mtojek**) | 📦 referência — validam o framework no Utgard | — |
+| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | so-loader (ref. **mtojek**) | 📦 referência (base do framework) — validam o so-loader no Utgard | — |
+| Crazy Taxi Classic (GLES2) | so-loader (loader de **initdream** sobre o framework) | 📦 referência (port da comunidade) — ✅ **jogável** no Mali-450 (render + áudio + **gptokeyb**) | [`ports/crazytaxi`](ports/crazytaxi/) |
 
 > ⚙️ **Dois caminhos**: a maioria é **so-loader** (carrega o `.so` Android e roda direto); alguns são **nativos** — Streets of Rage 4 roda o runtime **.NET 9 + MonoGame** compilado em GLES2, e Dusklight é um **recomp**. O empacotamento PortMaster (launcher + BYO-data) é o mesmo nos dois.
 
