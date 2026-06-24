@@ -59,8 +59,12 @@ __pycache__/
 *.pyc
 # dumps de gdb (debug efemero)
 experiments/hollow-recon/*.mem
-# crazytaxi: 269M de assets de jogo (copyright Sega) -- NAO vai pro repo publico
-ports/crazytaxi/
+# crazytaxi: SO o codigo/loader vai pro repo. Dados de jogo (copyright Sega) e
+# binarios compilados NUNCA -- PROIBIDO subir dados de jogo pro GitHub.
+ports/crazytaxi/package/
+ports/crazytaxi/assets/
+ports/crazytaxi/crazytaxi
+ports/crazytaxi/*.so
 # build artifacts das ferramentas .NET (Cecil) -- reproduziveis de *.cs, NAO versionar
 ports/sor4/port/tools/*/bin/
 ports/sor4/port/tools/*/obj/

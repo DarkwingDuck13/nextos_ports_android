@@ -31,6 +31,7 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 | **DYSMANTLE** | so-loader (GameActivity) | ✅ **jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
 | **Terraria** (Unity IL2CPP) | so-loader | ✅ **jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | ✅ **jogável** (Mali-450) — render, **controle físico (padrão Xbox)**, áudio, texto em inglês | [`ports/chrono`](ports/chrono/) |
+| **Crazy Taxi Classic** (so-loader) | loader de **initdream**, adaptado p/ Mali-450 | ✅ **jogável** (Mali-450 GLES2 1280x720 30fps) — render + áudio + controle via **gptokeyb** | [`ports/crazytaxi`](ports/crazytaxi/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | 🟡 gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity) | so-loader | 🔴 demo — menu + entrada Cap.1 OK; **andar congela** (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | 🟢 cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
@@ -84,3 +85,5 @@ Este repo é **só a ferramenta/loader** (como o PortMaster). Ele **não** distr
 
 ## Créditos
 Núcleo derivado dos ports **[syberia_arm64](https://github.com/mtojek/syberia_arm64)** e **[lswtcs_arm64](https://github.com/mtojek/lswtcs_arm64)** de **mtojek** (licença **Apache-2.0**). Este framework generaliza aquele approach. Veja `NOTICE` para atribuição.
+
+O port **Crazy Taxi Classic** usa o loader **[crazytaxi-aarch64](https://github.com/initdream/crazytaxi-aarch64)** de **[initdream](https://github.com/initdream)**, que o construiu **em cima deste framework**. Nós o **adaptamos para o Mali-450 (Utgard)**: recompilação no toolchain NextOS, mapeamento teclado→keycode Android para **gptokeyb**, e ajustes de áudio (PulseAudio). Versionamos **só o código/loader** — nenhum dado de jogo (copyright Sega) vai pro repo.
