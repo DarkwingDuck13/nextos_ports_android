@@ -14,6 +14,8 @@
  */
 #include <signal.h>
 #include <setjmp.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1174,7 +1176,7 @@ static void my_unlink(void *r0, void *r1) {
      can't deref a zero next inline after we return. */
   if (!su_ok(next) || !su_ok(prev)) {
     if (g_hist) { static int hn = 0; if (hn++ < 12) {
-        fprintf(stderr, "[UAF] corrupt node=%p next=%p prev=%p sc=%u\n", (void *)node, next, prev, scb);
+        fprintf(stderr, "[UAF] corrupt node=%p next=%p prev=%p sc=%u tid=%ld\n", (void *)node, next, prev, scb, (long)syscall(SYS_gettid));
         hist_dump("victim", (void *)node); df_backtrace(); } }
     else if (g_su_hits < 30) { g_su_hits++;
       fprintf(stderr, "[SAFEUNLINK] contained corrupt node=%p next=%p prev=%p\n", (void *)node, next, prev); }
@@ -1453,6 +1455,7 @@ static volatile int g_wp_armed = 0;
 static volatile int g_wp_need_rearm = 0;
 static int g_wp_frame = 0;
 static int g_wp_hits = 0;
+static int g_procmem = -1;
 static void wp_protect(int ro) {
   if (!g_wp_page) return;
   mprotect((void *)g_wp_page, 4096, ro ? PROT_READ : (PROT_READ | PROT_WRITE));
@@ -1460,7 +1463,11 @@ static void wp_protect(int ro) {
 static void *wp_arm_thread(void *a) {
   (void)a;
   while (egl_shim_frame_count() < g_wp_frame) usleep(2000);
+  g_procmem = open("/proc/self/mem", O_RDWR);
+  if (g_procmem < 0) fprintf(stderr, "[WP] WARN: /proc/self/mem open failed (%s)\n", strerror(errno));
   g_wp_page = g_wp_addr & ~0xfffUL;
+  /* commit the page first (touch it) so /proc/self/mem writes have a backing page */
+  (void)*(volatile unsigned *)g_wp_addr;
   wp_protect(1);
   g_wp_armed = 1;
   fprintf(stderr, "[WP] armed: page=0x%lx watching=0x%lx at frame %d\n",
@@ -1478,30 +1485,101 @@ static void *wp_arm_thread(void *a) {
 }
 /* emulate a single ARM store to *EA (=si_addr) using ucontext regs; keep page RO.
    returns 1 if handled (pc advanced), 0 if can't decode. */
-static int wp_emulate_store(ucontext_t *uc, uintptr_t ea) {
+/* write `n` bytes to the watched (RO) page by briefly dropping protection.
+   A spinlock serialises concurrent fault handlers; the tiny window (2 mprotect
+   syscalls) can rarely let another thread's store slip unseen, so a run may need
+   a retry (the victim addr is deterministic with ASLR off). */
+static volatile int g_wp_lock = 0;
+static void wp_write(uintptr_t ea, const void *src, int n) {
+  while (__sync_lock_test_and_set(&g_wp_lock, 1)) { }
+  mprotect((void *)g_wp_page, 4096, PROT_READ | PROT_WRITE);
+  for (int i = 0; i < n; i++) ((volatile unsigned char *)ea)[i] = ((const unsigned char *)src)[i];
+  mprotect((void *)g_wp_page, 4096, PROT_READ);
+  __sync_lock_release(&g_wp_lock);
+}
+/* locate the VFP register file in the signal ucontext (magic VFP_MAGIC) */
+static unsigned long long *wp_vfp_regs(ucontext_t *uc) {
+  unsigned long *p = (unsigned long *)&uc->uc_mcontext;
+  for (int i = 0; i < 320; i++) {
+    if (p[i] == 0x56465001u) return (unsigned long long *)&p[i + 2]; /* skip magic,size */
+  }
+  return NULL;
+}
+/* full ARM store emulator: keeps the watched page protected, replays the store
+   through /proc/self/mem. Returns 1 if handled. Covers the store forms seen on
+   this heap page (STR/STRB/STRH/STRD, STM, STREX*, VSTR/VSTM). */
+static int wp_emulate_store(ucontext_t *uc, uintptr_t fa) {
   uintptr_t pc = uc->uc_mcontext.arm_pc;
   uint32_t insn = *(uint32_t *)pc;
   int rt = (insn >> 12) & 0xf;
-  unsigned long val = get_reg(uc, rt);
-  int handled = 0;
-  wp_protect(0);  /* page writable for the emulated store */
-  if ((insn & 0x0c100000) == 0x04000000) {            /* STR/STRB imm or reg, L=0 */
+  /* STR/STRB (single data transfer), L=0 */
+  if ((insn & 0x0c100000) == 0x04000000) {
+    unsigned long v = get_reg(uc, rt);
     int B = (insn >> 22) & 1;
-    if (B) *(volatile unsigned char *)ea = (unsigned char)val;
-    else   *(volatile unsigned *)ea = (unsigned)val;
-    handled = 1;
-  } else if ((insn & 0x0e1000f0) == 0x000000b0) {     /* STRH imm/reg, L=0 */
-    *(volatile unsigned short *)ea = (unsigned short)val;
-    handled = 1;
-  } else if ((insn & 0x0e1000f0) == 0x000000f0 && !((insn>>20)&1)) { /* STRD */
-    *(volatile unsigned *)ea = (unsigned)val;
-    *(volatile unsigned *)(ea + 4) = (unsigned)get_reg(uc, rt + 1);
-    handled = 1;
+    wp_write(fa, &v, B ? 1 : 4);
+    uc->uc_mcontext.arm_pc = pc + 4; return 1;
   }
-  /* note: ignores base writeback (free-list link stores use [rn,#imm] no-wb) */
-  wp_protect(1);  /* re-arm */
-  if (handled) uc->uc_mcontext.arm_pc = pc + 4;
-  return handled;
+  /* extra load/store: STRH (op=01), STRD (op=11), L=0, bit7=bit4=1 */
+  if ((insn & 0x0e000090) == 0x00000090 && ((insn >> 4) & 0xb) == 0xb /*bit7,bit4*/) {
+    int op = (insn >> 5) & 3, L = (insn >> 20) & 1;
+    if (!L && op == 1) { unsigned long v = get_reg(uc, rt); wp_write(fa, &v, 2);
+      uc->uc_mcontext.arm_pc = pc + 4; return 1; }            /* STRH */
+    if (!L && op == 3) { unsigned long a = get_reg(uc, rt), b = get_reg(uc, rt + 1);
+      wp_write(fa, &a, 4); wp_write(fa + 4, &b, 4);
+      uc->uc_mcontext.arm_pc = pc + 4; return 1; }            /* STRD */
+  }
+  /* STM (block store), L=0: store reg list starting near base */
+  if ((insn & 0x0e100000) == 0x08000000) {
+    int rn = (insn >> 16) & 0xf, P = (insn >> 24) & 1, U = (insn >> 23) & 1;
+    unsigned list = insn & 0xffff;
+    int cnt = __builtin_popcount(list);
+    uintptr_t base = get_reg(uc, rn);
+    uintptr_t addr = U ? (base + (P ? 4 : 0)) : (base - 4 * cnt + (P ? 0 : 4));
+    for (int r = 0; r < 16; r++) if (list & (1u << r)) {
+      unsigned long v = get_reg(uc, r); wp_write(addr, &v, 4); addr += 4;
+    }
+    uc->uc_mcontext.arm_pc = pc + 4; return 1;
+  }
+  /* STREX/STREXB/STREXH/STREXD: store R[rt(=bits3:0)] to [rn], set R[rd]=0 (ok) */
+  if ((insn & 0x0f900ff0) == 0x01800f90) {
+    int rd = (insn >> 12) & 0xf, rtt = insn & 0xf;
+    int sub = (insn >> 21) & 3;   /* 0=word,1=D,2=byte,3=half (per bits[22:21]) */
+    unsigned long v = get_reg(uc, rtt);
+    if (sub == 2) wp_write(fa, &v, 1);
+    else if (sub == 3) wp_write(fa, &v, 2);
+    else if (sub == 1) { unsigned long w = get_reg(uc, rtt + 1); wp_write(fa, &v, 4); wp_write(fa + 4, &w, 4); }
+    else wp_write(fa, &v, 4);
+    set_reg(uc, rd, 0);   /* exclusive store "succeeded" */
+    uc->uc_mcontext.arm_pc = pc + 4; return 1;
+  }
+  /* VSTR (single FP reg), coproc 1010(S)/1011(D), L=0 */
+  if ((insn & 0x0f300e00) == 0x0d000a00 && !((insn >> 20) & 1)) {
+    unsigned long long *vfp = wp_vfp_regs(uc);
+    if (vfp) {
+      int dbl = (insn >> 8) & 1;     /* 1011=double */
+      int Vd = (insn >> 12) & 0xf, D = (insn >> 22) & 1;
+      if (dbl) { int dn = (D << 4) | Vd; wp_write(fa, &vfp[dn], 8); }
+      else { int sn = (Vd << 1) | D; unsigned w = (sn & 1) ? (unsigned)(vfp[sn>>1] >> 32) : (unsigned)vfp[sn>>1];
+             wp_write(fa, &w, 4); }
+      uc->uc_mcontext.arm_pc = pc + 4; return 1;
+    }
+  }
+  /* VSTM (FP reg list), coproc 1010/1011, L=0, bit23(U) addressing */
+  if ((insn & 0x0e100e00) == 0x0c000a00 && !((insn >> 20) & 1)) {
+    unsigned long long *vfp = wp_vfp_regs(uc);
+    if (vfp) {
+      int dbl = (insn >> 8) & 1, Vd = (insn >> 12) & 0xf, D = (insn >> 22) & 1;
+      int imm8 = insn & 0xff;
+      uintptr_t addr = fa;
+      if (dbl) { int dn = (D << 4) | Vd, n = imm8 / 2;
+        for (int i = 0; i < n; i++) { wp_write(addr, &vfp[dn + i], 8); addr += 8; } }
+      else { int sn = (Vd << 1) | D;
+        for (int i = 0; i < imm8; i++) { int s = sn + i; unsigned w = (s&1)?(unsigned)(vfp[s>>1]>>32):(unsigned)vfp[s>>1];
+          wp_write(addr, &w, 4); addr += 4; } }
+      uc->uc_mcontext.arm_pc = pc + 4; return 1;
+    }
+  }
+  return 0;   /* unhandled */
 }
 /* ---- ARM32 crash handler (debug) ---- */
 static void crash_handler(int sig, siginfo_t *info, void *uctx) {
@@ -1514,31 +1592,36 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
     if (fa >= g_wp_page && fa < g_wp_page + 4096) {
       uintptr_t off = pc - g_main_text;
       int is_target = (fa == g_wp_addr);
-      if (is_target) {
-        unsigned before = *(volatile unsigned *)g_wp_addr;
-        fprintf(stderr, "\n[WP-HIT] WRITE to watched 0x%lx  pc=duck+0x%lx  lr=duck+0x%lx  before=0x%x\n",
-                (unsigned long)g_wp_addr, (unsigned long)off, (unsigned long)(lr - g_main_text), before);
-        /* stack-scan backtrace */
-        uintptr_t sp = uc->uc_mcontext.arm_sp; uintptr_t *s = (uintptr_t *)(sp & ~3u);
-        int shown = 0;
-        for (int i = 0; i < 4096 && shown < 24; i++) { uintptr_t v = s[i];
-          if (v >= g_main_text && v < g_main_text + g_main_text_sz) {
-            fprintf(stderr, "    duck+0x%lx\n", (unsigned long)(v - g_main_text)); shown++; } }
-        g_wp_hits++;
-      }
-      /* keep running: emulate the store (page stays protected). decode the
-         instruction at pc regardless of which library it lives in. */
       int thumb = (uc->uc_mcontext.arm_cpsr >> 5) & 1;
-      if (!thumb && wp_emulate_store(uc, fa)) return;
-      /* couldn't decode (thumb / memset STM / NEON) -> dump the instruction the
-         first few times so we can see what the writer is, then unprotect briefly
-         and let the poll thread re-arm (window is small). */
+      /* emulate the store (writes via /proc/self/mem; page stays RO) */
+      if (!thumb && wp_emulate_store(uc, fa)) {
+        if (is_target) {
+          unsigned after = *(volatile unsigned *)g_wp_addr;
+          /* the UAF is the write that ZEROES the next link; allocator relinks
+             write valid pointers. Flag the zeroing write loudly. */
+          if (after == 0) {
+            fprintf(stderr, "\n[WP-WRITER] *** 0x%lx ZEROED by pc=duck+0x%lx lr=duck+0x%lx ***\n",
+                    (unsigned long)g_wp_addr, (unsigned long)off, (unsigned long)(lr - g_main_text));
+            uintptr_t sp = uc->uc_mcontext.arm_sp; uintptr_t *s = (uintptr_t *)(sp & ~3u);
+            int shown = 0;
+            for (int i = 0; i < 4096 && shown < 28; i++) { uintptr_t v = s[i];
+              if (v >= g_main_text && v < g_main_text + g_main_text_sz) {
+                fprintf(stderr, "    duck+0x%lx\n", (unsigned long)(v - g_main_text)); shown++; } }
+            g_wp_hits++;
+          } else if (g_wp_hits < 1) {
+            static int wn=0; if (wn++ < 20)
+              fprintf(stderr, "[WP] write to target pc=duck+0x%lx val=0x%x (not zero)\n",
+                      (unsigned long)off, after);
+          }
+        }
+        return;
+      }
+      /* unhandled store form -> dump it, then brief unprotect + poll-rearm */
       static int undn = 0;
-      if (undn < 12) { undn++;
+      if (undn < 16) { undn++;
         uint32_t w = *(uint32_t *)pc;
-        fprintf(stderr, "[WP] undecodable store pc=0x%lx (off=0x%lx) thumb=%d insn=0x%08x fault=0x%lx%s\n",
-                (unsigned long)pc, (unsigned long)off, thumb, w, (unsigned long)fa,
-                is_target ? "  <<< TARGET" : ""); }
+        fprintf(stderr, "[WP] UNHANDLED store pc=duck+0x%lx thumb=%d insn=0x%08x fault=0x%lx%s\n",
+                (unsigned long)off, thumb, w, (unsigned long)fa, is_target ? "  <<< TARGET" : ""); }
       g_wp_need_rearm = 1; wp_protect(0);
       return;
     }

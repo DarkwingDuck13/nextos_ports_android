@@ -49,6 +49,30 @@
 ## GFx (capstone ARM no host: ~/...; .text VMA==file off, base 0x2232e0); (c) RE do
 ## caminho que deixa o clip do bg fora do display-list.
 ##
+## 🧱 s4 cont. — POR QUE o catch dinâmico do UAF travou (3 vias fechadas) + a saída:
+## (1) gdb HW watchpoint: kernel 3.14 sem debug-regs no ptrace ("Unable to determine
+## number of hw watchpoints"). (2) perf_event_open HW breakpoint: ENOSYS (kernel SEM
+## CONFIG_PERF_EVENTS — probe /tmp/perfbp_probe confirma). (3) /proc/self/mem write numa
+## página PROT_READ: REJEITADO nesse kernel (pwrite ret=-1, probe /tmp/memwr_probe) → o
+## truque FOLL_FORCE não funciona aqui. (4) mprotect-watchpoint COMPLETO implementado
+## (emula STR/STRB/STRH/STRD/STM/STREX*/VSTR/VSTM via unprotect→write→reprotect+spinlock,
+## DUCK_WP=0xADDR DUCK_WPFRAME=N) MAS: a instrumentação (thread de arm + proteção) MUDA o
+## layout do heap → o endereço determinístico do build HIST (0x3186fe40) NÃO é mais a
+## vítima no build WP → HEISENBUG. Armou e nada bateu no alvo; a corrupção rolou em outro
+## endereço. ⚠️ A corrupção é detectada em 2 threads (workers) — multi-thread.
+##
+## ✅ A SAÍDA CERTA = TRACER PTRACE SEPARADO (próxima sessão): um processo tracer NÃO
+## toca a memória do alvo (não adiciona thread/alloc) → layout determinístico preservado →
+## vítima continua 0x3186fe40. Plano: fork+exec ducktales sob PTRACE_TRACEME (+ASLR off +
+## PTRACE_O_TRACECLONE p/ seguir as 10 threads); breakpoint (troca instr por trap) na ENTRADA
+## da função do loop de destrutores (text_base+0x8d30xx, a que contém 0x8d3164); quando bate,
+## PTRACE_SINGLESTEP NAQUELA thread lendo 0x3186fe40 (PTRACE_PEEKDATA) após cada passo; quando
+## vira 0 → PTRACE_GETREGS dá o PC do writer. ptrace single-step É suportado (gdb usa). Achar
+## a base do .so em runtime: /proc/pid/maps (carregado pelo so_loader via mmap, não dlopen;
+## com ASLR off é fixo, foi 0xeafce000). Alternativa estática: desassemblar as chamadas
+## virtuais do destrutor 0x8d3164 (já desassemblado: seta vtable [r4], free membro [this+0x14c]
+## via 0x92a538, blx [vtbl+0x34]) com capstone ARM no host até achar o str que zera o nó liberado.
+##
 ## 🎮 navegação CONFIRMADA na TV: NEW GAME -> tela de dificuldade EASY/MEDIUM/HARD
 ## aparece (vpad). Após dificuldade -> preto (cutscene/level black, frames avançam =
 ## não trava, renderiza preto). vpad.py agora PERSISTENTE em /roms/ports/ducktales/
