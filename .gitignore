@@ -73,3 +73,7 @@ ports/sor4/port/tools/*/obj/
 # game payloads (conteudo de jogo extraido — nunca commitar)
 ports/*/payload/
 *.orig
+
+# shantae: binario + payload (lib do jogo, copyright)
+ports/shantae/shantae
+ports/shantae/payload/
