@@ -79,9 +79,12 @@ permanece LIGADO (andar NÃO quebra — ao contrário da tentativa anterior que 
 - `LCS_FIX_CONTROLS=0` volta ao comportamento antigo (mirror do D-pad) se precisar.
 
 ## ADENDO (2026-06-23 tarde) — downscale e controle
-- **Downscale de render TESTADO e DESCARTADO:** `LCS_RENDER_SCALE` (egl_shim) renderiza mais baixo,
-  mas o fps NÃO subiu (20 a 1152x648 = 20 a 1280x720) → o jogo é **RAM/streaming-bound, não GPU**.
-  Além disso o fb não mode-seta (fica em canto). Default mantém 1280x720. Flag fica disponível mas off.
+- **Downscale de render TESTADO (A/B pareado) e DESCARTADO:** medição no device .88, gameplay
+  assentado, janela de 20s: **1280x720 = 21 fps** vs **1152x648 (LCS_RENDER_SCALE=0.9) = 20 fps**.
+  Renderizar 19% menos pixels NÃO subiu o fps (deu 1 a menos, dentro do ruído) → o jogo é
+  **RAM/streaming-bound, não GPU**; downscale NÃO resolve o "trava dirigindo". Além disso o
+  `LCS_RENDER_SCALE` no Mali fbdev não faz mode-set do fb0 (fica 1152x648 num canto, imagem menor).
+  **Default mantém 1280x720.** Flag continua no egl_shim mas OFF. (Detalhe em ESTUDO §5.1.)
 - **Bug de controle identificado:** o analógico DIREITO faz move+zoom+câmera (deveria ser SÓ câmera;
   zoom no D-pad). Causa: o gamepad NATIVO do engine (AND_GamepadUpdate) mapeia o stick direito.
   - Tentativa `LCS_CAMERA_BRIDGE` (stick direito → CPad offset 6/8) + `LCS_NO_AND_GAMEPAD_UPDATE`

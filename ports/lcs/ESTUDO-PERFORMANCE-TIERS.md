@@ -49,6 +49,23 @@ fez (etc2_halve) e o que dá fôlego de verdade no 832MB.
 ## PRÓXIMO: validar Tier 1 (eviction) → se RAM bound + dirige sem trava, baixar cap até o
 ponto bom; se eviction falhar (engine sem ref-count, lição Bully) → implementar half-res.
 
+## 5.1 DOWNSCALE DE RENDER — TESTADO E DESCARTADO (2026-06-23, A/B no device .88)
+Medição pareada de fps em gameplay assentado (state=9, janela de 20s, mesmo método):
+
+| Render | fps | Pixels |
+|---|---|---|
+| **1280x720 (baseline)** | **21** | 921.600 |
+| **1152x648 (LCS_RENDER_SCALE=0.9)** | **20** | 746.496 (-19%) |
+
+**VEREDITO: downscale NÃO ajuda.** Renderizar 19% menos pixels deu fps IGUAL (até 1
+a menos, dentro do ruído). Se fosse GPU-bound, menos pixels = mais fps; não aconteceu →
+**o gargalo NÃO é a GPU/fill-rate, é RAM/streaming** (consistente com a seção 1). Além
+disso o `LCS_RENDER_SCALE` no Mali fbdev não faz mode-set do /dev/fb0 (continua 1280x720)
+→ o engine renderiza 1152x648 num canto da tela. Conclusão prática: **downscale não
+resolve o "trava dirigindo" e ainda encolhe a imagem → mantido 1280x720 como default.**
+A flag `LCS_RENDER_SCALE` fica no código (egl_shim) mas OFF; o caminho para o freeze é
+RAM (eviction/half-res, seções 2-4), não resolução de render.
+
 ## 6. PERFIL OFFLINE PREPARADO (NAO TESTADO AINDA)
 
 Criado `run-gtasa-perf.sh` para testar depois, sem alterar o perfil visual bom atual.
