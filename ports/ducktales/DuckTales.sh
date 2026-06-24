@@ -90,6 +90,25 @@ export SDL_AUDIODRIVER="${SDL_AUDIODRIVER:-pulse}"
 export RE4_NO_SEMBREAK="${RE4_NO_SEMBREAK:-1}"
 # anti-hang watchdog: force-exit if rendering stalls >15s (0 max-seconds = unlimited play)
 export DUCK_MAXSECONDS="${DUCK_MAXSECONDS:-0}"
+# tolerate the GFx integrity assert (deliberate raise on a contained free-list
+# corruption) so the level-load doesn't abort. With the free-list containment
+# (default ON) the list stays consistent -> no freeze. DUCK_NORAISE=0 to disable.
+export DUCK_NORAISE="${DUCK_NORAISE:-1}"
+# skip wild stores from the heap UAF so the menu-load reaches the menu without a
+# crash (corruption contained; the lost bookkeeping write just leaks a block).
+export DUCK_RECOVER="${DUCK_RECOVER:-1}"
+# FIXSAMPLERS is ON in the binary by default: corrects the GFx textured-fill
+# sampler units (engine never calls glUniform1i, so samplers defaulted to unit 0;
+# when the GL_ALPHA texture sat on unit 0 the colour read was black). This made
+# the Disney splash and textured fills render instead of black.
+# DUCK_NO_FIXSAMPLERS disables it.
+
+# The Scaleform shader cache (GFxShaders.cache) is WRITTEN corrupted when the
+# menu-load heap UAF hits the shader-compile (~50%) -> a stale cache renders the
+# animated backgrounds BLACK every launch thereafter. Delete it each launch so
+# the shaders recompile fresh in memory (backgrounds render when the compile is
+# clean). Costs a few seconds of recompile. DUCK_KEEP_SHADERCACHE=1 to keep it.
+[ -n "$DUCK_KEEP_SHADERCACHE" ] || rm -f "$GAMEDIR/GFxShaders.cache"
 
 ts "launching ducktales (audio=$SDL_AUDIODRIVER watchdog_max=$DUCK_MAXSECONDS)"
 stop_frontend

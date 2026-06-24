@@ -112,7 +112,34 @@ void *re4_resolve(const char *nm){
   if(!strcmp(nm,"pthread_cond_timedwait_relative_np")) return (void*)&cond_timedwait_rel;
   if(!strncmp(nm,"__google_potentially",20)) return (void*)&noop;
   if(!strcmp(nm,"ptrace")) return (void*)&noop;
-  if(!strcmp(nm,"__sF")) return dlsym(RTLD_DEFAULT,"stdout");
+  /* __sF: bionic stdin/stdout/stderr table. Must be our own region + the stdio
+     funcs below redirect &__sF[i] to the real glibc streams, else the engine's
+     fprintf/fwrite on a garbage FILE* does WILD HEAP WRITES (the corruption). */
+  { extern void *dt_sF_table(void); if(!strcmp(nm,"__sF")) return dt_sF_table(); }
+  { extern int dt_fprintf(); extern int dt_vfprintf(); extern unsigned dt_fwrite();
+    extern unsigned dt_fread(); extern int dt_fputs(); extern int dt_fputc();
+    extern int dt_putc(); extern int dt_fflush(); extern int dt_fileno();
+    extern int dt_ferror(); extern int dt_feof(); extern void dt_clearerr();
+    extern int dt_getc(); extern char *dt_fgets(); extern int dt_setvbuf();
+    extern int dt_fseek(); extern long dt_ftell(); extern int dt_fclose();
+    if(!strcmp(nm,"fprintf")) return (void*)dt_fprintf;
+    if(!strcmp(nm,"vfprintf")) return (void*)dt_vfprintf;
+    if(!strcmp(nm,"fwrite")) return (void*)dt_fwrite;
+    if(!strcmp(nm,"fread")) return (void*)dt_fread;
+    if(!strcmp(nm,"fputs")) return (void*)dt_fputs;
+    if(!strcmp(nm,"fputc")) return (void*)dt_fputc;
+    if(!strcmp(nm,"putc")) return (void*)dt_putc;
+    if(!strcmp(nm,"fflush")) return (void*)dt_fflush;
+    if(!strcmp(nm,"fileno")) return (void*)dt_fileno;
+    if(!strcmp(nm,"ferror")) return (void*)dt_ferror;
+    if(!strcmp(nm,"feof")) return (void*)dt_feof;
+    if(!strcmp(nm,"clearerr")) return (void*)dt_clearerr;
+    if(!strcmp(nm,"getc")) return (void*)dt_getc;
+    if(!strcmp(nm,"fgets")) return (void*)dt_fgets;
+    if(!strcmp(nm,"setvbuf")) return (void*)dt_setvbuf;
+    if(!strcmp(nm,"fseek")) return (void*)dt_fseek;
+    if(!strcmp(nm,"ftell")) return (void*)dt_ftell;
+    if(!strcmp(nm,"fclose")) return (void*)dt_fclose; }
   if(!strcmp(nm,"bsd_signal")||!strcmp(nm,"sysv_signal")) return dlsym(RTLD_DEFAULT,"signal");
   if(!strcmp(nm,"sigignore")) return (void*)&noop;
   { extern void my_exit(int); if(!strcmp(nm,"exit")||!strcmp(nm,"_exit")||!strcmp(nm,"_Exit")) return (void*)my_exit; }

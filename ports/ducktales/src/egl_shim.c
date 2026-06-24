@@ -52,6 +52,10 @@ static void *g_real_dpy=NULL, *g_real_surf=NULL, *g_real_ctx=NULL, *g_real_cfg=N
 static int g_use_real_egl=0;
 static unsigned long g_creator_tid=0; /* thread que cria os contextos (setup) -> usa PBUFFER;
                                          a thread de RENDER (outra) usa a surface do WINDOW. */
+/* DuckTales renderiza NA PROPRIA thread criadora (nao ha render-thread separada),
+   entao a criadora precisa usar a WINDOW (senao renderiza num pbuffer e o swap e
+   pulado -> frames=0). DUCK_EGL_CREATOR_WIN=1 faz a criadora usar a window. */
+static int g_creator_win = 0;
 static int frame_count = 0;
 int egl_shim_frame_count(void) { return frame_count; }
 static int next_context_id = 1;
@@ -69,6 +73,64 @@ static int real_current_is_window_surface(void) {
 }
 
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
+
+/* ---- on-GL-thread screenshot (DUCK_SHOT=1) ----
+   /dev/fb0 reads return 0 bytes while the Mali fbdev is owned by our GL client,
+   so capture with glReadPixels on the rendering thread instead. Every
+   DUCK_SHOTEVERY frames (default 30) dump the current framebuffer to
+   /tmp/duck_shot.ppm (overwrite). Also computes a non-black % so the run log
+   tells us if the background actually rendered without needing the image. */
+static int g_shot = -1, g_shot_every = 30;
+static void egl_shim_maybe_shot(int w, int h) {
+  if (g_shot < 0) {
+    g_shot = getenv("DUCK_SHOT") ? 1 : 0;
+    const char *e = getenv("DUCK_SHOTEVERY"); if (e) g_shot_every = atoi(e);
+    if (g_shot_every < 1) g_shot_every = 30;
+  }
+  if (!g_shot) return;
+  if (frame_count % g_shot_every != 0) return;
+  if (w <= 0 || h <= 0 || w > 1920 || h > 1080) return;
+  static unsigned char *buf = NULL; static int cap = 0;
+  int need = w * h * 4;
+  if (need > cap) { free(buf); buf = malloc(need); cap = need; }
+  if (!buf) return;
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+  /* non-black ratio + flat-color dominance (intro logos are one flat color;
+     the real menu has varied content). Bucket colors into 4x4x4 = 64 bins. */
+  long nb = 0; int bins[64]; for (int i=0;i<64;i++) bins[i]=0; long binned=0;
+  for (int i = 0; i < w * h; i += 7) {
+    unsigned char *p = buf + i*4;
+    if (p[0]|p[1]|p[2]) nb++;
+    int b = (p[0]>>6)*16 + (p[1]>>6)*4 + (p[2]>>6); bins[b]++; binned++;
+  }
+  /* scale nb (sampled every 7) to full */
+  long sampled_total = (w*h + 6)/7;
+  int pct = sampled_total ? (int)(nb * 100 / sampled_total) : 0;
+  int topbin = 0; for (int i=0;i<64;i++) if (bins[i]>topbin) topbin = bins[i];
+  int flatpct = binned ? (int)((long)topbin * 100 / binned) : 100;  /* % in dominant color bin */
+  int varied = flatpct < 80;   /* menu content is varied; flat logos are not */
+  /* write PPM (flip vertically: GL origin bottom-left). Track the best frame of
+     the MENU phase (frame > 600) separately so we can tell if the menu bg
+     rendered this run, independent of the fullscreen intro logos. */
+  static int best = -1, menubest = -1;
+  const char *path = "/tmp/duck_shot.ppm";
+  /* a "menu with bg" frame = varied content (not a flat logo) and substantial
+     coverage. The intro logos are flat single colors -> excluded by `varied`. */
+  int is_menu = frame_count > 600 && varied;
+  if (pct > best) { best = pct; path = "/tmp/duck_best.ppm"; }
+  if (is_menu && pct > menubest) { menubest = pct; path = "/tmp/duck_menubest.ppm"; }
+  FILE *f = fopen(path, "wb");
+  if (f) {
+    fprintf(f, "P6\n%d %d\n255\n", w, h);
+    for (int y = h - 1; y >= 0; y--) {
+      unsigned char *row = buf + y * w * 4;
+      for (int x = 0; x < w; x++) { fputc(row[x*4], f); fputc(row[x*4+1], f); fputc(row[x*4+2], f); }
+    }
+    fclose(f);
+  }
+  debugPrintf("[SHOT] frame %d non-black=%d%% flat=%d%% varied=%d (best=%d menubest=%d)\n",
+              frame_count, pct, flatpct, varied, best, menubest);
+}
 
 static int read_env_int(const char *name, int fallback, int min_value, int max_value) {
   const char *value = getenv(name);
@@ -93,6 +155,9 @@ static int screen_height(void) {
 }
 
 void egl_shim_create_window(void) {
+  /* DuckTales renders on the creator thread -> it must use the WINDOW surface
+     (default ON). DUCK_NO_EGL_CREATOR_WIN reverts to the pbuffer (RE4-style). */
+  if (!getenv("DUCK_NO_EGL_CREATOR_WIN")) g_creator_win = 1;
   /* RESOLUCAO AUTOMATICA/PORTATIL: se RE4_WIDTH/HEIGHT nao foram fixados, usa a resolucao
      NATIVA do display (SDL_GetDesktopDisplayMode) -> 480p/720p/1080p sem hardcode. setenv ANTES
      de qualquer screen_width()/re4_screen_width() -> egl_shim e main_re4 concordam. O fix do
@@ -155,9 +220,13 @@ void egl_shim_create_window(void) {
       int dw=0,dh=0; SDL_GL_GetDrawableSize(egl_window,&dw,&dh);
       int mts=0,mrb=0,mvp[2]={0,0};
       void (*r_getiv)(unsigned,int*)=dlsym(RTLD_DEFAULT,"glGetIntegerv");
-      if(r_getiv){ r_getiv(0x0D33,&mts); r_getiv(0x84E8,&mrb); r_getiv(0x0D3A,mvp); }
+      int sbits=-1,dbits=-1,rbits=-1,abits=-1;
+      if(r_getiv){ r_getiv(0x0D33,&mts); r_getiv(0x84E8,&mrb); r_getiv(0x0D3A,mvp);
+        r_getiv(0x0D57/*GL_STENCIL_BITS*/,&sbits); r_getiv(0x0D56/*GL_DEPTH_BITS*/,&dbits);
+        r_getiv(0x0D52/*GL_RED_BITS*/,&rbits); r_getiv(0x0D55/*GL_ALPHA_BITS*/,&abits); }
       debugPrintf("egl_shim: [DIAG] REAL surface=%dx%d  SDL drawable=%dx%d  requested=%dx%d  GL_MAX_TEX=%d MAX_RB=%d MAX_VP=%dx%d\n",
-                  rw,rh,dw,dh,width,height,mts,mrb,mvp[0],mvp[1]); }
+                  rw,rh,dw,dh,width,height,mts,mrb,mvp[0],mvp[1]);
+      debugPrintf("egl_shim: [DIAG] framebuffer bits: stencil=%d depth=%d red=%d alpha=%d\n", sbits,dbits,rbits,abits); }
     /* config EXATO da surface do SDL (via CONFIG_ID) -> os contextos compartilhados batem com a
        surface (senao eglMakeCurrent = EGL_BAD_MATCH 0x3009). */
     int cfgid=0, n=0; r_querySurface(g_real_dpy, g_real_surf, 0x3028 /*EGL_CONFIG_ID*/, &cfgid);
@@ -344,7 +413,7 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
         tl_ctx = r_createContext(g_real_dpy, g_real_cfg, g_real_ctx, ctxattr);
         if(!tl_ctx) tl_ctx = (context->real_ctx?context->real_ctx:g_real_ctx);
       }
-      void *surf = (me==g_creator_tid && g_real_pbuf) ? g_real_pbuf : g_real_surf;
+      void *surf = (me==g_creator_tid && g_real_pbuf && !g_creator_win) ? g_real_pbuf : g_real_surf;
       r = r_makeCurrent(g_real_dpy, surf, surf, tl_ctx);
       if (r == 0 && surf!=g_real_surf) { r = r_makeCurrent(g_real_dpy, g_real_surf, g_real_surf, tl_ctx); surf=g_real_surf; }
       has_real_gl = (r != 0);
@@ -415,6 +484,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (g_use_real_egl) {
     if (r_swapBuffers && g_real_dpy && g_real_surf && real_current_is_window_surface()) {
+      egl_shim_maybe_shot(screen_width(), screen_height());
       r_swapBuffers(g_real_dpy, g_real_surf);
       int fc = ++frame_count; static int sl=0;
       if (sl < 8) { debugPrintf("egl_shim: REAL SwapBuffers #%d [tid=%lx]\n", fc, (unsigned long)pthread_self()); sl++; }
@@ -432,6 +502,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (!egl_window) return EGL_TRUE;
 
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
+    egl_shim_maybe_shot(screen_width(), screen_height());
     SDL_GL_SwapWindow(egl_window);
     int fc = ++frame_count;
     if (fc <= 10 || fc % 60 == 0) {

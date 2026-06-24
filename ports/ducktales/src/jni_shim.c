@@ -475,6 +475,11 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
   /* FMODAudioDevice.* (init/getInfo/...) chamado pelo C do FMOD = sucesso (1) */
   if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%s -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
+    /* The game polls hasJoystick() every frame; returning 0 makes it treat the
+       device as keyboard-only and IGNORE gamepad-source key events (handled=0)
+       AND never poll the Nv gamepad path. We always provide a pad (SDL/android_shim),
+       so report a joystick. DUCK_NO_HASJOY=1 forces the old behavior. */
+    if (strcmp(nm, "hasJoystick") == 0) return getenv("DUCK_NO_HASJOY") ? 0 : 1;
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     if (strcmp(nm, "getAction") == 0) { debugPrintf("[KEYEV] getAction->%d\n", g_hk_inject.action); return g_hk_inject.action; }
     if (strcmp(nm, "getKeyCode") == 0) { debugPrintf("[KEYEV] getKeyCode->%d\n", g_hk_inject.keycode); return g_hk_inject.keycode; }

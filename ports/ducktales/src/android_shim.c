@@ -201,20 +201,29 @@ static int sdl_key_to_keycode(SDL_Scancode scancode) {
 
 /* ---- Initialize gamepad ---- */
 
+/* Open ALL game controllers, not just the first. SDL_PollEvent only delivers
+   CONTROLLERBUTTON events for OPENED controllers; opening every pad lets any
+   connected device (physical or virtual) drive the game. g_gamecontroller keeps
+   the first-opened (used for analog-axis reads). Idempotent via an opened set. */
+#define MAX_PADS 8
+static SDL_JoystickID g_opened_pads[MAX_PADS];
+static int g_opened_n = 0;
+static int pad_already_open(SDL_JoystickID id) {
+  for (int i = 0; i < g_opened_n; i++) if (g_opened_pads[i] == id) return 1;
+  return 0;
+}
 static void init_gamecontroller(void) {
-  if (g_gamecontroller)
-    return;
   int num = SDL_NumJoysticks();
-  debugPrintf("android_shim: %d joysticks found\n", num);
   for (int i = 0; i < num; i++) {
-    if (SDL_IsGameController(i)) {
-      g_gamecontroller = SDL_GameControllerOpen(i);
-      if (g_gamecontroller) {
-        debugPrintf("android_shim: Opened gamepad: %s\n",
-                    SDL_GameControllerName(g_gamecontroller));
-        return;
-      }
-    }
+    if (!SDL_IsGameController(i)) continue;
+    SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
+    if (id >= 0 && pad_already_open(id)) continue;
+    SDL_GameController *gc = SDL_GameControllerOpen(i);
+    if (!gc) continue;
+    if (g_opened_n < MAX_PADS) g_opened_pads[g_opened_n++] = id;
+    if (!g_gamecontroller) g_gamecontroller = gc;   /* first = axis source */
+    debugPrintf("android_shim: Opened gamepad[%d]: %s (id=%d)\n",
+                i, SDL_GameControllerName(gc), (int)id);
   }
 }
 

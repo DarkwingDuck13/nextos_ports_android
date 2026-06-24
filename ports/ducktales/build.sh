@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 SRCS="src/main_ducktales.c src/so_util.c src/util.c src/error.c \
       src/imports.gen.c src/pthread_shim.c src/jni_shim.c \
       src/egl_shim.c src/android_shim.c src/asset_shim.c src/stat_shim.c \
-      src/opensles_shim.c src/softfp_shim.c src/jni_idx_stubs.gen.c"
+      src/opensles_shim.c src/softfp_shim.c src/jni_idx_stubs.gen.c src/stdio_shim.c"
 
 $CC -O2 -fPIC -fno-omit-frame-pointer -rdynamic -D_GNU_SOURCE \
     -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
