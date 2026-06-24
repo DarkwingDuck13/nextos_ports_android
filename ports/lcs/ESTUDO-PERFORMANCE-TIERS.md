@@ -20,8 +20,8 @@ Referência: MESMA parede do Bully (Mali-450 832MB; eviction sem ref-count é fr
 |---|---|---|---|
 | Mip-skip ETC | LCS_KEEPMIP (p/ reativar) | **ON** | pula mips lvl>0 (-33% tex) |
 | Paginação/despejo LRU | `BULLY_PAGE=1` + `BULLY_PAGE_CAP_MB` | **OFF** (cap 220) | despeja textura LRU acima do orçamento |
-| Texture-light (stub) | `LCS_TEX_LIGHT=1` + `LCS_TEX_LIGHT_CAP` | **OFF** | troca textura por 4x4 acima do cap (=textura sumida) |
-| Half-res textura | — | **NÃO IMPLEMENTADO** | (Bully tinha bake meia-res; LCS só MEDE o ganho) |
+| Texture-light (stub) | `LCS_TEX_LIGHT=1` + `LCS_TEX_LIGHT_CAP` | **OFF** | melhora flicker por remover textura, mas quebra pele/peds/carros; usar so diag |
+| Half-res textura comprimida | `LCS_TEX_HALF=1` + `LCS_TEX_HALF_MIN` | **ON nos tiers perf** | usa mip 1 como nivel 0 em ETC grande (-75% por textura afetada) |
 | Distância de LOD | `dvLodDistanceScale` | 0.75 | menos geometria de alto detalhe |
 | Orçamento streamer | `LCS_STREAMER_MAX` / `LCS_RESOURCEDRAIN_MAX` | 80 / 6 | quanto pumpa/dreda por frame |
 
@@ -29,10 +29,11 @@ Referência: MESMA parede do Bully (Mali-450 832MB; eviction sem ref-count é fr
 - **Tier 0 — QUALIDADE (atual):** sem despejo. RSS 443+209swap → trava dirigindo. ❌
 - **Tier 1 — BALANCEADO:** `BULLY_PAGE=1 BULLY_PAGE_CAP_MB=180` + mip-skip. Meta: RAM
   sem swap, leve pop/recarga de textura ao virar. (TESTANDO AGORA)
-- **Tier 2 — LISO:** `BULLY_PAGE=1 BULLY_PAGE_CAP_MB=140` + `LCS_TEX_LIGHT` cap +
-  `dvLodDistanceScale=0.5` + `RESOURCEDRAIN_MAX` menor (espalha upload). Meta: dirigir
-  sem trava, visual mais pobre (texturas menores/sumidas longe).
-- **Tier 3 — POTATO:** tudo agressivo + half-res (se implementar). Meta: liso garantido.
+- **Tier 2 — LISO:** `BULLY_PAGE=1 BULLY_PAGE_CAP_MB=140`, `LCS_TEX_HALF_MIN=512`,
+  `dvLodDistanceScale=0.5`, draw 0.35, populacao/carros reduzidos, streamer por fase.
+  Meta: dirigir sem trava preservando visual.
+- **Tier 3 — AGRESSIVO SAFE:** `LCS_TEX_HALF_MIN=256`, draw 0.25, densidade menor,
+  `LCS_NO_ENVMAP=1`, streamer ainda mais contido. Meta: reduzir flicker/stutter sem textura preta.
 
 ## 4. SE EVICTION NÃO BASTAR → implementar HALF-RES (downscale no upload)
 O `my_glCompressedTexImage2D` (imports.c) já intercepta o upload e MEDE o ganho de
@@ -80,13 +81,73 @@ GTASA NextOS/Vita:
 - paginacao LRU ligada (`BULLY_PAGE=1`) com cap por tier;
 - streamer/drain/LOD reduzidos por tier para tentar evitar swap.
 
-Tiers preparados:
+Tiers atuais depois dos testes em device:
 
 | Tier | Uso | Flags principais |
 |---|---|---|
-| 1 / balanced | primeiro teste seguro | `BULLY_PAGE_CAP_MB=180`, `LCS_STREAMER_MAX=64`, `LCS_RESOURCEDRAIN_MAX=4`, `LCS_GFX_LOD_SCALE=0.65` |
-| 2 / smooth | se ainda swapar/travar | cap 140MB, streamer 48, drain 3, LOD 0.50, `LCS_RENDER_SCALE=0.90` |
-| 3 / potato | teste agressivo de prova | cap 110MB, streamer 32, drain 2, LOD 0.40, render 0.75, `LCS_TEX_LIGHT=1` |
+| 1 / balanced | primeiro teste seguro | `BULLY_PAGE_CAP_MB=180`, `LCS_STREAMER_MAX=64`, `LCS_RESOURCEDRAIN_MAX=4`, `LCS_GFX_LOD_SCALE=0.65`, `LCS_TEX_HALF=1`, `LCS_TEX_HALF_MIN=1024` |
+| 2 / smooth | base jogavel full-native | cap 140MB, streamer 48, drain 3, LOD 0.50, draw 0.35, `LCS_TEX_HALF_MIN=512`, `render_scale=native` |
+| 3 / potato | agressivo safe | cap 110MB, streamer 32, drain 2, LOD 0.40, draw 0.25, `LCS_TEX_HALF_MIN=256`, `LCS_NO_ENVMAP=1`, `render_scale=native`, `TEX_LIGHT=off` |
 
 `run-final.sh` tambem foi preparado para usar esse perfil quando chamado com
 `LCS_PROFILE=gtasa-perf`. Nada foi executado/testado ainda por pedido do NextOS.
+
+Nota de estudo apos comparar com reVC/GTASA: `BULLY_PAGE` foi herdado do Bully e registra melhor o
+caminho `glTexImage2D`/ETC1-cacheado. O LCS Android sobe a maior parte do mundo por
+`glCompressedTexImage2D` ETC, entao a alavanca mais direta de RAM e `LCS_TEX_HALF`, ja existente no
+hook comprimido: quando chega o mip 1, ele reenvia esse mip como nivel 0 e descarta a base cheia.
+Isso segue o principio do GTASA (`disable_mipmaps`/perfil mobile) e deve ser medido antes de mexer
+em hacks de texture-light.
+
+## 7. RESULTADO DOS TESTES AUTOMATICOS (2026-06-23)
+
+- `LCS_RENDER_SCALE` foi descartado como default: a imagem precisa ficar cheia/native, e downscale
+  nao atacou o gargalo real (RAM/streaming).
+- Tier 2 full-native chegou a gameplay e andou com frame avancando bem. Medicao andando ficou por
+  volta de 410-447MB RSS e 165-181MB de swap do processo.
+- Tier 3 com `LCS_TEX_LIGHT=1` melhorou bastante flicker/stutter percebido, mas quebrou texturas de
+  pessoas/carros. Captura ruim: `~/lcs-build/shot-tier3-tex128-20260623.png`.
+- `LCS_TEX_LIGHT_MIN_DIM` foi adicionado para experimento seletivo, mas ainda nao e seguro para
+  default jogavel.
+- Perfil candidato atual: Tier 3 safe, sem `TEX_LIGHT`, com `NO_ENVMAP=1` e streamer/populacao
+  agressivos. Captura boa: `~/lcs-build/shot-tier3-safe-noenvmap-20260623.png`.
+
+Proxima linha de trabalho: manter o Tier 3 safe, testar ao volante/dirigindo e, se ainda houver
+flicker, criar seletor real por asset/classe para `TEX_LIGHT` em vez de cap global por quantidade.
+
+## 8. TIER 3+ FX-OFF VALIDADO (2026-06-23)
+
+Pergunta: com o jogo ja quase liso, o que ainda da para desligar sem quebrar visual?
+
+Resposta validada no device: cortar reflexos/FX leves e reduzir um pouco mais populacao/veiculos.
+Nao mexer em resolucao e nao usar `TEX_LIGHT` global.
+
+Novo Tier 3 default:
+
+| Item | Valor |
+|---|---|
+| Resolucao | native/full 1280x720 |
+| FX/reflexos | `LCS_SUNREFLECT_OFF=1`, `LCS_GFX_FX_OFF=1`, `LCS_NO_ENVMAP=1` |
+| Populacao | `peds=3`, `cars=2`, `pop=0.20`, `carpop=0.20` |
+| Distancias | `ped_dist=14`, `veh_dist=20`, draw 0.25 |
+| Textura | `LCS_TEX_HALF=1`, `LCS_TEX_HALF_MIN=256`, `TEX_LIGHT=off` |
+| Streamer | load `2/16 tex`, `4/16 buf`; gameplay `1/16 tex`, `1/16 buf` |
+
+Medicao automatica:
+
+| Perfil | VmRSS | VmSwap | Observacao |
+|---|---:|---:|---|
+| Tier 3 safe anterior | 453580 kB | 165732 kB | visual bom |
+| Tier 3+ FX-off | 443804 kB | 166696 kB | visual bom, full-native |
+
+Ganho direto medido: ~9-10 MB de RSS. FPS curto medido na cena parada: `300 frames / 15s`,
+aprox. 20 FPS. A captura `~/lcs-build/shot-tier3-plus-fxoff-20260623.png` mostrou HUD,
+personagem e textura OK.
+
+Conclusao pratica:
+- Seguro desligar: sun reflections, coronas reflections, motion blur streaks, rain streaks,
+  light bloom, env-map.
+- Seguro reduzir um pouco: peds/cars/densidade/distancia.
+- Nao usar como default: `LCS_TEX_LIGHT`; ele melhora flicker por remover textura, mas quebra
+  peds/carros/pessoas.
+- Nao usar como default: `LCS_RENDER_SCALE`; nao melhorou FPS e encolhe a imagem.

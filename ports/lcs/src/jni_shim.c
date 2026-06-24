@@ -11,7 +11,7 @@
  *   viewOnSurfaceChanged(env, thiz, void* window, int w, int h) -> CRIA o EGL
  *   viewOnDrawFrame(env, thiz)
  *   viewOnResume/Pause(env, thiz)
- *   onJoyButtonDown/Up(env, thiz, int pad, int button)   (button 0..15)
+ *   onJoyButtonDown/Up(env, thiz, int pad, int button)   (button enum Rockstar)
  *   setJoyAxis(env, thiz, int pad, int axis, float value)(deadzone 0.125, arr[axis])
  *   setNoJoysticks(env, thiz, int count)
  *   setAssetManager(env, thiz, jobject mgr)              (chama NewGlobalRef idx21)
@@ -35,6 +35,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
+#include <sys/sysinfo.h>
+#include <signal.h>
 
 #include "so_util_x64.h"
 #include "jni_shim.h"
@@ -130,12 +133,33 @@ static void lcs_write_dv_f32(const char *sym, float v, const char *tag) {
   fprintf(stderr, "[gfx] %s %s=%.3f old=%.3f @%p(+76)\n", tag ? tag : "dvf32", sym, v, old, (void *)p);
 }
 
+static void lcs_write_lod_s32_all(const char *suffix, int v, const char *tag) {
+  char sym[128];
+  snprintf(sym, sizeof(sym), "dvLODSettingsLow_%s", suffix);
+  lcs_write_dv_s32(sym, v, tag);
+  snprintf(sym, sizeof(sym), "dvLODSettingsMedium_%s", suffix);
+  lcs_write_dv_s32(sym, v, tag);
+  snprintf(sym, sizeof(sym), "dvLODSettingsHigh_%s", suffix);
+  lcs_write_dv_s32(sym, v, tag);
+}
+
+static void lcs_write_lod_f32_all(const char *suffix, float v, const char *tag) {
+  char sym[128];
+  snprintf(sym, sizeof(sym), "dvLODSettingsLow_%s", suffix);
+  lcs_write_dv_f32(sym, v, tag);
+  snprintf(sym, sizeof(sym), "dvLODSettingsMedium_%s", suffix);
+  lcs_write_dv_f32(sym, v, tag);
+  snprintf(sym, sizeof(sym), "dvLODSettingsHigh_%s", suffix);
+  lcs_write_dv_f32(sym, v, tag);
+}
+
 static void lcs_apply_gfx_profile(void) {
   if (!lcs_env_flag("LCS_GFX_LOW") && !lcs_env_flag("LCS_GFX_PREFS")) return;
 
   /* Perfil inspirado no GTASA Vita/NextOS: reduzir efeitos que viram drawcalls,
    * render-to-textures e manchas no Mali-450. Reversivel com LCS_GFX_LOW=0. */
   int shadows_off = lcs_env_flag("LCS_SHADOWS_OFF") || lcs_env_flag("LCS_GFX_LOW");
+  int memlow = lcs_env_flag("LCS_GFX_MEMLOW") || lcs_env_flag("LCS_GFX_LOW");
   lcs_write_sym_u8("_ZN12CMenuManager21m_PrefsDynamicShadowsE", 0, "pref");
   lcs_write_sym_u8("_ZN12CMenuManager18m_PrefsReflectionsE", 0, "pref");
   lcs_write_sym_i32("_ZN12CMenuManager21m_PrefsGraphicsDetailE", 0, "pref");
@@ -173,12 +197,253 @@ static void lcs_apply_gfx_profile(void) {
   lcs_write_dv_f32("dvLodDistanceScale", lcs_env_float("LCS_GFX_LOD_SCALE", 0.75f), "lod");
   lcs_write_sym_i32("ALLOW_LOD_REDUCTION", 1, "lod");
 
-  if (!lcs_env_flag("LCS_GFX_LOW")) return;
+  if (memlow) {
+    float draw = lcs_env_float("LCS_GFX_DRAW_DISTANCE", 0.35f);
+    float ped_dist = lcs_env_float("LCS_GFX_PED_DIST", 22.0f);
+    float veh_dist = lcs_env_float("LCS_GFX_VEHICLE_DIST", 28.0f);
+    int max_peds = lcs_env_int("LCS_GFX_MAX_PEDS", 8);
+    int max_cars = lcs_env_int("LCS_GFX_MAX_CARS", 5);
+    int tex_create = lcs_env_int("LCS_GFX_TEX_CREATE_PER_FRAME", 1);
+    int tex_destroy = lcs_env_int("LCS_GFX_TEX_DESTROY_PER_FRAME", 10);
+    int buf_create = lcs_env_int("LCS_GFX_BUF_CREATE_PER_FRAME", 2);
+    int buf_destroy = lcs_env_int("LCS_GFX_BUF_DESTROY_PER_FRAME", 10);
+    int stream_mb = lcs_env_int("LCS_GFX_STREAM_MEM_MB", 32);
+    float pop_mult = lcs_env_float("LCS_GFX_POP_MULT", 0.45f);
+    float car_mult = lcs_env_float("LCS_GFX_CAR_MULT", 0.45f);
 
-  lcs_write_dv_bool("dvbRenderSunReflections", 0, "fx");
-  lcs_write_dv_bool("dvbRenderSpecialFxMotionBlurStreaks", 0, "fx");
-  lcs_write_dv_bool("dvbRenderRainStreaks", 0, "fx");
-  lcs_write_dv_bool("dv_bSetSpriteAlphaShaderForWeatherAndSunReflections", 0, "fx");
+    lcs_write_dv_f32("dv_PrefsDrawDistance", draw, "memlow");
+    lcs_write_sym_f32("_ZN12CMenuManager19m_PrefsDrawDistanceE", draw, "memlow");
+    lcs_write_sym_f32("_ZN5CDraw15ms_fLODDistanceE", draw, "memlow");
+    lcs_write_sym_i32("gStreamingMemSize", stream_mb * 1024 * 1024, "memlow");
+
+    lcs_write_lod_s32_all("MaxPeds", max_peds, "memlow");
+    lcs_write_lod_s32_all("MaxPedsInterior", max_peds / 2 > 0 ? max_peds / 2 : 1, "memlow");
+    lcs_write_lod_s32_all("MaxRandomCars", max_cars, "memlow");
+    lcs_write_lod_s32_all("MaxParkedCars", max_cars / 2 > 0 ? max_cars / 2 : 1, "memlow");
+    lcs_write_lod_f32_all("PedDist", ped_dist, "memlow");
+    lcs_write_lod_f32_all("PedFadeDist", ped_dist * 0.75f, "memlow");
+    lcs_write_lod_f32_all("VehicleDist0", veh_dist, "memlow");
+    lcs_write_lod_f32_all("VehicleDist1", veh_dist * 1.25f, "memlow");
+    lcs_write_lod_f32_all("VehicleFadeDist", veh_dist * 0.75f, "memlow");
+    lcs_write_lod_f32_all("BigVehicleDist0", veh_dist * 1.25f, "memlow");
+    lcs_write_lod_f32_all("BigVehicleDist1", veh_dist * 1.50f, "memlow");
+
+    lcs_write_dv_s32("dvStreamerCreateNumTexturesPerFrame", tex_create, "memlow");
+    lcs_write_dv_s32("dvStreamerDestroyNumTexturesPerFrame", tex_destroy, "memlow");
+    lcs_write_dv_s32("dvStreamerCreateNumBuffersPerFrame", buf_create, "memlow");
+    lcs_write_dv_s32("dvStreamerDestroyNumBuffersPerFrame", buf_destroy, "memlow");
+    lcs_write_sym_i32("gNumTexturesToLoadPerFrame", tex_create, "memlow");
+
+    lcs_write_sym_f32("_ZN11CPopulation20PedDensityMultiplierE", pop_mult, "memlow");
+    lcs_write_sym_f32("_ZN8CIniFile19PedNumberMultiplierE", pop_mult, "memlow");
+    lcs_write_sym_f32("_ZN8CCarCtrl20CarDensityMultiplierE", car_mult, "memlow");
+    lcs_write_sym_f32("_ZN8CIniFile19CarNumberMultiplierE", car_mult, "memlow");
+    fprintf(stderr,
+            "[gfx] memlow draw=%.2f stream=%dMB peds=%d cars=%d pdist=%.1f vdist=%.1f tex=%d/%d buf=%d/%d pop=%.2f car=%.2f\n",
+            draw, stream_mb, max_peds, max_cars, ped_dist, veh_dist,
+            tex_create, tex_destroy, buf_create, buf_destroy, pop_mult, car_mult);
+  }
+
+  if (lcs_env_flag("LCS_GFX_LOW") || lcs_env_flag("LCS_GFX_FX_OFF") ||
+      lcs_env_flag("LCS_SUNREFLECT_OFF")) {
+    lcs_write_dv_bool("dvbRenderSunReflections", 0, "fx");
+    lcs_write_dv_bool("dvbRenderSpecialFxMotionBlurStreaks", 0, "fx");
+    lcs_write_dv_bool("dvbRenderRainStreaks", 0, "fx");
+    lcs_write_dv_bool("dv_bSetSpriteAlphaShaderForWeatherAndSunReflections", 0, "fx");
+  }
+}
+
+static void lcs_apply_stream_phase_profile(int state) {
+  if (!lcs_env_flag("LCS_GFX_MEMLOW") && !lcs_env_flag("LCS_GFX_LOW")) return;
+
+  int gameplay = (state == 9);
+  static int last_gameplay = -1;
+  if (last_gameplay == gameplay) return;
+  last_gameplay = gameplay;
+
+  const char *tex_create_env = gameplay ? "LCS_GFX_GAME_TEX_CREATE_PER_FRAME"
+                                        : "LCS_GFX_LOAD_TEX_CREATE_PER_FRAME";
+  const char *tex_destroy_env = gameplay ? "LCS_GFX_GAME_TEX_DESTROY_PER_FRAME"
+                                         : "LCS_GFX_LOAD_TEX_DESTROY_PER_FRAME";
+  const char *buf_create_env = gameplay ? "LCS_GFX_GAME_BUF_CREATE_PER_FRAME"
+                                        : "LCS_GFX_LOAD_BUF_CREATE_PER_FRAME";
+  const char *buf_destroy_env = gameplay ? "LCS_GFX_GAME_BUF_DESTROY_PER_FRAME"
+                                         : "LCS_GFX_LOAD_BUF_DESTROY_PER_FRAME";
+
+  int tex_create = lcs_env_int(tex_create_env,
+                               lcs_env_int("LCS_GFX_TEX_CREATE_PER_FRAME", 1));
+  int tex_destroy = lcs_env_int(tex_destroy_env,
+                                lcs_env_int("LCS_GFX_TEX_DESTROY_PER_FRAME", 10));
+  int buf_create = lcs_env_int(buf_create_env,
+                               lcs_env_int("LCS_GFX_BUF_CREATE_PER_FRAME", 2));
+  int buf_destroy = lcs_env_int(buf_destroy_env,
+                                lcs_env_int("LCS_GFX_BUF_DESTROY_PER_FRAME", 10));
+
+  lcs_write_dv_s32("dvStreamerCreateNumTexturesPerFrame", tex_create,
+                   gameplay ? "game-stream" : "load-stream");
+  lcs_write_dv_s32("dvStreamerDestroyNumTexturesPerFrame", tex_destroy,
+                   gameplay ? "game-stream" : "load-stream");
+  lcs_write_dv_s32("dvStreamerCreateNumBuffersPerFrame", buf_create,
+                   gameplay ? "game-stream" : "load-stream");
+  lcs_write_dv_s32("dvStreamerDestroyNumBuffersPerFrame", buf_destroy,
+                   gameplay ? "game-stream" : "load-stream");
+  lcs_write_sym_i32("gNumTexturesToLoadPerFrame", tex_create,
+                    gameplay ? "game-stream" : "load-stream");
+  fprintf(stderr, "[gfx] streamphase %s tex=%d/%d buf=%d/%d\n",
+          gameplay ? "gameplay" : "load", tex_create, tex_destroy,
+          buf_create, buf_destroy);
+}
+
+static void lcs_force_subtitles_pref(const char *tag) {
+  if (!lcs_env_flag("LCS_FORCE_SUBTITLES")) return;
+  static unsigned char *pref = NULL;
+  static int resolved = 0, logs = 0;
+  if (!resolved) {
+    pref = (unsigned char *)so_symbol(&mod_game, "_ZN12CMenuManager20m_PrefsShowSubtitlesE");
+    resolved = 1;
+    fprintf(stderr, "[text] subtitles pref sym=%p force=1\n", (void *)pref);
+  }
+  if (!pref) return;
+  unsigned char old = *pref;
+  if (old != 1) *pref = 1;
+  if ((old != 1 && logs < 16) || (lcs_env_flag("LCS_FONTDIAG") && logs < 4)) {
+    fprintf(stderr, "[text] force subtitles %s old=%u new=%u state=%d\n",
+            tag ? tag : "?", (unsigned)old, (unsigned)*pref, lcs_current_app_state());
+    logs++;
+  }
+}
+
+static void lcs_ensure_font_initialised(int frame, const char *stage) {
+  if (!lcs_env_flag("LCS_FONT_INIT")) return;
+  static int resolved = 0, done = 0, first_ready_frame = -1, logs = 0;
+  static void (*font_init)(void) = NULL;
+  static void (*sprite_init)(void) = NULL;
+  static unsigned char *jp = NULL, *ru = NULL, *kr = NULL, *efigs = NULL;
+  static int *font_size = NULL;
+  static void **font_list = NULL;
+  if (done) return;
+  if (!resolved) {
+    font_init = (void (*)(void))so_find_addr_safe("_ZN5CFont10InitialiseEv");
+    sprite_init = (void (*)(void))so_find_addr_safe("_ZN7CSprite10InitialiseEv");
+    jp = (unsigned char *)so_symbol(&mod_game, "_ZN5CFont21UsingJapaneseLanguageE");
+    ru = (unsigned char *)so_symbol(&mod_game, "_ZN5CFont20UsingRussianLanguageE");
+    kr = (unsigned char *)so_symbol(&mod_game, "_ZN5CFont19UsingKoreanLanguageE");
+    efigs = (unsigned char *)so_symbol(&mod_game, "_ZN5CFont18UsingEFIGSLanguageE");
+    font_size = (int *)so_symbol(&mod_game, "_ZN5CFont13msTexListSizeE");
+    font_list = (void **)so_symbol(&mod_game, "_ZN5CFont20mspCompressedTexListE");
+    resolved = 1;
+    fprintf(stderr,
+            "[fontfix] syms init=%p sprite=%p lang=%p/%p/%p/%p font=%p/%p\n",
+            (void *)font_init, (void *)sprite_init, (void *)jp, (void *)ru,
+            (void *)kr, (void *)efigs, (void *)font_size, (void *)font_list);
+  }
+  int state = lcs_current_app_state();
+  int min_state = lcs_env_int("LCS_FONT_INIT_STATE", 9);
+  if (state < min_state) return;
+  if (first_ready_frame < 0) first_ready_frame = frame;
+  int delay = lcs_env_int("LCS_FONT_INIT_DELAY", 0);
+  if (frame < first_ready_frame + delay) return;
+
+  int any_lang = (jp && *jp) || (ru && *ru) || (kr && *kr) || (efigs && *efigs);
+  int force = lcs_env_flag("LCS_FONT_INIT_FORCE");
+  if (any_lang && !force) {
+    if (logs < 4) {
+      fprintf(stderr,
+              "[fontfix] skip already initialised %s f=%d state=%d lang=%d/%d/%d/%d fontlist=%p size=%d\n",
+              stage ? stage : "?", frame, state, jp ? *jp : -1, ru ? *ru : -1,
+              kr ? *kr : -1, efigs ? *efigs : -1,
+              font_list ? *font_list : NULL, font_size ? *font_size : -1);
+      logs++;
+    }
+    done = 1;
+    return;
+  }
+  if (!font_init) {
+    if (logs < 4) {
+      fprintf(stderr, "[fontfix] CFont::Initialise missing f=%d state=%d\n", frame, state);
+      logs++;
+    }
+    done = 1;
+    return;
+  }
+
+  fprintf(stderr,
+          "[fontfix] call CFont::Initialise %s f=%d state=%d lang=%d/%d/%d/%d fontlist=%p size=%d force=%d\n",
+          stage ? stage : "?", frame, state, jp ? *jp : -1, ru ? *ru : -1,
+          kr ? *kr : -1, efigs ? *efigs : -1,
+          font_list ? *font_list : NULL, font_size ? *font_size : -1, force);
+  fflush(NULL);
+  font_init();
+  if (lcs_env_flag("LCS_FONT_INIT_SPRITE") && sprite_init) sprite_init();
+  fprintf(stderr,
+          "[fontfix] return CFont::Initialise f=%d state=%d lang=%d/%d/%d/%d fontlist=%p size=%d\n",
+          frame, lcs_current_app_state(), jp ? *jp : -1, ru ? *ru : -1,
+          kr ? *kr : -1, efigs ? *efigs : -1,
+          font_list ? *font_list : NULL, font_size ? *font_size : -1);
+  fflush(NULL);
+  done = 1;
+}
+
+static void lcs_text_diag_tick(int frame, const char *stage) {
+  if (!lcs_env_flag("LCS_FONTDIAG")) return;
+  static unsigned char *pref = NULL, *running = NULL, *processing = NULL, *play = NULL, *load = NULL;
+  static int *num = NULL, *curr = NULL, *dur = NULL, *start = NULL, *font_size = NULL;
+  static char *ctext = NULL;
+  static void **font_list = NULL;
+  static int resolved = 0, logs = 0, last_num = -999;
+  if (!resolved) {
+    pref = (unsigned char *)so_symbol(&mod_game, "_ZN12CMenuManager20m_PrefsShowSubtitlesE");
+    running = (unsigned char *)so_symbol(&mod_game, "_ZN12CCutsceneMgr10ms_runningE");
+    processing = (unsigned char *)so_symbol(&mod_game, "_ZN12CCutsceneMgr21ms_cutsceneProcessingE");
+    play = (unsigned char *)so_symbol(&mod_game, "_ZN12CCutsceneMgr21ms_cutscenePlayStatusE");
+    load = (unsigned char *)so_symbol(&mod_game, "_ZN12CCutsceneMgr21ms_cutsceneLoadStatusE");
+    num = (int *)so_symbol(&mod_game, "_ZN12CCutsceneMgr16ms_numTextOutputE");
+    curr = (int *)so_symbol(&mod_game, "_ZN12CCutsceneMgr17ms_currTextOutputE");
+    ctext = (char *)so_symbol(&mod_game, "_ZN12CCutsceneMgr14ms_cTextOutputE");
+    dur = (int *)so_symbol(&mod_game, "_ZN12CCutsceneMgr16ms_iTextDurationE");
+    start = (int *)so_symbol(&mod_game, "_ZN12CCutsceneMgr17ms_iTextStartTimeE");
+    font_size = (int *)so_symbol(&mod_game, "_ZN5CFont13msTexListSizeE");
+    font_list = (void **)so_symbol(&mod_game, "_ZN5CFont20mspCompressedTexListE");
+    resolved = 1;
+    fprintf(stderr,
+            "[fontdiag] syms pref=%p cut=%p/%p/%p/%p text=%p/%p/%p/%p/%p font=%p/%p\n",
+            (void *)pref, (void *)running, (void *)processing, (void *)play, (void *)load,
+            (void *)num, (void *)curr, (void *)ctext, (void *)dur, (void *)start,
+            (void *)font_size, (void *)font_list);
+  }
+  int n = num ? *num : -1;
+  int c = curr ? *curr : -1;
+  int event_stage = stage && !strncmp(stage, "LoadData_", 9);
+  int log_now = logs < 36 || (frame % 60) == 0 || n != last_num || event_stage;
+  if (log_now) {
+    int key0_ok = ctext && n > 0;
+    int keyc_ok = ctext && n > 0 && c >= 0 && c < n;
+    fprintf(stderr,
+            "[fontdiag] %s f=%d state=%d pref=%d cut=%d/%d/%d load=%d text num=%d curr=%d start0=%d dur0=%d key0='%.8s' keycur='%.8s' fontlist=%p size=%d\n",
+            stage ? stage : "?", frame, lcs_current_app_state(),
+            pref ? *pref : -1,
+            running ? *running : -1,
+            processing ? *processing : -1,
+            play ? *play : -1,
+            load ? *load : -1,
+            n,
+            c,
+            start ? start[0] : -1,
+            dur ? dur[0] : -1,
+            key0_ok ? ctext : "",
+            keyc_ok ? ctext + c * 8 : "",
+            font_list ? *font_list : NULL,
+            font_size ? *font_size : -1);
+    logs++;
+    last_num = n;
+  }
+}
+
+static void (*tramp_CFont_DrawFonts)(void) = NULL;
+static void my_CFont_DrawFonts(void) {
+  extern unsigned long g_frame_no;
+  lcs_text_diag_tick((int)g_frame_no, "DrawFonts");
+  if (tramp_CFont_DrawFonts) tramp_CFont_DrawFonts();
 }
 
 /* MEMDIAG: captura chamadas suspeitas do libGame para libc memcpy/memmove.
@@ -774,18 +1039,37 @@ static void build_env(void) {
 }
 
 /* ======================= input (LCS) ===================================== */
-/* enum de botao do libGame LCS: ainda nao confirmado por RE; comeca com layout
- * GTA-mobile padrao (0=A 1=B 2=X 3=Y 4=L1 5=R1 6=L2 7=R2 8=SELECT 9=START
- * 10=L3 11=R3 12=DPADup 13=down 14=left 15=right). Sondavel via /dev/shm/lcs_btn.
- * Override por env LCS_BTNMAP="sdl:game,..." nao implementado ainda. */
+/* Enum de botao por evento JNI Rockstar/Bully-style:
+ * 0=A 1=B 2=X 3=Y 4=START 5=BACK 6=L3 7=R3 8-11=NAV/menu
+ * 12-15=DPAD 16=L1 17=L2 18=R1 19=R2.
+ * O layout antigo GTA-mobile colocava 4=L1 e 9=START; isso fazia L1 agir como
+ * Start e Start fisico nao fazer nada no LCS. Sondavel via /dev/shm/lcs_btn. */
+#define LCS_BTN_COUNT 20
+#define LCS_BTN_A 0
+#define LCS_BTN_B 1
+#define LCS_BTN_START 4
+#define LCS_BTN_BACK 5
+#define LCS_BTN_L3 6
+#define LCS_BTN_R3 7
+#define LCS_BTN_DPAD_UP 12
+#define LCS_BTN_DPAD_DOWN 13
+#define LCS_BTN_DPAD_LEFT 14
+#define LCS_BTN_DPAD_RIGHT 15
+#define LCS_BTN_L1 16
+#define LCS_BTN_L2 17
+#define LCS_BTN_R1 18
+#define LCS_BTN_R2 19
 static const struct { int sdl; int game; } g_btnmap[] = {
   {SDL_CONTROLLER_BUTTON_A, 0}, {SDL_CONTROLLER_BUTTON_B, 1},
   {SDL_CONTROLLER_BUTTON_X, 2}, {SDL_CONTROLLER_BUTTON_Y, 3},
-  {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 4}, {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 5},
-  {SDL_CONTROLLER_BUTTON_BACK, 8}, {SDL_CONTROLLER_BUTTON_START, 9},
-  {SDL_CONTROLLER_BUTTON_LEFTSTICK, 10}, {SDL_CONTROLLER_BUTTON_RIGHTSTICK, 11},
-  {SDL_CONTROLLER_BUTTON_DPAD_UP, 12}, {SDL_CONTROLLER_BUTTON_DPAD_DOWN, 13},
-  {SDL_CONTROLLER_BUTTON_DPAD_LEFT, 14}, {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 15},
+  {SDL_CONTROLLER_BUTTON_START, LCS_BTN_START}, {SDL_CONTROLLER_BUTTON_BACK, LCS_BTN_BACK},
+  {SDL_CONTROLLER_BUTTON_LEFTSTICK, LCS_BTN_L3}, {SDL_CONTROLLER_BUTTON_RIGHTSTICK, LCS_BTN_R3},
+  {SDL_CONTROLLER_BUTTON_DPAD_UP, LCS_BTN_DPAD_UP},
+  {SDL_CONTROLLER_BUTTON_DPAD_DOWN, LCS_BTN_DPAD_DOWN},
+  {SDL_CONTROLLER_BUTTON_DPAD_LEFT, LCS_BTN_DPAD_LEFT},
+  {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, LCS_BTN_DPAD_RIGHT},
+  {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, LCS_BTN_L1},
+  {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, LCS_BTN_R1},
 };
 static void (*lcs_btn_down)(void *, void *, int, int) = NULL;
 static void (*lcs_btn_up)(void *, void *, int, int) = NULL;
@@ -793,9 +1077,9 @@ static void (*lcs_set_axis)(void *, void *, int, int, float) = NULL;
 static void (*lcs_set_njoy)(void *, void *, int) = NULL;
 static void (*lcs_and_gamepad_init)(void) = NULL;
 static void (*lcs_and_gamepad_update)(void) = NULL;
-static int g_btn_phys[16];
-static int g_btn_probe[16];
-static int g_btn_state[16];
+static int g_btn_phys[LCS_BTN_COUNT];
+static int g_btn_probe[LCS_BTN_COUNT];
+static int g_btn_state[LCS_BTN_COUNT];
 static float g_axis_state[6];
 static float g_axis_probe[6];
 static int g_axis_probe_hold[6];
@@ -829,6 +1113,38 @@ static void lcs_input_diag_raw_axes(void) {
   logs++;
 }
 
+static void lcs_input_diag_raw_buttons(void) {
+  if (!lcs_env_flag("LCS_RAW_BUTTONDIAG") || !g_joy) return;
+  static int prev_btn[64];
+  static int prev_hat[8];
+  static int logs = 0;
+  int max_logs = lcs_env_int("LCS_RAW_BUTTONDIAG_MAX", 256);
+  if (logs >= max_logs) return;
+  extern unsigned long g_frame_no;
+  int nb = SDL_JoystickNumButtons(g_joy);
+  if (nb > (int)(sizeof(prev_btn) / sizeof(prev_btn[0]))) nb = (int)(sizeof(prev_btn) / sizeof(prev_btn[0]));
+  for (int i = 0; i < nb && logs < max_logs; i++) {
+    int p = SDL_JoystickGetButton(g_joy, i) ? 1 : 0;
+    if (p != prev_btn[i]) {
+      fprintf(stderr, "[rawbutton] f=%lu state=%d raw=%d %s\n",
+              g_frame_no, lcs_current_app_state(), i, p ? "DOWN" : "UP");
+      prev_btn[i] = p;
+      logs++;
+    }
+  }
+  int nh = SDL_JoystickNumHats(g_joy);
+  if (nh > (int)(sizeof(prev_hat) / sizeof(prev_hat[0]))) nh = (int)(sizeof(prev_hat) / sizeof(prev_hat[0]));
+  for (int i = 0; i < nh && logs < max_logs; i++) {
+    int h = SDL_JoystickGetHat(g_joy, i);
+    if (h != prev_hat[i]) {
+      fprintf(stderr, "[rawhat] f=%lu state=%d hat%d=0x%x\n",
+              g_frame_no, lcs_current_app_state(), i, h);
+      prev_hat[i] = h;
+      logs++;
+    }
+  }
+}
+
 static int lcs_input_diag_enabled(void) {
   return lcs_env_flag("LCS_INPUTDIAG");
 }
@@ -838,11 +1154,11 @@ static void lcs_input_diag_button(int gm, int pressed) {
   if (!lcs_input_diag_enabled() || logs >= lcs_env_int("LCS_INPUTDIAG_MAX", 256)) return;
   extern unsigned long g_frame_no;
   int state = lcs_current_app_state();
-  if (gm == 9 && !lcs_env_flag("LCS_INPUTDIAG_START")) return;
+  if (gm == LCS_BTN_START && !lcs_env_flag("LCS_INPUTDIAG_START")) return;
   fprintf(stderr, "[input] f=%lu state=%d button=%d %s phys=%d probe=%d\n",
           g_frame_no, state, gm, pressed ? "DOWN" : "UP",
-          (gm >= 0 && gm < 16) ? g_btn_phys[gm] : -1,
-          (gm >= 0 && gm < 16) ? g_btn_probe[gm] : -1);
+          (gm >= 0 && gm < LCS_BTN_COUNT) ? g_btn_phys[gm] : -1,
+          (gm >= 0 && gm < LCS_BTN_COUNT) ? g_btn_probe[gm] : -1);
   logs++;
 }
 
@@ -856,7 +1172,7 @@ static void lcs_input_diag_axis(int axis, float value, const char *src) {
 }
 
 static void lcs_refresh_button(int gm) {
-  if (gm < 0 || gm >= 16) return;
+  if (gm < 0 || gm >= LCS_BTN_COUNT) return;
   int p = (g_btn_phys[gm] || g_btn_probe[gm]) ? 1 : 0;
   if (p == g_btn_state[gm]) return;
   lcs_input_diag_button(gm, p);
@@ -874,7 +1190,8 @@ int LCS_OS_GamepadIsConnected(unsigned int pad, void *type) {
   for (int i = 0; i < 6; i++) {
     if (g_axis_probe_hold[i] > 0 || fabsf(g_axis_state[i]) > 0.05f) return 1;
   }
-  return (g_pad || g_btn_state[12] || g_btn_state[13] || g_btn_state[14] || g_btn_state[15]) ? 1 : 0;
+  return (g_pad || g_btn_state[LCS_BTN_DPAD_UP] || g_btn_state[LCS_BTN_DPAD_DOWN] ||
+          g_btn_state[LCS_BTN_DPAD_LEFT] || g_btn_state[LCS_BTN_DPAD_RIGHT]) ? 1 : 0;
 }
 
 float LCS_OS_GamepadAxis(unsigned int pad, unsigned int axis) {
@@ -952,6 +1269,7 @@ static void pump_input(void) {
   }
   if (g_joy) SDL_JoystickUpdate();
   lcs_input_diag_raw_axes();
+  lcs_input_diag_raw_buttons();
   /* sonda de enum: `echo N > /dev/shm/lcs_btn` dispara down/up do enum N */
   { static int ph = -1, pb = -1, fr = 0, wait = 0, q[16], qn = 0;
     int hold = getenv("LCS_PROBEHOLD") ? atoi(getenv("LCS_PROBEHOLD")) : 8;
@@ -960,7 +1278,7 @@ static void pump_input(void) {
       FILE *pf = fopen("/dev/shm/lcs_btn", "r");
       if (pf) { int b = -1;
         while (fscanf(pf, "%d", &b) == 1) {
-          if (((b >= 0 && b < 16) || b < 0) && qn < (int)(sizeof(q) / sizeof(q[0]))) q[qn++] = b;
+          if (((b >= 0 && b < LCS_BTN_COUNT) || b < 0) && qn < (int)(sizeof(q) / sizeof(q[0]))) q[qn++] = b;
         }
         fclose(pf); unlink("/dev/shm/lcs_btn"); }
     }
@@ -975,7 +1293,7 @@ static void pump_input(void) {
       }
     }
     if (ph >= 0 && --ph == 0) {
-      if (pb >= 0 && pb < 16) { g_btn_probe[pb] = 0; lcs_refresh_button(pb); }
+      if (pb >= 0 && pb < LCS_BTN_COUNT) { g_btn_probe[pb] = 0; lcs_refresh_button(pb); }
       fprintf(stderr, "[probe] enum %d UP\n", pb);
       ph = -1;
     } }
@@ -1008,58 +1326,68 @@ static void pump_input(void) {
         fprintf(stderr, "[probe] axis %d = 0.000\n", i);
       }
     } }
-  g_axis_state[0] = (g_btn_state[15] ? 1.0f : 0.0f) - (g_btn_state[14] ? 1.0f : 0.0f);
-  g_axis_state[1] = (g_btn_state[13] ? 1.0f : 0.0f) - (g_btn_state[12] ? 1.0f : 0.0f);
+  g_axis_state[0] = (g_btn_state[LCS_BTN_DPAD_RIGHT] ? 1.0f : 0.0f) -
+                    (g_btn_state[LCS_BTN_DPAD_LEFT] ? 1.0f : 0.0f);
+  g_axis_state[1] = (g_btn_state[LCS_BTN_DPAD_DOWN] ? 1.0f : 0.0f) -
+                    (g_btn_state[LCS_BTN_DPAD_UP] ? 1.0f : 0.0f);
   float a[6] = { g_axis_state[0], g_axis_state[1], 0.0f, 0.0f, 0.0f, 0.0f };
   const char *axis_src[6] = { "dpad", "dpad", "sdl", "sdl", "sdl", "sdl" };
   if (g_pad && !lcs_env_flag("LCS_INPUT_PROBE_ONLY")) {
-    int phys[16]; memset(phys, 0, sizeof(phys));
+    int phys[LCS_BTN_COUNT]; memset(phys, 0, sizeof(phys));
     if (!lcs_env_flag("LCS_BUTTON_RAW_ONLY")) {
       for (unsigned i = 0; i < sizeof(g_btnmap) / sizeof(g_btnmap[0]); i++) {
         int gm = g_btnmap[i].game;
-        if (gm >= 0 && gm < 16)
+        if (gm >= 0 && gm < LCS_BTN_COUNT)
           phys[gm] |= SDL_GameControllerGetButton(g_pad, g_btnmap[i].sdl) ? 1 : 0;
       }
     }
     if (g_joy && lcs_env_int("LCS_RAW_BUTTONS", 1) != 0) {
-      /* USB Gamepad generico no device: b9=Start, b8=Back, b6/b7=L2/R2.
-       * Usar raw evita mapeamento SDL errado fazendo L2 virar Back/Start. */
+      /* USB Gamepad generico no device: usar raw evita mapeamento SDL errado.
+       * O enum enviado ao jogo segue o layout Rockstar/Bully-style acima. */
       const struct { int raw; int game; } rawmap[] = {
         {2, 0}, {1, 1}, {3, 2}, {0, 3},
-        {4, 4}, {5, 5}, {9, 9},
+        {4, LCS_BTN_L1}, {5, LCS_BTN_R1},
+        {9, LCS_BTN_START},
+        {10, LCS_BTN_L3}, {11, LCS_BTN_R3},
       };
       int nb = SDL_JoystickNumButtons(g_joy);
       for (unsigned i = 0; i < sizeof(rawmap) / sizeof(rawmap[0]); i++) {
         int rb = rawmap[i].raw;
         int gm = rawmap[i].game;
-        if (rb >= 0 && rb < nb && gm >= 0 && gm < 16)
+        if (rb >= 0 && rb < nb && gm >= 0 && gm < LCS_BTN_COUNT)
           phys[gm] |= SDL_JoystickGetButton(g_joy, rb) ? 1 : 0;
       }
+      if (SDL_JoystickNumHats(g_joy) > 0) {
+        int h = SDL_JoystickGetHat(g_joy, 0);
+        phys[LCS_BTN_DPAD_UP]    |= (h & SDL_HAT_UP) ? 1 : 0;
+        phys[LCS_BTN_DPAD_DOWN]  |= (h & SDL_HAT_DOWN) ? 1 : 0;
+        phys[LCS_BTN_DPAD_LEFT]  |= (h & SDL_HAT_LEFT) ? 1 : 0;
+        phys[LCS_BTN_DPAD_RIGHT] |= (h & SDL_HAT_RIGHT) ? 1 : 0;
+      }
       if (lcs_env_flag("LCS_ENABLE_BACK_BUTTON") && nb > 8)
-        phys[8] |= SDL_JoystickGetButton(g_joy, 8) ? 1 : 0;
+        phys[LCS_BTN_BACK] |= SDL_JoystickGetButton(g_joy, 8) ? 1 : 0;
     }
-    if (!lcs_env_flag("LCS_ENABLE_BACK_BUTTON")) phys[8] = 0;
-    /* Gatilhos continuam como eixos 4/5. Como o enum 6/7 ainda nao esta
-     * confirmado no LCS, nao os enviamos como botoes por padrao: L2 fisico
-     * estava fechando o jogo no device. */
+    if (!lcs_env_flag("LCS_ENABLE_BACK_BUTTON")) phys[LCS_BTN_BACK] = 0;
+    /* Gatilhos continuam como eixos 4/5. L2/R2 so viram botoes 17/19 se
+     * explicitamente habilitados; isso evita repetir o bug antigo de L2 fechar o jogo. */
     int lt = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 12000 ? 1 : 0;
     int rt = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 12000 ? 1 : 0;
     if (lcs_env_flag("LCS_TRIGGER_BUTTONS")) {
-      phys[6] |= lt; phys[7] |= rt;
+      phys[LCS_BTN_L2] |= lt; phys[LCS_BTN_R2] |= rt;
     }
     int lx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
     int ly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
     if (lcs_env_flag("LCS_ANALOG_AS_DPAD")) {
-      phys[12] |= ly < -16000; phys[13] |= ly > 16000;
-      phys[14] |= lx < -16000; phys[15] |= lx > 16000;
+      phys[LCS_BTN_DPAD_UP] |= ly < -16000; phys[LCS_BTN_DPAD_DOWN] |= ly > 16000;
+      phys[LCS_BTN_DPAD_LEFT] |= lx < -16000; phys[LCS_BTN_DPAD_RIGHT] |= lx > 16000;
     }
     int state = lcs_current_app_state();
     int dpad_axis_only = (state == 9 && lcs_env_int("LCS_DPAD_AS_AXIS_ONLY", 1) &&
                           !lcs_env_flag("LCS_DPAD_BUTTONS"));
     if (dpad_axis_only && lcs_input_diag_enabled()) {
       static int last_dx = 0, last_dy = 0;
-      int dx = (phys[15] ? 1 : 0) - (phys[14] ? 1 : 0);
-      int dy = (phys[13] ? 1 : 0) - (phys[12] ? 1 : 0);
+      int dx = (phys[LCS_BTN_DPAD_RIGHT] ? 1 : 0) - (phys[LCS_BTN_DPAD_LEFT] ? 1 : 0);
+      int dy = (phys[LCS_BTN_DPAD_DOWN] ? 1 : 0) - (phys[LCS_BTN_DPAD_UP] ? 1 : 0);
       if (dx != last_dx || dy != last_dy) {
         extern unsigned long g_frame_no;
         fprintf(stderr, "[input] f=%lu state=%d dpad-as-axis dx=%d dy=%d buttons-suppressed=1\n",
@@ -1067,9 +1395,9 @@ static void pump_input(void) {
         last_dx = dx; last_dy = dy;
       }
     }
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < LCS_BTN_COUNT; i++) {
       int next = phys[i];
-      if (dpad_axis_only && i >= 12 && i <= 15) next = 0;
+      if (dpad_axis_only && i >= LCS_BTN_DPAD_UP && i <= LCS_BTN_DPAD_RIGHT) next = 0;
       if (next != g_btn_phys[i]) {
         g_btn_phys[i] = next;
         lcs_refresh_button(i);
@@ -1089,8 +1417,8 @@ static void pump_input(void) {
     }
     for (int i = 0; i < 6; i++) axis_src[i] = "sdl";
     if (dpad_axis_only) {
-      int dx = (phys[15] ? 1 : 0) - (phys[14] ? 1 : 0);
-      int dy = (phys[13] ? 1 : 0) - (phys[12] ? 1 : 0);
+      int dx = (phys[LCS_BTN_DPAD_RIGHT] ? 1 : 0) - (phys[LCS_BTN_DPAD_LEFT] ? 1 : 0);
+      int dy = (phys[LCS_BTN_DPAD_DOWN] ? 1 : 0) - (phys[LCS_BTN_DPAD_UP] ? 1 : 0);
       if (dx) { a[0] = (float)dx; axis_src[0] = "dpad"; }
       if (dy) { a[1] = (float)dy; axis_src[1] = "dpad"; }
     }
@@ -1793,6 +2121,7 @@ static void (*tramp_Cutscene_LoadDataOverlay)(const char *) = NULL;
 static void (*tramp_Cutscene_LoadDataPreload)(void) = NULL;
 static int lcs_cutscene_diag_step(void);
 static int lcs_cutscene_active(void);
+static int lcs_streamer_pending_now(void);
 
 static int lcs_cutscene_required_finishes_done(void) {
   int need = lcs_fe25_required_finishes();
@@ -1845,6 +2174,8 @@ static void lcs_cutscene_post_overlay_reconcile(const char *tag) {
 }
 
 static void my_Cutscene_LoadDataOverlay_post_guard(const char *name) {
+  extern unsigned long g_frame_no;
+  lcs_text_diag_tick((int)g_frame_no, "LoadData_overlay:before");
   if (lcs_cutscene_post_overlay_blocked()) {
     int name_len = 0;
     int valid_name = lcs_cstring_mapped_len(name, 64, &name_len);
@@ -1868,9 +2199,12 @@ static void my_Cutscene_LoadDataOverlay_post_guard(const char *name) {
 
   if (tramp_Cutscene_LoadDataOverlay)
     tramp_Cutscene_LoadDataOverlay(name);
+  lcs_text_diag_tick((int)g_frame_no, "LoadData_overlay:after");
 }
 
 static void my_Cutscene_LoadDataPreload_post_guard(void) {
+  extern unsigned long g_frame_no;
+  lcs_text_diag_tick((int)g_frame_no, "LoadData_preload:before");
   if (lcs_cutscene_post_overlay_blocked()) {
     static int logs = 0;
     if (logs < 32 || lcs_env_flag("LCS_CUTSCENE_POST_LOAD_DIAG")) {
@@ -1886,6 +2220,7 @@ static void my_Cutscene_LoadDataPreload_post_guard(void) {
 
   if (tramp_Cutscene_LoadDataPreload)
     tramp_Cutscene_LoadDataPreload();
+  lcs_text_diag_tick((int)g_frame_no, "LoadData_preload:after");
 }
 
 static void lcs_cutscene_flyby_direct_tick(int frame, const char *phase) {
@@ -2110,9 +2445,13 @@ static int lcs_cutscene_diag_step(void) {
   return step > 0 ? step : 30;
 }
 
+  /* s8: RESTAURADO do commit f061a4d (s6) — versao que ACOMPANHAVA a camera da cutscene.
+   * O pos-s7c inchou esta funcao (+61 linhas: reset-stale-spline, finish-by-pos com
+   * min-frames, camprocess-block) e quebrou: camera nao seguia + gameplay vazava entre
+   * cut1 e cut2. Voltado ao comportamento s6 limpo (SPLINEFIX + finish simples). */
 static void lcs_cutscene_tick_after_draw(int frame) {
   int want_time = lcs_env_flag("LCS_CUTSCENE_TIMEDIAG");
-  int want_spline = lcs_env_flag("LCS_CUTSCENE_SPLINEFIX");
+  int want_spline = lcs_env_int("LCS_CUTSCENE_SPLINEFIX", 1);  /* s8: default ON (s6) — permanente, sem flag */
   int want_camfix = lcs_env_flag("LCS_CUTSCENE_CAMFIX");
   int want_camprocess = lcs_env_flag("LCS_CUTSCENE_CAMPROCESS");
   int want_take_spline = lcs_env_flag("LCS_CUTSCENE_TAKE_SPLINE");
@@ -2235,7 +2574,7 @@ static void lcs_cutscene_tick_after_draw(int frame) {
     }
   }
 
-  float finish_pos = lcs_env_float("LCS_CUTSCENE_FINISH_POS", 0.0f);
+  float finish_pos = lcs_env_float("LCS_CUTSCENE_FINISH_POS", 0.985f);  /* s8: default 0.985 (s6) — permanente, sem flag */
   int finish_by_pos = finish_pos > 0.0f && finish_pos <= 1.0f &&
                       gate && (pos >= finish_pos || cur_after >= finish_pos);
   int finished = 0;
@@ -2384,7 +2723,7 @@ static int my_Cutscene_IsSkipPressed(void) {
 
   calls++;
   int ret = real;
-  int pad_skip = (g_btn_state[0] || g_btn_state[9]) ? 1 : 0;
+  int pad_skip = (g_btn_state[LCS_BTN_A] || g_btn_state[LCS_BTN_START]) ? 1 : 0;
   if (!ret && lcs_env_flag("LCS_CUTSCENE_PAD_SKIP") && pad_skip) {
     ret = 1;
   }
@@ -3120,12 +3459,13 @@ static void lcs_apply_pad_bridge(const char *tag) {
   int state = lcs_current_app_state();
   if (!lcs_env_flag("LCS_PADBRIDGE_ALL") && state != 7 && state != 9) return;
 
-  int sel = g_btn_state[0] || g_btn_state[9];   /* A ou START */
-  int back = g_btn_state[1] || g_btn_state[8];  /* B ou BACK */
-  int up = g_btn_state[12], down = g_btn_state[13];
-  int left = g_btn_state[14], right = g_btn_state[15];
+  int sel = g_btn_state[LCS_BTN_A] || g_btn_state[LCS_BTN_START];     /* A ou START */
+  int back = g_btn_state[LCS_BTN_B] || g_btn_state[LCS_BTN_BACK];     /* B ou BACK */
+  int up = g_btn_state[LCS_BTN_DPAD_UP], down = g_btn_state[LCS_BTN_DPAD_DOWN];
+  int left = g_btn_state[LCS_BTN_DPAD_LEFT], right = g_btn_state[LCS_BTN_DPAD_RIGHT];
   int mask = sel | (back << 1) | (up << 2) | (down << 3) | (left << 4) | (right << 5);
-  int direct_buttons = lcs_env_flag("LCS_PADBRIDGE_DIRECT");
+  int menu_buttons = (state == 7 && lcs_env_int("LCS_PADBRIDGE_MENU", 1) != 0);
+  int direct_buttons = lcs_env_flag("LCS_PADBRIDGE_DIRECT") || menu_buttons;
   int move_bridge = (state == 9 && lcs_env_int("LCS_PADBRIDGE_MOVE", 1) != 0);
   static int prev_mask = 0;
   static int last_mask = -1;
@@ -3133,8 +3473,8 @@ static void lcs_apply_pad_bridge(const char *tag) {
 
   if (!direct_buttons && !move_bridge) {
     if (lcs_env_flag("LCS_PADDIAG") && mask != last_mask) {
-      fprintf(stderr, "[padbridge] %s state=%d mask=0x%02x direct=0 move=0 sel=%d back=%d UDLR=%d%d%d%d\n",
-              tag ? tag : "?", state, mask, sel, back, up, down, left, right);
+      fprintf(stderr, "[padbridge] %s state=%d mask=0x%02x direct=0 menu=%d move=0 sel=%d back=%d UDLR=%d%d%d%d\n",
+              tag ? tag : "?", state, mask, menu_buttons, sel, back, up, down, left, right);
       last_mask = mask;
     }
     prev_mask = mask;
@@ -3148,18 +3488,28 @@ static void lcs_apply_pad_bridge(const char *tag) {
 
   if (direct_buttons) {
     /* Layout CPad mobile: current nos offsets baixos. Como rodamos depois do
-     * UpdatePads, marcamos old=0 no primeiro frame para preservar JustDown. */
-    cpad_set_just_pair(pad, 42, 94, sel,  sel  && !(prev_mask & 0x01));
-    cpad_set_just_pair(pad, 40, 92, back, back && !(prev_mask & 0x02));
-    cpad_set_just_pair(pad, 44, 96, back, back && !(prev_mask & 0x02));
-    cpad_set_just_pair(pad, 18, 70, up,    up    && !(prev_mask & 0x04));
-    cpad_set_just_pair(pad, 26, 78, up,    up    && !(prev_mask & 0x04));
-    cpad_set_just_pair(pad, 20, 72, down,  down  && !(prev_mask & 0x08));
-    cpad_set_just_pair(pad, 28, 80, down,  down  && !(prev_mask & 0x08));
-    cpad_set_just_pair(pad, 22, 74, left,  left  && !(prev_mask & 0x10));
-    cpad_set_just_pair(pad, 30, 82, left,  left  && !(prev_mask & 0x10));
-    cpad_set_just_pair(pad, 24, 76, right, right && !(prev_mask & 0x20));
-    cpad_set_just_pair(pad, 32, 84, right, right && !(prev_mask & 0x20));
+     * UpdatePads, marcamos old=0 no primeiro frame para preservar JustDown.
+     * MENU PULSE (default ON p/ menu): a engine do menu rola enquanto o botao fica
+     * CURRENT setado -> segurando 1 frame ele "move todas". Pulsamos o current SO na
+     * borda (1 aperto = 1 movimento). LCS_MENU_PULSE=0 volta ao held. */
+    int pulse = menu_buttons && lcs_env_int("LCS_MENU_PULSE", 1);
+    int sel_e = sel && !(prev_mask & 0x01), back_e = back && !(prev_mask & 0x02);
+    int up_e = up && !(prev_mask & 0x04), down_e = down && !(prev_mask & 0x08);
+    int left_e = left && !(prev_mask & 0x10), right_e = right && !(prev_mask & 0x20);
+    int sc = pulse ? sel_e : sel, bc = pulse ? back_e : back;
+    int uc = pulse ? up_e : up, dc = pulse ? down_e : down;
+    int lc = pulse ? left_e : left, rc = pulse ? right_e : right;
+    cpad_set_just_pair(pad, 42, 94, sc, sel_e);
+    cpad_set_just_pair(pad, 40, 92, bc, back_e);
+    cpad_set_just_pair(pad, 44, 96, bc, back_e);
+    cpad_set_just_pair(pad, 18, 70, uc, up_e);
+    cpad_set_just_pair(pad, 26, 78, uc, up_e);
+    cpad_set_just_pair(pad, 20, 72, dc, down_e);
+    cpad_set_just_pair(pad, 28, 80, dc, down_e);
+    cpad_set_just_pair(pad, 22, 74, lc, left_e);
+    cpad_set_just_pair(pad, 30, 82, lc, left_e);
+    cpad_set_just_pair(pad, 24, 76, rc, right_e);
+    cpad_set_just_pair(pad, 32, 84, rc, right_e);
     pad[220] = 0; pad[221] = 0; pad[222] = 0;
   }
 
@@ -3832,6 +4182,43 @@ static void my_RenderReflections(void) {
   if (tramp_RenderReflections) tramp_RenderReflections();
 }
 
+/* TAP NATURAL: a tela "tap to continue" do front-end (apos o intro, antes do menu)
+ * avanca quando HasTappedScreen() retorna true. No original e o toque/botao; no nosso
+ * a engine retornava true sozinha -> pulava a tela. Hookamos HasTappedScreen p/ retornar
+ * 0 (a engine RENDERIZA e ESPERA na tela de tap) e 1 SO no frame em que o controle
+ * aperta A/START. g_tap_request e setado pelo loop do driver (edge do botao, fora do
+ * gameplay). Gate LCS_TAP_NATURAL=1 (default). */
+int g_tap_request = 0;
+int g_app_state = -1;
+int g_frontend_step = 0;        /* 0=tap, 1=legal/disclaimer, 2=menu (avanca por aperto) */
+time_t g_intro_play_secs = 0;   /* tempo gasto no intro blocking, descontado do MAXSECONDS */
+static int lcs_play_intro(void);   /* fwd: player de video nativo (def. perto do driver) */
+/* INTRO NO PONTO NATIVO: a engine chama OS_MoviePlay("intro",...) no estado 3 do
+ * OS_ApplicationTick. No Android isso abre o MediaPlayer/Surface; no so-loader caia no
+ * JNI fake (no-op) -> intro pulado. Hookamos OS_MoviePlay p/ tocar o video DE VERDADE
+ * (blocking, com skip pelo controle) exatamente no ponto certo -> os estados de tap/
+ * legal/loading da engine rodam ao redor naturalmente. Gate LCS_INTRO=1 (default). */
+static void (*tramp_OS_MoviePlay)(const char *, unsigned char, unsigned char, float) = NULL;
+static void my_OS_MoviePlay(const char *name, unsigned char skippable, unsigned char loop, float vol) {
+  fprintf(stderr, "[intro] OS_MoviePlay('%s' skip=%d loop=%d vol=%.2f) -> player nativo\n",
+          name ? name : "?", skippable, loop, vol);
+  lcs_play_intro();
+}
+static int (*tramp_HasTapped)(int *, int *) = NULL;
+static int my_HasTappedScreen(int *px, int *py) {
+  /* SO controla o tap no FRONT-END (state < 9). No state 9 (cutscene/gameplay) devolve
+   * o valor REAL: a cutscene checa HasTappedScreen p/ skip/progressao e segurar em 0
+   * WEDAVA a cutscene (nunca progredia). */
+  if (g_app_state == 9) return tramp_HasTapped ? tramp_HasTapped(px, py) : 0;
+  if (g_tap_request) {
+    g_tap_request = 0;            /* consome: 1 aperto = 1 avanco */
+    if (px) *px = 640;
+    if (py) *py = 360;
+    return 1;
+  }
+  return 0;
+}
+
 /* OBFDIAG: o PVS le indust.xml via LogicalFS_OpenBundleFile -> handle (vtable) ->
  * getSize@vtbl+0x30 -> calloc(size+1) -> read@vtbl+0x10 -> TiXmlDocument(buf). Se
  * getSize retorna lixo, calloc falha -> buf NULL -> TiXml crash. Logamos o getSize. */
@@ -3957,6 +4344,10 @@ static int *p_lglNumTexturesCreated2 = NULL;
 static int *p_lglNumTexturesCreated2ThisFrame = NULL;
 static void lcs_resource_manual_drain(const char *tag, int frame);
 
+static int lcs_streamer_pending_now(void) {
+  return (p_hasFinished && !p_hasFinished()) ? 1 : 0;
+}
+
 static void streamer_tick_like_original_wait(void) {
   if (p_streamerTick) p_streamerTick();
   if (p_gBufferCreator && *p_gBufferCreator && p_bufferCreatorTick) p_bufferCreatorTick(*p_gBufferCreator);
@@ -3982,6 +4373,37 @@ static void my_lglWaitForStreamerToFinishTasks(void) {
   static long c = 0;
   if ((c++ % 30) == 0) fprintf(stderr, "[stream] WaitForStreamer bounded: %d ticks, finished=%d\n",
           i, p_hasFinished ? p_hasFinished() : -1);
+}
+
+/* s8 WEDGE-FIX (causa-raiz da trava na ENTRADA do gameplay): o STREAMDIAG provou que
+ * lglTextureManager::hasPendingTasks fica pendente ETERNO (race da thread loader de
+ * textura), enquanto World/Model/Buffer Creators limpam rapido. Logo lglHasStreamerFinishedTasks
+ * NUNCA fica true -> o engine fica em loop esperando o streamer "terminar" -> nunca entra no
+ * gameplay -> watchdog reboota. FIX: depois que o mundo/modelos ja carregaram (estamos no
+ * state 9) e o streamer fica preso por LCS_STREAMER_FORCE_FINISH_SECS (default 10s), FORCAMOS
+ * finished=true. As texturas seguem subindo pelo dreno (uploadTexture) -> pop-in, mas o
+ * gameplay ENTRA de forma deterministica. Nunca forca no boot (state != 9). */
+static int (*tramp_hasStreamerFinished)(void) = NULL;
+static time_t g_strm_stuck_t0 = 0;
+static int my_lglHasStreamerFinishedTasks(void) {
+  int real = tramp_hasStreamerFinished ? tramp_hasStreamerFinished() : 1;
+  if (real) { g_strm_stuck_t0 = 0; return 1; }
+  if (g_app_state != 9) { g_strm_stuck_t0 = 0; return 0; }  /* so no gameplay, nunca no boot */
+  int grace = lcs_env_int("LCS_STREAMER_FORCE_FINISH_SECS", 10);
+  if (grace <= 0) return 0;
+  time_t now = time(NULL);
+  if (g_strm_stuck_t0 == 0) { g_strm_stuck_t0 = now; return 0; }
+  if (now - g_strm_stuck_t0 >= grace) {
+    extern unsigned long g_frame_no;
+    static int logged = 0;
+    if (logged < 8) {
+      fprintf(stderr, "[stream] FORCE finished apos %ds preso (TextureManager pendente eterno) f=%lu state=9\n",
+              grace, g_frame_no);
+      logged++;
+    }
+    return 1;
+  }
+  return 0;
 }
 
 static void lcs_resource_creator_ensure(const char *tag, int frame) {
@@ -4155,10 +4577,33 @@ static int my_GetScreenFadeStatus(void *thiz) {
   if (st && *(int *)st == 9 && lcs_intro_transition_fade_blocked()) return 2;
   return tramp_fadestatus ? tramp_fadestatus(thiz) : 0;
 }
+
+/* DIAG do LOADING vermelho: loga toda chamada de LoadingScreen() (a engine a chama
+ * repetidamente durante GameStart/streaming com as msgs). Mostra SE/QUANDO o loading
+ * nativo é ativado no New Game. Gate LCS_LOADING_DIAG=1. */
+static void (*tramp_LoadingScreen)(const char *, const char *, const char *, char) = NULL;
+static void my_LoadingScreen(const char *a, const char *b, const char *c, char d) {
+  extern unsigned long g_frame_no;
+  static long n = 0;
+  if (n++ < 200 || (n % 50) == 0)
+    fprintf(stderr, "[loading] LoadingScreen('%s','%s','%s',%d) #%ld f=%lu state=%d\n",
+            a ? a : "", b ? b : "", c ? c : "", d, n, g_frame_no, g_app_state);
+  if (tramp_LoadingScreen) tramp_LoadingScreen(a, b, c, d);
+}
 static void install_hooks(void) {
   so_make_text_writable();
   lcs_install_memdiag();
   lcs_apply_gfx_profile();
+  lcs_force_subtitles_pref("install");
+  if (lcs_env_flag("LCS_FONTDIAG_HOOK")) {
+    uintptr_t df = so_find_addr_safe("_ZN5CFont9DrawFontsEv");
+    if (df) {
+      tramp_CFont_DrawFonts = (void (*)(void))make_callthrough(df);
+      hook_x64(df, (uintptr_t)my_CFont_DrawFonts);
+    }
+    fprintf(stderr, "[hook] CFont::DrawFonts diag @%p tramp=%p\n",
+            (void *)df, (void *)tramp_CFont_DrawFonts);
+  }
   /* FIX mundo-escuro: pin CCoronas::LightsMult=1.0 no consumidor (timing certo). */
   if (!getenv("LCS_NO_LIGHTSMULT_FIX")) {
     uintptr_t sl = so_find_addr_safe("_Z28SetLightsWithTimeOfDayColourv");
@@ -4173,6 +4618,22 @@ static void install_hooks(void) {
   hook_x64(so_symbol(&mod_game, "__cxa_guard_abort"),   (uintptr_t)my_cxa_guard_abort);
   uintptr_t nv = so_symbol(&mod_game, "_Z22NVThreadSpawnJNIThreadPlPK14pthread_attr_tPKcPFPvS5_ES5_");
   if (nv) hook_x64(nv, (uintptr_t)my_NVThreadSpawnJNIThread);
+  /* INTRO NATIVO: hookar OS_MoviePlay (estado 3 do tick) p/ tocar o video real. */
+  if (lcs_env_int("LCS_INTRO", 1)) {
+    uintptr_t mp = so_symbol(&mod_game, "_Z12OS_MoviePlayPKcbbf");
+    if (mp) { tramp_OS_MoviePlay = (void (*)(const char *, unsigned char, unsigned char, float))make_callthrough(mp);
+              hook_x64(mp, (uintptr_t)my_OS_MoviePlay);
+              fprintf(stderr, "[hook] OS_MoviePlay -> intro nativo @%p\n", (void *)mp); }
+    else fprintf(stderr, "[hook] OS_MoviePlay NOT FOUND\n");
+  }
+  /* TAP NATURAL: hookar HasTappedScreen p/ a tela de tap esperar o controle (ver acima). */
+  if (lcs_env_int("LCS_TAP_NATURAL", 1)) {
+    uintptr_t ht = so_symbol(&mod_game, "_Z15HasTappedScreenRiS_");
+    if (ht) { tramp_HasTapped = (int (*)(int *, int *))make_callthrough(ht);
+              hook_x64(ht, (uintptr_t)my_HasTappedScreen);
+              fprintf(stderr, "[hook] HasTappedScreen -> tap-natural (espera controle) @%p\n", (void *)ht); }
+    else fprintf(stderr, "[hook] HasTappedScreen NOT FOUND\n");
+  }
   const char *nopvs = getenv("LCS_NOPVS");
   if (!nopvs || strcmp(nopvs, "0") != 0) {
     uintptr_t p1 = so_symbol(&mod_game, "_ZN3PVS12LoadPVSZonesEj");
@@ -4275,7 +4736,7 @@ static void install_hooks(void) {
       }
     }
   }
-  if (lcs_env_flag("LCS_GFX_LOW")) {
+  if (lcs_env_flag("LCS_GFX_LOW") || lcs_env_flag("LCS_GFX_FX_OFF")) {
     const char *gfx_off[] = {
       "_ZN8CCoronas17RenderReflectionsEv",
       "_ZN8CCoronas19RenderSunReflectionEv",
@@ -4288,7 +4749,7 @@ static void install_hooks(void) {
       uintptr_t a = so_symbol(&mod_game, gfx_off[i]);
       if (a) {
         hook_x64(a, (uintptr_t)my_pvs_noop);
-        fprintf(stderr, "[hook] GFX_LOW NO-OP %s (%p)\n", gfx_off[i], (void *)a);
+        fprintf(stderr, "[hook] GFX_FX_OFF NO-OP %s (%p)\n", gfx_off[i], (void *)a);
       }
     }
   }
@@ -4335,7 +4796,8 @@ static void install_hooks(void) {
     }
   }
   if (!lcs_env_flag("LCS_NO_POST_CUTSCENE_LOAD_BLOCK") &&
-      (lcs_env_flag("LCS_FE25") || lcs_env_flag("LCS_CUTSCENE_LOAD_POST_BLOCK"))) {
+      (lcs_env_flag("LCS_FE25") || lcs_env_flag("LCS_CUTSCENE_LOAD_POST_BLOCK") ||
+       lcs_env_flag("LCS_FONTDIAG") || lcs_env_flag("LCS_CUTSCENE_LOAD_DIAG"))) {
     uintptr_t clo = so_find_addr_safe("_ZN12CCutsceneMgr24LoadCutsceneData_overlayEPKc");
     uintptr_t clp = so_find_addr_safe("_ZN12CCutsceneMgr24LoadCutsceneData_preloadEv");
     if (clo) {
@@ -4349,9 +4811,10 @@ static void install_hooks(void) {
       hook_x64(clp, (uintptr_t)my_Cutscene_LoadDataPreload_post_guard);
     }
     fprintf(stderr,
-            "[hook] Cutscene post-final load guard overlay=%p/%p preload=%p/%p\n",
+            "[hook] Cutscene post-final load guard/diag overlay=%p/%p preload=%p/%p fontdiag=%d\n",
             (void *)clo, (void *)tramp_Cutscene_LoadDataOverlay,
-            (void *)clp, (void *)tramp_Cutscene_LoadDataPreload);
+            (void *)clp, (void *)tramp_Cutscene_LoadDataPreload,
+            lcs_env_flag("LCS_FONTDIAG"));
   }
   uintptr_t dc = so_find_addr_safe("_ZN12CCutsceneMgr18DeleteCutsceneDataEv");
   if (dc) {
@@ -4405,6 +4868,13 @@ static void install_hooks(void) {
   uintptr_t df = so_find_addr_safe("_Z6DoFadev");
   if (df) { tramp_dofade = (void (*)(void))make_callthrough(df); hook_x64(df, (uintptr_t)my_DoFade);
     fprintf(stderr, "[hook] DoFade skip@state9 (LCS_NODOFADE) @%p\n", (void *)df); }
+  if (lcs_env_flag("LCS_LOADING_DIAG")) {
+    uintptr_t ls = so_symbol(&mod_game, "_Z13LoadingScreenPKcS0_S0_b");
+    if (ls) { tramp_LoadingScreen = (void (*)(const char *, const char *, const char *, char))make_callthrough(ls);
+              hook_x64(ls, (uintptr_t)my_LoadingScreen);
+              fprintf(stderr, "[hook] LoadingScreen diag @%p\n", (void *)ls); }
+    else fprintf(stderr, "[hook] LoadingScreen NOT FOUND\n");
+  }
   uintptr_t fs = so_symbol(&mod_game, "_ZN7CCamera19GetScreenFadeStatusEv");
   if (fs) {
     tramp_fadestatus = (int (*)(void *))make_callthrough(fs);
@@ -4681,6 +5151,17 @@ static void install_hooks(void) {
     p_gVarrayDestroyer = (void **)so_find_addr_safe("gVarrayDestroyer");
     p_gBufferDestroyer = (void **)so_find_addr_safe("gBufferDestroyer");
     p_gTextureDestroyer = (void **)so_find_addr_safe("gTextureDestroyer");
+    /* s8 WEDGE-FIX: hookar lglHasStreamerFinishedTasks p/ forcar finished apos graca no
+     * gameplay (TextureManager pendente eterno). p_hasFinished passa a apontar p/ a versao
+     * forcavel -> tanto nosso wait quanto o engine veem "finished" e o gameplay ENTRA. */
+    uintptr_t hf = so_find_addr_safe("_Z27lglHasStreamerFinishedTasksv");
+    if (hf) {
+      tramp_hasStreamerFinished = (int (*)(void))make_callthrough(hf);
+      hook_x64(hf, (uintptr_t)my_lglHasStreamerFinishedTasks);
+      p_hasFinished = my_lglHasStreamerFinishedTasks;
+      fprintf(stderr, "[hook] lglHasStreamerFinishedTasks force-finish @%p tramp=%p\n",
+              (void *)hf, (void *)tramp_hasStreamerFinished);
+    }
     uintptr_t ws = so_find_addr_safe("_Z31lglWaitForStreamerToFinishTasksv");
     if (ws && p_streamerTick && p_hasFinished) {
       hook_x64(ws, (uintptr_t)my_lglWaitForStreamerToFinishTasks);
@@ -4805,6 +5286,35 @@ static void lcs_menu_diag(int f, int state, void *fe, const char *tag, int force
           ht, hx, hy, p0b0, p0b1, p0b2, p0x, p0y, q0x, q0y, q0s, m0x, m0y, m0s);
 }
 
+static void lcs_menu_controller_confirm(int f, int state, void *fe) {
+  if (lcs_env_int("LCS_MENU_CONFIRM_START", 1) == 0) return;
+
+  static int prev_sel = 0;
+  static int fired = 0;
+  int sel = g_btn_state[LCS_BTN_A] || g_btn_state[LCS_BTN_START];
+  if (state != 7 || !fe) {
+    prev_sel = sel;
+    fired = 0;
+    return;
+  }
+  if (sel && !prev_sel && !fired) {
+    void (*startNew)(void *) =
+      (void *)so_find_addr_safe("_ZN12CMenuManager12StartNewGameEv");
+    void *femm = (void *)so_find_addr_safe("FrontEndMenuManager");
+    lcs_menu_diag(f, state, fe, "before-pad-startnew", 1);
+    fprintf(stderr,
+            "[menu] controller confirm -> CMenuManager::StartNewGame(%p) fn=%p button=A/START\n",
+            femm, (void *)startNew);
+    if (startNew && femm) {
+      startNew(femm);
+      fired = 1;
+      fprintf(stderr, "[menu] controller StartNewGame retornou\n");
+    }
+    fflush(NULL);
+  }
+  prev_sel = sel;
+}
+
 static void lcs_clear_splash_tap_gates(const char *tag) {
   static int resolved = 0;
   static unsigned char *rendered_tap = NULL, *shown_legal = NULL;
@@ -4867,6 +5377,74 @@ static void lcs_process_deferred_rockstar_gate(int frame) {
   st = text_base ? *(void **)(tb + 0x7fd000 + 2232) : NULL;
   fe = text_base ? *(void **)(tb + 0x7f9000 + 704) : NULL;
   lcs_menu_diag(frame, st ? *(int *)st : -1, fe, "after-rkgate", 1);
+}
+
+/* ---- INTRO NATIVO: toca o video de abertura original (res/raw/intro.m4v: 3 logos
+ * Rockstar + montagem, com audio+legendas) ANTES do menu. No Android isso seria o
+ * MediaPlayer/Surface (playlist via JNI andVideo); como o so-loader nao tem Java,
+ * tocamos no proprio processo via libavcodec do device (ffmpeg -> /dev/fb0 + pacat).
+ * Igual ao original, PODE SER PULADO no controle (START/A/B). Roda 1x no boot. Gate
+ * LCS_INTRO=1 (default). O engine fica pausado (sem viewOnDrawFrame) durante o video. */
+static int lcs_play_intro(void) {
+  if (lcs_env_int("LCS_INTRO", 1) == 0) return 0;
+  time_t _intro_t0 = time(NULL);
+  const char *dir = getenv("LCS_INTRO_DIR");
+  if (!dir) dir = "/storage/roms/ports/lcs";
+  char vid[300];
+  snprintf(vid, sizeof vid, "%s/intro720.m4v", dir);          /* preferir o 720p leve */
+  if (access(vid, R_OK) != 0) snprintf(vid, sizeof vid, "%s/intro.m4v", dir);
+  if (access(vid, R_OK) != 0) { fprintf(stderr, "[intro] sem arquivo de video (%s) -> pular\n", dir); return 0; }
+
+  fprintf(stderr, "[intro] tocando %s (START/A/B pula)\n", vid);
+  char cmd[1200];
+  snprintf(cmd, sizeof cmd,
+    "( ffmpeg -hide_banner -loglevel error -i '%s' -vn -f s16le -ar 48000 -ac 2 - 2>/dev/null "
+    "| pacat --rate=48000 --channels=2 --format=s16le ) & AP=$!; "
+    "ffmpeg -hide_banner -loglevel error -re -an -i '%s' -vf 'scale=1280:720,format=bgra' "
+    "-pix_fmt bgra -f fbdev /dev/fb0 2>/dev/null; "
+    "kill $AP 2>/dev/null; wait $AP 2>/dev/null", vid, vid);
+
+  pid_t pid = fork();
+  if (pid < 0) { fprintf(stderr, "[intro] fork falhou -> pular\n"); return 0; }
+  if (pid == 0) {
+    setsid();   /* grupo proprio: skip mata o pipeline inteiro */
+    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+
+  int status;
+  for (;;) {
+    pid_t r = waitpid(pid, &status, WNOHANG);
+    if (r == pid) { fprintf(stderr, "[intro] terminou naturalmente\n"); break; }
+    pump_input();
+    lcs_native_gamepad_update("intro", 0);
+    if (g_btn_state[LCS_BTN_START] || g_btn_state[LCS_BTN_A] || g_btn_state[LCS_BTN_B]) {
+      fprintf(stderr, "[intro] SKIP pelo controle -> encerrando player\n");
+      kill(-pid, SIGTERM);
+      usleep(150000);
+      kill(-pid, SIGKILL);
+      waitpid(pid, &status, 0);
+      break;
+    }
+    usleep(40000);
+  }
+  { extern time_t g_intro_play_secs; g_intro_play_secs += time(NULL) - _intro_t0; }
+  /* LIBERAR RAM: o ffmpeg decodificou o m4v e deixou o arquivo de video no page
+   * cache + working set dos filhos. Em 832MB isso rouba RAM do streamer (state5
+   * LoadAllTextures / state9 streaming) -> wedge em estado-D no swap do SD. O intro
+   * roda 1x e termina ANTES do load pesado, entao devolvemos a RAM agora. Gate
+   * LCS_INTRO_FREE_RAM=1 (default). */
+  if (lcs_env_int("LCS_INTRO_FREE_RAM", 1)) {
+    long fa = -1, fd2 = -1;
+    { struct sysinfo si; if (!sysinfo(&si)) fa = (long)(si.freeram * si.mem_unit / 1024 / 1024); }
+    sync();
+    int dc = open("/proc/sys/vm/drop_caches", O_WRONLY);
+    if (dc >= 0) { if (write(dc, "1\n", 2) < 0) {} close(dc); }
+    { struct sysinfo si; if (!sysinfo(&si)) fd2 = (long)(si.freeram * si.mem_unit / 1024 / 1024); }
+    fprintf(stderr, "[intro] RAM liberada (drop_caches): free %ldMB -> %ldMB\n", fa, fd2);
+  }
+  fprintf(stderr, "[intro] done\n");
+  return 1;
 }
 
 void jni_load(void) {
@@ -5001,8 +5579,11 @@ void jni_load(void) {
   time_t t0 = time(NULL); int shot_done = 0;
   for (int f = 0; viewOnDrawFrame; f++) {
     { extern unsigned long g_frame_no; g_frame_no = (unsigned long)f; }
+    /* INTRO: por default a engine drive via OS_MoviePlay hook (estado 3). Fallback antigo
+     * (tocar no f==0) so com LCS_INTRO_AT_FRAME0=1. */
+    if (f == 0 && lcs_env_int("LCS_INTRO_AT_FRAME0", 0)) { lcs_play_intro(); t0 = time(NULL); }
     if (maxsec) {
-      long el = (long)(time(NULL) - t0);
+      long el = (long)(time(NULL) - t0 - g_intro_play_secs);
       /* shot opcional na janela final; deixar off no modo jogavel evita glReadPixels por frame. */
       if (shotwin > 0 && el >= maxsec - shotwin) { int fd = creat("/dev/shm/lcs_shot", 0644); if (fd >= 0) close(fd); (void)shot_done; }
       if (el >= maxsec) { fprintf(stderr, "[drv] LCS_MAXSECONDS=%d (%lds) -> teardown+_exit\n", maxsec, el); LCS_CLEANUP(); _exit(0); }
@@ -5017,11 +5598,32 @@ void jni_load(void) {
     lcs_native_gamepad_update("frame", 0);
     lcs_force_gamepad_ui("frame", 0);
 
+    /* TAP NATURAL: detecta edge de A/START (fora do gameplay state 9) -> pede 1 "tap"
+     * p/ o HasTappedScreen hookado avancar a tela de tap/legal do front-end. */
+    if (lcs_env_int("LCS_TAP_NATURAL", 1)) {
+      static int tap_prev = 0;
+      int tap_now = g_btn_state[LCS_BTN_A] || g_btn_state[LCS_BTN_START] || g_btn_state[LCS_BTN_B];
+      if (tap_now && !tap_prev && g_app_state != 9) {
+        g_tap_request = 1;
+        /* avanca o front-end nativo: tap -> legal -> menu */
+        if (lcs_env_int("LCS_FORCE_TAPLEGAL", 1) && g_frontend_step < 2) {
+          g_frontend_step++;
+          fprintf(stderr, "[tap] press -> frontend_step=%d f=%d state=%d\n", g_frontend_step, f, g_app_state);
+        } else {
+          fprintf(stderr, "[tap] press -> tap_request f=%d state=%d\n", f, g_app_state);
+        }
+      }
+      tap_prev = tap_now;
+    }
+
     /* state 1 (boot) espera CommonAPI_HandlePlaylistFinishInit p/ avancar a 2.
      * Chamamos no frame 5 (seta flag 0xa441b0=1 -> RockstarGameLoad -> state 2). */
-    if (f == 5) {
-      void (*plFinish)(void *, void *, int) = (void *)so_symbol(&mod_game, "Java_com_rockstargames_gtalcs_CommonAPI_HandlePlaylistFinishInit");
-      if (plFinish) { plFinish(fake_env, FAKE_OBJ, 1); fprintf(stderr, "[drv] HandlePlaylistFinishInit(1)\n"); }
+    {
+      int plf = getenv("LCS_PLAYLIST_FRAME") ? atoi(getenv("LCS_PLAYLIST_FRAME")) : 5;
+      if (f == plf) {
+        void (*plFinish)(void *, void *, int) = (void *)so_symbol(&mod_game, "Java_com_rockstargames_gtalcs_CommonAPI_HandlePlaylistFinishInit");
+        if (plFinish) { plFinish(fake_env, FAKE_OBJ, 1); fprintf(stderr, "[drv] HandlePlaylistFinishInit(1) f=%d\n", f); }
+      }
     }
     /* avanca o boot state-machine setando os flags que cada estado espera
      * (descobertos por disasm de OS_ApplicationTick). */
@@ -5030,9 +5632,47 @@ void jni_load(void) {
       void *st = *(void **)(tb + 0x7fd000 + 2232);
       void *fe = *(void **)(tb + 0x7f9000 + 704);
       int s = st ? *(int *)st : -1;
+      g_app_state = s;
+      /* TAP + DISCLAIMER NATIVOS (igual ao original): apos o intro a engine pularia
+       * o tap e a legal porque marca renderedTapToContinue/shownLegalScreen=1 rapido.
+       * Seguramos esses flags em 0 -> a engine RENDERIZA e ESPERA: 1o a arte/tap, depois
+       * a legal/disclaimer. Avanca SO no aperto do controle (g_frontend_step). Gate
+       * LCS_FORCE_TAPLEGAL=1 (default). g_frontend_step: 0=tap, 1=legal, 2=menu. */
+      if (lcs_env_int("LCS_FORCE_TAPLEGAL", 1)) {
+        static unsigned char *rtap = NULL, *slegal = NULL; static int rinit = 0;
+        if (!rinit) { rtap = (unsigned char *)so_find_addr_safe("renderedTapToContinue");
+                      slegal = (unsigned char *)so_find_addr_safe("shownLegalScreen"); rinit = 1;
+                      g_frontend_step = lcs_env_int("LCS_FRONTEND_STEP_START", 0);  /* teste: pular p/ legal */
+                      fprintf(stderr, "[taplegal] rtap=%p slegal=%p step0=%d\n", (void *)rtap, (void *)slegal, g_frontend_step); }
+        static int *lstate = NULL, *ltimer = NULL; static float *lslerp = NULL; static int linit = 0;
+        if (!linit) { lstate = (int *)so_find_addr_safe("legalScreenState");
+                      ltimer = (int *)so_find_addr_safe("legalScreenTimer");
+                      lslerp = (float *)so_find_addr_safe("legalScreenSlerp"); linit = 1;
+                      fprintf(stderr, "[taplegal] lstate=%p ltimer=%p lslerp=%p\n", (void *)lstate, (void *)ltimer, (void *)lslerp); }
+        if (s >= 2 && s <= 7) {
+          if (g_frontend_step == 0) { if (rtap) *rtap = 0; if (slegal) *slegal = 0;       /* tap */
+            int ts = lcs_env_int("LCS_TAP_HOLD_STATE", -99);
+            if (lstate && ts != -99) *lstate = ts;
+            if (lcs_env_int("LCS_LEGAL_DIAG", 0) && (f % 20) == 0)
+              fprintf(stderr, "[tapscr] f=%d state=%d slerp=%.3f rtap=%d\n", f,
+                lstate ? *lstate : -1, lslerp ? *lslerp : -1.0f, rtap ? *rtap : -1);
+          }
+          else if (g_frontend_step == 1) {                                              /* legal/disclaimer */
+            if (rtap) *rtap = 1; if (slegal) *slegal = 0;
+            if (lcs_env_int("LCS_LEGAL_DIAG", 0) && (f % 20) == 0)
+              fprintf(stderr, "[legal] f=%d state=%d timer=%d slerp=%.3f\n",
+                f, lstate ? *lstate : -1, ltimer ? *ltimer : -1, lslerp ? *lslerp : -1.0f);
+            /* segura o contador da legal no inicio da janela p/ o disclaimer nao expirar
+             * antes do aperto (a engine recalcula o slerp a partir dele). */
+            if (lstate) *lstate = lcs_env_int("LCS_LEGAL_HOLD_STATE", 0);
+          }
+          /* step>=2: solta -> engine vai pro menu */
+        }
+      }
       static int adv2 = 0;
       if (s == 2 && fe && !adv2) { *((unsigned char *)fe + 40) = 1; adv2 = 1; fprintf(stderr, "[drv] state2->3: feobj+40=1\n"); }
       lcs_menu_diag(f, s, fe, "loop", 0);
+      lcs_menu_controller_confirm(f, s, fe);
       /* state 7 = MENU PRINCIPAL — fica aqui por DEFAULT (menu completo).
        * START GAME e OPT-IN: LCS_START=force forca feobj+25=1; LCS_START=tap
        * injeta toque no ▶ (coords LCS_TAPX/Y). LCS_START=frontend apenas pede
@@ -5066,7 +5706,8 @@ void jni_load(void) {
           void (*reqFront)(void *) = (void *)so_find_addr_safe("_ZN12CMenuManager22RequestFrontEndStartUpEv");
           void *femm = (void *)so_find_addr_safe("FrontEndMenuManager");
           lcs_menu_diag(f, s, fe, "before-frontend", 1);
-          if (!getenv("LCS_FRONTEND_KEEP_SPLASH")) lcs_clear_splash_tap_gates("frontend");
+          if (!getenv("LCS_FRONTEND_KEEP_SPLASH") && !lcs_env_int("LCS_TAP_NATURAL", 1))
+            lcs_clear_splash_tap_gates("frontend");
           fprintf(stderr, "[drv] state7: CMenuManager::RequestFrontEndStartUp(%p) fn=%p\n", femm, (void *)reqFront);
           fflush(NULL);
           if (reqFront && femm) reqFront(femm);
@@ -5139,6 +5780,10 @@ void jni_load(void) {
      * o PVS real; so limpa visualizacao de zonas/bounding boxes se algum caminho
      * legado deixar esses toggles ligados. */
     lcs_apply_pvs_debug_cleanup();
+    lcs_apply_stream_phase_profile(lcs_current_app_state());
+    lcs_force_subtitles_pref("frame");
+    lcs_ensure_font_initialised(f, "pre-draw");
+    lcs_text_diag_tick(f, "pre-draw");
 
     /* Fallback de diagnostico: desliga PVS/culling se o renderer ficar sem mundo.
      * O default preserva PVS nativo; habilite LCS_NOPVSCULL=1 so para comparar. */
@@ -5415,6 +6060,21 @@ void jni_load(void) {
       hb("f=%d state=%d post-draw\n", f, st ? *(int *)st : -1); }
     lcs_cutscene_tick_after_draw(f);
     lcs_resource_manual_drain("frame", f);
+    /* FPS CAP: o jogo foi feito p/ ~30fps; sem teto roda 40-80fps -> UI/timers da engine
+     * (menu, tela de tap/legal, cutscene) ficam rapidos demais. Mantem o frame em
+     * LCS_FPS_CAP (default 30). LCS_FPS_CAP=0 desliga. */
+    { int cap = lcs_env_int("LCS_FPS_CAP", 30);
+      if (cap > 0) {
+        static struct timespec prev = {0, 0};
+        long target_ns = 1000000000L / cap;
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        if (prev.tv_sec) {
+          long el = (now.tv_sec - prev.tv_sec) * 1000000000L + (now.tv_nsec - prev.tv_nsec);
+          if (el < target_ns) { struct timespec ts = {0, target_ns - el}; nanosleep(&ts, NULL);
+                                clock_gettime(CLOCK_MONOTONIC, &prev); }
+          else prev = now;
+        } else prev = now;
+      } }
     /* GLSTATS por frame (gameplay): mostra ONDE os draws vao (tela vs FBO) + clears.
      * Decide o galho do "mundo nao aparece": fbo>>screen = render-to-texture sem blit;
      * screen alto = desenha mas algo limpa/sobre-escreve; ambos baixos = nao submete o

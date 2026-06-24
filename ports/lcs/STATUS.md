@@ -1201,3 +1201,180 @@ Mudancas preparadas, NAO TESTADAS:
 Importante: nada foi executado/testado por mim, nenhum run novo foi iniciado nesta etapa. Os scripts/docs
 foram copiados para o device. Havia processos antigos `./lcs`/`LCS_WALKDIAG` ja rodando antes; foram
 encerrados para respeitar o pedido de deixar o jogo fechado. Confirmado depois: `pgrep -af lcs` sem retorno.
+
+### s13 - 2026-06-23 - Primeira medicao perf real + correcao do perfil
+
+NextOS liberou testes automaticos. Primeiro run `LCS_PROFILE=gtasa-perf LCS_PERF_TIER=1` foi iniciado
+com `run-final.sh`. Resultado: o processo foi morto pelo watchdog em state 7/f=89 antes de gameplay,
+sem crash log. Memoria durante load caiu para 64-81MB livres, swap ~61MB; no fim voltou para ~630MB
+livres. Interpretacao: nao provar stutter de gameplay ainda; o watchdog estava agressivo para load
+longo/streaming com frame parado. Proximos runs devem usar `FREEZE_SEC` maior ou run direto sem esse
+watchdog de frame parado durante state 7.
+
+Estudo de codigo apos reVC/GTASA:
+- reVC usa alpha=0 na surface, forca 1280x720, corrige mipmap incompleto/`GL_TEXTURE_MAX_LEVEL` e
+  documenta que estudar a fonte/loader antes de chutar e o caminho.
+- LCS ja possui uma alavanca melhor que eu nao tinha ligado no perfil: `LCS_TEX_HALF`.
+- `BULLY_PAGE` registra principalmente texturas do caminho `glTexImage2D`/ETC1-cache; LCS Android
+  sobe a maior parte por `glCompressedTexImage2D` ETC, entao `BULLY_PAGE` sozinho nao reduz o grosso.
+- `LCS_TEX_HALF` no hook comprimido reenvia mip 1 como nivel 0, cortando textura grande por ~75% sem
+  re-encodar. Isso e o corte certo para atacar RAM/FPS primeiro.
+
+Mudanca offline feita depois da medicao:
+- `run-gtasa-perf.sh` agora liga `LCS_TEX_HALF=1`.
+  - Tier 1: `LCS_TEX_HALF_MIN=1024`.
+  - Tier 2: `LCS_TEX_HALF_MIN=512`.
+  - Tier 3: `LCS_TEX_HALF_MIN=256` + `LCS_TEX_LIGHT`.
+
+### s14 - 2026-06-23 - Performance/FPS: perfil full-native, streamer por fase, texlight descartado
+
+Objetivo do NextOS mudou para **ganhar FPS/usar menos RAM sem encolher a imagem**. A imagem precisa
+ficar full/native. Resultado: `LCS_RENDER_SCALE` foi removido dos defaults do `run-gtasa-perf.sh`;
+fica apenas opt-in manual. O jogo agora roda 1280x720 por default em todos os tiers.
+
+Mudancas implementadas e deployadas:
+- `src/jni_shim.c`: `LCS_GFX_MEMLOW` escreve draw distance, `gStreamingMemSize`, limites de
+  peds/carros/distancias, densidade de populacao/carros e knobs do streamer.
+- `src/jni_shim.c`: novo `streamphase` por estado. Durante load usa create moderado
+  (`loadtex/loadbuf`), e ao entrar em gameplay rebaixa para `gametex/gamebuf`. Isso e importante
+  porque a engine seta `dvStreamerCreateNumTexturesPerFrame=4000` na transicao para gameplay.
+- `src/imports.c`: contador de textura comprimida ETC em `glCompressedTexImage2D`, para o memdiag
+  deixar de ficar cego ao caminho principal do LCS.
+- `run-gtasa-perf.sh`: `LCS_NO_ENVMAP=1` default no perfil perf, atacando flicker/reflexo de carro
+  sem destruir textura.
+
+Medicoes principais:
+- Tier 2 full/native, andando por eixo: ~410-447MB RSS, ~165-181MB VmSwap do processo, heartbeat
+  avancando bem em state 9. Visual preservado.
+- Tier 3 original com `LCS_TEX_LIGHT=1` reduziu flicker/stutter visual, mas **quebrou texturas**:
+  pele/personagens ficaram pretos/brancos. Logs mostraram stubs `64x64`, depois `128x128/256x256`.
+  Portanto `TEX_LIGHT` nao pode ser default jogavel.
+- Filtro `LCS_TEX_LIGHT_MIN_DIM=512` preservou Toni/pele, mas praticamente nao aplicou stubs.
+- Filtro `LCS_TEX_LIGHT_MIN_DIM=128` ainda quebrou pedestre/carro na captura
+  `~/lcs-build/shot-tier3-tex128-20260623.png`.
+- Perfil candidato atual: **Tier 3 safe** = `TEX_LIGHT` off, `TEX_HALF_MIN=256`,
+  `NO_ENVMAP=1`, streamer/densidade agressivos. Captura boa:
+  `~/lcs-build/shot-tier3-safe-noenvmap-20260623.png`.
+
+Estado atual recomendado para teste do NextOS:
+```sh
+cd /storage/roms/ports/lcs
+LCS_PROFILE=gtasa-perf LCS_PERF_TIER=3 RUNSEC=360 MAXRESTART=0 FREEZE_SEC=180 sh ./run-final.sh
+```
+
+Nao reativar `LCS_TEX_LIGHT` como default ate existir seletor por asset/classe. Ele melhora alguns
+flickers porque remove textura, mas e destrutivo para pessoas/carros/itens.
+
+### s15 - 2026-06-23 - Tier 3+ pequeno: FX/reflexos off, menos pop, full-native preservado
+
+Pedido do NextOS: o jogo ja estava "muito bom"; buscar mais 5-10% sem quebrar imagem/textura.
+
+Mudancas implementadas, buildadas e deployadas:
+- `src/jni_shim.c`: novo corte separado por `LCS_GFX_FX_OFF=1`, sem depender de `LCS_GFX_LOW`.
+  Ele no-opa `CCoronas::RenderReflections`, `RenderSunReflection`,
+  `CMotionBlurStreaks::Render`, `CWeather::RenderRainStreaks` e `RenderLightBloom`.
+- `run-gtasa-perf.sh`: default perf agora liga `LCS_SUNREFLECT_OFF=1` e `LCS_GFX_FX_OFF=1`,
+  mantendo `LCS_NO_ENVMAP=1`.
+- Tier 3/potato foi apertado levemente:
+  `peds=3`, `cars=2`, `ped_dist=14`, `veh_dist=20`, `pop=0.20`, `carpop=0.20`.
+- Resolucao continua nativa/full: screenshot validado em `1280 720`.
+- `TEX_LIGHT` continua desligado por default; nao reintroduzir, pois quebrou pele/peds/carros.
+
+Teste automatico no device `.88`:
+```sh
+cd /storage/roms/ports/lcs
+LCS_PROFILE=gtasa-perf LCS_PERF_TIER=3 RUNSEC=900 MAXRESTART=0 FREEZE_SEC=180 sh ./run-final.sh
+```
+
+Resultado:
+- Entrou em gameplay `state=9` sem crash.
+- Hooks aplicados no log: `SUNREFLECT_OFF`, `GFX_FX_OFF`, `NO_ENVMAP`, `streamphase gameplay`.
+- Movimento virtual para frente aplicado via `/dev/shm/lcs_axis`; frame avancou ate `f=2549+`.
+- Medicao final estabilizada: `VmRSS 443804 kB`, `VmSwap 166696 kB`, RAM livre ~91MB,
+  available ~153MB.
+- Comparacao com Tier 3 safe anterior (`VmRSS 453580 kB`, `VmSwap 165732 kB`): economizou
+  cerca de 9-10MB de RSS sem aumentar swap de forma relevante.
+- Janela curta de cadencia: `f=2789 -> f=3089` em 15s, aproximadamente 20 FPS na cena parada.
+- Captura visual boa: `~/lcs-build/shot-tier3-plus-fxoff-20260623.png`
+  (`1280x720`, personagem/HUD/texturas OK, sem pele preta/branca).
+
+Estado deixado: jogo aberto no device em gameplay com o Tier 3+ ativo para o NextOS olhar. Se esse
+perfil causar cidade vazia demais, voltar somente os limites de pop/carros, mantendo FX/reflexos off.
+
+## s7 (2026-06-24) — INTRO NATIVO (engine-driven) + decifrado o boot state-machine
+🎬 **INTRO RESTAURADO NATIVO:** a engine chama `OS_MoviePlay("Movies/LCS_INTRO_1080.m4v")` no
+ESTADO 3 do `OS_ApplicationTick` (no Android = MediaPlayer/Surface Java; no so-loader caía no JNI
+fake → no-op → intro pulado). FIX = hookar `OS_MoviePlay` (`_Z12OS_MoviePlayPKcbbf`) → `my_OS_MoviePlay`
+→ `lcs_play_intro()`: toca o `intro.m4v` REAL (3 logos Rockstar + abertura, 1080p, COM áudio+legendas)
+via ffmpeg do device → `/dev/fb0` (vídeo) + pacat/pulse (áudio), BLOCKING, com SKIP pelo controle
+(A/B/START). Vídeo extraído do APK do celular: `res/raw/intro.m4v` (40MB); versão leve `intro720.m4v`
+(h264 baseline 720p, 7MB) pra decode em tempo real no Amlogic. Confirmado: SEM botão fantasma (toca
+limpo sem input, ffmpeg=2 rodando, engine pausada). Gate `LCS_INTRO=1`. NextOS validou: "vídeo+áudio+
+legendas OK". mpv/SDL NÃO desenham no fbdev (só ffmpeg `-f fbdev`). t0 do MAXSECONDS desconta o intro
+(g_intro_play_secs).
+
+🗺️ **BOOT STATE-MACHINE DECIFRADO** (`OS_ApplicationTick` @0x53ed14, jump table @0x23f1ca, estado em
+[0x7fd000+2232]): st0=init+LoadSettings+OS_PlaylistBeginInit | st1→RockstarGameLoad→st2 (precisa
+HandlePlaylistFinishInit, setamos no f=5) | st2→st3 (precisa feobj+40, setamos) | **st3=OS_MoviePlay
+(INTRO)→st4** | st4=espera filme + tap-to-skip (LIB_PointerGetButton==2) | **st5=LoadAllTextures+
+LoadingScreen** (o LOADING vermelho!) | st6=LoadingScreen+CheckSlotDataValid→st7 | **st7=menu** (se
+feobj+25==0 roda CMenuManager via GameCoreTick; se feobj+25 setado→st8→DoFade→GameStart→st9) |
+**st9=GameCoreTick (GAMEPLAY)**. `LoadingScreen()`@0x521870 é a MESMA usada no new-game.
+
+🚫 **REMOVIDO ATALHO DO SUBMENU NEW GAME:** `lcs_menu_controller_confirm` chamava
+`CMenuManager::StartNewGame` direto no A → PULAVA o submenu New Game (reclamação do NextOS). Agora
+`LCS_MENU_CONFIRM_START=0` default (run30.sh) → menu nativo navega Start Game→submenu sozinho.
+
+🟡 **PENDENTE (precisa controle do NextOS p/ testar):** (1) tap/legal "piscam" — a engine
+auto-completa `renderedTapToContinue`/`shownLegalScreen`/`legalScreenState` rápido (NÃO é botão
+fantasma — confirmado; NÃO é só o gta_lcs.set salvo — testado removendo). Renderizador embutido
+(offsets 0x9ec7a9-b4, sem símbolo, refs via add difíceis). (2) New Game→LOADING vermelho→cutscene:
+testar agora que o atalho StartNewGame saiu — a hipótese do NextOS é que o loading que faltava é a
+raiz de muitos bugs de cutscene. Binário lcs md5 1f87cefc. Hooks novos: OS_MoviePlay, HasTappedScreen
+(LCS_TAP_NATURAL, mas engine não gateia nele). Flags: LCS_INTRO, LCS_INTRO_AT_FRAME0, LCS_PLAYLIST_FRAME.
+
+## s7b (2026-06-24, sessão autônoma) — FLUXO COMPLETO ATÉ GAMEPLAY + FPS CAP
+🎯 **FPS CAP 30 (causa-raiz de "tudo rápido"):** o jogo roda 42-50fps sem teto -> UI/timers da
+engine rápidos demais (menu rolava todas opções, tap/disclaimer piscavam). FIX: cap no loop do
+driver via clock_gettime+nanosleep, `LCS_FPS_CAP=30` default (=0 desliga). Medido 33fps. NextOS
+validou navegação do menu "perfeita" depois disso + do MENU PULSE.
+🕹️ **MENU PULSE (LCS_MENU_PULSE=1 default):** o bridge mantinha o botão CURRENT setado enquanto
+segurado -> menu rolava todas as opções num aperto. FIX: no menu (state 7) pulsa o d-pad/A só na
+BORDA (1 frame) -> 1 aperto = 1 movimento. NextOS: "pro lado foi resolvido / navego perfeito".
+🎬 **FLUXO COMPLETO VALIDADO (via injeção `echo N>/dev/shm/lcs_btn`, A=0):** Start Game (A) ->
+submenu New Game (A) -> New Game -> state 9 -> cutscene/streaming (lento ~1fps, frame 224-389) ->
+**GAMEPLAY COM MUNDO 3D RENDERIZANDO** (frame pula p/ 944+, ~33fps fluido; Toni andando, carro,
+escadas, prédios, árvores de Liberty City — d4/g_25). SAÍDA LIMPA (run30 done, ZERO crash). O
+"preto com HUD" inicial (g_05) é só o streaming não-terminado, não bug. **Menu confirm nativo
+funciona** (Start Game->submenu sem o hack StartNewGame). O disco cheio (/dev/shm 100%) causava
+capturas falhas/tela branca -> limpo (gamedata 7.8G->2.1G).
+🟡 **PENDENTE:** (1) tap "touch to continue" vermelho não renderiza (arte segura mas sem texto;
+controle pré-frame da legal é frágil - engine recalcula mid-frame). (2) disclaimer tem 2 PÁGINAS
+(textos diferentes); página 1 segura (freeze legalScreenState=0), página 2 pisca (valor de state
+da pág2 não isolado - janela estreita). (3) cutscenes bus/office parecem abreviadas pelos hacks
+LCS_CUTSCENE_* (NextOS quer elas TOCANDO de verdade com luz). PRÓXIMO: com o fps cap, revisitar os
+hacks de cutscene (talvez removê-los deixe as cutscenes tocarem naturais agora que o timing é 30fps).
+Binário lcs md5 865294a. Flags novas: LCS_FPS_CAP=30, LCS_MENU_PULSE=1, LCS_FORCE_TAPLEGAL=1,
+LCS_TAP_NATURAL=1, LCS_LEGAL_HOLD_STATE=0, LCS_FRONTEND_STEP_START. ⚠️NÃO usar LCS_FORCE_TAPLEGAL=0
+com LCS_TAP_NATURAL=1 (trava em tela branca: HasTappedScreen=0 sem o step machine).
+
+## s7c (2026-06-24) — CUTSCENES TOCAM (fade-hack era o vilão) + wedge de streaming
+🎬🏆 **BUG "HUD do nada antes da cutscene" RESOLVIDO:** após New Game o correto é loading->cutscene1
+(SEM HUD), mas aparecia o HUD de gameplay (mapa/vida/$) no mundo preto antes do vídeo. CAUSA: os
+fade-hacks `LCS_NODOFADE`+`LCS_UNFADE` (band-aid da s6) forçavam GetScreenFadeStatus!=FADE_2 ->
+revelavam o gameplay/HUD durante a fase de loading em vez de deixar a cutscene tocar com seu
+próprio fade. FIX: `LCS_NO_FADEHACK=1` agora DEFAULT (desliga UNFADE+NODOFADE). Resultado: New Game
+-> loading (preto, SEM HUD) -> **CUTSCENE 1 do ÔNIBUS toca com LUZ DO DIA** (Portland, prédios) ->
+**CUTSCENE 2 da mansão com LEGENDA** ("What more could a family guy ask for?") -> gameplay com mundo
+renderizando. Sem fade-hack o gameplay NÃO fica preto (a cutscene natural limpa o fade sozinha; o
+fade-hack só era "necessário" quando FORÇÁVAMOS gameplay pulando a cutscene).
+🔧 **HasTappedScreen gate state-9:** o hook do TAP_NATURAL retornava 0 sempre -> WEDAVA a cutscene
+(ela checa HasTappedScreen p/ progressão/skip). FIX: my_HasTappedScreen devolve o valor REAL no
+state 9 (cutscene/gameplay); só controla o tap no front-end (state<9).
+🟡 **WEDGE DE STREAMING (não-blocker de código):** durante a cutscene 2 (mansão, streaming pesado)
+trava em frame NÃO-DETERMINÍSTICO (749 numa run, 869 noutra) = parede de RAM/corrida do job-system
+do streamer (igual Bully; memória documenta). Mata limpo no MAXSECONDS, 0 crash. PRÓXIMO: atacar o
+streamer (zram/swap tuning OU achar qual lglXxxCreator::hasPendingTasks nunca termina - ver s3).
+Binário lcs md5 8a4cbd96. Defaults novos: LCS_NO_FADEHACK=1, LCS_FPS_CAP=30, LCS_MENU_PULSE=1,
+LCS_MENU_CONFIRM_START=0. Fluxo COMPLETO funcional: intro nativo->tap->disclaimer p1->menu->Start
+Game->submenu New Game->loading->cutscene1 ônibus->cutscene2 mansão (legendas)->[wedge streaming].

@@ -51,6 +51,28 @@ static void note_texture_asset_path(const char *path) {
   }
 }
 
+static int lcs_asset_textlog_path(const char *path) {
+  if (!path) return 0;
+  return strcasestr(path, "font") || strcasestr(path, ".gxt") ||
+         strcasestr(path, "text/") || strcasestr(path, "hud.txd");
+}
+
+static void lcs_asset_textlog(const char *path, const char *where, long len) {
+  if (!lcs_asset_textlog_path(path)) return;
+  static int logs = 0;
+  int limit = 160;
+  const char *e = getenv("LCS_ASSET_TEXTLOG_LIMIT");
+  if (e && *e) {
+    limit = atoi(e);
+    if (limit < 0) limit = 0;
+  }
+  if (logs >= limit) return;
+  fprintf(stderr, "[asset-text] open \"%s\" -> %s", path, where ? where : "?");
+  if (len >= 0) fprintf(stderr, " (%ld)", len);
+  fprintf(stderr, "\n");
+  logs++;
+}
+
 /* ===================== CACHE ETC1 OFFLINE (bakeado, embarcado) =====================
  * O engine decodifica o .tex (formato console tiled/swizzled, fechado) e sobe RGBA/16-bit
  * via glTexImage2D -- e ele NAO tem caminho ETC1. Entao: bakeamos o ETC1 do NOSSO lado
@@ -131,12 +153,23 @@ static long lcs_tex_light_cap(void) {
   }
   return cap;
 }
+static int lcs_tex_light_min_dim(void) {
+  static int min_dim = -1;
+  if (min_dim < 0) {
+    const char *e = getenv("LCS_TEX_LIGHT_MIN_DIM");
+    min_dim = e && *e ? atoi(e) : 0;
+    if (min_dim < 0) min_dim = 0;
+  }
+  return min_dim;
+}
 static int lcs_tex_light_stub_compressed(unsigned target, int level,
                                          unsigned ifmt, int w, int h) {
   if (!lcs_tex_light_enabled()) return 0;
   if (target != 0x0DE1 || level != 0) return 0;  /* GL_TEXTURE_2D base only */
   if (ifmt != GL_ETC1_RGB8_OES) return 0;
   if (w <= 4 && h <= 4) return 0;
+  int min_dim = lcs_tex_light_min_dim();
+  if (min_dim > 0 && w < min_dim && h < min_dim) return 0;
   return g_tex_live >= lcs_tex_light_cap();
 }
 /* retorna 1 se tratou (subiu ETC1 do cache, ou pulou mip de textura ja-ETC1). */
@@ -485,6 +518,7 @@ static void *aa_open(void *mgr, const char *path, int mode) {
   FILE *fp = asset_fopen(path);
   if (fp) {
     if (assetlog && log < loglimit) { fprintf(stderr, "[asset] open \"%s\" -> DISCO\n", path); log++; }
+    lcs_asset_textlog(path, "DISCO", -1);
     AAsset *a = calloc(1, sizeof(AAsset)); a->fp = fp;
     fseek(fp, 0, SEEK_END); a->len = ftell(fp); fseek(fp, 0, SEEK_SET);
     return a;
@@ -508,10 +542,12 @@ static void *aa_open(void *mgr, const char *path, int mode) {
         fprintf(stderr, "[xmlhdr] \"%s\" len=%ld elen=%ld primeiros: %.40s\n", path, len, elen, (char *)mem);
     }
     if (assetlog && log < loglimit) { fprintf(stderr, "[asset] open \"%s\" -> WAD (%ld%s)\n", path, len, elen > len ? "+1" : ""); log++; }
+    lcs_asset_textlog(path, "WAD", len);
     AAsset *a = calloc(1, sizeof(AAsset)); a->mem = mem; a->len = elen; a->pos = 0;
     return a;
   }
   if (missinglog && log < loglimit) { fprintf(stderr, "[asset] open \"%s\" -> FALTA\n", path); log++; }
+  lcs_asset_textlog(path, "FALTA", -1);
   return NULL;
 }
 static int aa_read(void *h, void *buf, size_t n) {
@@ -735,6 +771,23 @@ static void drawhb(const char *fmt, ...) {
     fdatasync(g_drawhb_fd);
   }
 }
+
+static void lcs_track_compressed_tex_bytes(int bytes, const char *tag) {
+  if (bytes <= 0 || g_cur_tex2d >= RESMAP) return;
+  unsigned old = bully_g_texbytes(g_cur_tex2d);
+  g_texbytes_live += (long long)bytes - old;
+  bully_g_texbytes_set(g_cur_tex2d, (unsigned)bytes);
+  if (getenv("LCS_COMP_TEXLOG")) {
+    static int logs = 0;
+    if (logs < 120) {
+      fprintf(stderr, "[ctex] %s tex=%u bytes=%d old=%u live=%lldMB\n",
+              tag ? tag : "?", g_cur_tex2d, bytes, old,
+              g_texbytes_live / (1024 * 1024));
+      logs++;
+    }
+  }
+}
+
 static void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,int b,int sz,const void*d) {
   static long c=0; gltrace("compressedTex #%ld fmt=0x%x %dx%d lvl=%d\n", ++c, ifmt, w, h, l);
   if (!real_glCompressedTexImage2D) real_glCompressedTexImage2D = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
@@ -752,15 +805,19 @@ static void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h
     static int half = -1, hmin = 0;
     if (half < 0) { half = getenv("LCS_TEX_HALF") ? 1 : 0;
                     hmin = getenv("LCS_TEX_HALF_MIN") ? atoi(getenv("LCS_TEX_HALF_MIN")) : 512; }
-    if (half && l == 1 && (w*2 >= hmin || h*2 >= hmin) && real_glCompressedTexImage2D)
+    if (half && l == 1 && (w*2 >= hmin || h*2 >= hmin) && real_glCompressedTexImage2D) {
       real_glCompressedTexImage2D(t, 0, ifmt, w, h, b, sz, d);
+      if (t == 0x0DE1) lcs_track_compressed_tex_bytes(sz, "half");
+    }
     return;
   }
   if (lcs_tex_light_stub_compressed(t, l, ifmt, w, h)) {
     static const unsigned char blank_etc1[8] = {0};
     static int logs = 0;
-    if (real_glCompressedTexImage2D)
+    if (real_glCompressedTexImage2D) {
       real_glCompressedTexImage2D(t, 0, ifmt, 4, 4, 0, sizeof(blank_etc1), blank_etc1);
+      if (t == 0x0DE1) lcs_track_compressed_tex_bytes((int)sizeof(blank_etc1), "stub");
+    }
     if (logs < 24 || env_on("LCS_TEX_LIGHT_LOG")) {
       fprintf(stderr,
               "[texlight] stub compressed live=%ld cap=%ld fmt=0x%x %dx%d -> 4x4\n",
@@ -769,7 +826,10 @@ static void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h
     }
     return;
   }
-  if (real_glCompressedTexImage2D) real_glCompressedTexImage2D(t,l,ifmt,w,h,b,sz,d);
+  if (real_glCompressedTexImage2D) {
+    real_glCompressedTexImage2D(t,l,ifmt,w,h,b,sz,d);
+    if (t == 0x0DE1 && l == 0) lcs_track_compressed_tex_bytes(sz, "base");
+  }
 }
 static int lcs_glstate_enabled(void) { static int m=-1; if (m < 0) m = getenv("LCS_GLSTATE") ? 1 : 0; return m; }
 static unsigned g_cur_program = 0;

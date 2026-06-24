@@ -1,28 +1,32 @@
 #!/bin/sh
-# Perfil jogavel atual: fluxo nativo newgame, Start nas cutscenes, analogico esquerdo anda.
+# Perfil jogavel/original: abre o frontend nativo; controle fisico escolhe Start Game.
+# Para teste automatico rapido: LCS_START=newgame LCS_AUTOSKIP_INTRO=1.
 cd /storage/roms/ports/lcs || exit 1
 
 rm -f run.log progress3.txt heartbeat.txt /dev/shm/lcs_btn
 
-(
-  i=0
-  armed=0
-  while [ $i -lt 900 ]; do
-    if [ "$armed" = 0 ]; then
-      grep -q "\[menu\] after-newgame" run.log 2>/dev/null && armed=1
-    else
-      count=$(grep -c "FinishCutscene called" run.log 2>/dev/null)
-      [ "$count" -ge 2 ] && exit 0
-      printf '9\n' > /dev/shm/lcs_btn
-    fi
-    i=$((i + 1))
-    sleep 1
-  done
-) >/dev/null 2>&1 &
+if [ "${LCS_AUTOSKIP_INTRO:-0}" = 1 ]; then
+  (
+    i=0
+    armed=0
+    start_btn="${LCS_START_BUTTON_ENUM:-4}"
+    while [ $i -lt 900 ]; do
+      if [ "$armed" = 0 ]; then
+        grep -q "\[menu\] after-newgame" run.log 2>/dev/null && armed=1
+      else
+        count=$(grep -c "FinishCutscene called" run.log 2>/dev/null)
+        [ "$count" -ge 2 ] && exit 0
+        printf '%s\n' "$start_btn" > /dev/shm/lcs_btn
+      fi
+      i=$((i + 1))
+      sleep 1
+    done
+  ) >/dev/null 2>&1 &
+fi
 
 LCS_MAXSECONDS="${LCS_MAXSECONDS:-900}" \
 LCS_WATCHDOG_GRACE="${LCS_WATCHDOG_GRACE:-120}" \
-LCS_START="${LCS_START:-newgame}" \
+LCS_START="${LCS_START:-frontend}" \
 LCS_STARTFRAME="${LCS_STARTFRAME:-100}" \
 LCS_STREAMER_MAX="${LCS_STREAMER_MAX:-80}" \
 LCS_RESOURCEDRAIN_MAX="${LCS_RESOURCEDRAIN_MAX:-6}" \
@@ -32,6 +36,9 @@ LCS_GFX_LOW="${LCS_GFX_LOW:-0}" \
 LCS_GFX_PREFS="${LCS_GFX_PREFS:-1}" \
 LCS_SHADOWS_OFF="${LCS_SHADOWS_OFF:-1}" \
 LCS_PVS_CLEAN="${LCS_PVS_CLEAN:-1}" \
+LCS_FORCE_SUBTITLES="${LCS_FORCE_SUBTITLES:-0}" \
+LCS_FONT_INIT="${LCS_FONT_INIT:-0}" \
+LCS_FONTDIAG="${LCS_FONTDIAG:-0}" \
 LCS_ALPHA_DIAG="${LCS_ALPHA_DIAG:-0}" \
 LCS_NO_WORLD_ALPHA="${LCS_NO_WORLD_ALPHA:-0}" \
 LCS_INPUTDIAG_START="${LCS_INPUTDIAG_START:-0}" \
@@ -39,11 +46,16 @@ LCS_INPUTDIAG_MAX="${LCS_INPUTDIAG_MAX:-1800}" \
 LCS_PROBEHOLD="${LCS_PROBEHOLD:-20}" \
 LCS_CUTSCENE_PAD_SKIP="${LCS_CUTSCENE_PAD_SKIP:-1}" \
 LCS_CUTSCENE_CAMPROCESS="${LCS_CUTSCENE_CAMPROCESS:-0}" \
+LCS_CUTSCENE_FINISH_MIN_FRAMES="${LCS_CUTSCENE_FINISH_MIN_FRAMES:-0}" \
+LCS_CUTSCENE_RESET_STALE_SPLINE="${LCS_CUTSCENE_RESET_STALE_SPLINE:-0}" \
+LCS_CUTSCENE_CAMPROCESS_RESET_DELAY="${LCS_CUTSCENE_CAMPROCESS_RESET_DELAY:-0}" \
+LCS_CUTSCENE_CAMPROCESS_STREAM_WAIT_FRAMES="${LCS_CUTSCENE_CAMPROCESS_STREAM_WAIT_FRAMES:-0}" \
 LCS_DPAD_AS_AXIS_ONLY="${LCS_DPAD_AS_AXIS_ONLY:-0}" \
 LCS_MOVE_RAW="${LCS_MOVE_RAW:-1}" \
 LCS_MOVE_AXIS_X="${LCS_MOVE_AXIS_X:-0}" \
 LCS_MOVE_AXIS_Y="${LCS_MOVE_AXIS_Y:-1}" \
 LCS_AXIS_DEADZONE="${LCS_AXIS_DEADZONE:-0.18}" \
+LCS_RAW_BUTTONDIAG="${LCS_RAW_BUTTONDIAG:-0}" \
 LCS_RAW_BUTTONS="${LCS_RAW_BUTTONS:-1}" \
 LCS_BUTTON_RAW_ONLY="${LCS_BUTTON_RAW_ONLY:-1}" \
 LCS_ENABLE_BACK_BUTTON="${LCS_ENABLE_BACK_BUTTON:-0}" \

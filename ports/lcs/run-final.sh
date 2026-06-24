@@ -43,7 +43,7 @@ while [ "$attempt" -le "$MAXRESTART" ]; do
       # audio: backends concretos (evita falso-positivo do campo "audio=" do menu)
       case "$line" in *FMOD*|*fmod*|*[Oo]penAL*|*openal*|*pulse*|*alsa*|*AudioTrack*|*sndserver*|*"snd_pcm"*|*"[audio]"*)
         printf '%s %s\n' "$t" "$line" >> "$ALOG";; esac
-      case "$line" in *"[input]"*|*"[pad"*|*"[probe]"*|*"[rawaxis]"*|*onJoyButton*|*setJoyAxis*)
+      case "$line" in *"[input]"*|*"[pad"*|*"[probe]"*|*"[rawaxis]"*|*"[rawbutton]"*|*"[rawhat]"*|*onJoyButton*|*setJoyAxis*)
         printf '%s %s\n' "$t" "$line" >> "$ILOG";; esac
     done ) &
   ROUTERPID=$!
