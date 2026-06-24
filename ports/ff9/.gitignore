@@ -1,0 +1,6 @@
+# payloads do jogo (BYO-data — não versionar)
+payload/
+ff9
+*.o
+run.out
+debug.log
