@@ -8,7 +8,6 @@ Port of Crazy Taxi Classic (Android aarch64) to Linux aarch64
 > [nextos_ports_android](https://github.com/felc18-blip/nextos_ports_android).
 > Aqui ele foi **adaptado para o Mali-450 (fbdev)**: recompilado no toolchain
 > NextOS Amlogic-old, com mapeamento teclado→keycode Android para **gptokeyb**
-> e ajustes de áudio (PulseAudio). **Só o código vai pro repo** — os dados do
 > jogo (copyright Sega) são BYO (you bring your own).
 
 ## Screenshots
