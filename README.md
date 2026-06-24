@@ -59,7 +59,7 @@ template/src/    # BASE por-jogo (copiada e adaptada pra cada port)
 tools/
   new-port.sh    # << gera um port novo a partir de um APK/.so >>
 ports/<jogo>/    # cada port gerado vive aqui
-docs/            # arquitetura + receita + referência (lswtcs)
+docs/            # arquitetura + receita + referência (syberia GLES1 + lswtcs GLES2)
 ```
 
 ## Fluxo de um port novo
