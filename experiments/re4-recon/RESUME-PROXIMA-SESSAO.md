@@ -23,7 +23,7 @@ kill) → **precisa REBOOT físico**. O swap de 2GB virou faca de dois gumes: ru
 **thrasha até morrer** em vez de OOM-killar rápido. **Antes de testar runaway de memória, pôr um CAP de
 memória via cgroup v1** (igual Toziuha/Crash: `/sys/fs/cgroup/memory/<grupo>/memory.limit_in_bytes`
 ~580-650MB) pra OOM-killar rápido e iterar sem reboot. O device ESTÁ travado agora (fim da sessão 9),
-aguardando reboot do NextOS.
+aguardando reboot manual.
 
 ## Como buildar / deployar / testar
 ```bash
@@ -116,7 +116,7 @@ causa do GC — atacar o GC primeiro deve destravar o swap junto.)
 - build_re4boot.sh (usa $HOME). re4boot NÃO versionado (binário).
 - Doc viva: experiments/re4-recon/RE4-MALI450-PORT.md. Memória: project_re4_unity_mono_soloader_mali450.md (FASE 2a..2j).
 
-## Regras do NextOS
+## Regras do projeto
 - Modo autônomo, responder em PT, não parar no 1º erro, commitar cada avanço.
-- NUNCA Co-Authored-By Agente nos commits. NÃO commitar .so/binários/assets nem IP/senha (repo PÚBLICO).
+- Commits limpos (zero co-autor). NÃO commitar .so/binários/assets nem IP/senha (repo PÚBLICO).
 - Device prioritário = Amlogic-old (Mali-450 fbdev, kernel 3.14).

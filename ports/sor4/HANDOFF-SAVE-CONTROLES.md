@@ -1,6 +1,6 @@
 # HANDOFF — Save-fix + Controles (2026-06-18 noite)
 
-## TL;DR pro NextOS
+## TL;DR pro porter
 - **Controles CONSERTADOS.** Eu tinha quebrado criando gamepads virtuais que clonavam o id do
   teu pad (0810:0001) → SDL confundia. O **reboot limpou**. Confirmei: pad reconhecido como
   `id=0 isGameController=1`, input limpo (só o pad real).
@@ -38,14 +38,14 @@ o do .NET → null-check/GC do .NET virava crash. O fix roteia `sigaction` pela 
 bloqueia o Wwise de instalar handler de SIGSEGV/ABRT/BUS. **Não testado em gameplay ainda.**
 
 ## Auto-input (por que não testei sozinho) — ver doc da série
-`~/Área de trabalho/TRABALHO AGENTE CODE/SERIE-1-auto-input-em-jogos.md`. Resumo: criar pad
+Ver doc interna `SERIE-1-auto-input-em-jogos.md`. Resumo: criar pad
 virtual clonando 0810:0001 QUEBRA o controle. O certo é `inject.py` direto no `/dev/input/event2`
-(id=0) ou `evcap.py` capturando você navegar + clonar. O título do SoR4 não avançou só com
-A/START injetado → falta capturar a ação certa com você demonstrando 1x.
+(id=0) ou `evcap.py` capturando a navegação + clonar. O título do SoR4 não avançou só com
+A/START injetado → falta capturar a ação certa com uma demonstração 1x.
 
 ## Pendências
 - [ ] Você jogar a fase e confirmar: crash do save sumiu? save persiste?
 - [ ] Se OK: commitar `imports.gen.c`+`wwise_native.c` (SEM co-autor, master) + atualizar o zip
-      da Área de trabalho com a libWwise nova.
+      de distribuição com a libWwise nova.
 - [ ] Se o controle der problema: `bash /storage/roms/restaurar_controles.sh` + me avisar.
 - [ ] (Opcional) auto-input via captura+clone (evcap) pra eu testar sozinho no futuro.

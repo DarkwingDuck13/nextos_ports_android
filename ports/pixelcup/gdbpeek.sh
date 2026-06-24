@@ -1,8 +1,8 @@
 #!/bin/bash
 # roda o jogo até congelar e ataca com gdb: backtrace de todas as threads + bases.
 set -u
-HOST=192.168.31.164
-export SSHPASS=emuelec
+HOST="<device-ip>"
+export SSHPASS="<senha>"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 root@$HOST"
 SCP="sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 cd "$(dirname "$0")"

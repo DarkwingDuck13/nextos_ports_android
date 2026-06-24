@@ -64,7 +64,7 @@ export CUP_FRAMES=999999999
 # NATIVAMENTE. TER_GAMEPAD le o SDL; TER_CTRL injeta no InControl (GetKeyRaw/GetAxisRaw) e forca
 # _controllerActive; TER_CURSPEED escala o stick direito (mira).
 # Analogico esq = mover personagem; D-pad = navegar UI/inventario (separados, sem conflito).
-# TER_SWAPAB=1 troca A<->B (pedido do NextOS). TER_CURSPEED escala o stick direito (mira).
+# TER_SWAPAB=1 troca A<->B (pedido do porter). TER_CURSPEED escala o stick direito (mira).
 export TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_CURSPEED=0.38 TER_SWAPAB=1 TER_SWAPLR=1 TER_FIXSP=1 TER_NOVKBD=1
 # SOM: thread C bombeia fmodProcess->SDL (auto pulse/pipewire/alsa). TER_STREAMFALLBACK
 # refaz a MÚSICA (stream, que falha INTERNAL no so-loader) como SAMPLE -> toca. SFX já tocam.

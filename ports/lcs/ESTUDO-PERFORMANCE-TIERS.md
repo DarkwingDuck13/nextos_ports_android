@@ -1,6 +1,6 @@
 # LCS Mali-450 — ESTUDO DE PERFORMANCE & TIERS (2026-06-23)
 
-## 1. GARGALO CONFIRMADO (dados reais do device .88, gameplay)
+## 1. GARGALO CONFIRMADO (dados reais do device, gameplay)
 | Métrica | Valor | Veredito |
 |---|---|---|
 | RAM total | 832 MB | fixo (Mali-450) |
@@ -9,7 +9,7 @@
 | lcs RSS | 443 MB | + **209 MB swapped** |
 | fps | ~18 | baixo |
 
-**RAIZ do "trava dirigindo" (diagnóstico do NextOS, confirmado):** a velocidade do
+**RAIZ do "trava dirigindo" (diagnóstico do porter, confirmado):** a velocidade do
 veículo faz o streamer alocar textura/modelo novo → RAM cheia → **swap pro SD (lento)
 → FREEZE**. A pé é devagar (pouca alocação) → não trava. Parado → não trava.
 NÃO é GPU/vsync/env-map (já testados). É **RAM → swap thrashing**.
@@ -50,7 +50,7 @@ fez (etc2_halve) e o que dá fôlego de verdade no 832MB.
 ## PRÓXIMO: validar Tier 1 (eviction) → se RAM bound + dirige sem trava, baixar cap até o
 ponto bom; se eviction falhar (engine sem ref-count, lição Bully) → implementar half-res.
 
-## 5.1 DOWNSCALE DE RENDER — TESTADO E DESCARTADO (2026-06-23, A/B no device .88)
+## 5.1 DOWNSCALE DE RENDER — TESTADO E DESCARTADO (2026-06-23, A/B no device)
 Medição pareada de fps em gameplay assentado (state=9, janela de 20s, mesmo método):
 
 | Render | fps | Pixels |
@@ -90,7 +90,7 @@ Tiers atuais depois dos testes em device:
 | 3 / potato | agressivo safe | cap 110MB, streamer 32, drain 2, LOD 0.40, draw 0.25, `LCS_TEX_HALF_MIN=256`, `LCS_NO_ENVMAP=1`, `render_scale=native`, `TEX_LIGHT=off` |
 
 `run-final.sh` tambem foi preparado para usar esse perfil quando chamado com
-`LCS_PROFILE=gtasa-perf`. Nada foi executado/testado ainda por pedido do NextOS.
+`LCS_PROFILE=gtasa-perf`. Nada foi executado/testado ainda por pedido do porter.
 
 Nota de estudo apos comparar com reVC/GTASA: `BULLY_PAGE` foi herdado do Bully e registra melhor o
 caminho `glTexImage2D`/ETC1-cacheado. O LCS Android sobe a maior parte do mundo por

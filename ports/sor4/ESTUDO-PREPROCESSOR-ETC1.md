@@ -1,6 +1,6 @@
 # Estudo: Pré-processador ETC1 (progressor) — SOR4
 
-Objetivo (pedido do NextOS): um **progressor** estilo Dysmantle (janela com % real + nome
+Objetivo (pedido do porter): um **progressor** estilo Dysmantle (janela com % real + nome
 dos arquivos) que, na **1ª execução**, converte TODAS as texturas pra **ETC1**, **apaga os
 originais** (fica só ETC1), define o **texscale** e aplica outros fixes (fontes etc). Depois
 o jogo abre rápido desde a 1ª vez, **zero conversão em runtime**. O Mali-450 lê ETC1 nativo.
@@ -49,7 +49,7 @@ NÃO as texturas) → **NÃO são o bloqueio**. O conversor offline é totalment
   do host; testar se é XOR simples — ver se `\x00IAP` XOR chave vira 'XNB'/'\x00\x00\x00\x01').
 
 ## Abordagens (decidir ao implementar)
-- **A) Reescrever os dados (o que o NextOS quer):** decriptar IAP → XNB → ASTC → decode →
+- **A) Reescrever os dados (o que o porter quer):** decriptar IAP → XNB → ASTC → decode →
   ETC1/RGBA8 → reescrever o XNB (SurfaceFormat=RgbEtc1) → **re-obfuscar IAP** (ou salvar plano
   se o loader aceitar XNB sem IAP) → sobrescrever o arquivo. Apaga ASTC, fica ETC1. Precisa
   reverter IAP nos DOIS sentidos (decode+encode) OU confirmar que o loader lê XNB plano.

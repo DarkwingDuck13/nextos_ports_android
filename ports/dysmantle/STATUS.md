@@ -47,7 +47,7 @@ NXT_CreateThread→NXTI_CreateThread→thread_entry→InitializeThread. O frame 
   Retorno 1 = consumido ✓. Layouts extraídos do binário (_Static_assert nos tamanhos).
 - BACK→BUTTON_SELECT(109) (AKEYCODE_BACK=4 é especial no Paddleboat); A/B sem swap.
 
-**PRÓXIMOS PASSOS:** validar resposta in-game do controle (NextOS), lag (comparar c/ DYSMANTLE_NO_OBOE=1),
+**PRÓXIMOS PASSOS:** validar resposta in-game do controle (no device), lag (comparar c/ DYSMANTLE_NO_OBOE=1),
 volume fino (SLSHIM_GAIN), estabilidade gameplay longa, empacotar p/ ES + R2 (desmascarar emustation!).
 
 ## (histórico) MARCO 1: RENDERER GLES2 100% INICIALIZADO + JOGO CARREGANDO TEXTURAS
@@ -115,7 +115,7 @@ BRK-trap tracer (install_brk_traps, comentado) p/ rastrear funções locais. Cra
 
 ## 🖼️ MURO ATUAL (2026-06-10): MUNDO NÃO RENDERIZA (chão branco, objetos faltando)
 
-**SINTOMAS (NextOS):** chega no gameplay 100%, controle perfeito, mas: chão BRANCO;
+**SINTOMAS (observados):** chega no gameplay 100%, controle perfeito, mas: chão BRANCO;
 árvores/barris/matos/cabeça/armas do player NÃO aparecem; corpo+calça do player E tampa do
 bonker renderizam (com cor). "algo surreal".
 

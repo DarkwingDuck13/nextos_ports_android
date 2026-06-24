@@ -1,9 +1,9 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
 ## 🟢 2026-06-17 NOITE — ESTADO VALIDADO: CONTROLES + AUDIO + PLAYER/MUNDO + SEM TELA PRETA
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device. Se o jogo estiver criando mundo, **não matar**: aguardar terminar.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device. Se o jogo estiver criando mundo, **não matar**: aguardar terminar.
 
-Estado validado pelo NextOS:
+Estado validado pelo porter:
 - Controles estão bons e devem ser preservados.
 - Áudio está bom: FMOD roda em 24000 Hz e `TER_STREAMFALLBACK=1` mantém música/SFX.
 - Player foi criado pelo fluxo nativo do Terraria: `/storage/roms/terraria/Players/Player.plr`.
@@ -26,10 +26,10 @@ Estado de boot/render:
 - `TER_SKIPJOBWAIT` ficou necessário para boot/menu. A criação de mundo pode demorar vários minutos; não considerar travado só porque `Worlds/` ainda está vazio.
 
 ## 🟡 2026-06-17 NOITE — SAVES GERADOS INVALIDADOS; VOLTAR AO CREATE NATIVO COM AUTONOME
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
 Estado atual:
-- NextOS não mexeu nos controles; tratar o bug recente como save/estado inválido, não como regressão voluntária do usuário.
+- O porter não mexeu nos controles; tratar o bug recente como save/estado inválido, não como regressão voluntária do usuário.
 - Os saves `Player.plr`, `Player_2.plr` e `Player_3.plr` gerados no device foram invalidados: ao carregar gameplay, houve tela preta/estado ruim e exceção Unity em mundo.
 - `ports/terraria/default_players/` deve ficar sem `.plr` default até existir um save realmente validado.
 - O caminho atual é criar personagem do zero pelo menu original do Terraria.
@@ -44,7 +44,7 @@ Detalhe importante do gerador em `src/main.c`:
 - Não recolocar chamada do gerador em `ter_ctrl_feed`: isso roda no caminho de input/render e já causou crash cedo ao chamar `il2cpp_string_new`.
 
 ## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES + PLAYER SAVE FUNCIONANDO
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
 Estado validado depois do problema do teclado:
 - A solução prática do nome/personagem é **não usar teclado**.
@@ -52,7 +52,7 @@ Estado validado depois do problema do teclado:
 - `run.sh` cria `Players/` e garante que cada `.plr` de `default_players/` exista lá, sem sobrescrever save existente.
 - Para deixar 2 ou 3 opções prontas, basta adicionar mais `.plr` validado em `ports/terraria/default_players/`; o launcher copia todos.
 - No device, o save está instalado em `/storage/roms/terraria/Players/Spedyleonik.plr`.
-- NextOS confirmou em teste real: **"deu certo"**.
+- Confirmado em teste real: **"deu certo"**.
 - `run.sh` default fica sem `TER_OSK`; manter `TER_NOVKBD=1`.
 - A navegação horizontal no menu foi corrigida: em linhas com vários botões (`Voltar | Aleatório | Criar`), esquerda/direita agora troca coluna.
 
@@ -62,9 +62,9 @@ Não reabrir como default:
 - Não remover o player padrão sem outro `.plr` validado.
 
 ## 🟢 ESTADO FINAL VALIDADO 2026-06-17 — CONTROLES FUNCIONANDO, TECLADO DESLIGADO
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
-Este é o estado que NextOS validou com `funciouuu` e que não pode ser perdido.
+Este é o estado validado com `funciouuu` e que não pode ser perdido.
 
 Estado correto:
 - `run.sh` default usa `TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_NAVMENU=1 TER_FIXSP=1 TER_NOVKBD=1`.
@@ -82,7 +82,7 @@ Não mudar sem teste completo:
 - Não voltar o mini teclado para o default.
 
 ## ⚠️ TENTATIVA ANTERIOR COM MINI TECLADO — NÃO USAR COMO DEFAULT
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
 Estado atual importante:
 - `run.sh` padrão mantém **cursor nativo do Terraria**. Não reativar `TER_RSCURSOR` por padrão.
@@ -113,7 +113,7 @@ Correção implementada:
   - `Y`: espaço.
   - `Start`, `RB`, `RT` ou `R3`: finalizar; se vazio, usa `TER_VK_DEFAULT` ou `PLAYER`.
   - `Select`: cancelar.
-- Ajuste posterior: NextOS validou que o teclado ficou bom, mas `Start` não confirmava no controle dele. A última tecla da última linha agora é `OK`, confirmável com `A`; `RB/RT/R3` também confirmam como alternativas ao `Start`.
+- Ajuste posterior: validamos que o teclado ficou bom, mas `Start` não confirmava no controle. A última tecla da última linha agora é `OK`, confirmável com `A`; `RB/RT/R3` também confirmam como alternativas ao `Start`.
 - Ajuste posterior 2: ao clicar `OK`, o Unity fechava e imediatamente chamava `showSoftInput` de novo com `text=""`; isso apagava o nome e reabria o teclado. Correção:
   - `jni_shim.c` preserva o último texto confirmado e suprime até 3 reopens vazios imediatos (`[SOFTINPUT] suppress empty reopen -> keep ...`).
   - `main.c` engole o gamepad por alguns frames depois do `OK`, para o `A` não clicar novamente no campo por trás.
@@ -123,7 +123,7 @@ Correção implementada:
 Build/deploy feito:
 - `./build.sh` OK.
 - Antes de copiar, processo antigo foi morto e não havia PID restante.
-- Copiado `terraria` e `run.sh` para `192.168.31.89:/storage/roms/terraria/`.
+- Copiado `terraria` e `run.sh` para `<device-ip>:/storage/roms/terraria/`.
 - Lançado build inicial do teclado via `sh run.sh`, PID `123936`.
 - Depois do ajuste de confirmação (`OK` na grade + `RB/RT/R3`), build/deploy OK e novo PID `125132`.
 - Depois do ajuste de reopen vazio/pós-OK, build/deploy OK e novo PID `126308`.
@@ -140,9 +140,9 @@ Próximo teste:
 - Se letras aparecem no overlay mas o jogo não habilita o botão de continuar, revisar a ordem dos callbacks `nativeSetInputString`/`nativeSetInputSelection`/`nativeSoftInputClosed` ou alimentar diretamente o campo IL2CPP de nome.
 
 ## 🟢 SESSÃO 2026-06-17 (continuação 2) — stick direito move cursor; bug real era cursor invisível + A sem clique
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
-Atualização importante descoberta pelo NextOS:
+Atualização importante descoberta pelo porter:
 - Existem **dois cursores**.
 - No gameplay, o cursor nativo do Terraria aparece; desenhar nosso overlay ali duplica o cursor.
 - No menu inicial, o cursor nativo/principal fica **invisível**, e o overlay que desenhamos precisa seguir esse cursor interno.
@@ -151,7 +151,7 @@ Atualização importante descoberta pelo NextOS:
 - Log esperado no build atual: `[RCURSINK] real=640,360 game=451,254/902x507 ... girm=451,254 ovr=1 menu=1`.
 - Ajuste posterior: `Main.gameMenu`/`Main.myPlayer` não resolvem neste build (`nil` no log). Para remover o cursor duplicado no gameplay, o gate agora usa `Main.player[]` + offset de `Terraria.Player.active` e desliga o overlay quando **qualquer Player ativo** existir. Log no menu ainda deve mostrar `playerActive=0`; no gameplay deve virar `playerActive=1`.
 
-Diagnóstico ao vivo do NextOS:
+Diagnóstico ao vivo do porter:
 - O analógico direito **funcionava**: por duas vezes ele conseguiu passar por cima de opções.
 - O problema real era que o cursor estava **invisível**.
 - Ao acertar uma opção "por sorte", o botão A também **não confirmava/iniciava**, porque o clique do mouse virtual estava desligado no caminho `TER_RSCURSOR`.
@@ -166,17 +166,17 @@ Correção aplicada em `ports/terraria/src/main.c`:
 Build/deploy/teste feito:
 - `./build.sh` OK.
 - Antes de copiar: `pkill -9 terraria` no device e `pgrep` confirmou que não havia processo vivo.
-- Copiado `terraria` novo para `192.168.31.89:/storage/roms/terraria/terraria`.
+- Copiado `terraria` novo para `<device-ip>:/storage/roms/terraria/terraria`.
 - Lançado com `TER_GPAXLOG=1 TER_RSCURSORLOG=1 sh run.sh`, PID `118979`.
 - Log confirmou:
   - `[TGP-HOOK] FNA Mouse.GetState ... hookado`
   - `[RCURDRAW] cursor overlay ON size=14 thick=3 screen=1280x720`
   - `[RCUR] 640,360 ... bounds=1280x720`
 
-Próximo passo: NextOS validar na TV se a mira aparece e se A confirma/inicia. Se hover aparecer mas A ainda não acionar, investigar se o menu em questão lê outro caminho além de FNA `Mouse.GetState`.
+Próximo passo: validar na TV se a mira aparece e se A confirma/inicia. Se hover aparecer mas A ainda não acionar, investigar se o menu em questão lê outro caminho além de FNA `Mouse.GetState`.
 
 ## 🟢 SESSÃO 2026-06-17 (continuação) — CONTROLE agora usa SDL_GameController/Xbox, não js0 cru
-**Regra operacional do NextOS:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device.
 
 O caminho de controle foi refeito para parar de chutar layout de `/dev/input/js0`.
 - `ter_gamepad_poll` agora usa **SDL_GameController** como fonte física única. O SDL normaliza para layout **Xbox**.
@@ -196,7 +196,7 @@ Mapeamento entregue ao jogo:
 
 Build/deploy/teste feito:
 - `./build.sh` OK.
-- Copiado `terraria` e `run.sh` para `192.168.31.89:/storage/roms/terraria/`.
+- Copiado `terraria` e `run.sh` para `<device-ip>:/storage/roms/terraria/`.
 - Lançado com `TER_GPAXLOG=1 sh run.sh`, PID visto: `117505`.
 - Log confirmou:
   - `[TGP] SDL_NumJoysticks=1`
@@ -204,13 +204,13 @@ Build/deploy/teste feito:
   - `[TGP] Xbox layout via SDL_GameController js0: Twin USB PS2 Adapter`
   - `[TGPAX]` mostrou D-pad, A/B/X/Y, left stick e right stick variando.
 
-Próximo passo: NextOS validar no menu e gameplay se o controle agora se comporta como Xbox real. Se algo ainda não bater, ajustar a camada que o Terraria espera (InControl/XNA), não voltar para mapeamento manual de eixo cru.
+Próximo passo: validar no menu e gameplay se o controle agora se comporta como Xbox real. Se algo ainda não bater, ajustar a camada que o Terraria espera (InControl/XNA), não voltar para mapeamento manual de eixo cru.
 
 ## 🔴 SESSÃO 2026-06-17 (madrugada) — ÁUDIO RESOLVIDO, mas CONTROLE REGREDIU (LEIA PRIMEIRO)
-**Device `192.168.31.89` (ssh root/`nextos`), jogo `/storage/roms/terraria/`. `sh run.sh`. Commit atual `a0f1f99`.**
+**Device `<device-ip>` (ssh root/`nextos`), jogo `/storage/roms/terraria/`. `sh run.sh`. Commit atual `a0f1f99`.**
 **Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; ssh ...kill; scp terraria .89`.**
 
-### 🟢 ÁUDIO — RESOLVIDO DE VERDADE (NextOS confirmou de ouvido). NÃO MEXER, só manter.
+### 🟢 ÁUDIO — RESOLVIDO DE VERDADE (confirmado de ouvido). NÃO MEXER, só manter.
 Eram DOIS problemas, ambos resolvidos:
 1. **Acelerado** (1.84×): o FMOD mixa a **24000 Hz** (não 44100). Causa achada por `fmodGetInfo(env,thiz,info)@libunity+0x8112b0` chamado direto: **info 0=samplerate(24000), 1=blockSize(1024 frames), 4=channels(2)**. O SDL abria a 44100 → 44100/24000=1.84×. FIX: abrir o SDL na taxa/canais REAIS do fmodGetInfo. Também medi empiricamente (sentinela 0xAB no buffer) que fmodProcess escreve 4096 B/chamada — bate com 1024 frames stereo. (A teoria velha de "capacidade do DirectByteBuffer" estava ERRADA.) ⚠️ o offset da struct do System `*0xc7c2f0`/`+0x60` é NÃO-CONFIÁVEL (fmod_read_format sempre falhava) — use `fmodGetInfo`.
 2. **Engasgando**: back-pressure curto. FIX: `bp=6` blocos default + pré-enche a fila antes de despausar. Tunável `TER_AUDIO_BP`/`TER_AUDIO_RATE`/`TER_AUDIO_CH`/`TER_AUDIO_FRAMES`.
@@ -218,7 +218,7 @@ Eram DOIS problemas, ambos resolvidos:
 
 ### 🔴 CONTROLE — EU QUEBREI NESTA SESSÃO. RECUPERAÇÃO = RESTAURAR de `ff34d71`.
 **FATO: no commit `ff34d71` (início desta sessão) o controle FUNCIONAVA** (menu + gameplay + cursor;
-NextOS tinha validado no Tutorial na sessão anterior). **As minhas mudanças de controle desta sessão
+tinha sido validado no Tutorial na sessão anterior). **As minhas mudanças de controle desta sessão
 regrediram.** Sintoma final (gameplay): cursor **volta sempre pro mesmo ponto**, stick direito **só anda
 na horizontal (não sobe/desce)**, e o **D-pad move o cursor**. "Antes de dormir tudo funcionava."
 
@@ -232,21 +232,21 @@ RESTAURAR o código de CONTROLE para a versão `ff34d71`, **mantendo** o áudio.
   stick direito que eu **removi** mas pode ter deixado resíduo; confira contra `ff34d71`).
 - Globais que adicionei: `g_gp_log[12]→[16]` + `g_lt_analog/g_rt_analog` + `g_fcmode/g_fcx/g_fcy` +
   campo `MM.fgameMenu`. (Pode deixar declarados, só não devem ALTERAR o comportamento de `ff34d71`.)
-Comando p/ ver a versão boa: `git show ff34d71:ports/terraria/src/main.c`. Depois rebuild+deploy e o
-NextOS confirma que o controle voltou ao normal. SÓ DEPOIS pensar em adicionar Xbox-completo/idioma.
+Comando p/ ver a versão boa: `git show ff34d71:ports/terraria/src/main.c`. Depois rebuild+deploy e
+confirmar que o controle voltou ao normal. SÓ DEPOIS pensar em adicionar Xbox-completo/idioma.
 
 **Por que provavelmente quebrou (hipóteses p/ a próxima sessão, NÃO confirmadas):**
 - O cursor "volta pro mesmo ponto" + "D-pad move o cursor" no GAMEPLAY = o `ter_menu_nav` está
   rodando NO JOGO (não só no menu) e forçando `g_cursor` pra um item do HUD + movendo por D-pad. Tentei
-  gatear com `gameMenu` (`MM.fgameMenu && !ter_getb(...)`) mas NextOS disse "nada mudou" → provável que
+  gatear com `gameMenu` (`MM.fgameMenu && !ter_getb(...)`) mas o porter disse "nada mudou" → provável que
   **`gameMenu` NÃO resolveu** (campo NULL → gate vira no-op) OU o nome do campo está errado. Conferir se
   `Terraria.Main.gameMenu` resolve (logar) OU usar outro sinal de "está no jogo" (ex.: `Main.menuMode`
   == -1? netMode? a presença de um `Player` ativo?). No `ff34d71` o ter_menu_nav NÃO atrapalhava o
   gameplay — descobrir POR QUÊ (talvez no ff34d71 o gameplay não tinha regiões GIRM navegáveis e algo
   que mudei fez passar a ter; ou o cursor do gameplay no ff34d71 vinha de outro caminho).
-- "Stick direito só horizontal" = **layout de eixos do controle do NextOS ≠ do meu chute** (assumi
+- "Stick direito só horizontal" = **layout de eixos do controle do porter ≠ do meu chute** (assumi
   RX=eixo3, RY=eixo4; o Y dele deve estar noutro eixo). PRECISA logar os eixos reais: lançar com
-  `TER_GPAXLOG=1` (já existe; loga `[TGPAX] ax0..ax5 cur`), pedir o NextOS mexer o stick direito
+  `TER_GPAXLOG=1` (já existe; loga `[TGPAX] ax0..ax5 cur`), mexer o stick direito
   cima/baixo/esq/dir, e LER o log p/ achar os eixos certos. (Há `axlog.sh` no device pra isso.)
   Ajustar `TER_GP_RX`/`TER_GP_RY` (e LX/LY) ao controle dele. **NÃO chutar — medir.**
 
@@ -271,7 +271,7 @@ NextOS confirma que o controle voltou ao normal. SÓ DEPOIS pensar em adicionar 
 ---
 
 ## ✅✅✅ SESSÃO 2026-06-17 (noite) — (PARCIALMENTE SUPERADA: controle regrediu depois; ver acima)
-**Device `192.168.31.89` (ssh root/`nextos`), jogo em `/storage/roms/terraria/`. Lançar: `sh run.sh`.**
+**Device `<device-ip>` (ssh root/`nextos`), jogo em `/storage/roms/terraria/`. Lançar: `sh run.sh`.**
 **Commit `ebb55c3`. Build/deploy: `cd ~/nextos_ports_android/ports/terraria; ./build.sh; scp terraria .89`.**
 
 ### 1) 🔊 ÁUDIO ACELERADO — RESOLVIDO (causa-raiz, não era taxa)
@@ -283,7 +283,7 @@ o FMOD andava **8× mais rápido** que o playback → áudio acelerado. **FIX:**
 44100/2 (= `getProperty(OUTPUT_SAMPLE_RATE)` do init; **não** confiar no offset-read — o MIXSPY
 provou que o mixer 0x805a94 nem é chamado e a struct do System não é a assumida). Math: pump
 back-pressured a ~43 chamadas/s × 1024 = 44100 frames/s = real-time. ✅ Tunável: `TER_AUDIO_BUF`
-(bytes/chamada), `TER_AUDIO_BP` (blocos back-pressure, def 4). **Falta só o NextOS confirmar de ouvido.**
+(bytes/chamada), `TER_AUDIO_BP` (blocos back-pressure, def 4). **Falta só confirmar de ouvido.**
 
 ### 2) 🎮 CONTROLE XBOX COMPLETO — FEITO
 `g_gp_log` agora tem 16 estados. Lê do js0 (layout xpad/SDL): A0 B1 X2 Y3, LB4 RB5, Back6 Start7,
@@ -320,11 +320,11 @@ produção (tudo via TER_CTRL).
 ---
 
 ## 🔊🎮 SESSÃO 2026-06-17 (tarde) — SOM SAINDO (HISTÓRICO, resolvido acima)
-**Device: `192.168.31.89` (ssh root / senha `nextos`). Jogo em `/storage/roms/terraria/`.**
-**Lançar pra jogar: `ssh root@192.168.31.89 'cd /storage/roms/terraria; sh run.sh'`** (run.sh já tem som).
+**Device: `<device-ip>` (ssh root / senha `nextos`). Jogo em `/storage/roms/terraria/`.**
+**Lançar pra jogar: `ssh root@<device-ip> 'cd /storage/roms/terraria; sh run.sh'`** (run.sh já tem som).
 Diário de build/test: `cd ~/nextos_ports_android/ports/terraria; ./build.sh` → `scp terraria` → `sh audiotest.sh 80`.
 
-### ✅ SOM AGORA SAI DO ALTO-FALANTE (NextOS confirmou "to ouvindo bem")
+### ✅ SOM AGORA SAI DO ALTO-FALANTE (confirmado de ouvido "to ouvindo bem")
 O FMOD aqui é o **áudio nativo do Unity (FMOD Ex 4.x) DENTRO de libunity.so** (NÃO libfmod separada,
 NÃO FMOD Studio; org.fmod.FMODAudioDevice = backend AudioTrack do Unity). 3 fixes (todos em `src/main.c`):
 1. **🔑 PUMP CORRIGIDO** (`fmod_audio_thread`): o nativo **`fmodProcess`@libunity+0x811378 retorna 0 em
@@ -344,7 +344,7 @@ NÃO FMOD Studio; org.fmod.FMODAudioDevice = backend AudioTrack do Unity). 3 fix
    tabela em VMA 0xb66948, 8B/código).
 
 ### ⚠️ PROBLEMA ABERTO #1 — ÁUDIO TOCA RÁPIDO/ACELERADO (pitch alto)
-**NextOS: "áudio acelerado no gameplay ENQUANTO O VÍDEO RODA BEM"** (vídeo OK ~58fps, só o som rápido).
+**Relato: "áudio acelerado no gameplay ENQUANTO O VÍDEO RODA BEM"** (vídeo OK ~58fps, só o som rápido).
 Logo NÃO é frame-pacing; é taxa/contagem do PCM. Análise até agora (INCOMPLETA, resolver na próxima):
 - Abro SDL a **44100/2ch** e enfileiro `blk*ch*2=4096` bytes/chamada (blk=1024). MAS descobri que em
   vários boots o `fmod_read_format` **caiu no FALLBACK** (44100/2/1024) — o output `*0xc7c2f0` não ficou
@@ -362,7 +362,7 @@ Logo NÃO é frame-pacing; é taxa/contagem do PCM. Análise até agora (INCOMPL
   mix_hook diagnóstico). run.sh tem AUDIO+STREAMFALLBACK (sem SPY).
 
 ### ⚠️ PROBLEMA ABERTO #2 — MAPEAMENTO XBOX COMPLETO (faltam muitos botões)
-NextOS quer o controle mapeado **como um Xbox completo** (todos os botões; hoje só D-pad↑↓ + A + L1/R1
+O porter quer o controle mapeado **como um Xbox completo** (todos os botões; hoje só D-pad↑↓ + A + L1/R1
 navegam). Pesquisar na internet o mapeamento PADRÃO Xbox (A/B/X/Y, LB/RB, LT/RT, Start/Back/Guide,
 L3/R3, D-pad, sticks) e o que o Terraria espera (InControl/ControllerDevice). A infra de input está em
 `src/gamepad.c` + `ter_gamepad_poll`/`ter_input_hook` em `main.c` (substitui
@@ -390,7 +390,7 @@ ErrorString 0x3ceb7c, output global *0xc7c2f0. Ferramentas RE: capstone (`/tmp/x
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
 ## 🏆🎮 SESSÃO 2026-06-17 — CONTROLES + SINGLE PLAYER RESOLVIDOS (LEIA PRIMEIRO)
-**CONTROLE FUNCIONA NO MENU E NO GAMEPLAY (incl. cursor no jogo) — NextOS validou no Tutorial.**
+**CONTROLE FUNCIONA NO MENU E NO GAMEPLAY (incl. cursor no jogo) — validado no Tutorial.**
 Caminho CORRETO descoberto: o build mobile usa **InControl/Controller.ControllerDevice** pra TUDO
 (menu + gameplay + cursor), NÃO o FNA `GamePad.GetState` (que NUNCA é chamado, 0×). Alimentamos via:
 - **`Controller.ControllerDevice.GetKeyRaw`@il2cpp+0xc5c51c** e **`GetAxisRaw`@0xc5c2f0** SUBSTITUÍDOS
@@ -441,13 +441,13 @@ CUP_NOLOGFILE=1 CUP_FRAMES=999999999 TER_GAMEPAD=1 TER_CTRL=1 TER_NAVMENU=1 TER_
   (B) FORÇAR OpenSL: fazer o FMOD escolher OUTPUTTYPE_OPENSL (o opensles_shim já resolve OpenSL→SDL→
       Pulse). Tentar SDK menor em my_sysprop (hoje "25") ou setOutput. Menos provável (o jogo
       registrou FMODAudioDevice = decidiu AudioTrack).
-  ⚠️ Mali-450 = PulseAudio (ver memória nextos_openal_pulse). Precisa do NextOS confirmar de OUVIDO.
-- 🕹️ Ajustar `TER_CURSPEED` ao gosto (NextOS testar o feeling do cursor no jogo).
+  ⚠️ Mali-450 = PulseAudio (ver memória nextos_openal_pulse). Precisa confirmar de OUVIDO.
+- 🕹️ Ajustar `TER_CURSPEED` ao gosto (testar o feeling do cursor no jogo).
 
 ## 🎮🎮 CONTROLES — SESSÃO 2026-06-16 (HISTÓRICO — superado acima)
 ## 🎮🎮 CONTROLES — PRÓXIMA SESSÃO (2026-06-16) — LEIA PRIMEIRO
 **Status: jogo RODA no menu (60fps, renderiza), mas NENHUM input funciona no menu.**
-**🔑 PISTA DECISIVA: até um MOUSE USB REAL não funciona no menu (NextOS testou).** Logo o problema
+**🔑 PISTA DECISIVA: até um MOUSE USB REAL não funciona no menu (testado).** Logo o problema
 NÃO é a nossa injeção — é que **input nenhum (real OU injetado) chega ao menu do Terraria**.
 
 ### ✅ JÁ DIAGNOSTICADO NESTA SESSÃO (não re-investigar):
@@ -460,9 +460,9 @@ NÃO é a nossa injeção — é que **input nenhum (real OU injetado) chega ao 
   (esperado, NÃO é sinal de que o engine não lê input).
 
 ### 🎯 HIPÓTESE PRINCIPAL (CORRIGIDA 2026-06-17): hookar `GamePad.GetState`, NÃO touch/mouse.
-⚠️ A hipótese "touch-only" estava ERRADA — NextOS confirmou que o Terraria mobile suporta SIM
+⚠️ A hipótese "touch-only" estava ERRADA — confirmamos que o Terraria mobile suporta SIM
 controle/teclado/mouse. Estudo completo (decompilação da FNA): **TERRARIA-INPUT-ESTUDO-FNA-vs-
-SOLOADER-2026-06-17.md** em `~/Área de trabalho/TRABALHO AGENTE CODE/`. Achados decisivos:
+SOLOADER-2026-06-17.md** (doc interna). Achados decisivos:
 - O menu do Terraria num CONTROLE usa `UILinkPointNavigator` (D-pad), dirigido por `GamePadInput`
   que lê **`Microsoft.Xna.Framework.Input.GamePad.GetState(0)`** (API FNA/XNA, NÃO InControl direto).
 - `CurrentInputMode` é mútuo-exclusivo: com gamepad "ativo" (modo XBoxGamepadUI=4) →
@@ -508,7 +508,7 @@ Env de teste: `CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_G
 
 ## 🏆🏆🏆 RODANDO + RENDERIZANDO + MENU A 60FPS (2026-06-16) 🏆🏆🏆
 **Terraria so-loader Unity 2021.3 IL2CPP RODA no Mali-450 Utgard: splash Re-Logic → MENU, 60 FPS,
-cores corretas (NextOS confirmou na TV).** Receita (env de lançamento):
+cores corretas (confirmado na TV).** Receita (env de lançamento):
 ```
 CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1
 SDL_VIDEODRIVER=mali LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
@@ -537,7 +537,7 @@ problemático.
 
 **FALTA (polish):** (a) controles (input — gamepad.c existe, wirar ao Terraria); (b) áudio (FMOD
 falha a init do output device — "Error initializing output device"); (c) my capture (glReadPixels lê
-black por double-buffer/FBO — ler front buffer ou o FBO do worker; NextOS vê na TV, é só diagnóstico);
+black por double-buffer/FBO — ler front buffer ou o FBO do worker; vê-se na TV, é só diagnóstico);
 (d) jobs rodam FINGIDOS (INLINETASK/SKIPJOBWAIT) — o jogo roda, mas se algo depender de job real,
 revisitar; (e) empacotar PortMaster. Device .89. Commits: 482b2a6 (IMAGEM) + anteriores.
 
@@ -957,9 +957,9 @@ real (itera os PT_LOAD de libunity+libil2cpp) e set_import/patch_got — pode pr
 ```sh
 cd ~/nextos_ports_android/ports/terraria
 ./build.sh                                   # cross arm64 -> ./terraria (erros SDL2 "subsection" = warning, ignore)
-ssh root@192.168.31.89 'killall -9 terraria; rm -f /storage/roms/terraria/terraria'
-scp terraria root@192.168.31.89:/storage/roms/terraria/
-ssh root@192.168.31.89 'cd /storage/roms/terraria; export TER_SHOT=12 CUP_DLLOG=1; sh test.sh 60 250'
+ssh root@<device-ip> 'killall -9 terraria; rm -f /storage/roms/terraria/terraria'
+scp terraria root@<device-ip>:/storage/roms/terraria/
+ssh root@<device-ip> 'cd /storage/roms/terraria; export TER_SHOT=12 CUP_DLLOG=1; sh test.sh 60 250'
 # ler: ssh ... 'cd /storage/roms/terraria; grep -aE "ALOG|CRASH|Unable|<r0]|GfxDevice|SHOT" eng.log; tail -8 eng.log'
 ```
 - **`test.sh N F`** = SEMPRE `timeout -s KILL N` + mata leftovers (N seg, F=CUP_FRAMES).
@@ -970,7 +970,7 @@ ssh root@192.168.31.89 'cd /storage/roms/terraria; export TER_SHOT=12 CUP_DLLOG=
 
 ## ☠️ REGRA CRÍTICA: NUNCA rodar sem timeout
 Run sem `timeout` deixa a thread `UnityMain` (detached) IMORTAL em busy-spin → pina os 4 cores
-→ sshd não responde (banner timeout) → OOM não mata → **só power-cycle físico do `.89` resolve**.
+→ sshd não responde (banner timeout) → OOM não mata → **só power-cycle físico do device resolve**.
 Já aconteceu (1h+ travado). SEMPRE `test.sh`. Se travar: pedir ao usuário pra religar o device.
 
 ## 🗺️ Arquitetura
@@ -981,7 +981,7 @@ Já aconteceu (1h+ travado). SEMPRE `test.sh`. Se travar: pedir ao usuário pra 
   via dlsym + stub log). `recon_fill_passthrough()` é chamado antes de cada `so_resolve` (main.c).
   Ao regenerar, sempre `mv src/imports_unity.gen.c src/imports.gen.c`.
 - **Payloads** (`.gitignore`, BYO-data, JÁ no device): `payload/lib/*.so`, `payload/assets/assets/bin/Data/**`.
-  Origem: APK `/home/nextos/Downloads/Terraria-v1.4.5.6.4terariaapk.com.apk` (Unity IL2CPP + PAIRIP;
+  Origem: APK `/home/root/Downloads/Terraria-v1.4.5.6.4terariaapk.com.apk` (Unity IL2CPP + PAIRIP;
   PAIRIP IGNORADO, global-metadata LIMPO `af1bb1fa`).
 - **Device**: `/storage/roms/terraria/{terraria, lib*.so, bin/Data/**, userdata/}`. O `boot.config`
   no device (≠ do APK) tem `gfx-disable-mt-rendering=1`, `androidUseSwappy=0`, `gfx-enable-*gfx-jobs=0`.

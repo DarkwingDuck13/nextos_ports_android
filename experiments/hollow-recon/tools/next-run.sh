@@ -1,6 +1,6 @@
 #!/bin/bash
-# next-run.sh -- espera o .89 voltar, resgata logs do wedge, deploya e roda.
-DEV=192.168.31.89
+# next-run.sh -- espera o device voltar, resgata logs do wedge, deploya e roda.
+DEV="${DEV:-device-ip}"   # set DEV to the device IP before running
 SSH="ssh -F /dev/null -o ConnectTimeout=6 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$DEV"
 SCP="scp -F /dev/null -o ConnectTimeout=6 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 HR=~/nextos_ports_android/experiments/hollow-recon

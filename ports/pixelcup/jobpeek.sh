@@ -1,8 +1,8 @@
 #!/bin/bash
 # jobpeek.sh — dump do job-manager do Unity no muro async-load. Usa o padrão PROVADO do gdbpeek.
 set -u
-HOST=192.168.31.164
-export SSHPASS=emuelec
+HOST="<device-ip>"
+export SSHPASS="<senha>"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 root@$HOST"
 SCP="sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 cd "$(dirname "$0")"

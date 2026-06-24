@@ -5,7 +5,7 @@
 - ✅ **Meia-resolucao automatica p/ 1GB** funcionando (etc2_halve.c; GPU 129->27MB). Cache etc2cache_half no device.
 - 🔴 **Stutter no R36S = MURO DE RAM, SEM fix viavel em 480MB.** PROVADO: motor RenderWare do Bully (~700MB) nao cabe
   nos 480MB; build mobile teve o gerenciamento de memoria de streaming GUTADO (despejo sem ref-count -> nao libera).
-  Confirmacao do NextOS: **roda LISO no Mali-450 (832MB)** -> e RAM, nao GPU. Tentativas que FALHARAM (todas no muro):
+  Confirmacao: **roda LISO no Mali-450 (832MB)** -> e RAM, nao GPU. Tentativas que FALHARAM (todas no muro):
   cap256(mais pesado, OOM), mlock(OOM no load), swappiness 10/200(stutter/OOM), BULLY_STREAM_MULT(IplStreamingDist=0),
   BULLY_EVICT(despejo gutado libera zero). 
 - 🎯 **VEREDITO: o Bully e jogo de Mali-450 832MB+ / 1GB+ usavel** (la roda liso, e o port esta pronto+melhor com os
@@ -13,15 +13,15 @@
 - **AMANHA, 2 caminhos:** (A) EMPACOTAR o port pra Mali-450/1GB+ (PortMaster zip) — caminho recomendado, o trabalho
   ja rende; (B) se insistir no R36S: RE do CStreaming pra reconstruir deletable-flags/ref-count e religar o despejo
   (BULLY_EVICT ja tem a estrutura do hook em jni_shim:779, falta a maquinaria de baixo) — dificil/incerto.
-- **Device** (R36S, link-local): `~/Área de trabalho/TRABALHO AGENTE CODE/r36s-net.sh` ANTES; `sshpass -p archr ssh
-  root@169.254.170.2`. Estado deixado: 0 bully, binario 5725d864 (=repo), launcher meia-res sem flags experimentais,
+- **Device** (R36S, link-local): rodar o `r36s-net.sh` (docs internas) ANTES; `sshpass -p <senha> ssh
+  root@<device-ip>`. Estado deixado: 0 bully, binario 5725d864 (=repo), launcher meia-res sem flags experimentais,
   swappiness 60. Caches no device: etc2cache(full 873M), etc2cache_half(meia-res, ATIVO), etc2cache_lo(cap256 orfao,
   pode apagar). ⚠️SEMPRE matar bully por /proc/*/exe (pkill-x deixa zumbi); NUNCA swapfile no SD (trava).
 - **Flags do binario** (todas opt-in, OFF no launcher): BULLY_STUTTERLOG, BULLY_MLOCK_CODE/CAP_MB, BULLY_STREAM_MULT,
   BULLY_TEX_MAXDIM (cap extra na meia-res), BULLY_EVICT, BULLY_NO_HALF (desliga meia-res).
 
 ## ATUALIZACAO 2026-06-22 — BRANCO RESOLVIDO+CONFIRMADO + MEIA-RESOLUCAO (1GB)
-- **Branco do gameplay RESOLVIDO** (NextOS "imagem apareceu" + `[fbo] ATTACH status=0x8cd5 OK`, INCOMPLETO=0).
+- **Branco do gameplay RESOLVIDO** ("imagem apareceu" + `[fbo] ATTACH status=0x8cd5 OK`, INCOMPLETO=0).
   RAIZ REAL (≠ a do filtro mipmap, que foi pista falsa — incompleta dá PRETO): o **render-target da cena 3D**
   herdava `bully_cur_tex_path` STALE (setado só ao abrir `.tex` em jni_shim.c:580, NUNCA limpo) → casava o cache →
   `bully_try_etc2` subia ETC2 DENTRO do RT → FBO INCOMPLETO → 3D não compunha → branco chapado (HUD ok por cima).
@@ -36,7 +36,7 @@
 
 ## METODO QUE FUNCIONOU (chegar no gameplay e printar por SSH no R36S)
 - **Matar SEMPRE por `/proc/*/exe`** (pkill -x/-f NÃO casa — engine renomeia thread → deixa ZUMBI vivo comendo
-  120MB RAM+20MB GPU = falso-OOM/branco; foi por isso que eu OOMava e o NextOS não).
+  120MB RAM+20MB GPU = falso-OOM/branco; foi por isso que a sessão SSH OOMava e o device físico não).
 - **NUNCA swapfile no SD** (faz thrash infinito em SD lento = device TRAVA, sshd morre; o stock 512 zram OOM-mata
   LIMPO e o device se recupera sozinho). Rodar em 1GB stock mesmo (480MB usável + 512 zram).
 - Reboot limpo antes de testar (zera zumbi+GPU). Captura: `/dev/shm/bully_shot` em loop enquanto vivo (alive por
@@ -72,7 +72,7 @@ que o Mali-450 já fazia e ficava bom.
   `bully.bak-prefiltro` (device) e `bully.compat.gcc.bak-prefiltro` (host).
 - Device pronto: `.use_etc2cache` presente (ETC2 ON), nada rodando.
 
-## VERIFICAR (NextOS pela ES)
+## VERIFICAR (pela ES)
 Abrir o Bully na ES e ENTRAR no gameplay. Esperado: personagens/pessoas/mundo agora com **textura**
 (não branco). Menu já confirmado sem regressão (continua perfeito com o fix).
 
@@ -84,8 +84,8 @@ não swappável (swapfile de 3GB no SD foi adicionado em runtime e NÃO ajudou; 
 - Lançando por SSH eu **não consegui** alcançar uma cena 3D estável: o load do attract/New-Game estoura a
   GPU e mata o bully no menu (frames ~2500-7700, variável). **Baixar o cap NÃO ajuda** (cap=44 morreu antes
   que cap=64) → o estouro é das alocações do **próprio motor** (RTT + texturas pequenas não-paginadas + VBOs),
-  que nosso paging não controla. NextOS ALCANÇA o gameplay no device dele (viu os brancos lá) — provável
-  diferença: launch pela ES é mais enxuto que minha sessão SSH.
+  que nosso paging não controla. O gameplay É alcançado no device físico (vimos os brancos lá) — provável
+  diferença: launch pela ES é mais enxuto que a sessão SSH.
 - Toggles novos no launcher (`Bully.sh`): `BULLY_PAGE_CAP_MB` (default 64, override por env),
   `BULLY_SYNC_PAGE=1` (re-upload síncrono, sem pop-in branco do async; default = async).
 

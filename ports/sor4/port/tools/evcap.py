@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # evcap.py - le /dev/input/event2 (pad real) e imprime cada botao/eixo com timestamp.
-# Usado p/ descobrir o mapeamento FISICO do pad do NextOS.
+# Usado p/ descobrir o mapeamento FISICO do pad do porter.
 import struct, time, sys, os
 dev = sys.argv[1] if len(sys.argv)>1 else "/dev/input/event2"
 dur = float(sys.argv[2]) if len(sys.argv)>2 else 40

@@ -118,7 +118,7 @@ RC=$?
 ts "=== ducktales exited rc=$RC ==="
 } 2>&1 | tee -a "$GAMELOG"
 
-# split categorized logs for quick inspection (NextOS's requested layout)
+# split categorized logs for quick inspection (requested layout)
 grep -iE 'crash|sig[0-9]|abort|SIGSEGV|fatal' "$GAMELOG" > "$LOGDIR/crash.log" 2>/dev/null
 grep -iE 'audio|fmod|opensl|pulse|pcm' "$GAMELOG"        > "$LOGDIR/audio.log" 2>/dev/null
 grep -iE 'input|controller|gamepad|key|motion|joystick'  "$GAMELOG" > "$LOGDIR/input.log" 2>/dev/null

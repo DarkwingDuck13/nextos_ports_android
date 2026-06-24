@@ -1076,7 +1076,7 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
   }
   /* 🏎️ DYSMANTLE_TEXSCALE=F: reduz TODA textura RGBA grande por fator F
    * (ex 1.2 = ~83% das dimensões, bilinear). Menos banda de memória/cache de
-   * textura na GPU — ideia do NextOS p/ os milhares de itens no mapa. */
+   * textura na GPU — ideia do porter p/ os milhares de itens no mapa. */
   {
     static float texscale = -1.0f;
     if (texscale < 0.0f) {

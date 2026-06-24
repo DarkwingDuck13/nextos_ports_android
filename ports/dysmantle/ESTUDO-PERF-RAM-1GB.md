@@ -3,7 +3,7 @@
 > Estudo só (NÃO aplicado). Base medida 2026-06-15 com o jogo rodando no X5M.
 > Objetivo: caber/rodar liso em **devices de ≤1GB de RAM** e matar os flickers.
 
-## Definição do alvo: por RAM, NÃO por GPU  (decisão NextOS 2026-06-15)
+## Definição do alvo: por RAM, NÃO por GPU  (decisão do porter 2026-06-15)
 Gatear as economias de RAM por **capacidade de RAM (≤1GB)**, não pelo nome da GPU. Assim o
 perfil cobre QUALQUER device de 1GB — **Mali-450/Amlogic (fbdev)**, **R26S (KMSDRM)**, R36S etc.
 **Dois eixos independentes:**
@@ -14,7 +14,7 @@ perfil cobre QUALQUER device de 1GB — **Mali-450/Amlogic (fbdev)**, **R26S (KM
 - **Formato de textura (T3)** → depende da **capacidade da GPU** (amostra ETC2? só ETC1?),
   detectada em RUNTIME por extensão GL — independente de RAM e do nome do device.
 
-## Princípio: GERAL vs gateado  (decisão NextOS 2026-06-15)
+## Princípio: GERAL vs gateado  (decisão do porter 2026-06-15)
 **Se a melhoria é estritamente melhor (ou neutra) em todo lugar → aplica pra TODOS.** Só
 gateia no perfil ≤1GB o que **custa algo** (nitidez, resolução, alpha) em device capaz.
 Classificação das frentes por esse critério:
@@ -143,7 +143,7 @@ Cortes aditivos pra fechar a conta em 1GB depois de T2/T3:
 
 ---
 ## MEDIDO IN-GAME no .127 (Mali-450 Utgard, 832MB, fbdev) — 2026-06-16
-Device de prova = **.127** (senha nextos): Mali-450/Utgard, **832MB RAM + 511MB swap**, fbdev.
+Device de prova = **.127** (senha <senha>): Mali-450/Utgard, **832MB RAM + 511MB swap**, fbdev.
 - **Port do zero OK**: PSX apagada (20G), assets(1.4G fixados)+libs+binário deployados.
   ⚠️ ES lista de **`/storage/roms/ports_scripts/<Nome>.sh`** (NÃO `ports/`); dados em `ports/dysmantle/`.
 - **🔊 ÁUDIO estava MUDO** (não era T5): launcher forçava `alsa`, mas .127 roda **PulseAudio**
@@ -155,7 +155,7 @@ Device de prova = **.127** (senha nextos): Mali-450/Utgard, **832MB RAM + 511MB 
   ~igual na área inicial (textura grande não é o gargalo lá). → **roda mas APERTADO, vive no swap**.
 - **Conclusão**: cortar os 533MB (T3) tira do swap = mais liso; T2 baixa FBO = +fps. Fazer os 2.
 
-## PLANO T2+T3 (decisão NextOS 2026-06-16: "fazer os 2", T3 "direito no extrator")
+## PLANO T2+T3 (decisão do porter 2026-06-16: "fazer os 2", T3 "direito no extrator")
 - **T3 (ETC1) NO EXTRATOR/fixpak, não no runtime**: o `fixpak.c` (roda 1x na instalação)
   passa a **transcodar as texturas opacas pra ETC1** e gravar no pak (em vez de decodificar
   ETC2→JPEG/RGBA). Runtime sobe `glCompressedTexImage2D(ETC1)` direto → ~8× menos RAM, zero

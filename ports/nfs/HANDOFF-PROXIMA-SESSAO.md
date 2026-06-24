@@ -1,6 +1,6 @@
 # NFS Most Wanted (Mali-450 so-loader) — HANDOFF p/ próxima sessão (2026-06-15)
 
-Device em **192.168.31.164** (subnet .31, NÃO .0/.1; senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
+Device em **<device-ip>**. Port em `ports/nfs/` (neste repo).
 Build: `./build.sh`. Rodar no device: `cd /storage/roms/nfs && ./go.sh` (ou os g*.sh).
 Ghidra: `~/re-tools` (`export GHIDRA_INSTALL_DIR=~/re-tools/ghidra_12.1.2_PUBLIC JAVA_HOME=~/re-tools/jdk-21.0.11+10`).
 RE: projeto JÁ ANALISADO em `~/re-tools/proj_an` (nfsan); decompile rápido c/
@@ -10,7 +10,7 @@ Workflow de teste de tela: `cp auto.raw snap.raw` no device + scp + PIL `frombyt
 auto.raw é escrito a CADA present (race c/ scp → snapshot via cp; md5 do auto.raw p/ detectar mudança).
 
 ## 🎨🟢🏆 PARTE 18 (2026-06-15) — TEXTURAS MAGENTA/VERDE DO CENÁRIO RESOLVIDAS (ABI softfp/hardfp)
-NextOS: "todas as texturas estão ok, bonito mesmo". **CAUSA-RAIZ = mismatch de ABI de float.**
+Confirmado: "todas as texturas estão ok, bonito mesmo". **CAUSA-RAIZ = mismatch de ABI de float.**
 `readelf -h`: libapp.so (engine) = **SOFT-FLOAT** (0x5000200, float args nos regs CORE r0-r3);
 nosso binário/shim = **HARD-FLOAT** (0x5000400, float no VFP). Os wrappers GL com **float args**
 (egl_shim.c) liam os floats do VFP = LIXO → cor de material (glUniform4f) e **cor de vértice
@@ -27,7 +27,7 @@ ponteiro) NÃO.** Diag (default-off) p/ chegar aqui: NFS_SWAPRB/ETCDUMP/NOLIGHT/
 FORCEGREEN/UNILOG. Becos descartados: ETC1 do cenário decodifica normal (texture2ddecoder), colorMask
 (0 no CMASKLOG), R/B swap (magenta simétrico, listras do carro azuis ok), lighting (NOLIGHT/NOHEMI
 não corrigiram). Commit 80921ad. ⚠️ Os HANGS no boot (frame ~1260/1350) eram o **emustation
-voltando**→`systemctl mask emustation` resolve (não só stop). FALTA POUCO (NextOS).
+voltando**→`systemctl mask emustation` resolve (não só stop). FALTA POUCO.
 
 ## 🔊🟢🏆 PARTE 17 (2026-06-15) — ÁUDIO FUNCIONANDO! init + latência + música + SFX
 
@@ -91,7 +91,7 @@ e ANTES do init faz: `setOutput(22=OpenSL)` → `setSpeakerMode` → `getNumDriv
 e `NFS_FMODSWEEP` (testa quais setOutput aceita). dlopen de libOpenSLES → shim
 (opensles_shim.c, ponte OpenSL ES → SDL2 audio; SDL escolhe driver sozinho = pulseaudio).
 
-### FATOS ESTABELECIDOS (todos medidos no device .164):
+### FATOS ESTABELECIDOS (todos medidos no device):
 1. **33 = FMOD_ERR_INVALID_SPEAKER** — CONFIRMADO. As strings de erro FMOD estão no
    `libapp.so` na ordem padrão do `fmod_errors.h`: índice 25="FMOD was not initialized
    correctly..." (=INITIALIZATION, é o erro do createSound depois), 33="An invalid speaker
@@ -137,7 +137,7 @@ Descobrir QUAL subcall de 0x404dc retorna 33. Opções:
       próprio System_Create+init, hookar EventSystem::init não basta — hookar `System::init`
       global. Ver no libapp como o SoundManager obtém o System.
 Refs de outros ports com som (o usuário citou): Cuphead (deu trabalho), Sonic, Bully — todos
-conseguiram som; ver receitas deles em ~/.agente (memórias) e ports/*/src.
+conseguiram som; ver receitas deles nas notas internas do projeto e ports/*/src.
 
 ### Como reproduzir o diagnóstico:
 ```

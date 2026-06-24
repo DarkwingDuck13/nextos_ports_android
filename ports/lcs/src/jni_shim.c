@@ -4703,7 +4703,7 @@ static void install_hooks(void) {
       }
     }
   }
-  /* RAIZ do "asfalto preto" no Mali-450 (diagnostico NextOS 2026-06-23):
+  /* RAIZ do "asfalto preto" no Mali-450 (diagnostico do porter 2026-06-23):
    * o passe de REFLEXO clima/sol vaza PRETO no Utgard. Assinatura: some a NOITE
    * (sem sol), some olhando PRO SOL (clarao = angulo de reflexao bate), some com
    * FAROL/luz aditiva, PISCA na chuva (asfalto molhado = reflexo ativo). NAO e
@@ -5864,7 +5864,7 @@ void jni_load(void) {
       }
     }
     /* REPRO DIAG do "asfalto preto": forca hora (sol baixo, p.ex. 15h como nas
-     * fotos do NextOS) e WetRoads/Rain (reflexo clima+sol ATIVO) para reproduzir
+     * fotos do porter) e WetRoads/Rain (reflexo clima+sol ATIVO) para reproduzir
      * o bug view-dependent de forma deterministica num screenshot headless. */
     if (getenv("LCS_FORCE_HOUR")) {
       static unsigned char *ch2=NULL,*cm2=NULL; static int r2=0;
@@ -5958,7 +5958,7 @@ void jni_load(void) {
      * DIRECIONAL do MUNDO (re3 Lights.cpp:33-35,48-50) ate o minimo 0.6 quando o
      * Sun Corona aparece na tela, e OSCILA conforme a camera vira (Coronas.cpp:109+).
      * Os PEDS sao ISENTOS (usam AmbientColourForPedsCarsAndObjects, +30%), por isso
-     * o CHAO/mundo escurece mas o Toni nao. Diagnostico NextOS: "sombra da arvore
+     * o CHAO/mundo escurece mas o Toni nao. Diagnostico do porter: "sombra da arvore
      * normal, o preto oscila por cima como nuvem; farol/luz revela; some olhando o
      * sol". Fixar LightsMult=1.0 por frame remove a oscilacao/escurecimento do mundo.
      * Default ON; LCS_NO_LIGHTSMULT_FIX desliga; LCS_LIGHTSMULT=v ajusta. */

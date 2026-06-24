@@ -7,12 +7,12 @@ so-loader. Fonte do loader: https://github.com/initdream/crazytaxi-aarch64
 🟢🏆 Render (Mali-450 GLES2, 1280x720, 30fps) + SOM (pulse 44100/2ch) +
 CONTROLE via gptokeyb funcionando (scanCodes 21/22/103/108 confirmados no log,
 "Unpause brute-force complete!", menu de pause abriu com START). Aberto pela ES
-na TV. Falta: empacotar PortMaster; NextOS jogar de verdade e ajustar .gptk se
+na TV. Falta: empacotar PortMaster; jogar de verdade e ajustar .gptk se
 algum botão estiver trocado.
 
 ## ⚠️ Device / como abrir (NÃO esquecer)
 - Device = o mesmo do Terraria (Amlogic-old, Gxbb/S905, Mali-450 fbdev). IP MUDA
-  por DHCP (.89→.88 em 18/06). Achar: ping-sweep 192.168.31.x + `ls
+  por DHCP (.89→.88 em 18/06). Achar: ping-sweep na subrede local + `ls
   /storage/roms/ports/crazytaxi`. Host key muda no reboot → `ssh-keygen -R <ip>`.
 - ABRIR SÓ ASSIM: `systemctl stop emustation; bash "/storage/roms/ports_scripts/
   Crazy Taxi Classic.sh"` em foreground PURO (do meu Bash tool: run_in_background).
@@ -60,6 +60,6 @@ so_find_addr retorna uintptr_t atribuído a ponteiros de função).
 - useTouch=0 e isPremiumUser=1 são patchados em main.c.
 
 ## TODO
-- [ ] NextOS validar input/gameplay com gamepad (entra menu, dirige)
+- [ ] validar input/gameplay com gamepad (entra menu, dirige)
 - [ ] empacotar PortMaster zip (.sh topo + pasta) p/ BYO-data ou distribuir
 - [ ] checar perf (30fps cap pq GPU < GLES 3.1) e áudio em jogo

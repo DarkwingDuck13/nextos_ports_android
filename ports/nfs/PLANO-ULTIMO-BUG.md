@@ -1,7 +1,7 @@
 # NFS MW — TELA do DISCLAIMER (splash MOST WANTED): RESOLVIDA 2026-06-15 (pin no atlas de boot)
 
-Device **192.168.31.164** (subnet .31, senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
-Build `./build.sh`. Deploy `scp nfs root@192.168.31.164:/storage/roms/nfs/nfs` (matar nfs antes).
+Device **<device-ip>**. Port em `ports/nfs/` (neste repo).
+Build `./build.sh`. Deploy `scp nfs root@<device-ip>:/storage/roms/nfs/nfs` (matar nfs antes).
 
 ## ✅ RESULTADO (commit desta sessão)
 A 4ª tela (splash "© 2018 Electronic Arts Inc.") tinha a **parte de cima toda fora de ordem**

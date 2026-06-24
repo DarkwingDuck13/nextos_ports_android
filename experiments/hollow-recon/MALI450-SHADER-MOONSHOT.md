@@ -290,15 +290,15 @@ progride MENOS -> menos objetos posicionados -> render esparso.
 3. Tracear o que o jogo espera no estado parcial (qual yield/await nao resolve).
 
 ## Atualização 2026-06-11 (parte 10) — retomada pós-Bogodroid: HK_PTHREAD_SHIM=1 é OBRIGATÓRIO
-- Voltamos pro nosso loader (decisão do NextOS: controle total > Bogodroid fechado, que confirmou
+- Voltamos pro nosso loader (decisão do porter: controle total > Bogodroid fechado, que confirmou
   a parede do GfxDevice mas não dava pra patchar). Binário+assets ainda em /storage/hollow-recon/ (.87).
 - 🔑 **CRASH REPRODUZIDO + DIAGNOSTICADO:** rodar SEM `HK_PTHREAD_SHIM=1` → SEGV `lr=libil2cpp+0x68014c`.
   Desmontagem (apkextract): `libil2cpp+0x680148 = bl pthread_cond_wait@plt` (x0=cond x24, x1=mutex x19;
   incrementa contador [x21+96] antes). = **ABI bionic↔glibc**: libil2cpp passa pthread_cond_t BIONIC
   (4B) p/ o pthread_cond_wait do glibc (48B) → lê lixo → fault. **FIX = HK_PTHREAD_SHIM=1** (traduz
   bionic→glibc, já implementado em pthread_shim.c). As vitórias das partes 3-9 usavam o shim.
-- ⚠️ Run COM o shim **wedgou o device** (GPU/kernel travou, SSH inacessível, precisou power-cycle do
-  NextOS) ANTES de eu confirmar se passou do crash. Confirmar no próximo run pós-reboot.
+- ⚠️ Run COM o shim **wedgou o device** (GPU/kernel travou, SSH inacessível, precisou power-cycle
+  manual) ANTES de eu confirmar se passou do crash. Confirmar no próximo run pós-reboot.
 - ENV CORRETO p/ rodar: `HK_GLES2=1 HK_PTHREAD_SHIM=1 SDL_VIDEODRIVER=mali NODRIVER=1 GC_DONT_GC=1 sh saferun.sh 70`.
 - Insight do Bogodroid (FakeJni VM completa) p/ o muro de INPUT da tela de idioma — explorar depois.
 - Desmontagens cacheadas: ~/hollow-port/apkextract/lib/arm64-v8a/{libunity.so,libil2cpp.so} + /tmp/unity.dis.
@@ -312,8 +312,8 @@ progride MENOS -> menos objetos posicionados -> render esparso.
   - **HK_TEXCAP=N**: textura > NxN é alocada reduzida (shift) no stub_glTexStorage2D + upload
     downsampled point-sample no diag_glTexSubImage2D (rastreia bound tex via my_glBindTexture).
     (Cuphead: texturas 2048² travavam o Utgard → CUP_TEXHALF=512.)
-- ⚠️ DESCOBERTA operacional: ~/.ssh/config mapeia 192.168.31.87 → HostName **192.168.31.89**.
-  O device REAL é .89; ping em .87 não diz nada. Pingar/scriptar SEMPRE .89.
+- ⚠️ DESCOBERTA operacional: ~/.ssh/config mapeia o alias do device → HostName **<device-ip>**.
+  O device REAL é o IP mapeado; ping no alias não diz nada. Pingar/scriptar SEMPRE o IP real.
 - ENV do próximo run (curto, 40s): HK_GLES2=1 HK_PTHREAD_SHIM=1 HK_SWAPMS=20 HK_TEXCAP=1024
   SDL_VIDEODRIVER=mali NODRIVER=1 GC_DONT_GC=1 sh saferun.sh 40
 - 1o passo pós-reboot: LER run.log do wedge (sync 1s flushou) → onde travou decide o resto.

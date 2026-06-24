@@ -1,8 +1,8 @@
 # DYSMANTLE v5.1 — HANDOFF (2026-06-18) — LEAN PAK (corta disco) + muro do "ETC1 puro"
 
 ## ✅ ENTREGUE E VALIDADO NO DEVICE (.164)
-- **`~/Área de trabalho/DYSMANTLE v5.zip`** (3.7MB) — BYO-DATA, padrão PortMaster.
-- Device .164 deixado PRONTO pro NextOS abrir pela ES (install já convertido, markers
+- **`DYSMANTLE v5.zip`** (3.7MB, diretório de entregas) — BYO-DATA, padrão PortMaster.
+- Device .164 deixado PRONTO p/ abrir pela ES (install já convertido, markers
   `.setup_done/.textures_fixed/.etc1_cached` setados → NÃO re-bakeia; ES rodando).
 - Validação E2E no device: o **próprio `texbake.aarch64` do device** rodou `--leanpak`
   (output byte-idêntico ao host: data.pak 465801651, gfx 76910815) → boot → **MENU
@@ -68,5 +68,5 @@ resto é JPEG/PNG real. O cache ETC1 (602MB) **duplica** essas texturas. O custo
 ## 🚨 REGRA: matar+confirmar 0 instâncias por `/proc/*/exe` antes de lançar (comm=Main).
 
 ## FALTA
-- NextOS abrir pela ES no device (já pronto) e confirmar gameplay de OUVIDO/OLHO na TV.
-- (Opcional) commitar no master quando o NextOS pedir (SEM co-autor Agente).
+- Abrir pela ES no device (já pronto) e confirmar gameplay de OUVIDO/OLHO na TV.
+- (Opcional) commitar no master quando solicitado (commits limpos, zero co-autor).

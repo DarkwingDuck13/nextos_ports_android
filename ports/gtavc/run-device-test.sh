@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-HOST="${GTAVC_HOST:-192.168.31.87}"
+HOST="${GTAVC_HOST:-<device-ip>}"
 PASS="${GTAVC_PASS:-emuelec}"
 PORT_DIR="/storage/roms/ports/gtavc"
 SWAP_FILE="/storage/roms/gtavc.swap"

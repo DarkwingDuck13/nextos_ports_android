@@ -1,7 +1,7 @@
 # Cuphead — backend KMSDRM p/ o X5M (fbdev mantido) — 2026-06-13
 
-## Missão (NextOS)
-Rodar o port no **s905x5m** (192.168.31.165). Hoje só abre em **mali fbdev**.
+## Missão
+Rodar o port no **s905x5m** (`<device-ip>`). Hoje só abre em **mali fbdev**.
 Queremos **kmsdrm também** no X5M, como fallback/alternativa, **mantendo o fbdev** do
 Amlogic-old (Mali-450). "manteremos o fbdev mas vamos ter o kmsdrm também".
 
@@ -36,7 +36,7 @@ Binário rebuildado (build.sh, toolchain Amlogic-old). O **mesmo binário roda n
 - senão → **fbdev**: `CUP_VIDEO=fbdev`, `SDL_VIDEODRIVER=mali` (igual go.sh do Amlogic-old).
 - `go.sh` (Amlogic-old) permanece como referência fbdev.
 
-## ✅✅ VALIDADO NO X5M (.103, senha nextos) 2026-06-13 — KMSDRM FUNCIONA
+## ✅✅ VALIDADO NO X5M (.103, senha <senha>) 2026-06-13 — KMSDRM FUNCIONA
 O X5M é **.103** (hostname Amlogic-no, /dev/dri/card0+renderD128, /dev/fb0). SDL2 NATIVO
 2.32.10 do device JÁ tem **KMSDRM+Wayland** (sem driver mali) → não precisou recompilar SDL.
 Stack Valhall: libmali/libgbm/libdrm.so.2/libEGL/libGLESv2. RAM 3.6G. Frontend=**essway.service**

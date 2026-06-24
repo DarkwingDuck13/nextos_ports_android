@@ -1,10 +1,10 @@
 #!/bin/sh
-# Pixel Cup Soccer (Unity 2022.3.62f3 IL2CPP, ES2 nativo) so-loader — Mali-450 fbdev (.164).
+# Pixel Cup Soccer (Unity 2022.3.62f3 IL2CPP, ES2 nativo) so-loader — Mali-450 fbdev.
 set -u
 GAMEDIR=/storage/roms/ports/pixelcup
 cd "$GAMEDIR" || { echo "sem $GAMEDIR"; exit 1; }
 
-# nunca lançar sobre instância viva (matcher por /proc/PID/exe — regra do NextOS #3)
+# nunca lançar sobre instância viva (matcher por /proc/PID/exe — regra #3)
 pc_pids() {
   for p in /proc/[0-9]*; do
     e=$(readlink "$p/exe" 2>/dev/null)

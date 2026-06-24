@@ -2,7 +2,7 @@
 
 Port iniciado 2026-06-21. Base = port do Bully (engine `libGame.so` War Drum), mas a LCS usa
 framework War Drum **mais novo** (JNI `GTAJNIlib_*`/`RockstarJNIlib_*`, dados WAD via
-`LogicalFS`, EGL auto-gerenciado). Device de trabalho: **.88** (root/emuelec, Mali-450 Utgard).
+`LogicalFS`, EGL auto-gerenciado). Device de trabalho: **.88** (root/<senha>, Mali-450 Utgard).
 
 ## Estado atual: 🟡 BOOTA, ESTÁVEL, CARREGA TUDO — mas tela PRETA (state-machine travada)
 O jogo carrega 100% dos dados, passa todos os crashes, roda o frame loop estável — porém a
@@ -75,9 +75,9 @@ OU um GL-op específico no flood de uploads. Mundo não renderiza ainda (fase de
 reduzir count/load (eviction CStreaming::MakeSpaceFor, ou TEX_LIGHT estilo Bully) OU achar o GL-op
 exato do wedge (tracer no heartbeat). Mirar: sobreviver o load → mundo renderiza.
 
-### INFRA DE TESTE (regras do NextOS — NÃO fazer ele reiniciar)
+### INFRA DE TESTE (regras do porter — NÃO fazer ele reiniciar)
 - **Watchdog no device**: `( sleep 75; <lcs vivo?> && reboot -f ) &` antes de rodar → auto-recupera
-  wedge SEM o NextOS. (Mali kill durante GL = D-state, só reboot resolve.)
+  wedge SEM intervenção manual. (Mali kill durante GL = D-state, só reboot resolve.)
 - **Heartbeat fsync** (`heartbeat.txt`): última fase/frame/texMB sobrevive ao wedge.
 - **Testes curtos**: `LCS_MAXFRAMES=N` (_exit limpo), `LCS_STARTFRAME=N` (auto-start cedo).
 - ES **masked**. Swap em `/storage/roms/bigswap.img`. gdb+gdbserver no device.
@@ -127,7 +127,7 @@ permanente (instrumentar os 5 `lglXxxCreator::hasPendingTasks` — ponteiros em 
 7fd000+248 / 7fd000+1824 / 7fe000+2552 / 7fe000+224). Suspeitas: (a) thread async do loader travada
 (uma thread fica em state R rodando), estilo job-system do RE4 (sh_sem); (b) task referencia asset
 que falha (WEAPON_MULTI.DAT FALTA? ou modelo do gameplay). Resolver o streamer → init completa →
-script roda → player posicionado → mundo renderiza. DEPOIS: religar menu real + controles (pedido do NextOS).
+script roda → player posicionado → mundo renderiza. DEPOIS: religar menu real + controles (pedido do porter).
 
 ### Flags novas desta sessão (jni_shim.c, todas gated): 
 `LCS_GLSTATS` (log dScreen/dFbo/nVis/fade/cam/ped/veh por frame — SEM fdatasync), `LCS_UNFADE`
@@ -178,11 +178,11 @@ ajudam (o renderer precisa das ZONAS, não só do flag). LEAD: corrigir o parse 
   Flags diag novas: LCS_RENDERDIAG, LCS_MATT2CLASSIC, LCS_OBFDIAG, LCS_NOCRASHHANDLER, LCS_XMLPLUS1.
 
 ═══════════════════════════════════════════════════════════════════════════════
-## SESSÃO 5 (2026-06-21, Agente continuando o Codex): CUTSCENE DE INTRO — máquina de FINISH mapeada
+## SESSÃO 5 (2026-06-21, continuação): CUTSCENE DE INTRO — máquina de FINISH mapeada
 ═══════════════════════════════════════════════════════════════════════════════
-Contexto: Codex levou a cutscene de intro (cscoach/Toni chega a LC) a RENDERIZAR em 3D
+Contexto: o dev anterior levou a cutscene de intro (cscoach/Toni chega a LC) a RENDERIZAR em 3D
 (biblioteca+personagem+geometria texturizada) — salto além do "mundo preto" da s4. MAS ela
-fica em LOOP: toca, e nunca entrega o gameplay ("entra em gameplay e pula pra vídeo"). Codex
+fica em LOOP: toca, e nunca entrega o gameplay ("entra em gameplay e pula pra vídeo"). o dev anterior
 tentou forçar FinishCutscene/HasCutsceneFinished/skip → loop persiste (tratava sintoma).
 
 DIAGNÓSTICO COMPLETO (disassembly libGame.so + diag read-only no device, flags novas LCS_CUTSCENE_TIMEDIAG/LCS_FLYBYDIAG/LCS_CUTSCENE_SPLINEFIX):
@@ -234,7 +234,7 @@ no state 9 JA com feobj+25=1 e o sistema de script inicializado (fluxo menu->jog
 PROXIMO PASSO (proxima sessao): por que CTheScripts::StartNewScript retorna NULL (pool CRunningScript
 nao alocado/cheio no nosso forced-newgame)? Garantir CTheScripts::Init/pool no fluxo de new-game, OU
 descobrir qual passo do menu->jogo seta feobj+25 persistente (sem re-init loop) + inicializa scripts.
-Refs do NextOS p/ estudar: PSVita GTASA, nosso reVC so-loader, e o BULLY (MESMA libGame.so) — como
+Refs p/ estudar: PSVita GTASA, nosso reVC so-loader, e o BULLY (MESMA libGame.so) — como
 eles entram no jogo com scripts+camera vivos. Bully = melhor ref (engine identica).
 GANHOS confirmados desta sessao: (1) loop da s3 (main.scm 85x) RESOLVIDO - agora 2x, init 1x.
 (2) fade-hack NODOFADE/UNFADE quebra o fade da cutscene - tornar condicional (LCS_NO_FADEHACK).
@@ -242,10 +242,10 @@ GANHOS confirmados desta sessao: (1) loop da s3 (main.scm 85x) RESOLVIDO - agora
 LCS_FLYBYDIAG, LCS_CAMDIAG, LCS_CUTSCENE_SPLINEFIX, LCS_NO_FADEHACK(run30.sh), LCS_FE25.
 
 ═══════════════════════════════════════════════════════════════════════════════
-## SESSÃO 6 (2026-06-22, Agente continuando o Codex): CÂMERA DA CUTSCENE — REORIENTAÇÃO
+## SESSÃO 6 (2026-06-22, continuação): CÂMERA DA CUTSCENE — REORIENTAÇÃO
 ═══════════════════════════════════════════════════════════════════════════════
-Contexto: NextOS relatou "câmera anda um pouco e para" (geral, em TODAS as cutscenes/vídeos),
-"semáforo grande", "quadrado preto no chão". Codex tinha acabado de adicionar um helper manual
+Contexto: o porter relatou "câmera anda um pouco e para" (geral, em TODAS as cutscenes/vídeos),
+"semáforo grande", "quadrado preto no chão". o dev anterior tinha acabado de adicionar um helper manual
 `LCS_CUTSCENE_FLYBY_DIRECT` (chama CCam::Process_FlyBy à mão pelo wrapper de Update_overlay).
 
 ACHADOS (disassembly + análise dos logs existentes, SEM regredir nada):
@@ -265,15 +265,15 @@ ACHADOS (disassembly + análise dos logs existentes, SEM regredir nada):
      f=1800 cmode=17 clock=56.4s spline=0.995
      f=1809 spline=1.000 csfin=1 -> FinishCutscene + restore camera (modo 17->4)
    A câmera (modo 17=flyby/cutscene) percorre a spline 0->1.0 em 56s e a cutscene FINALIZA limpo.
-   ⇒ "câmera para cedo" = ARTEFATO DOS TESTES CURTOS (45-70s) do Codex com flyby-direct: em 45s o
+   ⇒ "câmera para cedo" = ARTEFATO DOS TESTES CURTOS (45-70s) do o dev anterior com flyby-direct: em 45s o
      jogo (a ~11fps) só chega a f~127 = primeiros ~8s da cutscene. NÃO era regressão da câmera.
 
-3. ❌ O helper FLYBY_DIRECT do Codex é beco sem saída: no seu caminho clk=0.000 e cmode=4 (FOLLOWPED,
+3. ❌ O helper FLYBY_DIRECT do o dev anterior é beco sem saída: no seu caminho clk=0.000 e cmode=4 (FOLLOWPED,
    não 17) -> cutuca a câmera errada e só roda 3 frames. Está gated (LCS_CUTSCENE_FLYBY_DIRECT) ->
    NÃO afeta o default. Manter desligado. SPLINEFIX é o caminho bom.
 
-4. ⚠️ NÃO HÁ launcher ES pro lcs (ports_scripts sem entrada). NextOS vê a TV enquanto NÓS rodamos
-   os testes -> a "config que ele vê" = a do último run. Os últimos runs do Codex eram flyby-direct
+4. ⚠️ NÃO HÁ launcher ES pro lcs (ports_scripts sem entrada). O porter vê a TV enquanto NÓS rodamos
+   os testes -> a "config que ele vê" = a do último run. Os últimos runs do o dev anterior eram flyby-direct
    curtos -> daí a impressão de câmera travada.
 
 5. 🔴 PRÓXIMO BLOQUEIO REAL (não é a câmera): handoff cutscene->GAMEPLAY ANDÁVEL + mundo 3D.
@@ -345,7 +345,7 @@ FALTA p/ "jogável pleno": follow-cam + translação confirmada (boss do memcpy-
 (infra OK: openal+music.wad), empacotar launcher ES (não existe ainda).
 
 ═══════════════════════════════════════════════════════════════════════════════
-## SESSÃO 7 (2026-06-22, Codex): FE25 protegido + câmera/cutscene real + novo blocker no renderer
+## SESSÃO 7 (2026-06-22): FE25 protegido + câmera/cutscene real + novo blocker no renderer
 ═══════════════════════════════════════════════════════════════════════════════
 
 ### Avanço confirmado
@@ -497,7 +497,7 @@ Patch de input aplicado:
 
 Próximo run recomendado:
 ```sh
-ssh -F /dev/null -o StrictHostKeyChecking=no root@192.168.31.88 'cd /storage/roms/ports/lcs || exit 1; ( sleep 245; printf "1 -1.0 420\n" > /dev/shm/lcs_axis; sleep 8; printf "0 0.8 240\n" > /dev/shm/lcs_axis ) & LCS_MAXSECONDS=310 LCS_WATCHDOG_GRACE=60 LCS_START=newgame LCS_STARTFRAME=12 LCS_GLSTATS=1 LCS_FE25=1 LCS_FE25DIAG=1 LCS_CUTSCENE_CAMPROCESS=1 LCS_CUTSCENE_CAMPROCESS_STOPPOS=0.960 LCS_CUTSCENE_FINISH_POS=0.985 LCS_CUTSCENE_TIMEDIAG=1 LCS_CUTSCENE_TIMEDIAG_STEP=120 LCS_SCRIPTPOOL_EXTRA=128 LCS_FORCE_GAMEPAD_UI=1 LCS_TV_DEVICE=1 LCS_NJOY_COUNT=1 LCS_PADBRIDGE_DIRECT=0 LCS_PADDIAG=1 LCS_AXIS_DEADZONE=0.10 LCS_SHOT_FINAL_WINDOW=10 sh ./run30.sh'
+ssh -F /dev/null -o StrictHostKeyChecking=no root@<device-ip> 'cd /storage/roms/ports/lcs || exit 1; ( sleep 245; printf "1 -1.0 420\n" > /dev/shm/lcs_axis; sleep 8; printf "0 0.8 240\n" > /dev/shm/lcs_axis ) & LCS_MAXSECONDS=310 LCS_WATCHDOG_GRACE=60 LCS_START=newgame LCS_STARTFRAME=12 LCS_GLSTATS=1 LCS_FE25=1 LCS_FE25DIAG=1 LCS_CUTSCENE_CAMPROCESS=1 LCS_CUTSCENE_CAMPROCESS_STOPPOS=0.960 LCS_CUTSCENE_FINISH_POS=0.985 LCS_CUTSCENE_TIMEDIAG=1 LCS_CUTSCENE_TIMEDIAG_STEP=120 LCS_SCRIPTPOOL_EXTRA=128 LCS_FORCE_GAMEPAD_UI=1 LCS_TV_DEVICE=1 LCS_NJOY_COUNT=1 LCS_PADBRIDGE_DIRECT=0 LCS_PADDIAG=1 LCS_AXIS_DEADZONE=0.10 LCS_SHOT_FINAL_WINDOW=10 sh ./run30.sh'
 ```
 
 ### s7.1 UPDATE_OVERLAY reconciliado: 2 cutscenes -> gameplay por 300s sem crash
@@ -532,13 +532,13 @@ Estado atual de controle:
 - Ainda não há prova de translação real do Toni; `pedpos` ficou praticamente igual nesse run. Próximo
   alvo: mapear eixo/botões para movimento jogável sem reativar `PADBRIDGE_DIRECT`.
 
-Correção aplicada após observação do NextOS:
+Correção aplicada após observação do porter:
 - `LCS_NOON=1` congelava o HUD em 12:00 durante gameplay, porque escrevia `CClock` todo frame.
 - Agora `LCS_NOON` é pulso de boot limitado por `LCS_NOON_FRAMES` (default 300). Para reproduzir o
   hack antigo, usar `LCS_NOON_STICKY=1`.
 
 ### s7.7 Marco jogavel: camera OK + analogico esquerdo andando no controle fisico
-NextOS confirmou o run em tela: "tudo rodando bem".
+O porter confirmou o run em tela: "tudo rodando bem".
 
 Estado confirmado:
 - Fluxo nativo preservado: `LCS_START=newgame`, sem remover cutscene nem forcar estado cru.
@@ -583,7 +583,7 @@ Proximos focos, sem mexer no que ja ficou bom:
 - Confirmar mapa completo, pedestres, carros e interiores conforme o streaming avanca.
 
 ### s7.6 Controle correto: D-pad nao deve andar; analogico esquerdo deve andar
-NextOS testou o build s7.5 e apontou o detalhe certo:
+O porter testou o build s7.5 e apontou o detalhe certo:
 - D-pad estava andando.
 - Analogico esquerdo estava com funcao errada/zoom.
 - O alvo correto e inverter isso: D-pad volta a ser botao nativo/zoom e analogico esquerdo vira
@@ -628,7 +628,7 @@ Proximo teste/criterio:
   `LCS_MOVE_AXIS_X=2 LCS_MOVE_AXIS_Y=3` ou inverter por patch pequeno se o sinal vier trocado.
 
 ### s7.5 Movimento visual comprovado: swap nativo fazia o ped ler D-pad, nao stick
-Nova descoberta a partir do sintoma do NextOS:
+Nova descoberta a partir do sintoma relatado:
 - Analogico direito movia a camera perfeitamente.
 - D-pad e analogico esquerdo nao moviam Toni.
 - L2 fechava o jogo.
@@ -661,7 +661,7 @@ Prova visual limpa:
 - Linha-chave no log: `move=1 lx=0.00 ly=1.00 UDLR=0100`, processo vivo e sem `CRASH`.
 
 ### s7.2 START nativo + controle: caminho de teste jogavel confirmado
-Pergunta do NextOS estava certa: se o objetivo e controle/gameplay, o melhor teste e preservar o
+A pergunta do porter estava certa: se o objetivo e controle/gameplay, o melhor teste e preservar o
 fluxo `newgame` e pular as cutscenes com `Start` nativo, nao remover cutscene nem forcar estado cru.
 
 Runs novos preservados:
@@ -717,7 +717,7 @@ Conclusao atual:
   `FinishCutscene called` x2 + `fade=0/nVis>0`, ou o eixo pode disparar durante handoff/fade.
 
 ### s7.3 Travamento ao apertar botao: nao era crash de controle, era I/O diagnostico pesado
-Teste pedido pelo NextOS ("assim que tento andar aperto o botao ele trava") reproduziu uma pista
+Teste pedido pelo porter ("assim que tento andar aperto o botao ele trava") reproduziu uma pista
 importante: o input fisico chegava ao jogo, mas a thread principal ficava parada em syscall de disco.
 
 Estado observado no device antes do patch:
@@ -762,7 +762,7 @@ Nova regra:
 - Heartbeat com fsync e GL trace ficam apenas para investigacao curta de wedge, nao para gameplay.
 
 ### s7.4 Repro direta do "apertou direcional/analogico": input entra, jogo nao crasha no perfil atual
-Pedido do NextOS: pular as cutscenes com Start, chegar rapido no gameplay e provocar o erro com
+Pedido do porter: pular as cutscenes com Start, chegar rapido no gameplay e provocar o erro com
 direcional/analogico para capturar o ponto exato.
 
 Mudancas aplicadas:
@@ -813,7 +813,7 @@ Conclusao atual:
   antes do travamento. Se houver SIGSEGV, o crash handler ja imprime PC/LR/libGame offset.
 
 ### s7.8 Quadrados/planos no chao/cenario: overlay PVS/debug ligado, nao textura faltando
-Pedido do NextOS: investigar os quadrados pretos/planos no chao, ruas, primeira cutscene do onibus
+Pedido do porter: investigar os quadrados pretos/planos no chao, ruas, primeira cutscene do onibus
 e gameplay. Tambem foi pedido estudar GTASA porque ele reduz sombras/detalhe para rodar liso no
 Mali-450.
 
@@ -851,9 +851,9 @@ Patch aplicado:
 GTASA/Bully aplicado:
 - Estudo local de GTASA Vita mostrou o padrao certo para Mali: reduzir detail/shadows/LOD em vez de
   ligar efeitos caros. Referencias locais:
-  - `/home/nextos/gtavc-build/refs/gtasa_vita/loader/config.c`
-  - `/home/nextos/gtavc-build/refs/gtasa_vita/loader/main.c`
-  - `/home/nextos/Área de trabalho/ESTUDO - GTA SA vs Bully no Mali-450 (streaming, DXT, texturas).md`
+  - `/home/root/gtavc-build/refs/gtasa_vita/loader/config.c`
+  - `/home/root/gtavc-build/refs/gtasa_vita/loader/main.c`
+  - docs internas: "ESTUDO - GTA SA vs Bully no Mali-450 (streaming, DXT, texturas)"
 - `LCS_GFX_PREFS=1` agora aplica o perfil leve:
   - menu prefs: dynamic shadows/reflections/detail/LOD off/baixo;
   - overrides de shadow/detail/game detail;
@@ -884,7 +884,7 @@ Estado atual no device:
 ### s7.9 - 2026-06-23 - shadow pass granular para os blocos pretos no chao
 
 Motivacao:
-- NextOS fotografou o gameplay com farol apagado/aceso e notou que o chao quebrado corrigia
+- O porter fotografou o gameplay com farol apagado/aceso e notou que o chao quebrado corrigia
   quando o farol do carro iluminava a pista.
 - Isso muda o diagnostico: o piso/asset esta presente, mas recebe uma mascara escura grande
   e dura por cima. O problema e coerente com shadow/lighting pass quebrado no Mali-450.
@@ -947,7 +947,7 @@ Proximos focos:
 ### s7.10 - 2026-06-23 - SHADOWS_OFF completo para blocos pretos projetados
 
 Nova evidencia:
-- As fotos do NextOS (`photo_2026-06-23_00-24-09.jpg`,
+- As fotos do porter (`photo_2026-06-23_00-24-09.jpg`,
   `photo_2026-06-23_00-24-08.jpg`, `photo_2026-06-23_00-24-08 (2).jpg`)
   mostram poligonos escuros grandes com borda dura sobre o chao. O padrao segue o mundo
   e muda com farol/luz, entao e projeção/sombra, nao textura base ausente.
@@ -979,7 +979,7 @@ Estado deixado:
 
 ### s7.11 - 2026-06-23 - pausa solicitada, estado salvo
 
-Pedido do NextOS:
+Pedido do porter:
 - Parar por enquanto e salvar tudo nos MDs.
 - Nao continuar tentando resolver o mesmo bug agora.
 
@@ -1042,14 +1042,14 @@ CAUSA-RAIZ CRAVADA (RE + A/B no device, alta confiança):
   SetLightsWithTimeOfDayColour @0x4b9a44). Vai de 1.0 e CAI ao mínimo 0.6 quando o Sun Corona
   aparece (Coronas.cpp:584), OSCILANDO conforme a câmera vira (Coronas.cpp:109+ usa CamLook).
 - Os PEDS são ISENTOS (SetAmbientColoursForPedsCarsAndObjects, +30% próprio) -> por isso o
-  CHÃO/mundo escurece mas o Toni NÃO. Bate com TODAS as pistas do NextOS: "sombra de árvore
+  CHÃO/mundo escurece mas o Toni NÃO. Bate com TODAS as pistas do porter: "sombra de árvore
   normal, o preto oscila por cima como nuvem, farol/luz revela, some olhando pro sol, pisca na
   chuva, view-dependent".
 
 PROVA A/B (harness test_ab.sh: gameplay + varredura de câmera, mede brilho do chão):
 - LightsMult NATURAL (buggy): chão mean ~43 (oscila 39-48)
 - LightsMult=1.0 (fix):        chão mean ~44
-- **LightsMult=0.6 FORÇADO:    chão mean ~26-30** = IDÊNTICO aos frames pretos do NextOS (26-32),
+- **LightsMult=0.6 FORÇADO:    chão mean ~26-30** = IDÊNTICO aos frames pretos do porter (26-32),
   mesma cena/horário (13:54 dia claro), mundo escuro + Toni iluminado. Print: ab_dim_png/a03_g26.png.
   -> prova matemática+visual: o "preto" = LightsMult em 0.6; fixar 1.0 elimina.
 
@@ -1058,17 +1058,17 @@ FIX (default ON, commitar jni_shim.c):
   força `CCoronas::LightsMult=1.0` IMEDIATAMENTE antes da engine montar as luzes do mundo (timing
   garantido). + escrita por-frame no loop (redundância).
 - Flags: `LCS_NO_LIGHTSMULT_FIX=1` desliga; `LCS_LIGHTSMULT=v` ajusta o valor (testes).
-- Era REGRESSÃO nossa (NextOS: "há >1 dia a 1ª cutscene tava limpa"). LightsMult é comportamento
+- Era REGRESSÃO nossa (porter: "há >1 dia a 1ª cutscene tava limpa"). LightsMult é comportamento
   normal da engine, mas algo nosso (provável dvLodDistanceScale=0.75 / forçar NOON / câmera) fazia
   ele cair a 0.6 com frequência. Pin 1.0 resolve direto sem depender da causa do drop.
 
-PENDENTE: NextOS confirmar ao vivo no terreno costeiro (onde o preto era forte). Stutter dirigindo
+PENDENTE: confirmar ao vivo no terreno costeiro (onde o preto era forte). Stutter dirigindo
 = problema SEPARADO (streaming I/O do SD + upload ETC no Mali).
 
 ### s9 - 2026-06-23 - 🎯🔑🔑 CAUSA REAL do "asfalto/chão PRETO" = DETAIL TEXTURE (não era LightsMult)
 
 CORREÇÃO da s8: o LightsMult era SECUNDÁRIO (escurece o mundo todo ~40%, fix mantido). A CAUSA
-PRINCIPAL do "preto que vem de outro lugar" (NextOS: clarear a luz só ajudava um pouco, suspeita
+PRINCIPAL do "preto que vem de outro lugar" (porter: clarear a luz só ajudava um pouco, suspeita
 de TEXTURA) é a **DETAIL TEXTURE** do chão.
 
 DIAGNÓSTICO DECISIVO (frame em "Saint Mark's", andando pra frente do spawn):
@@ -1089,11 +1089,11 @@ FIX (default ON, jni_shim.c, frame-loop): pin `dv_renderDetailedDistance=0` (+_I
 Binário fix md5 90f2b418. + mantido o fix LightsMult (s8, secundário/world-dim) e canal live
 /dev/shm/lcs_lightsmult.
 
-PENDENTE: NextOS confirmar ao vivo (deve estar resolvido agora). Stutter dirigindo = SEPARADO.
+PENDENTE: confirmar ao vivo (deve estar resolvido agora). Stutter dirigindo = SEPARADO.
 
 ### s10 - 2026-06-23 madrugada - investigação overnight do chão escuro (HONESTO: parcial)
 
-NextOS testou ao vivo: o detail-fix (s9) melhorou (prints "perfeitos") MAS ainda há PRETO. Fotos novas:
+O porter testou ao vivo: o detail-fix (s9) melhorou (prints "perfeitos") MAS ainda há PRETO. Fotos novas:
 (1) DIAMANTE preto HARD-EDGED em volta do CARRO (spawn), (2) ARCO escuro no chão perto a pé.
 Resolvido s9 (detail texture) era REAL mas PARCIAL.
 
@@ -1118,7 +1118,7 @@ LEADS NÃO TESTADOS (pra sessão ao vivo):
 
 FERRAMENTAS LIVE prontas (build c7eb4f1): /dev/shm/lcs_lightsmult (val), /dev/shm/lcs_dvset
 ("sym val"), /dev/shm/lcs_ambient (val). Repro do escuro: andar pra frente do spawn + girar câmera.
-PLANO: sessão AO VIVO - NextOS dirige até o diamante, eu toggle candidatos live em segundos.
+PLANO: sessão AO VIVO - o porter dirige até o diamante, eu toggle candidatos live em segundos.
 
 ### s10b - resultado SHADOWS_OFF A/B (REFUTA hipótese) + veredito honesto da noite
 A/B câmera-fixa forward+sweep: SHADOWS_OFF=0 (sombras ON) chão MIN=16 med=18 (varia 16-19, sombra
@@ -1130,11 +1130,11 @@ VEREDITO HONESTO (após noite inteira de A/B): o único lever LIMPO do chão esc
 knobs = sem efeito. shadows = não é. O escuro restante é a luz intrínseca do mundo em certos
 ângulos. NÃO consegui isolar uma causa "nossa" headless, NEM reproduzir o DIAMANTE hard-edged
 (precisa do carro parado no spot). 
-PRÓXIMO = SESSÃO AO VIVO: NextOS dirige até o diamante, capturo o frame EXATO (finalmente o repro
+PRÓXIMO = SESSÃO AO VIVO: o porter dirige até o diamante, capturo o frame EXATO (finalmente o repro
 hard-edged), e toggle candidatos live. Suspeitos restantes do diamante: polígono de chão do MAPA
 com vertex-color/textura escura (carro parado em cima), OU env-map/reflexo do veículo projetado.
 Build c7eb4f1 com tools live no device. NÃO shipei boost agressivo (escolha do valor LightsMult
-fica pro NextOS ver ao vivo: echo VAL > /dev/shm/lcs_lightsmult).
+fica pro porter ver ao vivo: echo VAL > /dev/shm/lcs_lightsmult).
 
 ### s11 - 2026-06-23 - 🎉🔑🏆 RESOLVIDO DE VEZ: "diamante/preto no chão" = ALPHA vazando no compositor HDMI
 
@@ -1145,15 +1145,15 @@ GL com o fundo (preto) usando o ALPHA do framebuffer**. Onde o chão/mundo é de
 
 POR QUE NOS ENGANOU A NOITE TODA:
 - glReadPixels lê só RGB (ignora alpha) -> MEUS PRINTS NUNCA MOSTRAVAM o preto (era invisível pra mim).
-- A TV mostra o resultado ALPHA-COMPOSTO -> o preto aparece SÓ no HDMI ("só eu vejo" do NextOS).
+- A TV mostra o resultado ALPHA-COMPOSTO -> o preto aparece SÓ no HDMI ("só eu vejo", visível só na TV).
 - LightsMult/detail/shadows/ambient = tudo RGB -> NÃO corrigiam (o bug é alpha).
 - Farol/clarão-do-sol desenham OPACO (alpha=1) -> tapavam o vazamento localmente (revelavam o chão).
-- NextOS cravou: "algo sujo no caminho pro HDMI". Exato.
+- Diagnóstico do porter: "algo sujo no caminho pro HDMI". Exato.
 
 FIX (default ON, imports.c my_eglSwapBuffers, ANTES do swap): força o ALPHA do framebuffer inteiro
 = 1 (plano opaco) -> sem vazamento. glDisable(SCISSOR/DITHER); glColorMask(0,0,0,1);
 glClearColor(0,0,0,1); glClear(COLOR_BUFFER_BIT); glColorMask(1,1,1,1). Flag LCS_NO_ALPHA_FIX desliga.
-Binário a1b9a7e. NextOS confirmou ao vivo: "deu certo, resolveu tudo".
+Binário a1b9a7e. O porter confirmou ao vivo: "deu certo, resolveu tudo".
 
 LIÇÃO REUSÁVEL (qualquer so-loader em Amlogic/Mali-450 fbdev): se aparecer preto/artefato SÓ na TV
 e não no glReadPixels, é o ALPHA do framebuffer vazando o fundo no compositor -> forçar alpha=1 antes
@@ -1162,9 +1162,9 @@ do swap (ou criar a surface com alpha=0). glReadPixels NÃO debuga isso (lê só
 NOTA: os fixes s8(LightsMult)/s9(detail) seguem no build mas eram secundários/desnecessários pro
 diamante; dá pra re-testar re-ligar detail (LCS_DETAIL_ON=1) p/ visual melhor agora que a raiz é alpha.
 
-### s11b - ESTADO FINAL BOM TRAVADO (NextOS: "melhorou muito, quase imperceptível")
+### s11b - ESTADO FINAL BOM TRAVADO (porter: "melhorou muito, quase imperceptível")
 PERFIL BOM = run-playable.sh DEFAULT (SHADOWS_OFF=1, GFX_PREFS=1, detail-off, lightsmult-pin) +
-binário a1b9a7e (FIX DE ALPHA default-on). NextOS confirmou: chão limpo, sem diamante, estável.
+binário a1b9a7e (FIX DE ALPHA default-on). O porter confirmou: chão limpo, sem diamante, estável.
 - ⚠️ NÃO reverter SHADOWS_OFF: com sombras LIGADAS (SHADOWS_OFF=0) a SOMBRA pisca muito (z-fight)
   -> SHADOWS_OFF=1 evita. As "hacks" NÃO eram lixo de debug, ajudam. Manter o default.
 - ⚠️ O state-restore do alpha-fix (build 07dcdc7) PIOROU tudo -> REVERTIDO. Fix bom = a1b9a7e (clear
@@ -1172,11 +1172,11 @@ binário a1b9a7e (FIX DE ALPHA default-on). NextOS confirmou: chão limpo, sem d
 - PENDÊNCIAS MENORES conhecidas (quase imperceptíveis, deixadas de lado): vidro do carro
   "quadradinhos" só ao mover (output-path/tile Mali, NÃO aparece no glReadPixels, env-map-off não
   mudou); flicker de sombra só com SHADOWS_OFF=0. Stutter dirigindo = separado (streaming).
-Binário bom md5 a1b9a7e deployado. PRÓXIMO ALVO: a definir com NextOS (provável stutter dirigindo).
+Binário bom md5 a1b9a7e deployado. PRÓXIMO ALVO: a definir com o porter (provável stutter dirigindo).
 
 ### s12 - 2026-06-23 - Perfil GTASA/performance preparado OFFLINE (sem abrir jogo)
 
-Pedido do NextOS: estudar GTASA Vita + GTASA do R2 e preparar melhorias de performance sem abrir
+Pedido do porter: estudar GTASA Vita + GTASA do R2 e preparar melhorias de performance sem abrir
 o jogo/sem testar ate ele pedir.
 
 Estudo local confirmou o padrao:
@@ -1204,7 +1204,7 @@ encerrados para respeitar o pedido de deixar o jogo fechado. Confirmado depois: 
 
 ### s13 - 2026-06-23 - Primeira medicao perf real + correcao do perfil
 
-NextOS liberou testes automaticos. Primeiro run `LCS_PROFILE=gtasa-perf LCS_PERF_TIER=1` foi iniciado
+O porter liberou testes automaticos. Primeiro run `LCS_PROFILE=gtasa-perf LCS_PERF_TIER=1` foi iniciado
 com `run-final.sh`. Resultado: o processo foi morto pelo watchdog em state 7/f=89 antes de gameplay,
 sem crash log. Memoria durante load caiu para 64-81MB livres, swap ~61MB; no fim voltou para ~630MB
 livres. Interpretacao: nao provar stutter de gameplay ainda; o watchdog estava agressivo para load
@@ -1228,7 +1228,7 @@ Mudanca offline feita depois da medicao:
 
 ### s14 - 2026-06-23 - Performance/FPS: perfil full-native, streamer por fase, texlight descartado
 
-Objetivo do NextOS mudou para **ganhar FPS/usar menos RAM sem encolher a imagem**. A imagem precisa
+O objetivo mudou para **ganhar FPS/usar menos RAM sem encolher a imagem**. A imagem precisa
 ficar full/native. Resultado: `LCS_RENDER_SCALE` foi removido dos defaults do `run-gtasa-perf.sh`;
 fica apenas opt-in manual. O jogo agora roda 1280x720 por default em todos os tiers.
 
@@ -1256,7 +1256,7 @@ Medicoes principais:
   `NO_ENVMAP=1`, streamer/densidade agressivos. Captura boa:
   `~/lcs-build/shot-tier3-safe-noenvmap-20260623.png`.
 
-Estado atual recomendado para teste do NextOS:
+Estado atual recomendado para teste:
 ```sh
 cd /storage/roms/ports/lcs
 LCS_PROFILE=gtasa-perf LCS_PERF_TIER=3 RUNSEC=360 MAXRESTART=0 FREEZE_SEC=180 sh ./run-final.sh
@@ -1267,7 +1267,7 @@ flickers porque remove textura, mas e destrutivo para pessoas/carros/itens.
 
 ### s15 - 2026-06-23 - Tier 3+ pequeno: FX/reflexos off, menos pop, full-native preservado
 
-Pedido do NextOS: o jogo ja estava "muito bom"; buscar mais 5-10% sem quebrar imagem/textura.
+Pedido do porter: o jogo ja estava "muito bom"; buscar mais 5-10% sem quebrar imagem/textura.
 
 Mudancas implementadas, buildadas e deployadas:
 - `src/jni_shim.c`: novo corte separado por `LCS_GFX_FX_OFF=1`, sem depender de `LCS_GFX_LOW`.
@@ -1280,7 +1280,7 @@ Mudancas implementadas, buildadas e deployadas:
 - Resolucao continua nativa/full: screenshot validado em `1280 720`.
 - `TEX_LIGHT` continua desligado por default; nao reintroduzir, pois quebrou pele/peds/carros.
 
-Teste automatico no device `.88`:
+Teste automatico no device:
 ```sh
 cd /storage/roms/ports/lcs
 LCS_PROFILE=gtasa-perf LCS_PERF_TIER=3 RUNSEC=900 MAXRESTART=0 FREEZE_SEC=180 sh ./run-final.sh
@@ -1298,7 +1298,7 @@ Resultado:
 - Captura visual boa: `~/lcs-build/shot-tier3-plus-fxoff-20260623.png`
   (`1280x720`, personagem/HUD/texturas OK, sem pele preta/branca).
 
-Estado deixado: jogo aberto no device em gameplay com o Tier 3+ ativo para o NextOS olhar. Se esse
+Estado deixado: jogo aberto no device em gameplay com o Tier 3+ ativo para inspeção. Se esse
 perfil causar cidade vazia demais, voltar somente os limites de pop/carros, mantendo FX/reflexos off.
 
 ## s7 (2026-06-24) — INTRO NATIVO (engine-driven) + decifrado o boot state-machine
@@ -1309,7 +1309,7 @@ fake → no-op → intro pulado). FIX = hookar `OS_MoviePlay` (`_Z12OS_MoviePlay
 via ffmpeg do device → `/dev/fb0` (vídeo) + pacat/pulse (áudio), BLOCKING, com SKIP pelo controle
 (A/B/START). Vídeo extraído do APK do celular: `res/raw/intro.m4v` (40MB); versão leve `intro720.m4v`
 (h264 baseline 720p, 7MB) pra decode em tempo real no Amlogic. Confirmado: SEM botão fantasma (toca
-limpo sem input, ffmpeg=2 rodando, engine pausada). Gate `LCS_INTRO=1`. NextOS validou: "vídeo+áudio+
+limpo sem input, ffmpeg=2 rodando, engine pausada). Gate `LCS_INTRO=1`. Validado: "vídeo+áudio+
 legendas OK". mpv/SDL NÃO desenham no fbdev (só ffmpeg `-f fbdev`). t0 do MAXSECONDS desconta o intro
 (g_intro_play_secs).
 
@@ -1322,25 +1322,25 @@ feobj+25==0 roda CMenuManager via GameCoreTick; se feobj+25 setado→st8→DoFad
 **st9=GameCoreTick (GAMEPLAY)**. `LoadingScreen()`@0x521870 é a MESMA usada no new-game.
 
 🚫 **REMOVIDO ATALHO DO SUBMENU NEW GAME:** `lcs_menu_controller_confirm` chamava
-`CMenuManager::StartNewGame` direto no A → PULAVA o submenu New Game (reclamação do NextOS). Agora
+`CMenuManager::StartNewGame` direto no A → PULAVA o submenu New Game (reclamação do porter). Agora
 `LCS_MENU_CONFIRM_START=0` default (run30.sh) → menu nativo navega Start Game→submenu sozinho.
 
-🟡 **PENDENTE (precisa controle do NextOS p/ testar):** (1) tap/legal "piscam" — a engine
+🟡 **PENDENTE (precisa controle físico p/ testar):** (1) tap/legal "piscam" — a engine
 auto-completa `renderedTapToContinue`/`shownLegalScreen`/`legalScreenState` rápido (NÃO é botão
 fantasma — confirmado; NÃO é só o gta_lcs.set salvo — testado removendo). Renderizador embutido
 (offsets 0x9ec7a9-b4, sem símbolo, refs via add difíceis). (2) New Game→LOADING vermelho→cutscene:
-testar agora que o atalho StartNewGame saiu — a hipótese do NextOS é que o loading que faltava é a
+testar agora que o atalho StartNewGame saiu — a hipótese do porter é que o loading que faltava é a
 raiz de muitos bugs de cutscene. Binário lcs md5 1f87cefc. Hooks novos: OS_MoviePlay, HasTappedScreen
 (LCS_TAP_NATURAL, mas engine não gateia nele). Flags: LCS_INTRO, LCS_INTRO_AT_FRAME0, LCS_PLAYLIST_FRAME.
 
 ## s7b (2026-06-24, sessão autônoma) — FLUXO COMPLETO ATÉ GAMEPLAY + FPS CAP
 🎯 **FPS CAP 30 (causa-raiz de "tudo rápido"):** o jogo roda 42-50fps sem teto -> UI/timers da
 engine rápidos demais (menu rolava todas opções, tap/disclaimer piscavam). FIX: cap no loop do
-driver via clock_gettime+nanosleep, `LCS_FPS_CAP=30` default (=0 desliga). Medido 33fps. NextOS
+driver via clock_gettime+nanosleep, `LCS_FPS_CAP=30` default (=0 desliga). Medido 33fps. O porter
 validou navegação do menu "perfeita" depois disso + do MENU PULSE.
 🕹️ **MENU PULSE (LCS_MENU_PULSE=1 default):** o bridge mantinha o botão CURRENT setado enquanto
 segurado -> menu rolava todas as opções num aperto. FIX: no menu (state 7) pulsa o d-pad/A só na
-BORDA (1 frame) -> 1 aperto = 1 movimento. NextOS: "pro lado foi resolvido / navego perfeito".
+BORDA (1 frame) -> 1 aperto = 1 movimento. Porter: "pro lado foi resolvido / navego perfeito".
 🎬 **FLUXO COMPLETO VALIDADO (via injeção `echo N>/dev/shm/lcs_btn`, A=0):** Start Game (A) ->
 submenu New Game (A) -> New Game -> state 9 -> cutscene/streaming (lento ~1fps, frame 224-389) ->
 **GAMEPLAY COM MUNDO 3D RENDERIZANDO** (frame pula p/ 944+, ~33fps fluido; Toni andando, carro,
@@ -1352,7 +1352,7 @@ capturas falhas/tela branca -> limpo (gamedata 7.8G->2.1G).
 controle pré-frame da legal é frágil - engine recalcula mid-frame). (2) disclaimer tem 2 PÁGINAS
 (textos diferentes); página 1 segura (freeze legalScreenState=0), página 2 pisca (valor de state
 da pág2 não isolado - janela estreita). (3) cutscenes bus/office parecem abreviadas pelos hacks
-LCS_CUTSCENE_* (NextOS quer elas TOCANDO de verdade com luz). PRÓXIMO: com o fps cap, revisitar os
+LCS_CUTSCENE_* (queremos elas TOCANDO de verdade com luz). PRÓXIMO: com o fps cap, revisitar os
 hacks de cutscene (talvez removê-los deixe as cutscenes tocarem naturais agora que o timing é 30fps).
 Binário lcs md5 865294a. Flags novas: LCS_FPS_CAP=30, LCS_MENU_PULSE=1, LCS_FORCE_TAPLEGAL=1,
 LCS_TAP_NATURAL=1, LCS_LEGAL_HOLD_STATE=0, LCS_FRONTEND_STEP_START. ⚠️NÃO usar LCS_FORCE_TAPLEGAL=0

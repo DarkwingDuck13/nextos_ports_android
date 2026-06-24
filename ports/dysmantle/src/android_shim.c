@@ -437,7 +437,7 @@ static void process_sdl_events(void) {
      * Ex default: aperta A no frame 300 (confirma menu inicial), depois
      * DOWN/A pra navegar. Cada frame ~ pump do pollAll. */
     if (getenv("DYSMANTLE_PB_SELFTEST")) {
-      /* Sequência ensinada pelo NextOS: no menu inicial = 1× pra BAIXO,
+      /* Sequência de navegação: no menu inicial = 1× pra BAIXO,
        * depois A/X pra entrar no jogo. Frames ~ pumps (poll_n).
        * Cada press = down no frame f, up em f+10. */
       struct { int f, act, kc; } seq[] = {

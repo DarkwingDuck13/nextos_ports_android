@@ -1,6 +1,87 @@
 # DuckTales: Remastered → Mali-450 — STATUS / HANDOFF
 
 # ═══════════════════════════════════════════════════════════════════
+# ✅ 2026-06-24 (sessão 5) — UAF CARACTERIZADO + VIRADA: O FUNDO É DESENHADO
+# ═══════════════════════════════════════════════════════════════════
+## 🎯 ESTADO VISUAL CONFIRMADO (screenshot /tmp/duck_shot.png via glReadPixels):
+## MENU PRINCIPAL RENDERIZA LINDO — logo DuckTales:Remastered colorido (gradiente
+## laranja→amarelo + sombra), NEW GAME/OPTIONS/EXTRAS amarelos, © 1989 2018 Disney,
+## botão "?" redondo. FALTA SÓ o fundo animado de Duckburg (preto). Disney splash
+## (pré-corrupção) renderiza 100% (logo cinza em branco).
+##
+## 🟢🟢 VIRADA (DUCK_GLTEXLOG+DUCK_DRAWLOG, instrumentação LEVE preserva o bug):
+## O FUNDO É DESENHADO! As texturas ETC1 do fundo (ifmt=0x8d64: 1024x512, 1024x256,
+## 512x512...) SOBEM OK (err=0x0) E SÃO DESENHADAS (milhares de draws grandes/frame:
+## big>=512 chega a 7478, classe 1024 domina). ⟹ o preto NÃO é dado de textura
+## faltando/corrompido — é COMPOSITING/STATE/OVERLAY. Algo desenha preto POR CIMA do
+## fundo já renderizado (bate com bisseção do handoff "draws 45-50 escurecem"). 
+## PISTA: existe 1 textura 1024x1024 GL_ALPHA (0x1906) com nonblack=0% = ALPHA TODA
+## ZERO. Se o fill do fundo amostra alpha dela → alpha=0 → fundo invisível. MAS
+## DUCK_SHADERFIX (força gl_FragData=vec4(cor.xyz,1.0), alpha=1) NÃO trouxe o fundo →
+## não é puramente alpha=0 do fill; investigar FBO-composite OU quad preto full-screen.
+## ➡️ PRÓXIMO MAIS PROMISSOR (GL-level, pode NÃO precisar do fix do UAF): achar o draw
+## que pinta preto sobre o fundo. DUCK_DRAWDBG/DRAWSTOP=N bissecta o frame (já existem).
+## Checar: (a) fundo vai pra um FBO mal-compositado? (b) quad preto full-screen depois
+## do fundo? (c) blend/alpha do composite. O fundo renderiza UMA vez no offscreen e some.
+##
+## 🔬 UAF CARACTERIZADO COM PRECISÃO (DUCK_HIST, ASLR off):
+## EXATAMENTE 13 nós de free-list corrompidos em UM ÚNICO BURST no menu-load (entre
+## frame 751 e 800), por 2 threads worker. DEPOIS do burst: ZERO UAF. Vítimas
+## DETERMINÍSTICAS sob instrumentação leve: 1ª SEMPRE 0x3186fe40, todas na low-arena
+## (0x3186/0x43e8/0x44055/0x442b6/0x4517f). Assinatura: next=nil, prev=self (bins de 1
+## elemento self-circular com next ZERADO); 1 caso prev=outro (multi-elem).
+## ✅ Disasm CONFIRMOU lista CIRCULAR (insert 0x939d20: bin vazio→self-circular
+## streq r1,[r1]+streq r1,[r1,#4]). Logo next=nil É corrupção real; my_unlink correto.
+## Fault do crash original = head-unlink 0x939dd8 (str ip,[next+4], next=NULL).
+## 🔑 O WRITER escreve 0 LITERAL no offset 0 (node[0]/next). NÃO é o destrutor 0x8d3164
+## (esse escreve VTABLE em [r4], não 0). HIPÓTESE FORTE: UAF-READ de um ponteiro stale
+## de memória liberada + escreve 0 através dele → explica por que a vítima MUDA sob
+## perturbação (conteúdo do bloco liberado é layout-dependente) E por que bionic-OK
+## (glibc deixa lixo diferente no bloco liberado). Vítima 0x3186fe40 "no alloc record"
+## = é nó INTERNO do arena TLSF (carved de 1 malloc grande), não malloc individual.
+##
+## ❌ DESCARTADO HOJE (não repetir):
+## - DOUBLE-FREE no TLSF (DUCK_DFDETECT): só falso-positivo (mesmo chunk 0x8b0b8e4
+##   reciclado 12×, NÃO casa com vítimas). NÃO é double-free → é UAF-write genuíno.
+## - LOW ARENA como causa (DUCK_NO_LOWHEAP=1): 11 UAFs persistem + crash. Não é a causa.
+## - BQ = quarentena do free TLSF (DUCK_BQ=1, novo enable): CRASH cedo (quebra alocador).
+##   Confirma handoff. Dead end.
+## - HW WATCHPOINT via ptrace: EIO (kernel/CPU sem debug-regs). CONFIRMADO indisponível.
+##   probe: tools/hwwp_probe.c. gdb também não conseguia — é o device, não o gdb.
+## - mprotect WATCHPOINT in-process (DUCK_WP e novo DUCK_WP_ONFREE=arm-no-free): HEISENBUG.
+##   Proteger a página HOT muda o timing das 2 threads → a vítima 0x3186fe40 é RE-LINKADA
+##   com ponteiros válidos (0x3186febc/fe6e), não zerada → o write-0 vai pra outro lugar.
+##   Pegou writes de ptr válido pc=duck+0x80e120 (não-zero). Página-protect é incompatível
+##   com esse bug multi-thread. DEAD END (4ª confirmação).
+## - SHADERFIX (alpha=1): fundo segue preto.
+## - ID ESTÁTICA do writer: inviável. Loop de destrutores está em gap de 2.8MB SEM
+##   símbolo (entre __cxa_current_exception_type 0x6100b9 e png_set_sig_bytes 0x93c2e8).
+##
+## 🧰 REGRA NOVA (importante p/ caçar): instrumentação LEVE (hash table: DUCK_HIST/
+## ATRACK/DFDETECT) PRESERVA o bug (vítima estável 0x3186fe40). Instrumentação PESADA
+## (page-protect, breakpoint, single-step) MUDA o bug (vítima migra). ⟹ qualquer caça
+## ao writer que pare/proteja threads tem risco de heisenbug. Métodos que SÓ leem/contam
+## são seguros.
+##
+## 🆕 MUDANÇAS DE CÓDIGO HOJE (todas opt-in, defaults INALTERADOS — manter, são diag):
+## - DUCK_BQ: liga a quarentena de free TLSF (g_bq antes era inalcançável).
+## - DUCK_WP_ONFREE: arma o mprotect-WP lazy quando a vítima é liberada self-circular
+##   (wp_check_onfree() chamado no pool_free_wrap). [resultado: heisenbug]
+## - hist_put adicionado ao at_alloc_wrap (HeapAlloc 0x82bd78) p/ registrar allocs de
+##   alto nível também.
+## - ducktales escreve /tmp/duck_base.txt ("<base> <size> <pid>") ao subir → p/ tracer
+##   ptrace externo resolver offsets (load base era 0xeacf8000 com ASLR off).
+## - HOST: duckdis.py (disasm capstone ARM/Thumb por file-offset; VMA==file off, .text
+##   em 0x2232e0), tools/hwwp_probe.c.
+##
+## ➡️ PRÓXIMA SESSÃO — 2 caminhos, ORDEM RECOMENDADA:
+## (A) ⭐ COMPOSITING (mais promissor, GL-level, LEVE, pode dispensar o fix do UAF):
+##     o fundo é desenhado e some. Bissectar o frame do menu (DUCK_DRAWDBG/DRAWSTOP)
+##     p/ achar o draw/estado que apaga o fundo. Olhar FBO-composite e quad preto.
+## (B) WRITER do UAF via TRACER PTRACE SEPARADO (base em /tmp/duck_base.txt pronta;
+##     HW-WP fora). Mas single-step/breakpoint = heisenbug provável. Caminho (A) primeiro.
+
+# ═══════════════════════════════════════════════════════════════════
 # ✅ 2026-06-24 (sessão 4) — RENDER DIAGNOSTICADO + FIX DE SAMPLER + TOOLING
 # ═══════════════════════════════════════════════════════════════════
 ## 🎯 BREAKTHROUGH: a tela da DISNEY (splash texturizada) que era PRETA agora
@@ -87,7 +168,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # ✅ 2026-06-24 (sessão 3 cont.) — GAMEPLAY ENTRA + FUNDOS (root achado)
 # ═══════════════════════════════════════════════════════════════════
-## 🎮 CONTROLE FUNCIONA / ENTRA NO GAME (confirmado por NextOS na TV: "o A do
+## 🎮 CONTROLE FUNCIONA / ENTRA NO GAME (confirmado na TV: "o A do
 ## controle entrou no game"). FIX (default ON no binário, sem env):
 ## 1. `hasJoystick()` JNI agora retorna 1 (era 0 → o jogo tratava como teclado e
 ##    IGNORAVA todo key de gamepad: handled=0, e nunca engatava o path Nv).
@@ -235,14 +316,14 @@ Depois de achar o writer (uma função do Scaleform que usa um ponteiro stale), 
 = corrigir esse caminho (provável race de 2 jobs do menu-load compartilhando um recurso
 Scaleform; OU serializar ESSE recurso específico).
 
-## ⚠️ REGRA DO NEXTOS: usar **gdb (1 run captura o erro)**, NÃO rodar o jogo mil vezes
-pra "medir confiabilidade". Achar a causa → corrigir → verificar 1x. (Ele fica MUITO
-irritado com os loops de teste repetidos — cada launch mostra as logos na TV dele.)
+## ⚠️ REGRA DO PORTER: usar **gdb (1 run captura o erro)**, NÃO rodar o jogo mil vezes
+pra "medir confiabilidade". Achar a causa → corrigir → verificar 1x. (Loops de teste
+repetidos são indesejados — cada launch mostra as logos na TV.)
 
 ## 📱 ORÁCULO: o Moto G100 (adb 0074124494) roda o jogo REAL (mesmo .so v7a, bionic):
 menu = **fundo ANIMADO de Duckburg** (cidade, montanhas, ponte; ver /tmp/ph_25.png). O
 nosso = fundo PRETO. Confirma: o decode/render da imagem de fundo está quebrado pela
-MESMA corrupção. NextOS: "resolver as imagens destrava tudo" (provavelmente certo — é o
+MESMA corrupção. Nota do porter: "resolver as imagens destrava tudo" (provavelmente certo — é o
 mesmo UAF no menu-load). Logos da intro passam RÁPIDO DEMAIS (~0.5s vs ~2.5s no real) =
 possível problema de frame-pacing/delta-time A INVESTIGAR depois.
 
@@ -262,7 +343,7 @@ coordenador), job-serial (deadlock), glibc-only (crash mais cedo), bucket-size-s
 (quebra o alocador), image-isolation (sem efeito no crash).
 
 ## COMO RODAR / GDB (device .165 agora — IP MUDA no reboot via DHCP; ping-sweep
-192.168.31.X + checar `ls /roms/ports/ducktales`; senha emuelec; ASLR off:
+<device-ip> + checar `ls /roms/ports/ducktales`; senha <senha>; ASLR off:
 `echo 0 >/proc/sys/kernel/randomize_va_space`):
 ```
 cd /roms/ports/ducktales; systemctl stop emustation; killall -9 ducktales
@@ -279,7 +360,7 @@ NÃO escrever em /dev/input/eventN (evdev ignora). Pad físico USB já em js0/ev
 
 # ═══════════════════════════════════════════════════════════════════
 
-**Data:** 2026-06-23  •  **Device:** Mali-450 EmuELEC (IP muda; senha emuelec), fbdev 1280x720
+**Data:** 2026-06-23  •  **Device:** Mali-450 EmuELEC (IP muda; senha <senha>), fbdev 1280x720
 **Pasta device:** `/roms/ports/ducktales` (dados) + `/roms/ports_scripts/DuckTales.sh` (launcher) — partição EEROMS (mmcblk1p3, 111G).
 **⚠️ NUNCA gravar em `/storage` (mmcblk1p2, partição de sistema, 2.3G) — só em `/roms` (=`/storage/roms`, partição grande).**
 
@@ -486,7 +567,7 @@ corrida pura). Não é bloqueio externo.
 
 ## COMO RODAR (device)
 ```sh
-ssh root@192.168.31.164   # senha emuelec
+ssh root@<device-ip>   # senha <senha>
 cd /roms/ports/ducktales
 systemctl stop emustation
 DUCK_LIBDIR=lib DUCK_ASSETS=assets DUCK_DATADIR=userdata \

@@ -36,4 +36,4 @@ Decomp: `~/sonic-build/Sonic-Mania-Decompilation/SonicMania/Objects/Title/TitleS
 - `src/gl_trace.c` = blit shader + wrappers GL.
 - `src/shims.c` = bionic/cxx/dlopen-OpenSLES shims.
 - `src/opensles_shim.c` = ponte audio (pump desabilitado no jni por crash).
-- Memória completa: ~/.agente/projects/-home-nextos/memory/project_sonic_mania_soloader_mali450.md
+- Memória completa: (notas internas do projeto)

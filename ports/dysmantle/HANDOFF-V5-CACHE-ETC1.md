@@ -2,12 +2,12 @@
 
 ## 🎯 PRÓXIMA SESSÃO — FAÇA ISSO (em ordem)
 
-**A abordagem do CACHE JÁ FUNCIONA e foi validada no gameplay (NextOS confirmou).** O
+**A abordagem do CACHE JÁ FUNCIONA e foi validada no gameplay (confirmado).** O
 caminho mais rápido pra ENTREGAR a v5 é fechá-la com o cache. NÃO recomece do zero.
 
 1. **LER este handoff inteiro + a REGRA** (matar+confirmar 0 instâncias antes de lançar
-   o jogo — NextOS fica furioso, já violei).
-2. **Perguntar ao NextOS:** quer fechar a v5 com **cache** (funciona, mas pak+cache=1.2GB
+   o jogo — regra importante, já foi violada).
+2. **Perguntar ao porter:** quer fechar a v5 com **cache** (funciona, mas pak+cache=1.2GB
    no disco) ou insiste no **"só ETC1 nativo"** (sem cache/JPEG, limpo como SOR4, MAS
    depende de rachar um crash do motor fechado = RE arriscado, talvez impossível no ES2)?
 3. **Se for CACHE (recomendado):**
@@ -19,7 +19,7 @@ caminho mais rápido pra ENTREGAR a v5 é fechá-la com o cache. NÃO recomece d
    c. Abrir o jogo (env `DYSMANTLE_ETC1CACHE`), screenshot do menu E do gameplay → confirmar
       imagem completa (sem rosa/branco/preto) + sem stutter.
    d. Zipar: `cd ~/dysmantle-v5 && zip -r "DYSMANTLE v5.zip" DYSMANTLE.sh dysmantle/` → pôr
-      em `~/Área de trabalho/`. FIM.
+      no diretório de entregas. FIM.
 4. **Se for "só ETC1 nativo" (arriscado):** ver seção "MURO" abaixo — investigar o crash do
    `KtxImageLoader` (`game@0x4957dc...` no `libNativeGame.so` via Ghidra `~/re-tools`).
    **Time-box: ~1h.** Se não rachar, voltar pro cache.
@@ -30,16 +30,16 @@ caminho mais rápido pra ENTREGAR a v5 é fechá-la com o cache. NÃO recomece d
 
 
 
-> Sessão longa. Objetivo do NextOS: **zip v5** que na 1ª execução **converte TODAS as
+> Sessão longa. Objetivo do porter: **zip v5** que na 1ª execução **converte TODAS as
 > texturas offline** (fixpak + ETC1), aplica os fixes, e abre o jogo **LIMPO, sem
 > conversão durante o gameplay** (igual SOR4). Binário glibc velha (2.27, roda em 2.30+).
 
 ---
 
-## ✅ O QUE JÁ FUNCIONA (abordagem CACHE — VALIDADA ponta-a-ponta, gameplay confirmado pelo NextOS)
+## ✅ O QUE JÁ FUNCIONA (abordagem CACHE — VALIDADA ponta-a-ponta, gameplay confirmado)
 
 **Resultado: imagem COMPLETA (menu + gameplay: chão/personagem/árvores/mato com cor), ZERO
-stutter, ETC1 na VRAM. NextOS confirmou "tá tudo normal agora" no gameplay.**
+stutter, ETC1 na VRAM. Confirmado "tá tudo normal agora" no gameplay.**
 
 ### Como a solução do cache funciona (estilo SOR4, controlando NA NOSSA camada)
 O motor (10tons NX) é **caixa-preta fechada**: só aceita carregar **.jpg (ES2)** ou
@@ -76,7 +76,7 @@ O motor (10tons NX) é **caixa-preta fechada**: só aceita carregar **.jpg (ES2)
   - `nice -n 10`: senão os 4 cores a 100% deixam o device/sshd **irresponsivo** (parece
     travado). Com nice fica 25% idle = responsivo.
   - **Tempo no device (.164, Mali-450 4×A53): ~12.5min** o cache (602MB, 15436 texturas).
-    1º boot total ≈ 17min (extract 3 + fixpak 2 + texbake 12.5). NextOS aceitou "demora".
+    1º boot total ≈ 17min (extract 3 + fixpak 2 + texbake 12.5). "demora" aceita.
 
 ### 1 binário universal
 - Acabou o esquema 2-binários. **Um só** `dysmantle` = `dysmantle.compat.gcc` (GLIBC_2.27,
@@ -89,8 +89,8 @@ O motor (10tons NX) é **caixa-preta fechada**: só aceita carregar **.jpg (ES2)
 
 ---
 
-## 🔴 O QUE O NEXTOS QUER (ABERTO — não resolvido): "SEM CACHE" / só ETC1 nativo (igual SOR4)
-NextOS quer o pak **só com ETC1** (sem o arquivo de cache, sem JPEG) — o SOR4 faz isso
+## 🔴 O QUE O PORTER QUER (ABERTO — não resolvido): "SEM CACHE" / só ETC1 nativo (igual SOR4)
+O porter quer o pak **só com ETC1** (sem o arquivo de cache, sem JPEG) — o SOR4 faz isso
 (ASTC→ETC1, no fim só ETC1). **O custo do cache atual: duplica no disco (JPEG ~600MB +
 cache ETC1 ~600MB = 1.2GB)**; o SOR4 tem metade.
 
@@ -155,8 +155,8 @@ cache ETC1 ~600MB = 1.2GB)**; o SOR4 tem metade.
 - texbake host (teste rápido): `gcc -O2 -I src -o /tmp/texbake src/texbake.c src/etc2_decode.c
   src/etc1_encode.c -ldl -lm -lpthread`.
 
-### Device .164 (⚠️ root/emuelec, NÃO nextos!)
-- `ssh root@192.168.31.164` senha **emuelec**. Mali-450 Utgard (Amlogic Gxbb/S905), 832MB
+### Device .164 (⚠️ login root/<senha>)
+- `ssh root@<device-ip>` senha **<senha>**. Mali-450 Utgard (Amlogic Gxbb/S905), 832MB
   RAM, **4 cores** (mas sysconf online=1). SSH cai em comandos longos → rodar **detached
   (nohup) + polling por flag**. Install em `/storage/roms/ports/dysmantle/`. APK guardado:
   pode estar em `/storage/roms/_dys_apk_keep.apk` ou no dir. PSX apagada (47GB livres).
@@ -164,13 +164,13 @@ cache ETC1 ~600MB = 1.2GB)**; o SOR4 tem metade.
   DYSMANTLE_GLVER=2.0 LD_LIBRARY_PATH=/usr/lib:$PWD ./dysmantle`. Screenshot: `dd if=/dev/fb0
   of=fb.raw bs=1M count=8` → host: PIL `frombytes('RGBA',(1280,720))` + trocar BGR→RGB.
 
-### 🚨 REGRA (NextOS FURIOSO se violar — já na memória)
+### 🚨 REGRA (crítica — já na memória)
 **MATAR + CONFIRMAR 0 instâncias ANTES de lançar o jogo.** Kill por `/proc/*/exe`
 (`pkill -x dysmantle` e `pkill -f caminho` NÃO casam: engine vira `{Main}`, launch é
 `./dysmantle`). Ver `feedback_matar_confirmar_jogo_antes_de_lancar.md`.
 
 ### Referências
-- v4 (base): `~/Área de trabalho/DYSMANTLE v4.zip`. SOR4 (modelo): `~/Área de trabalho/StreetsOfRage4.zip`
+- v4 (base): `DYSMANTLE v4.zip` (diretório de entregas). SOR4 (modelo): `StreetsOfRage4.zip`
   (texconv ASTC→ETC1 + LZ4, host .NET, controla o motor MonoGame).
 - APKs: `~/Downloads/com.dysmantle53.soco.GP_1.4.1.12-APK_Award.apk` (o analisado).
 - `~/dysmantle-bake/` = paks de trabalho no host. `/tmp/apk_orig/` = paks originais (⚠️ /tmp é
@@ -178,9 +178,9 @@ cache ETC1 ~600MB = 1.2GB)**; o SOR4 tem metade.
 
 ---
 
-## DECISÃO PENDENTE (NextOS)
+## DECISÃO PENDENTE (porter)
 Cache (FUNCIONA, mas 1.2GB disco) **vs** só-ETC1 nativo (limpo como SOR4, mas crash do motor
-fechado = RE incerto, talvez muro do ES2). NextOS pediu "sem cache" mas disse "faça seu
+fechado = RE incerto, talvez muro do ES2). O porter pediu "sem cache" mas disse "faça seu
 melhor do seu jeito". **Recomendação:** se o crash não rachar rápido, fechar a v5 com o
 cache (validada) — entrega imagem completa + sem stutter HOJE; deixar o "só ETC1" como
 investigação futura (alto risco).

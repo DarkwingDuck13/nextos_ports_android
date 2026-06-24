@@ -1,6 +1,6 @@
 # HANDOFF — Texturas brancas (cercas/escadas/sprites) — RESOLVIDO 2026-06-18
 
-> Sessão autônoma (NextOS saiu e deixou comigo). Resolvi o bug das texturas brancas.
+> Sessão autônoma. Resolvi o bug das texturas brancas.
 
 ## O bug
 Cercas, grades, **escadas de fundo** (e na verdade sprites de personagem também) apareciam
@@ -12,7 +12,7 @@ Adicionei um modo `--diag` no texconv (lê e categoriza sem escrever). Resultado
   silhuetas de personagem) + **28 em `decors/`** (cercas/escadas de cenário).
 - **0 fontes embranquecidas.** Os atlas `gui/fonts/{font_50x50,numbers_62x62}.xnb` são
   **COLORIDOS** (têm cor no pixel opaco) → convertem normal e renderizam legíveis SEM maskfix
-  (NextOS confirmou de ouvido/olho que o texto fica legível no build anterior).
+  (confirmado de olho que o texto fica legível no build anterior).
 
 **Conclusão:** o MASKFIX (que pintava RGB=A pra "fazer texto aparecer") era uma heurística
 equivocada — nenhuma fonte deste jogo depende dele; ele só embranquecia por engano qualquer
@@ -31,10 +31,10 @@ do APK** (feito nesta sessão, ~25905 arquivos, do `Streets-of-Rage-4-v1.4.5...a
 - DLLs novos deployados no device (.127): `MonoGame.Framework.dll`=fce76d46,
   `sor4texconv.dll`=6c4b517e. Reconversão com MASKFIX off **rodando/concluída**.
 - texcache limpo, ES reiniciada.
-- **Zip da Área de trabalho atualizado** com os DLLs novos (instalação BYO futura já vem certa).
+- **Zip de distribuição atualizado** com os DLLs novos (instalação BYO futura já vem certa).
 - Áudio (audioout/music_ids) intacto.
 
-## ✅ VALIDADO DE OLHO pelo NextOS (2026-06-18)
+## ✅ VALIDADO DE OLHO pelo porter (2026-06-18)
 "arrumou tudo mesmo" — corrigiu cercas/escadas/sombras E **o menu** (preto-transparente voltou
 ao certo) E **a barra de vida**. Um fix conceitual resolveu vários bugs de uma vez (o MASKFIX
 atacava TODO escuro+alpha, não só as cercas). Fontes/texto seguem legíveis. CASO FECHADO.

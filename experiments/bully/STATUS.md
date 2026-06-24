@@ -34,7 +34,7 @@ Entradas nativas tb: `_Z8GameInitb` (GameInit), `_Z9NvAPKInit...` (assets, é HO
 
 ## ▶️ PRÓXIMO (portar o driver do bully-NX, Switch→Linux/SDL)
 1. Trocar `jni_load` (RegisterNatives) pelo **driver impl*** (sequência acima) — resolver os símbolos via `so_symbol`.
-2. Portar `asset_archive.c` do bully-NX (lê dos OBB/APK reais; NvAPKInit hookado) — copiar `main.obb`/`patch.obb` pro `gamefiles/` (estão no zip do NextOS).
+2. Portar `asset_archive.c` do bully-NX (lê dos OBB/APK reais; NvAPKInit hookado) — copiar `main.obb`/`patch.obb` pro `gamefiles/` (estão no zip).
 3. Threading: o jogo cria GameMain + render thread; tratar handoff de contexto EGL (no NX solta o ctx no main e a render thread pega). No PC/SDL: SDL_GL context + multiplos contextos compartilhados OU rodar GL na thread certa.
 4. Gate flags + `OS_ScreenGetWidth/Height` + `sync_engine_egl_globals` (ver bully-NX).
 5. 1º frame no PC → depois rebuild aarch64 (so_util do core) + Mali + empacotar.
@@ -46,7 +46,7 @@ Driver multi-thread + endereços build-específicos = trabalho médio-alto, MAS 
 
 ## 🎉 MARCO 2026-06-03: init ponta-a-ponta no PC + dados v1.4.311 achados
 
-**Dados resolvidos:** o `.apkm` v1.4.311 tem **`split_data_1.apk` (1GB)** com `assets/data_0.zip`+`data_1.zip`+`.idx` = dado real do jogo (Play Asset Delivery). Estagiado em `gamefiles/assets/` (1.1GB). O OBB antigo do NextOS (2022, layout `Bully/*.msh`) NÃO serve; a v1.4.311 usa os data zips.
+**Dados resolvidos:** o `.apkm` v1.4.311 tem **`split_data_1.apk` (1GB)** com `assets/data_0.zip`+`data_1.zip`+`.idx` = dado real do jogo (Play Asset Delivery). Estagiado em `gamefiles/assets/` (1.1GB). O OBB antigo (2022, layout `Bully/*.msh`) NÃO serve; a v1.4.311 usa os data zips.
 
 **Driver estático portado** (jni_shim.c reescrito): resolve os 38 `Java_..._impl*` por símbolo, ancora gates em `StorageRootPath` (init=srp-0x174/susp=-0x17c/render=-0x2e8), hooka 11 `NvAPK*`→`asset_archive.c` (vendorizado do bully-NX, lê dos data zips), `AttachCurrentThread`/`GetEnv` na fake_vm, dispatchers JNI com **`va_list`/`va_arg`** (NÃO uintptr_t* — crash 64-bit), métodos has/get/setAppLocalValue+getParameter.
 
@@ -213,11 +213,11 @@ do jogo). No device Mali-450 fbdev é outro caminho EGL (igual reVC funcionou). 
 o EGL/contexto multi-thread (NVIDIA surfaceless/pbuffer) OU partir pro device arm64 (extrair libGame.so
 arm64 do mesmo APK + os data já temos a receita). Engine LÓGICO já roda — falta a APRESENTAÇÃO GL.
 
-## 🎉🎉🎉🎉 JOGO RODANDO 2026-06-08 — ÁUDIO + GL MULTI-THREAD OK (NextOS ouviu o som!)
+## 🎉🎉🎉🎉 JOGO RODANDO 2026-06-08 — ÁUDIO + GL MULTI-THREAD OK (ouvimos o som!)
 **FIX multi-thread GL:** hookado `_Z22OS_ThreadUnmakeCurrentv` -> bully_release_current (pareia com
 OS_ThreadMakeCurrent). Antes o GameMain segurava o ctx EGL (single-thread) e a render thread falhava
 (ok=0). Agora intercala release/make -> **ok=1: 2172, ok=0: 0** (render thread pega GL todo frame).
-**ESTADO: O JOGO RODA.** NextOS OUVIU o som do jogo no PC. Logs mostram carga de gameplay:
+**ESTADO: O JOGO RODA.** Ouvimos o som do jogo no PC. Logs mostram carga de gameplay:
 sfx_*.snd (efeitos), mx_ms_runninglow.snd (música), hud_jump/punch.tex (HUD), mission_bg.tex.
 Engine: boot->JNI->gates->Rockstar->GameMain->resources(data_0-4)->whitetexture OK->render loop
 (frame 2280+) com áudio OpenAL tocando. PC bring-up ESSENCIALMENTE COMPLETO (engine roda o jogo).
@@ -251,12 +251,12 @@ o tempo todo. CAPTURA CERTA = `dd if=/dev/fb0 + PIL frombytes RGBA raw BGRA` (fb
 SDL2-mali EGL (1280x720 GLES2) -> Rockstar gate -> whitetexture.tex (data_2/3/4 reais) -> render loop
 (eglMakeCurrent ok=1 + unmake handoff) -> fixes GLES2 (highp->mediump, RGBA8->RGBA, MAX_LEVEL/mipmap,
 glClear cor) -> MENU/MUNDO na TV. swap via eglSwapBuffers do game + SDL_GL_SwapWindow.
-**Screenshot: /home/nextos/BULLY-MALI450-PRIMEIRO-RENDER.png**
+**Screenshot: /home/root/BULLY-MALI450-PRIMEIRO-RENDER.png**
 **FALTA (polish):** controle (jni_shim ja tem SDL gamecontroller; testar/gptokeyb), audio (OpenAL,
 funcionava no PC), empacotar ES, gerar gamecontrollerdb. Mas o CORE esta FEITO.
 
 ## 🎮🏆 CONTROLE FUNCIONANDO + MENU PRINCIPAL (2026-06-08) — JOGÁVEL
-NextOS: "controle PERFEITO". O jogo NÃO faz polling (GetGamepadButtons nunca chamado); usa EVENTOS
+O porter confirmou "controle PERFEITO". O jogo NÃO faz polling (GetGamepadButtons nunca chamado); usa EVENTOS
 JNI. FIX: pump_gamepad() no loop empurra implOnGamepadButtonDown/Up/AxesChanged/CountChanged a cada
 frame (abre SDL_GameController "USB Gamepad" via gamecontrollerdb do sistema; init SDL_INIT_GAMECONTROLLER
 + jni_init_input que NUNCA eram chamados). Mapa SDL->GamepadButton enum libGame (0=A 1=B 2=X 3=Y
@@ -292,7 +292,7 @@ Sintoma: entrar na escola (hub principal) wedgava o device DURO (SSH timeout). I
 - Hang ABRUPTO carregando textura de NPC (prgirl_pinky_md_n.tex), frames estáveis e param secos.
 CAUSA: o Mali-450 (Utgard) tem limite de memória/MMU de TEXTURA separado da RAM. A escola popula
 com MUITOS NPCs (cada um _d/_n/_s 512²) -> estoura o limite de textura da GPU -> driver TRAVA (sem
-erro limpo). [O GTA SA roda liso pq gerencia melhor a textura dos pedestres — sacada do NextOS.]
+erro limpo). [O GTA SA roda liso pq gerencia melhor a textura dos pedestres — sacada do porter.]
 FIX (3 reduções de memória de textura, env no starter):
 1. BULLY_TEX_LIGHT: pula os mapas de DETALHE _n/_s (nv_open retorna NULL) = -2/3 por NPC.
 2. BULLY_TEX_HALF (a) pula MIPMAPS (lvl>0): como forço MIN_FILTER=LINEAR, mips nunca são usados
@@ -304,7 +304,7 @@ linear 60418 x milhares de opens). Tudo confirmado NÃO-memória via monitor mem
 
 ## 🏆👕 ROUPA DO JIMMY RESOLVIDA (2026-06-08) — JOGO 100%
 Sintoma: a roupa do player (torso/camisa/braços) APARECIA e SUMIA (no guarda-roupa, parado ou mexendo).
-CAUSA-RAIZ (achada com o NextOS — "algo que mexemos no código"): o my_glClear forçava
+CAUSA-RAIZ (achada com o porter — "algo que mexemos no código"): o my_glClear forçava
 GL_COLOR_BUFFER_BIT em TODO glClear (fix antigo de tela preta). A composição de roupa (render-to-
 texture) faz clear só de PROFUNDIDADE no estado estável -> o nosso force-COLOR APAGAVA a cor (a roupa
 já composta) -> some. Pistas decisivas: aparece-e-some (renderiza OK); trocar roupa RÁPIDO mantém

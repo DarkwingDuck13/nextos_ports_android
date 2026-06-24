@@ -23,7 +23,7 @@
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
 /* s14: 2048 amostras (~46ms). A tentativa 4096 + ring-fundo(6x) + max_calls=32 fez a
  * thread do pump VIRAR moedor de CPU (chamava o mixer do FMOD 32x/ciclo) -> travou o
- * device + distorceu (feedback NextOS "bugou bonito"). Voltei pro simples; a folga de
+ * device + distorceu (feedback "bugou bonito"). Voltei pro simples; a folga de
  * verdade vem do FIX de performance (draws sem glGetIntegerv) que tira o thrash. */
 #define SDL_AUDIO_SAMPLES 2048
 

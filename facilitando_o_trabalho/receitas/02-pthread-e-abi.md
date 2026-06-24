@@ -25,5 +25,8 @@ No Android ARM64, o `pthread_t` é apenas um ponteiro (8 bytes), o que felizment
 A estrutura `sigaction` também difere. A Bionic espera uma máscara de sinais de 64-bit dentro de um espaço pequeno. Se você passar o `sigaction` da Glibc (que é enorme), você estoura a pilha do jogo. 
 *   **Fix:** Sempre use o nosso wrapper `my_sigaction` que traduz os campos um por um.
 
+## 6. O fundo de tudo isto é ponteiro
+O "Mapa de Ponteiros" da seção 2 não é um truque isolado — é a mesma ideia que rege GOT, JNI fake e relocações. Se você quer entender *por que* tratar o storage bionic como um ponteiro funciona (e onde mais isso aparece), leia a receita dedicada: [Ponteiros: handles, GOT/PLT e trampolins](11-ponteiros-handles-e-hooks.md).
+
 ---
 *Dica: Se o jogo trava em "Deadlock" logo no início, ou se o carregamento de uma fase secundária congela a CPU em 100%, revise a sua ponte pthread.*

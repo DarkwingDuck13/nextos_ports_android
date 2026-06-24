@@ -1,18 +1,18 @@
 # DYSMANTLE — ESTUDO: "tudo pronto antes do jogo, nada em runtime" (texturas offline + 1 binário)
 
 > Estudo (NÃO aplicado ainda). Base: APK original `com.dysmantle53.soco.GP_1.4.1.12-APK_Award.apk`
-> + repo atual `ports/dysmantle`. Pedido do NextOS (2026-06-18): replicar o que deu **super
+> + repo atual `ports/dysmantle`. Pedido do porter (2026-06-18): replicar o que deu **super
 > certo no SOR4** — TODA conversão de textura/qualquer fix acontece **offline, no progressor
 > (1x na instalação)**, gerando as **melhores texturas pro device**. O runtime só **carrega e
 > sobe**. **NADA em tempo real dentro do jogo.** Port mais **limpo**, menos RAM, **1 binário só**.
 
 ---
 
-## 0. Princípio (palavras do NextOS)
+## 0. Princípio (palavras do porter)
 - **TUDO pronto ANTES do jogo iniciar — qualquer textura, qualquer fix.**
 - **NADA em tempo real dentro do jogo.**
 - **1 binário só** (glibc velha ~2.17/2.27/2.30) → roda em **qualquer device**.
-- **Mudar tudo** do Dysmantle nessa direção. Device de trabalho: **192.168.31.164**.
+- **Mudar tudo** do Dysmantle nessa direção. Device de trabalho: **<device-ip>**.
 
 ---
 
@@ -149,7 +149,7 @@ O `ESTUDO-PERF-RAM-1GB.md` mediu no **.127 (Mali-450, 832 MB)**:
   **não por textura.** A/B controlado: **ETC1 ON ≈ OFF** no RSS daquele device.
 - ➡️ **Este trabalho NÃO vai derrubar muito o RSS no .127 específico.** Não vender isso.
 
-**Mas os ganhos REAIS que ele entrega (e que o NextOS pediu):**
+**Mas os ganhos REAIS que ele entrega (e que o porter pediu):**
 1. **Port limpo** — o princípio "nada em runtime" cumprido; fim do fixpak que infla/atropela.
 2. **Load mais rápido + sem stutter** — some o JPEG-decode da engine **e** o ETC1-encode em runtime
    (esse encode na CPU fraca é hitch de verdade).
@@ -163,9 +163,9 @@ O `ESTUDO-PERF-RAM-1GB.md` mediu no **.127 (Mali-450, 832 MB)**:
 ---
 
 ## 7. Plano por fases (custo↑ / risco↑) — validar cada uma no .164
-1. **F0 — 1 binário** (baixo) — **DECISÃO NextOS 2026-06-18**: adotar o **compat como O binário
-   principal** (`dysmantle`), apagar o nativo + toda a detecção de glibc no `.sh`. Requisitos do
-   NextOS: o compat **tem que ter TUDO corrigido** (mesmo `src/` completo, todos os fixes) e a
+1. **F0 — 1 binário** (baixo) — **DECISÃO do porter 2026-06-18**: adotar o **compat como O binário
+   principal** (`dysmantle`), apagar o nativo + toda a detecção de glibc no `.sh`. Requisito:
+   o compat **tem que ter TUDO corrigido** (mesmo `src/` completo, todos os fixes) e a
    **compilação dele é SEMPRE no Docker** (`debian:bullseye`, `build_compat_gcc.sh` → GLIBC_2.17).
    Testar boot no .164. *(ganho imediato, risco ~zero.)*
 2. **F1 — provar o passthrough** (médio, é o RISCO): pegar ~10 texturas, gerar KTX-ETC1 / RGBA4444
@@ -182,7 +182,7 @@ O `ESTUDO-PERF-RAM-1GB.md` mediu no **.127 (Mali-450, 832 MB)**:
 
 ---
 
-## 7.5 💡 OPÇÃO AVANÇADA GUARDADA (NextOS gostou, 2026-06-18): ETC1 + plano de alpha separado
+## 7.5 💡 OPÇÃO AVANÇADA GUARDADA (aprovada, 2026-06-18): ETC1 + plano de alpha separado
 Pro "resto" (texturas com alpha), em vez de RGBA4444/5551 (16 bpp), dá pra chegar a **~8 bpp**:
 - guardar o **RGB como ETC1** (4 bpp) + o **alpha como uma 2ª textura** (ETC1 do canal A, ou L8/EAC),
   e **combinar no shader** (amostra as 2 e faz `gl_FragColor.a = alphaTex.r`).

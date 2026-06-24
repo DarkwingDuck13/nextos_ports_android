@@ -124,7 +124,7 @@ export WWISE_REAL="$PKG/libs/libWwise.real.so"
 export WWISE_LOG="$GAMEDIR/wwise.log"
 export WWISE_TICK_US="${WWISE_TICK_US:-33333}"
 export SOR4_MUSIC_GRACE="${SOR4_MUSIC_GRACE:-3600}"
-export SOR4_SFXGAIN="${SOR4_SFXGAIN:-1.1}"   # som de BATER/golpe (NextOS: tava baixo); OpenAL amplifica >1 com limiter
+export SOR4_SFXGAIN="${SOR4_SFXGAIN:-1.1}"   # som de BATER/golpe (estava baixo); OpenAL amplifica >1 com limiter
 export SOR4_MUSICGAIN="${SOR4_MUSICGAIN:-0.6}"
 # rede de seguranca: escala que o usuario escolheu (texscale.txt), senao 3.
 SOR4_TEXSCALE=3; [ -f "$GAMEDIR/tools/texscale.txt" ] && SOR4_TEXSCALE=$(cat "$GAMEDIR/tools/texscale.txt" 2>/dev/null | tr -dc '0-9')

@@ -14,7 +14,7 @@ O modelo é: **`bash StreetsOfRage4.sh`** (lançado pelo PortMaster) → o .sh c
 O progressor SÓ funciona/sobrevive quando o port é lançado pela sessão do PortMaster (que
 suspende o ES e entrega o display). Por ssh cru o ES (Restart=always) volta e mata o progressor.
 
-## O TEMPLATE CERTO (do Bully.sh que o NextOS mandou — COPIAR a estrutura)
+## O TEMPLATE CERTO (do Bully.sh de referência — COPIAR a estrutura)
 O `.sh` DEVE:
 - `source $controlfolder/control.txt` + `get_controls`  → define `$ESUDO`, `$GPTOKEYB`,
   `$directory`, `$sdl_controllerconfig`, `pm_finish`, `$CUR_TTY`.
@@ -26,7 +26,7 @@ O `.sh` DEVE:
      "$GAMEDIR/tools/sor4_setup.src"
   ```
 - Ambiente: `export LD_LIBRARY_PATH="$GAMEDIR/host_pkg/libs:/usr/lib:$GAMEDIR"`.
-  **NUNCA setar SDL_VIDEODRIVER nem SDL_AUDIODRIVER** (auto-detect SEMPRE — ordem do NextOS).
+  **NUNCA setar SDL_VIDEODRIVER nem SDL_AUDIODRIVER** (auto-detect SEMPRE — regra do projeto).
   Pode usar `SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1` + `SDL_VIDEO_FULLSCREEN_DESKTOP=1` (Bully usa).
 - gptokeyb via `$GPTOKEYB "sor4host" -c "$GAMEDIR/sor4.gptk" &` (ou fallback `gptokeyb -1`).
 - `./host_pkg/sor4host` (o jogo).
@@ -50,7 +50,7 @@ O `.sh` DEVE:
   + Mono.Cecil.dll. Rodam via `sor4host --run-dll noopm.dll SOR4.dll AndroidServices.* ...` etc.
 - **Reader** (`build/MonoGame/.../Texture2DReader.cs`) lê RgbEtc1 XNB direto (caminho ASTC nem
   dispara qdo já é ETC1) → jogo lê os XNB pré-convertidos sem conversão runtime.
-- **Progressor** (binário 335KB) + FiraCode font: vêm do `~/Área de trabalho/DYSMANTLE v3.zip`
+- **Progressor** (binário 335KB) + FiraCode font: vêm do `DYSMANTLE v3.zip`
   (tools/progressor, tools/FiraCode-Regular.ttf). `pbar`/`msgbox` funcionam; **`settitle` CRASHA**
   (não usar — usar --title). `confirm` NÃO testado no nosso progressor (Salt usa um progressor de
   137KB onde confirm funciona — se precisar de confirm, testar ou usar o do Salt).
@@ -76,10 +76,10 @@ O SOR4 é .NET-for-Android. Falta descobrir/implementar a extração do APK:
   assembly store do .NET-Android — pode precisar de tratamento especial, NÃO é só unzip).
 - Estudar como o SOR4.dll foi obtido na dev (havia /tmp/SOR4.device.dll). Os 19 arquivos `\x00IAP`
   na raiz do gameassets são minoria (não são as texturas; texturas = 25224 XNB padrão).
-- ⚠️ DECISÃO DO NEXTOS: apagar o APK **só após SUCESSO TOTAL** (extração+patch+conversão+jogo
+- ⚠️ DECISÃO DO PORTER: apagar o APK **só após SUCESSO TOTAL** (extração+patch+conversão+jogo
   abre). Se falhar, MANTER o APK (opção 1).
 
-## UX DO PROGRESSOR (decidido com o NextOS, inspirado no Salt) — A FAZER
+## UX DO PROGRESSOR (decidido com o porter, inspirado no Salt) — A FAZER
 DUAS escolhas separadas (Salt usa `confirm`):
 1. **Downscale (escala 1 / 2 / 3)** — tamanho da textura. Recomendado **3.0 p/ 1GB**.
 2. **Modo de conversão**: "RÁPIDA (memória alta = muitos threads)" vs "LOW MEMORY (lenta = poucos
@@ -94,12 +94,12 @@ e o modo define `SOR4_CONV_THREADS`.
 - **SDL video E áudio = AUTO-DETECT** (nunca forçar driver; forçar 'mali' deixava tela preta).
 - **p3 é vfat** (limite 4GB/arquivo) — não fazer tar gigante; backup = renomear pasta.
 - **settitle crasha** o progressor (JSON) — usar --title.
-- texconv usa pouca RAM (~121MB); o "low memory" do NextOS é p/ a RAM do JOGO (ETC1 resolve) E
+- texconv usa pouca RAM (~121MB); o "low memory" é p/ a RAM do JOGO (ETC1 resolve) E
   p/ o pico DURANTE a conversão (menos threads).
 - Limpar no fim: logs de debug; coredumps do DOTNET_DbgEnableMiniDump (o run_diag.sh de debug
   gera ~80MB por crash — o launcher de produção NÃO deve ter isso).
 
-## ESTADO DO DEVICE (192.168.31.127)
+## ESTADO DO DEVICE (<device-ip>)
 - `/storage/roms/sor4` = pacote em montagem (host_pkg, gameassets convertido escala-3, tools/).
 - `/storage/roms/sor4-test.bak` = backup (originais ASTC).
 - Conversão escala-3 bash-direto rodou até ~100% (validar o jogo abrindo com `bash sor4/StreetsOfRage4.sh`).

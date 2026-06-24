@@ -2,7 +2,7 @@
 
 ## ⏩ COMO RETOMAR (próxima sessão) — quickstart
 **Estado:** código commitado+pushado (origin+private, commit 7cdd71f). Device .164 (root/—,
-DHCP pode mudar IP: tentar 192.168.31.164; se não, `ssh root@<ip>` do range 31.x).
+DHCP pode mudar IP: tentar `<device-ip>`; se não, `ssh root@<device-ip>` na subrede local).
 
 **Objetivo nº1:** o load assíncrono da cena do MAPA não completa (1 op de integração
 PERSISTENTE com done72=0 desde o boot; vt u+0x123e658, integ=0x872758). NÃO é crash nem
@@ -12,7 +12,7 @@ memória. Fix CIRÚRGICO (levers globais quebram o boot — ver seção MURO). L
 
 **Setup do device (perde no reboot — refazer):**
 ```
-ssh root@192.168.31.164
+ssh root@<device-ip>
 systemctl stop emustation; systemctl mask emustation; pkill -9 emulationstation   # libera RAM
 echo 1 > /proc/sys/vm/overcommit_memory
 L=$(losetup -f); losetup $L /storage/roms/nextos.swap; mkswap $L; swapon -p 20 $L  # swap 2GB
@@ -26,9 +26,9 @@ P2 bloqueado). Esperar disclaimer (`grep inputwait debug.log`). Navegar via /tmp
 toques em transições). Pra PSPY: rodar go-map.sh com CUP_PSPY=1 (e SEM DRAINWAIT/DRAINPRELOAD,
 que travam). Capturar fb: `head -c 3686400 /dev/fb0 > /tmp/fb.raw` (BGRA, converter swap R<->B).
 
-## Ponto de partida (s11, do NextOS)
+## Ponto de partida (s11)
 - INÉDITO: controle + entrada na fase pela primeira vez, estável.
-- 3 destraves do NextOS: (1) overloads de input por NÚMERO de ação (7 que faltavam);
+- 3 destraves: (1) overloads de input por NÚMERO de ação (7 que faltavam);
   (2) feel do menu (lixo -32767 do USB ao conectar envenenava calibração + scroll 1/frame);
   (3) deploy cutscene livro/intro/mundo-1 + redirect de paths relativos.
 - Memória RESOLVIDA: UnloadUnusedAssets+GC nas transições + swap reordenado pro ext4.
@@ -120,7 +120,7 @@ NOREFRESHDLC+GAMEPAD+MEMLOG+GCEVERY=1800. SCENEGUARD é default-ON (CUP_NOSCENEG
 1. SIGSEGV 0x541cdc (scene NULL deref) -> SCENEGUARD. PASSOU.
 2. SIGSEGV 0x8f9b1c (mesh index count insana ~0x10000000 em 0x8f9914) -> MASKGUARD
    (clamp count>0x40000). Instalado.
-3. **FREEZE (não-crash) = PLAYER 2 FANTASMA** (causa que o NextOS apontou!).
+3. **FREEZE (não-crash) = PLAYER 2 FANTASMA** (causa apontada pelo porter!).
    NullReferenceException em **PlayerManager.Update()** <- Cuphead.Update(), todo frame,
    render TRAVA. CAUSA-RAIZ: os hooks de input (gamepad.c) faziam (void)self e devolviam
    o MESMO input p/ TODOS os players Rewired -> quando o jogo lê o input do Player 2,
@@ -135,7 +135,7 @@ NOREFRESHDLC+GAMEPAD+MEMLOG+GCEVERY=1800. SCENEGUARD é default-ON (CUP_NOSCENEG
 - Com o fix do P2, ao sair da casa o device entrou em THRASH pesado (sshd sufocado,
   30 tentativas de reconexão sem sucesso, rede responde ping mas ssh não completa
   handshake). = OOM no load do mapa-múndi (cena MAIS PESADA do jogo) saturando
-  832MB+swap. PRECISA POWER-CYCLE do NextOS (mesmo padrão de s7).
+  832MB+swap. PRECISA POWER-CYCLE manual (mesmo padrão de s7).
 - Não deu pra ler o debug.log final (ssh morto) — não sei se chegou a renderizar o
   mapa antes de afogar, ou se afogou no load. Os guards (SCENE/MASK) e o fix P2 podem
   ter funcionado; o muro agora é MEMÓRIA pura no load do mapa.
@@ -220,7 +220,7 @@ NOREFRESHDLC+GAMEPAD+MEMLOG+GCEVERY=1800. SCENEGUARD é default-ON (CUP_NOSCENEG
 ## 🎯 MURO REAL ISOLADO (s12 fim) — load assíncrono do mapa NÃO COMPLETA (NÃO é memória!)
 - Com SCENESKIP, a transição casa→mapa NÃO CRASHA mais. Mas trava na AMPULHETA de loading:
   o render spina ~1560fps VAZIO (loop roda, nada renderiza) — depois HANG (15540 fixo).
-  Memória saudável (avail 232MB). NextOS confirmou: trava no loading mesmo com texturas feias.
+  Memória saudável (avail 232MB). Confirmado: trava no loading mesmo com texturas feias.
 - PSPY no momento travado (PreloadManager mgr=0x55c540f980): **preloadQ=1 integQ=1** presas.
   jobmgr +70/+168/+16c = 0 (sem jobs pendentes do worker).
   - **PQ[0]** op=...d180 vt=**u+0x123e8d8** done72=**0** w64=0 w68=0

@@ -1,6 +1,6 @@
 # Cuphead Mali-450 — HANDOFF p/ Sessão 17 (noite 2026-06-13, sessão autônoma)
 
-## 🎯 MISSÃO (do NextOS): chefes/inimigos INVISÍVEIS nas fases — fazê-los aparecer.
+## 🎯 MISSÃO: chefes/inimigos INVISÍVEIS nas fases — fazê-los aparecer.
 
 ## ⛔ BLOQUEADOR descoberto nesta sessão (LER PRIMEIRO)
 A missão foi pedida "no s905x5m, por ser mais rápido". **NÃO É VIÁVEL no X5M sem trabalho grande**:
@@ -49,7 +49,7 @@ fbo2 aparece. GL state dos invisíveis: colorMask 1111, blend ON, depth test=1/m
 3. **🆕 COR POR-VÉRTICE = 0** (lead novo desta sessão): como o ALPHAFIX mexeu só nos UNIFORMS
    e não resolveu, se o frag multiplica por uma varying de cor de vértice (COLOR0) que vem 0
    no caminho batched, os sprites somem mesmo com uniforms=1. **Análogo ao vertex-color branco
-   do Dysmantle (intuição do NextOS).** Teste decisivo: patch no shader forçando
+   do Dysmantle.** Teste decisivo: patch no shader forçando
    `gl_FragColor.rgb = texture2D(_MainTex,uv).rgb` (bypassa TODOS os multiplies de cor/vértice).
    Se aparecer → é a cadeia de cor (vértice/uniform); se continuar sumido → é geometria (1/2).
    ⚠️ precisa do TEXTO do shader ext-alpha (CUP_SHADERDUMP) p/ saber o nome da varying de uv —
@@ -62,4 +62,4 @@ fbo2 aparece. GL state dos invisíveis: colorMask 1111, blend ON, depth test=1/m
    screenshot. Apareceu? → promover NOSCISSOR a default, commit, FIM.
 4. Não? → `touch /tmp/dson; touch /tmp/dsdump` na fase → ler [SPROBE] sciss/vp + [MAT] +
    capturar [SHSRC] do ext-alpha → decidir entre matriz (2) e vertex-color (3) → implementar →
-   commit. Coletar RÁPIDO e matar (wedge risk; avisar NextOS p/ power-cycle).
+   commit. Coletar RÁPIDO e matar (wedge risk; avisar p/ power-cycle).

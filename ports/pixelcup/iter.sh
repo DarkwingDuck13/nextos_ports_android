@@ -1,10 +1,10 @@
 #!/bin/bash
-# iter.sh — deploy + run pixelcup no device .164, captura log + thread states + screenshot.
+# iter.sh — deploy + run pixelcup no device, captura log + thread states + screenshot.
 # uso: ENV1=v ENV2=v ./iter.sh [segundos]
 set -u
 SECS="${1:-25}"
-HOST=192.168.31.164
-export SSHPASS=emuelec
+HOST="<device-ip>"
+export SSHPASS="<senha>"
 SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 root@$HOST"
 SCP="sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8"
 GD=/storage/roms/ports/pixelcup

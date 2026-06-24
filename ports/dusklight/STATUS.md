@@ -118,7 +118,7 @@ mostra crash real. Device /storage/roms/dusklight-recon/ (libmain.so+dusklight; 
 ## SESSÃO 3 (2026-06-09) — F2 RESOLVIDO + GL context no Mali + 🧱 MURO: binário é Vulkan/Null-only (sem GLES)
 
 ### ✅ Tudo que destravou (engine roda do init até criar contexto GL e carregar UI):
-Cadeia de crashes resolvidos, em ordem (todos no device .164, login root/emuelec, run com
+Cadeia de crashes resolvidos, em ordem (todos no device .164, login root/<senha>, run com
 `DUSK_NOSKIP=1 LD_LIBRARY_PATH=/usr/lib ./dusklight`):
 
 1. **JNI env cacheado virava 0x1** (crash em `SDL_GetAndroidInternalStoragePath`→`Android_JNI_GetEnv`):
@@ -176,7 +176,7 @@ Título da janela: `Dusklight v1.2.0-1 [Null]`. O engine usa **Dawn (WebGPU)**. 
 → No device só roda o **backend Null do Dawn (descarta render)** → preto. **Não há código GLES dentro do
 binário** p/ shimar do jeito so-loader normal.
 
-### ➡️ CAMINHO (decisão NextOS): converter pra GLES2 (já fizemos várias vezes)
+### ➡️ CAMINHO (decisão do porter): converter pra GLES2 (já fizemos várias vezes)
 O Dawn fala WebGPU internamente; precisamos interpor a camada gráfica e **traduzir p/ GLES2** (estilo
 "Route A" do fork Aurora, mas aqui como SHIM sobre o binário pronto). Opções a investigar na próxima:
 - **Interpor a API C `webgpu.h` (wgpuDevice*/wgpuQueue*/wgpuSurface*…)** que o engine chama p/ falar com
@@ -199,7 +199,7 @@ O Dawn fala WebGPU internamente; precisamos interpor a camada gráfica e **tradu
 
 ### Como rodar/testar no device (.164 muda por DHCP — confirmar IP):
 ```
-sshpass -p emuelec ssh root@<IP>           # login
+sshpass -p <senha> ssh root@<IP>           # login
 ./build.sh                                  # cross-compila (toolchain NextOS Amlogic-old)
 scp dusklight root@<IP>:/storage/roms/dusklight-recon/
 # no device: mkdir files; echo {} > files/config.json; assets/res/ + AVConfig.json extraídos do APK

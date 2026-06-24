@@ -1,7 +1,7 @@
 # GTA Liberty City Stories → Mali-450 — ENTREGA (2026-06-23)
 
 ## COMO RODAR
-No device (EmuELEC, .88 root/emuelec), via SSH:
+No device (EmuELEC, root), via SSH:
 ```sh
 # RECOMENDADO — com logs persistentes + watchdog anti-travamento:
 sh /storage/roms/ports/lcs/run-final.sh
@@ -17,7 +17,7 @@ sh /storage/roms/ports/lcs/run-playable.sh
 1. **🏆 BUG PRINCIPAL RESOLVIDO — "chão/asfalto preto":** a surface GL era criada com canal
    ALPHA e o compositor do Amlogic vazava o fundo preto onde o framebuffer tinha alpha<1.
    Aparecia SÓ na TV (não no glReadPixels). **Fix:** forçar alpha=1 no framebuffer antes do
-   swap (imports.c, `LCS_NO_ALPHA_FIX` desliga). NextOS confirmou: "resolveu tudo".
+   swap (imports.c, `LCS_NO_ALPHA_FIX` desliga). O porter confirmou: "resolveu tudo".
 2. Vsync best-effort (FBIO_WAITFORVSYNC) p/ reduzir tearing dirigindo.
 3. Perfil estável default: sombras off (evita flicker de sombra z-fight), detail tratado.
 4. **Logs persistentes** (logs/, timestamp) + **watchdog anti-travamento** (run-final.sh).
@@ -28,7 +28,7 @@ sh /storage/roms/ports/lcs/run-playable.sh
 | Boot / inicialização | ✅ chega ao gameplay (~130s) |
 | Render / menus / HUD | ✅ normal, chão SEM preto (brilho 48 vs <20 seria preto), HUD/mundo ok |
 | Controles (inject move/câmera/botão) | ✅ registrados no engine (`[input] button=9 DOWN`, `[probe]`) |
-| Áudio | ✅ OpenAL carregado (`preload: libopenal.so.1 OK`); NextOS confirmou som ok |
+| Áudio | ✅ OpenAL carregado (`preload: libopenal.so.1 OK`); som confirmado ok |
 | Crash | ✅ nenhum (crash.log vazio) |
 | Watchdog + heartbeat | ✅ HEARTBEAT timestampado a cada 5s + mem; mata/reinicia se congelar |
 Screenshots do teste: `logs/shots/test0-2.png`.
@@ -56,7 +56,7 @@ o gargalo; half-res não resolve). A pé/parado roda liso. NÃO foi pedido mexer
 então fica como tuning futuro no orçamento de streaming do motor. Os bugs VISUAIS estão resolvidos.
 
 ## ARQUIVOS
-- Código: `~/nextos_ports_android/ports/lcs/src/` — `bash build.sh` → `lcs`.
+- Código: `ports/lcs/src/` (neste repo) — `bash build.sh` → `lcs`.
 - Launchers: `run-final.sh` (entrega, logs+watchdog), `run-playable.sh`, `run30.sh`.
 - Docs: `STATUS.md` (diário), `ESTUDO-PERFORMANCE-TIERS.md` (RAM), este `ENTREGA.md`.
 
@@ -79,7 +79,7 @@ permanece LIGADO (andar NÃO quebra — ao contrário da tentativa anterior que 
 - `LCS_FIX_CONTROLS=0` volta ao comportamento antigo (mirror do D-pad) se precisar.
 
 ## ADENDO (2026-06-23 tarde) — downscale e controle
-- **Downscale de render TESTADO (A/B pareado) e DESCARTADO:** medição no device .88, gameplay
+- **Downscale de render TESTADO (A/B pareado) e DESCARTADO:** medição no device, gameplay
   assentado, janela de 20s: **1280x720 = 21 fps** vs **1152x648 (LCS_RENDER_SCALE=0.9) = 20 fps**.
   Renderizar 19% menos pixels NÃO subiu o fps (deu 1 a menos, dentro do ruído) → o jogo é
   **RAM/streaming-bound, não GPU**; downscale NÃO resolve o "trava dirigindo". Além disso o

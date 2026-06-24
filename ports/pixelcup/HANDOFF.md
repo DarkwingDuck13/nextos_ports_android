@@ -1,7 +1,7 @@
 # Pixel Cup Soccer — HANDOFF (so-loader Mali-450, Unity 2022.3.62 IL2CPP)
 
 > Sessão 2026-06-23. Diagnóstico EXAUSTIVO do muro. Loading screen renderiza; jogo não passa dela.
-> Device dev = Mali-450 **192.168.31.164** (senha emuelec). Dados em /storage/roms/ports/pixelcup.
+> Device dev = Mali-450 **<device-ip>** (senha <senha>). Dados em /storage/roms/ports/pixelcup.
 
 ## ONDE ESTÁ (1 frase)
 A tela de LOADING (o malabarista) renderiza e CONGELA: o `nativeRender` do 1º frame bloqueia em
@@ -76,10 +76,10 @@ MAS:
 - `iter.sh [segs]` — build+deploy+run+captura threads/fds/screenshot. Passa env PC_/TER_/CUP_/SDL_/MALI_.
 - `gdbpeek.sh`, `gdbpeek2.sh`, `gdb10.sh` (no device /tmp) — backtraces com símbolos.
 - Screenshot: `cat /dev/fb0` (1280x720x4 BGRA, pegar primeiros 1280*720*4 bytes).
-- Matar: por /proc/*/exe (regra NextOS). ⚠️ scp às vezes segfalta local (sshpass) — repetir.
+- Matar: por /proc/*/exe (regra do porter). ⚠️ scp às vezes segfalta local (sshpass) — repetir.
 
 ## REGRAS (memória)
-- Git master-only, ZERO co-autor/menção Agente. Matar+confirmar 0 instâncias antes de lançar.
+- Git master-only, ZERO co-autor. Matar+confirmar 0 instâncias antes de lançar.
 - Default run (sem CUP_EGLMUX) = loading screen congelada = checkpoint conhecido (não-quebrado).
 
 ---
@@ -336,14 +336,14 @@ via sh_key_create/getspecific/setspecific) e desmontei o staller real. Conclusõ
    ⚠️ Default run (sem PC_/TER_) = loading congelada = checkpoint. PC_INLINETASK = avança até parede (B).
 
 ---
-## SESSÃO 2026-06-23 (cont. 6) — 🟢 DISK-FULL RESOLVIDO (dica do NextOS); parede única isolada = mount PAD
+## SESSÃO 2026-06-23 (cont. 6) — 🟢 DISK-FULL RESOLVIDO (dica do porter); parede única isolada = mount PAD
 🟢 **"IOException: Disk full" RESOLVIDO.** Causa: o **`/tmp` (tmpfs 416MB) do device estava 100% cheio**
    do MEU lixo acumulado de sessões (dezenas de `pc_fb*.raw`/`shot_*.raw` de 24MB + /tmp/cores). Mono/Unity
    escreve temp e o `write()` real dava **ENOSPC → "Disk full"**. FIX = `rm /tmp/*.raw /tmp/shot_* ...`
-   (/tmp 100%→0%). Confirmado: 0 ocorrências de "Disk full" depois. (NextOS: "terraria teve isso e foi
+   (/tmp 100%→0%). Confirmado: 0 ocorrências de "Disk full" depois. (porter: "terraria teve isso e foi
    resolvido lá" — era a mesma classe.) ⚠️ Manter /tmp do device limpo entre runs (iter.sh acumula .raw).
    Defensivo extra commitado: **my_statfs64 agora INFLA o espaço livre p/ 50GB** (f_blocks/f_bfree/f_bavail),
-   pois o cartão do .164 só tem ~936MB livres e o real podia disparar checagens de "low storage".
+   pois o cartão do device só tem ~936MB livres e o real podia disparar checagens de "low storage".
 
 🟢 **NullReferenceException = Rewired** (input DualShock4 native helper), **CAPTURADO/não-fatal** (confirmado:
    "Rewired: Exception setting up native Android input helper"). NÃO é o datapack. Red herring (handoff já dizia).

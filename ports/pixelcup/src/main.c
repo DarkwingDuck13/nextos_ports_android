@@ -2007,7 +2007,7 @@ static void ter_gamepad_poll(void) {
          "Twin USB PS2 Adapter"): o mapa EMBUTIDO do SDL p/ esse adaptador erra o eixo Y do stick
          DIREITO -> cursor "só horizontal". A entrada do gamecontrollerdb da comunidade põe o stick
          direito em rightx:a3 (ABS_RZ) / righty:a2 (ABS_Z) -> cursor 2D. Override por GUID só afeta
-         este controle; outros pads usam o mapa normal. NextOS pode sobrepor: TER_GP_MAP="<string>".
+         este controle; outros pads usam o mapa normal. O usuário pode sobrepor: TER_GP_MAP="<string>".
          Se ainda errar, TER_GP_RAWJS=1 usa o js0 cru (TER_GP_RX=2 TER_GP_RY=3 TER_GP_AXDX=4 AXDY=5). */
       const char *usermap = getenv("TER_GP_MAP");
       SDL_GameControllerAddMapping(usermap && *usermap ? usermap :
@@ -3604,14 +3604,14 @@ static void ter_ctrl_feed(void) {
   /* 🎮 mapeamento XBOX COMPLETO -> Controller.Buttons do InControl
      {Action1=0,Action2=1,Action3=2,Action4=3,ShoulderL=4,ShoulderR=5,LTrig=6,RTrig=7,
       Options=8,Switch=9,StickL=10,StickR=11,Back=12} */
-  /* TER_SWAPAB: troca A<->B (NextOS pediu). A=Action1(confirma), B=Action2(volta). */
+  /* TER_SWAPAB: troca A<->B (a pedido). A=Action1(confirma), B=Action2(volta). */
   int physA = getenv("TER_SWAPAB") ? g_gp_log[5] : g_gp_log[4];
   int physB = getenv("TER_SWAPAB") ? g_gp_log[4] : g_gp_log[5];
   g_inj_btn[0]=physA;         /* Action1     = A (confirma)   */
   g_inj_btn[1]=physB;         /* Action2     = B (volta)      */
   g_inj_btn[2]=gameplay ? 0 : g_gp_log[6];   /* X nao entra no caminho de ataque no gameplay */
   g_inj_btn[3]=g_gp_log[7];   /* Action4     = Y             */
-  /* TER_SWAPLR: inverte L1<->L2 e R1<->R2 (NextOS pediu; pode tirar a dupla-funcao do R1). */
+  /* TER_SWAPLR: inverte L1<->L2 e R1<->R2 (a pedido; pode tirar a dupla-funcao do R1). */
   int l1=g_gp_log[10], r1=g_gp_log[11], l2=g_gp_log[12], r2=g_gp_log[13];
   if (getenv("TER_SWAPLR")) { int t; t=l1; l1=l2; l2=t; t=r1; r1=r2; r2=t; }
   g_inj_btn[4]=l1;            /* ShoulderL   = L1 (trocavel)  */
@@ -5245,7 +5245,7 @@ static void *fmod_audio_thread(void *arg) {
   if (!SDL_WasInit(SDL_INIT_AUDIO)) SDL_InitSubSystem(SDL_INIT_AUDIO);
   SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
   /* back-pressure: colchão p/ absorver jitter de scheduling (o jogo ocupa os 4 núcleos do Mali). 6
-     blocos default = continuidade SEM engasgo, latência ~256ms (NextOS validou ~perfeito). Tunável
+     blocos default = continuidade SEM engasgo, latência ~256ms (validado ~perfeito). Tunável
      TER_AUDIO_BP. PRÉ-ENCHE a fila antes de despausar (sem corte no arranque). */
   unsigned bpblocks = getenv("TER_AUDIO_BP") ? (unsigned)atoi(getenv("TER_AUDIO_BP")) : 6;
   if (bpblocks < 2) bpblocks = 2; if (bpblocks > 64) bpblocks = 64;

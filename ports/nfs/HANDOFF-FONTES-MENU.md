@@ -1,7 +1,7 @@
 # HANDOFF — BUG DAS FONTES DO MENU (NFS Most Wanted, Mali-450)
 
-Device **192.168.31.164** (subnet .31, senha nextos). Port em `~/nextos_ports_android/ports/nfs/`.
-Build `./build.sh`. Deploy `scp -O nfs root@192.168.31.164:/storage/roms/nfs/nfs` (matar nfs antes;
+Device **<device-ip>**. Port em `ports/nfs/` (neste repo).
+Build `./build.sh`. Deploy `scp -O nfs root@<device-ip>:/storage/roms/nfs/nfs` (matar nfs antes;
 `mount -o remount,rw /storage/roms` se o vfat ficar RO). Decoder local: `~/nfs-diag/decode.py`.
 
 ## 🎯 O BUG
@@ -30,7 +30,7 @@ mantém as UVs ANTIGAS (a célula onde o glyph ESTAVA) → agora aquela célula 
    (28,158) E (55,446)). `drawString` só ocorre em cache-MISS ⇒ re-adição ⇒ eviction/repack.
 5. **A página de glyph é SÓ tex=7 (512²).** As "páginas 2/3…" que minha heurística marcou (tex=28,
    30, 35…) são **atlases de SPRITE** (botão, spinner, vidro rachado), não glyph. A "página 2" que
-   o NextOS vê é o **diálogo pop-up**, não uma 2ª página de glyph.
+   o porter vê é o **diálogo pop-up**, não uma 2ª página de glyph.
 
 ### ❌ REFUTADO (teorias antigas, com dados):
 - "Página 2 do glyph amostra a página 1 errada" (handoff anterior): **NÃO** — só existe 1 página de
@@ -44,7 +44,7 @@ mantém as UVs ANTIGAS (a célula onde o glyph ESTAVA) → agora aquela célula 
 
 ## ➡️ O FIX (direção, alta confiança)
 **Aumentar a página de glyph (512→1024) p/ ela NÃO encher → sem eviction → sem garble.** (A
-intuição do NextOS "manter o bitmap grande, não reduzir" e "é cache" bate 100%.) O tamanho 512 é
+intuição do porter "manter o bitmap grande, não reduzir" e "é cache" bate 100%.) O tamanho 512 é
 **fixo no código da engine** (`im::GlyphBuffer::AddTexturePage`), NÃO derivado do nosso getInfo →
 precisa de **PATCH BINÁRIO** na libapp.so OU achar como a engine escolhe 512.
 - O upload da página passa pelo **uploader genérico em libapp `+0x565f60`** (achado via

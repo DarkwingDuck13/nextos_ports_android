@@ -188,7 +188,7 @@ O `new-port.sh` gera um esqueleto incompleto; foi necessário:
 
 ## 4. Estado atual — ONDE TRAVA (sessão 1)
 
-`bash run.sh` no device .164 (Amlogic, EMUELEC, Mali-450, 832MB RAM):
+`bash run.sh` no device (Amlogic, EMUELEC, Mali-450, 832MB RAM):
 ```
 preload libs OK · gnustl carrega (4130 syms) · libUE4 relocate OK · resolve 4419 syms OK ·
 finalize OK · init_array... <TRAVA AQUI, não chega em "init_array DONE">
@@ -272,7 +272,7 @@ A pak é **`NierM-Android_ETC2.pak`** e contém **só shaders `GLSL_ES3_1` + `SF
 (zero `GLSL_ES2`) e texturas **ETC2**. O `libUE4.so` TEM o RHI `OpenGLES2` compilado
 (`OpenGLES2.cpp`, `bBuildForES2`), mas **não há shaders ES2 cookados** e o Mali-450 (Utgard)
 é **ES2-only, sem ETC2, sem ES3, sem Vulkan**. Forçar feature-level ES2 não acha shaders →
-sem render. Isto bate com a regra do NextOS: *UE4 = muro arquitetural p/ Mali-450*.
+sem render. Isto bate com a regra do projeto: *UE4 = muro arquitetural p/ Mali-450*.
 
 Para imagens de verdade haveria 2 caminhos, ambos grandes:
 - **Tradutor runtime GLSL ES3.1→ES1.00** (intercepta glShaderSource) **+ decoder ETC2→RGBA**
@@ -287,11 +287,11 @@ Para imagens de verdade haveria 2 caminhos, ambos grandes:
 # build (host)
 bash build.sh                      # -> ./nier (ELF aarch64 PIE)
 # deploy (sem OBB; binário+2 libs = 184MB, cabe em /storage)
-scp nier libgnustl_shared.so libUE4.so root@192.168.31.164:/storage/roms/ports/nier/
+scp nier libgnustl_shared.so libUE4.so root@<device-ip>:/storage/roms/ports/nier/
 # rodar (device): para a ES, foreground, captura stderr
-ssh root@.164 'systemctl stop emustation; timeout 60 bash /storage/roms/ports/nier/run.sh'
+ssh root@<device-ip> 'systemctl stop emustation; timeout 60 bash /storage/roms/ports/nier/run.sh'
 ```
-Device .164 = root/**emuelec**, Amlogic Mali-450 fbdev, 832MB RAM, /storage 936MB livre.
+Device = root login, Amlogic Mali-450 fbdev, 832MB RAM, /storage 936MB livre.
 `run.sh` seta `SDL_VIDEODRIVER=mali`, `LD_LIBRARY_PATH=$GAMEDIR`.
 
 ## 7. Legal — BYO

@@ -4,7 +4,7 @@
 > `project_sor4_streets_of_rage4_mali450`. O **progressor/BYO/render já estão PRONTOS e
 > validados** (jogo abre, roda, renderiza). Esta sessão foi 100% **áudio + controle**.
 
-Device: **192.168.31.127** (senha nextos). Install: `/storage/roms/ports/sor4`.
+Device: **<device-ip>** (senha <senha>). Install: `/storage/roms/ports/sor4`.
 Launcher (o ES lê daqui): `/storage/roms/ports_scripts/StreetsOfRage4.sh`.
 Fonte do áudio: `~/nextos_ports_android/ports/sor4wwise/src/{audioout.c, wwise_native.c}`.
 Parser de soundbank: `~/nextos_ports_android/ports/sor4/port/tools/wwise_extract.py`.
@@ -46,10 +46,10 @@ O som de verdade é tocado por um **reimpl OpenAL+opusfile** (`audioout.c`). Doi
 4. **SFX existir** (menu, soco no AR, voz do personagem, música) — OK.
 
 ## ✅✅ RESOLVIDO+VALIDADO 2026-06-18 (commit 1dbc6e4) — MÚSICA SOBREPOSTA
-> **NextOS validou de OUVIDO**: fase completa, troca de música LIMPA (transições E dentro da
+> **Validado de OUVIDO**: fase completa, troca de música LIMPA (transições E dentro da
 > fase com 2/3 faixas). "a fase toda ficou top, música trocou limpa". CASO FECHADO.
 
-**Sintoma (NextOS):** ao trocar de cena (título → seleção → loading → fase) a música da
+**Sintoma (relatado):** ao trocar de cena (título → seleção → loading → fase) a música da
 cena ANTERIOR continua tocando POR CIMA da nova; e DENTRO da fase, quando ela tem 2/3 faixas,
 "uma música por cima da outra". A nova deveria começar de imediato (a anterior PARA).
 
@@ -67,7 +67,7 @@ mas os segmentos mal-roteados escapavam disso → empilhavam.
    `AAsset_open`: ID na lista → `ao_music_request` (fonte única, substitui); senão → **fallback
    por tamanho** (compat. devices sem a lista). Custo desprezível, sem CPU extra.
 **Validado:** device loga `[wwise] music_ids carregados: 423` + `pump LIGADO`. Lógica conferida
-offline (423 música / 50 SFX / 0 overlap / 302 música <1.5MB = a causa). **FALTA:** NextOS ouvir
+offline (423 música / 50 SFX / 0 overlap / 302 música <1.5MB = a causa). **FALTA:** ouvir
 in-game (a música só abre depois do menu — não dá p/ testar sem navegar). Se sobrar sobreposição
 residual, são os ~190 wems FORA do HIRC dos 4 bancos (usam fallback por tamanho).
 
@@ -84,7 +84,7 @@ suspendendo/re-negociando. Fix candidato (LEVE, X5M-only via alsoft.conf): fixar
 OpenAL = nativo do HDMI (evita renegociação) + impedir suspend-on-idle do node PipeWire. NÃO
 mexer no caminho do Mali (que está bom).
 
-## ✅ RESOLVIDO 2026-06-17 (commit bfba090) — aguarda só ouvido do NextOS em combate
+## ✅ RESOLVIDO 2026-06-17 (commit bfba090) — aguarda só ouvido em combate
 
 **FIX (bank v135):** reescrito `wwise_extract.py` + `audioout.c`.
  - Event → segue SÓ ações de **Play** (actionType high-byte == 0x04). Antes seguia
@@ -100,13 +100,13 @@ mexer no caminho do Mali (que está bom).
 **Resultado:** 794 eventos c/ SFX (321 multi-variante). `hit_heavy`/`hit_ground`/`whoosh`
 mapeiam para conjuntos DISTINTOS de wems reais (Ogg Opus 5-8KB). **JÁ DEPLOYADO** no .127
 (libWwise.so + wwise_extract.py + audioout regenerado). Boot validado: manifest 794,
-`real init=1`, sem crash. **FALTA SÓ:** NextOS jogar e confirmar de ouvido.
+`real init=1`, sem crash. **FALTA SÓ:** jogar e confirmar de ouvido.
 Se um golpe vier com som de contexto errado (ex: cano em vez de soco) é porque juntamos
 TODOS os casos do Switch (não dá p/ saber o switch-value offline) — aceitável p/ variedade.
 ⚠️ device tem ~268 .opus órfãos da run antiga (inofensivos). bkp: `*.bak-prehit`.
 
 ### [HISTÓRICO] Sintoma original que motivou o fix
-**Sintoma (NextOS):** soco no AR tem som; bater no INIMIGO só dá UM som genérico
+**Sintoma (relatado):** soco no AR tem som; bater no INIMIGO só dá UM som genérico
 "computando hit", IGUAL para todos os personagens; inimigo morrendo/caindo = nada.
 Testado com `SOR4_SFXGAIN=1.6` → continua mudo, então **não é ganho**.
 
@@ -119,7 +119,7 @@ impacto distintos para o **MESMO wem genérico**. No trace (WWISE_TRACE=1):
 [audioout] SFX OK 'Play_vx_player_blaze_punch'  wem=922087847   (voz do soco = OK)
 [audioout] SFX OK 'Play_vx_ennemy_..._deathscream' wem=1009379495
 ```
-O `263540238` é o "computando hit" genérico que o NextOS ouve. Os sons REAIS (variados,
+O `263540238` é o "computando hit" genérico que se ouve. Os sons REAIS (variados,
 por golpe/personagem) estão em containers **RanSeq(0x05)/Switch(0x06)** que o parser
 **NÃO resolve direito**: `collect_wems_for_object` (em wwise_extract.py) varre o corpo do
 container por QUALQUER u32 que seja id do HIRC (scan ingênuo) → pega um filho genérico,
@@ -153,7 +153,7 @@ pesado (decode duplicado/RAM 832MB), aí volta pump-off. Medir os dois.
 ## COMO TESTAR / DEBUGAR (receita)
 Lançar o jogo por ssh com trace (precisa PARAR o ES direito senão tela preta):
 ```sh
-ssh root@192.168.31.127
+ssh root@<device-ip>
 W=/storage/roms/ports/sor4; PKG=$W/host_pkg
 systemctl stop emustation; sleep 3; pkill -9 sor4host
 export LD_LIBRARY_PATH=$PKG/libs:/usr/lib:/lib SDL_NO_SIGNAL_HANDLERS=1 DOTNET_EnableWriteXorExecute=0
@@ -163,7 +163,7 @@ export WWISE_TRACE=1   # << loga post_event/SFX/STREAMED/MUSICA
 export SDL_GAMECONTROLLERCONFIG="0300605b100800000100000010010000,USB Gamepad,a:b2,b:b1,x:b3,y:b0,..."
 cd $PKG; ./sor4host > $W/log.txt 2>&1 &
 ```
-NextOS joga; ler `$W/wwise.log`:
+Jogar; ler `$W/wwise.log`:
 - `grep 'SFX OK\|NAO no manifest\|STREAMED-SFX' wwise.log` → o que dispara no combate.
 - `grep 'MUSICA tocando\|set_state.*music_manager' wwise.log` → música/transições.
 - `grep 'real init=\|init OK' wwise.log` → áudio ligou? (real init=1 obrigatório).
@@ -175,7 +175,7 @@ NÃO precisa (é python; roda no device). Regenerar audioout no device:
 
 ## VERIFICAÇÃO SEM OUVIR
 `pactl list short sink-inputs` (float32le = OpenAL tocando) + os logs acima. Mas SFX de
-combate **precisa do NextOS de ouvido** (é o que a gente está caçando).
+combate **precisa de ouvido** (é o que a gente está caçando).
 
 ## DADOS ÚTEIS
 - bank v135; 4 .bnk: Init(didx=0), Core, Generic(didx=516 hirc=1631), Music(didx=0,hirc=0).

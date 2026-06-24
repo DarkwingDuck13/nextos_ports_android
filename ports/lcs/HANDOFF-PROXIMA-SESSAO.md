@@ -1,6 +1,6 @@
 # LCS (GTA Liberty City Stories) → Mali-450 — HANDOFF p/ próxima sessão (atualizado s4, 2026-06-21)
 
-> ATUALIZACAO CODEX 2026-06-23 s7.11: PAUSA solicitada por NextOS. Estado salvo; nao continuar
+> ATUALIZACAO 2026-06-23 s7.11: PAUSA solicitada pelo porter. Estado salvo; nao continuar
 > resolvendo o mesmo bug agora.
 >
 > Estado deixado:
@@ -32,11 +32,11 @@
 > - Se for atacar o retangulo do onibus, partir de `shot-fullshadowoff-cutscene-noskip.png` e isolar
 >   pass/material de world-stream.
 
-> ATUALIZACAO CODEX 2026-06-23 s7.10: quadrados pretos de chao/pista tratados como shadow pass.
-> NextOS observou que o chao quebrado corrigia quando o farol do carro acendia. As fotos
-> `/home/nextos/photo_2026-06-23_00-24-09.jpg`,
-> `/home/nextos/photo_2026-06-23_00-24-08 (2).jpg` e
-> `/home/nextos/photo_2026-06-23_00-24-08.jpg` mostraram que a textura do piso existia,
+> ATUALIZAÇÃO 2026-06-23 s7.10: quadrados pretos de chao/pista tratados como shadow pass.
+> O porter observou que o chao quebrado corrigia quando o farol do carro acendia. As fotos
+> `photo_2026-06-23_00-24-09.jpg`,
+> `photo_2026-06-23_00-24-08 (2).jpg` e
+> `photo_2026-06-23_00-24-08.jpg` mostraram que a textura do piso existia,
 > mas uma mascara escura grande e dura era aplicada por cima. Isso aponta para sombra/lighting,
 > nao para asset ausente puro.
 >
@@ -81,7 +81,7 @@
 > Default atual: `PVS_CLEAN=1`, `GFX_PREFS=1`, `SHADOWS_OFF=1`, `GFX_LOW=0`,
 > `TRIGGER_BUTTONS=0`, `TRIGGER_AXES=0`, movimento no analogico esquerdo raw 0/1.
 
-> ATUALIZACAO CODEX 2026-06-22 s7.8: artefatos de chao/cenario grandes corrigidos.
+> ATUALIZAÇÃO 2026-06-22 s7.8: artefatos de chao/cenario grandes corrigidos.
 > A causa dos "quadrados/planos" que apareciam no chao, ruas e cutscene nao era textura faltando:
 > era overlay/debug de zonas PVS ligado no engine. O log provou:
 > `dvPVSRenderWorldZones=1`, `dvPVSRenderCameraZones=1`, `dvPVSZonesAlpha=0.100`.
@@ -114,7 +114,7 @@
 > Default atual: `PVS_CLEAN=1`, `GFX_PREFS=1`, `GFX_LOW=0`, `TRIGGER_BUTTONS=0`, `TRIGGER_AXES=0`,
 > `ENABLE_EXIT_HOTKEY=0`, movimento no analogico esquerdo raw 0/1.
 
-> ATUALIZACAO CODEX 2026-06-22 s7.7: marco jogavel confirmado pelo NextOS.
+> ATUALIZACAO 2026-06-22 s7.7: marco jogavel confirmado pelo porter.
 > O run atual esta "rodando bem": fluxo nativo `newgame`, 2 cutscenes puladas por Start nativo,
 > camera OK, mundo visivel e analogico esquerdo andando pelo joystick raw 0/1. D-pad nao alimenta
 > mais movimento por default e L2/R2 nao entram como botoes enquanto o enum nao for confirmado.
@@ -129,7 +129,7 @@
 > - Gameplay depois dos pulos: `cut=0/0/0`, `fade=0`, `nVis=47..55`.
 > - Input fisico: `[input] ... axis0/axis1 ... src=raw`.
 > - Ped/camera mudando juntos: `pedpos=1420.x,-195.x` ate `1417.x,-201.x` e camera acompanha.
-> - NextOS confirmou em tela: "tudo rodando bem".
+> - O porter confirmou em tela: "tudo rodando bem".
 >
 > Script novo para repetir o estado bom no device:
 > `sh /storage/roms/ports/lcs/run-playable.sh`
@@ -138,8 +138,8 @@
 > Se precisar diagnosticar controle, rode o mesmo script com `LCS_GLSTATS=1` ou
 > `LCS_RAWAXISDIAG=1`, mas para jogar deixar leve.
 
-> ATUALIZACAO CODEX 2026-06-22 s7.6: inverter o mapeamento para o comportamento correto.
-> NextOS confirmou que o D-pad estava andando e o analogico esquerdo estava com funcao errada/zoom.
+> ATUALIZAÇÃO 2026-06-22 s7.6: inverter o mapeamento para o comportamento correto.
+> O porter confirmou que o D-pad estava andando e o analogico esquerdo estava com funcao errada/zoom.
 > Isso nao e o alvo: o padrao de GTASA Vita e `MAPPING_PED_MOVE_X/Y = ANALOG_LEFT_X/Y` e D-pad
 > separado para acoes/menu/radio/zoom. Portanto o default foi ajustado:
 >
@@ -155,11 +155,11 @@
 > `LCS_MAXSECONDS=420 LCS_START=newgame LCS_STARTFRAME=120 LCS_INPUTDIAG=1 LCS_PADDIAG=1
 >  LCS_RAWAXISDIAG=1 LCS_DPAD_AS_AXIS_ONLY=0 LCS_MOVE_RAW=1 LCS_MOVE_AXIS_X=0 LCS_MOVE_AXIS_Y=1`.
 > O log inicial confirmou `move_raw=1`, `dpad_axis_only=0` e raw neutro `a0/a1/a2/a3 ~= 0.004`.
-> Proximo passo: NextOS mexer analogico esquerdo; esperar `axis0/axis1 src=raw` e Toni andar.
+> Proximo passo: mexer analogico esquerdo; esperar `axis0/axis1 src=raw` e Toni andar.
 > Se o analogico ainda nao andar, trocar os envs para `LCS_MOVE_AXIS_X=2 LCS_MOVE_AXIS_Y=3` ou
 > inverter sinais apos olhar `[rawaxis]`.
 
-> ATUALIZACAO CODEX 2026-06-22 s7.5: movimento visual comprovado e causa do "nao anda" isolada.
+> ATUALIZAÇÃO 2026-06-22 s7.5: movimento visual comprovado e causa do "nao anda" isolada.
 > O problema principal de movimento era mapeamento nativo: `CPad::m_bSwapNippleAndDPad` faz
 > `GetPedWalkLeftRight/UpDown` ler offsets de D-pad (`18/20/22/24`) em vez dos offsets do stick
 > (`2/4`). Como o perfil estavel suprimia botoes D-pad em gameplay, camera pelo analogico direito
@@ -169,7 +169,7 @@
 > - `LCS_PADBRIDGE_MOVE=1` por default: em gameplay, espelha o eixo esquerdo nos offsets de
 >   movimento que `GetPedWalk*` realmente le quando o swap esta ativo.
 > - `LCS_TRIGGER_BUTTONS=0` por default: L2/R2 continuam como eixos 4/5, mas nao viram botoes 6/7
->   ate o enum ser confirmado; NextOS reportou que L2 fechava o jogo.
+>   ate o enum ser confirmado; reportado que L2 fechava o jogo.
 > - `LCS_INPUT_PROBE_ONLY=1` existe so para teste automatizado isolado; ignora SDL fisico e aceita
 >   apenas `/dev/shm/lcs_btn` e `/dev/shm/lcs_axis`.
 >
@@ -183,7 +183,7 @@
 > sai da traseira do carro e a camera acompanha. Run de prova usou `probe_only=1`; o `run30.sh`
 > normal fica com `probe_only=0`, portanto o controle fisico continua ativo.
 
-> ATUALIZAÇÃO CODEX 2026-06-22 s7.4: reprodução direta do input em gameplay.
+> ATUALIZAÇÃO 2026-06-22 s7.4: reprodução direta do input em gameplay.
 > O teste correto foi feito: `LCS_START=newgame`, Start nativo ate 2 `FinishCutscene called`,
 > depois D-pad/analogico em gameplay. Resultado: sem crash no perfil atual.
 >
@@ -206,12 +206,12 @@
 >   `onJoyButtonDown/Up` dos enums 12..15; vira `setJoyAxis`.
 > - Escape reversivel: `LCS_DPAD_BUTTONS=1` ou `LCS_DPAD_AS_AXIS_ONLY=0`.
 > - `LCS_INPUTDIAG=1` loga bordas de botao/eixo sem GLSTATS pesado. Use junto de `LCS_PADDIAG=1`
->   quando NextOS reportar input travando.
+>   quando reportarem input travando.
 >
 > Estado pratico: o crash/freeze ao apertar direcional/analogico nao reproduz mais. Se voltar,
 > capturar o ultimo `[input]` em `run.log`; se houver SIGSEGV, o crash handler imprime PC/LR/offset.
 
-> ATUALIZAÇÃO CODEX 2026-06-22 s7.3: falso "travou ao apertar controle" diagnosticado.
+> ATUALIZAÇÃO 2026-06-22 s7.3: falso "travou ao apertar controle" diagnosticado.
 > O input fisico chegou (`[padbridge] UpdatePads state=9 mask=0x10`), mas a thread principal estava
 > dormindo em `fat_file_fsync -> SyS_fdatasync`. Causa: heartbeat de LCS fazia `fdatasync()` todo
 > frame em `/storage/roms` (VFAT/SD). Bully, que roda bem, nao faz fsync por frame no loop jogavel.
@@ -235,7 +235,7 @@
 > Regra nova: perfil jogavel nao usa `LCS_GLTRACE`, `LCS_DRAWHB` nem `LCS_HB_FSYNC`. Isso fica so
 > para investigacao curta de wedge/reboot.
 
-> ATUALIZAÇÃO CODEX 2026-06-22 s7.2: controles/gameplay confirmados pelo caminho correto.
+> ATUALIZAÇÃO 2026-06-22 s7.2: controles/gameplay confirmados pelo caminho correto.
 > Para testar controle, nao deixar o port remover cutscenes nem pular ponteiro: preservar
 > `LCS_START=newgame` e pular as cutscenes com `Start` nativo (`/dev/shm/lcs_btn` enum `9`).
 >
@@ -265,7 +265,7 @@
 > - O combo agressivo `STARTFRAME=12 + FE25/FE25_POSTREADY + POP/HELI off + STREAMER_MAX=1`
 >   regrediu para wait do streamer em f154; nao e o perfil de controle.
 
-> ATUALIZAÇÃO CODEX 2026-06-22 s7.1: estado mais novo.
+> ATUALIZAÇÃO 2026-06-22 s7.1: estado mais novo.
 > O fluxo já passa por menu/start nativo, 2 cutscenes 3D e chega em gameplay por 300s sem crash.
 > O crash pós-2ª-cutscene em `CCutsceneMgr::Update_overlay -> CreateCutsceneObject ->
 > CEntity::CEntity -> memcpy(NULL, ..., 11)` foi corrigido sem instalar wrapper cedo no boot.
@@ -291,7 +291,7 @@
 > logs), mas ainda falta provar translação do Toni/camera follow em gameplay. Depois disso atacar
 > textura/streaming preto e lentidao.
 
-> ATUALIZAÇÃO CODEX 2026-06-22: este handoff antigo ficou parcialmente obsoleto.
+> ATUALIZAÇÃO 2026-06-22: este handoff antigo ficou parcialmente obsoleto.
 > O bloqueio principal NÃO é mais "mundo 3D/PVS vazio". O fluxo já renderiza cutscene 3D real
 > com prédios/personagem/câmera. Novo marco: com `LCS_CUTSCENE_CAMPROCESS_STOPPOS=0.960` +
 > `LCS_CUTSCENE_FINISH_POS=0.985`, o jogo passou pelas 2 cutscenes, finalizou limpo e chegou em
@@ -314,7 +314,7 @@
 > Patch importante já aplicado: `LCS_FE25` agora é protegido por `!lcs_cutscene_active()`, então
 > scripts/câmera de gameplay não rodam cedo demais durante cutscene. Também foi aplicado patch de
 > input para enviar eixo por `setJoyAxis` mesmo sem SDL GameController físico. Use `STATUS.md`, seção
-> "SESSÃO 7 (2026-06-22, Codex)", como fonte atual.
+> "SESSÃO 7 (2026-06-22)", como fonte atual.
 >
 > Artifacts:
 > - `~/lcs-build/shot-fe25-finishpos-1.png` = prova visual de gameplay real após 2 cutscenes.
@@ -327,8 +327,7 @@
 >   device reinicia; com CAMPROCESS ela progride, mas crasha no fim. A pista atual é controlar o
 >   handoff de câmera/cutscene antes do renderer entrar em estado misto.
 
-Leia também `STATUS.md` (histórico s1→s4, detalhadíssimo) e a memória
-`~/.agente/.../memory/project_lcs_liberty_city_stories_mali450.md`.
+Leia também `STATUS.md` (histórico s1→s4, detalhadíssimo) e as notas internas do projeto.
 
 ═══════════════════════════════════════════════════════════════════════════════
 ## 🎉 ESTADO ATUAL: HUD + GAMEPLAY RENDERIZAM. Falta só o MUNDO 3D (geometria).
@@ -344,7 +343,7 @@ O QUE FALTA: a geometria 3D do mundo (prédios/ruas). Só o HUD/2D desenha; o vi
 ═══════════════════════════════════════════════════════════════════════════════
 ## DEVICE / ACESSO
 ═══════════════════════════════════════════════════════════════════════════════
-- IP: **192.168.31.88** | login **root** / senha **emuelec** (ssh).
+- IP: **<device-ip>** | login **root** (ssh).
 - Mali-450 Utgard, GLES2, fbdev, ~832MB RAM. EmuELEC. ES masked (bom p/ teste).
 - ⚠️ A TV fica PRETA depois que o lcs sai (ES masked, nada redesenha) — é normal, NÃO é wedge.
 - **Swap PERSISTENTE 2GB no EEROMS**: `/storage/roms/swap2g.img` (auto-on no boot via
@@ -371,14 +370,14 @@ O "travamento + tela preta + reboot" entre runs ERA o Mali não-liberado no exit
 # build no PC:
 cd ~/nextos_ports_android/ports/lcs && bash build.sh   # warnings de ld do SDL2 são NÃO-FATAIS
 # deploy:
-ssh root@192.168.31.88 'kill lcs antigo'  # run30.sh já faz isso
-scp lcs run30.sh root@192.168.31.88:/storage/roms/ports/lcs/
+ssh root@<device-ip> 'kill lcs antigo'  # run30.sh já faz isso
+scp lcs run30.sh root@<device-ip>:/storage/roms/ports/lcs/
 # roda (sai limpo em ~26s, device fica usável):
-ssh root@192.168.31.88 'sh /storage/roms/ports/lcs/run30.sh'
+ssh root@<device-ip> 'sh /storage/roms/ports/lcs/run30.sh'
 # logs persistentes na SD (sobrevivem a tudo):
-ssh root@192.168.31.88 'grep "\[glstats\]" /storage/roms/ports/lcs/run.log | tail'
+ssh root@<device-ip> 'grep "\[glstats\]" /storage/roms/ports/lcs/run.log | tail'
 # screenshot do gameplay -> PNG:
-scp root@192.168.31.88:/storage/roms/ports/lcs/shot_gameplay.raw ~/lcs-build/
+scp root@<device-ip>:/storage/roms/ports/lcs/shot_gameplay.raw ~/lcs-build/
 python3 ~/lcs-build/raw2png.py ~/lcs-build/shot_gameplay.raw ~/lcs-build/shot_gameplay.txt out.png
 ```
 Config estável atual no `run30.sh` (= HUD + gameplay):

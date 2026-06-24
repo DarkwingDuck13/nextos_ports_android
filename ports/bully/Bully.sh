@@ -170,7 +170,7 @@ fi
 # texto OK). Quem quiser anti-aliasing forca BULLY_MSAA=4 (assume o risco do texto).
 : "${BULLY_MSAA:=0}"; export BULLY_MSAA
 
-# ESQUEMA DE QUALIDADE POR RAM (decisao NextOS 2026-06-20):
+# ESQUEMA DE QUALIDADE POR RAM (decisao do porter 2026-06-20):
 #   < 1200MB -> LINEAR  (ETC1 + bilinear)  : RAM apertada, trilinear AFUNDA (vimos MIN=165MB
 #               travando muito na cidade no .164 832MB) -> ver bloco low-RAM abaixo.
 #   > 1500MB -> TRILINEAR (mipmaps + filtro, DESLIGA ETC1) : RAM sobrando, imagem MUITO mais

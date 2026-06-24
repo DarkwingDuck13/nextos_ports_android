@@ -1,10 +1,10 @@
 # Pixel Cup Soccer — ESTUDO / PLANO DE PORT (pré-go)
 
 > Recon 2026-06-22. Vitória mais rápida do backlog (ES2 nativo, IL2CPP dominado via Terraria, SEM DRM).
-> COMEÇAR só no "go" do NextOS. Base de desenvolvimento = **Mali-450 .164** (= `192.168.31.164` wifi, senha `emuelec`).
+> COMEÇAR só no "go" do porter. Base de desenvolvimento = **Mali-450 device** (= `<device-ip>` wifi, senha `<senha>`).
 
 ## APK
-- **`/home/nextos/Downloads/Telegram Desktop/Pixel Cup Soccer 1.b320.apk`** (589M)
+- **`/home/root/Downloads/Telegram Desktop/Pixel Cup Soccer 1.b320.apk`** (589M)
 - Dev: **Batovi Games** (Pixel Cup Soccer). Package: confirmar no manifest (aapt não instalado no recon).
 
 ## Recon (fatos confirmados)
@@ -27,11 +27,11 @@
    - Shims provados (SOTN/RE4/Bully): **canary bionic** (`_Thread_local pad[256]`, tpidr+0x28), **R_AARCH64_ABS64** p/ imports UNDEF, **stdio __sF**, **AAssetManager → disco** (AAsset_* lê de `assets/`), **EGL → Mali fbdev** (libEGL direto OU egl_shim→SDL2 do device p/ universal igual SOTN).
    - Áudio: Unity usa FMOD ou OpenSL/AudioTrack → rotear p/ pacat (igual RE4/SOTN) OU SDL.
    - Input: evdev → Unity (onNativePad/eventos), gptokeyb fallback.
-3. **Iterar no .164** (matar+confirmar antes de lançar; foreground bash; dd /dev/fb0 p/ ver render).
+3. **Iterar no device** (matar+confirmar antes de lançar; foreground bash; dd /dev/fb0 p/ ver render).
 4. Fullscreen res nativa automática (sem 720p hardcode — lição SOTN), áudio, controle (mapeamento Xbox), empacotar tar.gz (Desktop + R2) com créditos felc18-blip/NextOS.
 
 ## Regras herdadas (memória)
-- Git: master only, ZERO co-autor/menção Agente. [[feedback_no_agente_coauthor_commit]] [[feedback_git_workflow_master_only]]
+- Git: master only, ZERO co-autor. [[feedback_no_coauthor_commit]] [[feedback_git_workflow_master_only]]
 - Matar+confirmar 0 instâncias antes de lançar. [[feedback_matar_confirmar_jogo_antes_de_lancar]]
 - Limpar/apagar com cuidado (alvos explícitos, staging primeiro). [[feedback_limpar_apagar_arquivos_com_cuidado]]
 - Display 100% automático no launcher (SDL2 do device escolhe backend). [[castlevania-sotn-mali450]]

@@ -1,9 +1,9 @@
 import sys,struct,subprocess
 from capstone import *
-L=sys.argv[1] if len(sys.argv)>1 else '/home/nextos/Downloads/nfs-analysis/lib/armeabi-v7a/libapp.so'
+L=sys.argv[1] if len(sys.argv)>1 else '/home/root/Downloads/nfs-analysis/lib/armeabi-v7a/libapp.so'
 start=int(sys.argv[2],16); end=int(sys.argv[3],16)
 data=open(L,'rb').read()
-RE='/home/nextos/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-ng.aarch64-4/toolchain/bin/armv8a-emuelec-linux-gnueabihf-readelf'
+RE='/home/root/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-ng.aarch64-4/toolchain/bin/armv8a-emuelec-linux-gnueabihf-readelf'
 rd=subprocess.run([RE,'-S',L],capture_output=True,text=True).stdout
 ta=to=ts=None; rodata=None
 secs=[]

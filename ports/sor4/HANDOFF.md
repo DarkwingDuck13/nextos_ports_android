@@ -1,17 +1,17 @@
 # Streets of Rage 4 — Port NextOS (MonoGame/.NET) — HANDOFF / diário de bordo
 
-Objetivo: rodar **Streets of Rage 4** (APK Android v1.4.5) no device **192.168.31.127**
-(Mali-450). Trabalho autônomo, commitando cada conquista. Plano completo aprovado em
-`~/.agente/plans/polymorphic-weaving-leaf.md`.
+Objetivo: rodar **Streets of Rage 4** (APK Android v1.4.5) no device **<device-ip>**
+(Mali-450). Trabalho autônomo, commitando cada conquista. Plano completo aprovado nas
+notas internas do projeto.
 
 > Atualizar este arquivo a cada descoberta/decisão (padrão NFS/Banjo). Convenção do projeto:
-> registrar SEMPRE o estado git. Commits em PT, SEM Co-Authored-By.
+> registrar SEMPRE o estado git. Commits em PT, sem co-autor.
 
 ---
 
 ## 🏆🏆🏆🥊 GAMEPLAY RODANDO (2026-06-16 cont.11) — JOGÁVEL! Blaze em "The Streets" stage 1
 Screenshot /tmp/sor4_streets.png: BLAZE em pé na fase 1 (rua), HUD completo (nome BLAZE + barra de
-vida verde + score 000000 + estrelas), cenário urbano (prédios, cerca, lixeira, poster). NextOS
+vida verde + score 000000 + estrelas), cenário urbano (prédios, cerca, lixeira, poster). O porter
 JOGOU com o controle REAL dele do menu até a fase. CONTROLES = RESOLVIDOS (pad real funciona 100%
 desde que entramos no menu). CADEIA DE FIXES desta sessão (todos confirmados com LOG/screenshot):
 
@@ -27,18 +27,18 @@ desde que entramos no menu). CADEIA DE FIXES desta sessão (todos confirmados co
 3. **NRE `InterStageVideoScreen.update_gui→platform.video_get_time`** (vídeo de intro de fase). FIX
    TEMPORÁRIO/scaffold: `noopm platform.video_exists`→false → `transition_to_intro_video` retorna false
    → vai DIRETO pro gameplay (sem vídeo). A fase CARREGA (loading lento de decors/main_campaign/stage_1)
-   e o gameplay aparece. ⚠️ SERÁ SUBSTITUÍDO por player de vídeo REAL (NextOS quer vídeos de verdade).
+   e o gameplay aparece. ⚠️ SERÁ SUBSTITUÍDO por player de vídeo REAL (queremos vídeos de verdade).
 
 PIPELINE SOR4.dll AGORA (port/tools/buildfix.sh, base=/tmp/SOR4.device.dll que já tem patchgam+noopm
 +skipvideo+verstub+noopm EOSManager): + titleprobe(DEBUG-remover) + rettrue(load_save) +
 noopm(MoreGamesNotificationUpdate) + [--skipvideo: noopm(video_exists)].
 
-### INFRA DE INPUT AUTÔNOMO (criada nesta sessão, p/ testar SEM o NextOS)
+### INFRA DE INPUT AUTÔNOMO (criada nesta sessão, p/ testar SEM o porter)
 - **vpad.py / vpadd.py** (port/tools): gamepad VIRTUAL via /dev/uinput clonando EXATO o " USB Gamepad "
   0810:0001 (mesmo bus/vendor/product/version/nome/caps → SDL calcula a MESMA GUID → mesmo mapping
   interno → jogo lê idêntico ao pad real). vpadd.py = DAEMON persistente lendo comandos de FIFO
   /tmp/vpadcmd (p/r/t <code>, hx/hy dpad, ax/ay stick, q). SDL detecta via hotplug udev.
-- ⚠️ MENU só lê o controller **slot 0** (1º aberto = pad real do NextOS = js0/event2). Virtual entra
+- ⚠️ MENU só lê o controller **slot 0** (1º aberto = pad real do porter = js0/event2). Virtual entra
   em slot >0 e o MENU IGNORA (só o título aceita qualquer slot). P/ dirigir menu autônomo: unbind do
   pad real (`echo -n 1-1 > /sys/bus/usb/drivers/usb/unbind`; rebind com .../bind) p/ virtual virar slot0.
 - Mapeamento evdev→jogo (pad 0810:0001): 288=Y, 290=B, 291=X; A≈289 (confirmar). dpad=ABS_HAT0X/Y(16/17).
@@ -46,7 +46,7 @@ noopm(MoreGamesNotificationUpdate) + [--skipvideo: noopm(video_exists)].
   puxa e converte p/ PNG (flip vertical). SOR4_SHOT=N (frame interval).
 
 ### 🎮 MAPEAMENTO DO CONTROLE CORRIGIDO (cont.11) — botões de ataque agora funcionam
-NextOS (gameplay): direcionais perfeitos, MAS X/B/Start agiam como START(pause), só Square atacava.
+Gameplay (relato): direcionais perfeitos, MAS X/B/Start agiam como START(pause), só Square atacava.
 CAUSA: SDL usava o mapping BUILT-IN **"Twin USB PS2 Adapter"** (errado p/ esse pad 0810:0001) porque
 o SDL_GAMECONTROLLERCONFIG do launcher usava GUID SEM CRC (`03000000...`) → ignorado. Runtime GUID
 real = `0300605b100800000100000010010000` (CRC 605b, confirmado via /tmp/sdlprobe). FIX: run_diag.sh
@@ -54,25 +54,25 @@ agora seta SDL_GAMECONTROLLERCONFIG com a GUID REAL + mapping explícito
 `a:b2,b:b1,x:b3,y:b0,back:b8,start:b9,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,leftx:a0,lefty:a1,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2`.
 VERIFICADO ativo: sdlprobe gcName mudou de 'Twin USB PS2 Adapter' → 'USB Gamepad'. Agora face btns
 evdev 288/289/290/291 = Y/B/A/X (b0/b1/b2/b3) e START vai p/ botão-base 297(b9). SoR4 default:
-jump=A(290) attack=X(291) special=Y(288) pickup=B(289) backAttack=RT(295) starMove=RB(293). ⏳ NextOS
+jump=A(290) attack=X(291) special=Y(288) pickup=B(289) backAttack=RT(295) starMove=RB(293). ⏳ o porter
 confirma no playtest (se layout físico dele divergir, ajustar a string). Determinístico+gcName=forte.
 
-### 🔊 SOM — DECISÃO: NATIVO (Wwise real do APK), NÃO reimplementação custom (NextOS: "faça o nativo")
+### 🔊 SOM — DECISÃO: NATIVO (Wwise real do APK), NÃO reimplementação custom (decisão: "faça o nativo")
 DESCOBERTAS desta sessão:
 - wem 0x3040 do SoR4 = **Ogg Opus padrão no chunk "data"** (ffmpeg/libopus tocam direto, SEM vgmstream).
 - Banks v135: Core.bnk(28MB,1743 wem DIDX), Generic.bnk(10MB,516 wem), Init.bnk(185 hirc), Music.bnk=32B
   (MÚSICA é STREAMED, fora dos banks — provavelmente nos arquivos obfuscados `\x00IAP` do gameassets).
 - Device: PulseAudio rodando, libopenal 1.25.2, libopusfile, ffmpeg/libavcodec.62, SDL2_mixer. ALSA=AML-M8AUDIO.
 
-CAMINHO CUSTOM (FEITO, mas NextOS NÃO quer — fica de fallback/referência):
+CAMINHO CUSTOM (FEITO, mas NÃO desejado — fica de fallback/referência):
 - port/tools/wwise_extract.py (parser HIRC+DIDX: event_id FNV-1 -> wem_ids, extrai .opus) +
   wwise_real.c (libWwise.so glibc: dlopen OpenAL+opusfile, post_event toca o .opus). FUNCIONOU end-to-end:
-  NextOS ouviu o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
+  ouvimos o SOM DE CONFIRMAÇÃO do menu. MAS parcial (sem música/mixagem/estados). Fallback deployado.
 
 ## ⏭️🔊 PRÓXIMA SESSÃO (cont.14) — MURO: Wwise renderiza SILÊNCIO (RAWpeak=0). Pipeline 100% OK.
 **ONDE PAROU:** toda a cadeia de áudio nativo FUNCIONA (Wwise real carrega, init=1, bancos+613 wem
-presentes, pump thread, OpenSLES->SDL->PulseAudio->HDMI sink RUNNING, ENQUEUE contínuo). MAS o NextOS
-NÃO ESCUTA. Diagnóstico definitivo: log `[opensles] ENQUEUE ... RAWpeak=0` = a Wwise enfileira buffers
+presentes, pump thread, OpenSLES->SDL->PulseAudio->HDMI sink RUNNING, ENQUEUE contínuo). MAS NÃO
+SE ESCUTA. Diagnóstico definitivo: log `[opensles] ENQUEUE ... RAWpeak=0` = a Wwise enfileira buffers
 de SILÊNCIO PURO (zeros), ANTES do meu volume. Logo a **própria Wwise renderiza silêncio** — não é
 roteamento/volume do shim (masterg=0.30 ok, sem CORRUPT vol). active=1 (1 voz ativa) mas dados=zeros.
 
@@ -88,19 +88,19 @@ roteamento/volume do shim (masterg=0.30 ok, sem CORRUPT vol). active=1 (1 voz at
 - (C) **voz VIRTUAL**: se o volume master=0, a Wwise virtualiza a voz (silêncio). Consequência de A/B.
 **PRÓXIMOS PASSOS:** 1) logar set_rtpc_value+set_state no wrapper (FWD atuais não logam). 2) grep IL por
 musicVolume/get_master_volume/set_volume/Suspend/WakeupFromSuspend. 3) testar forçar volume.
-**TODO NextOS:** áudio driver AUTOMÁTICO (não forçar SDL_AUDIODRIVER=pulse; deixar SDL escolher c/ fallback
+**TODO:** áudio driver AUTOMÁTICO (não forçar SDL_AUDIODRIVER=pulse; deixar SDL escolher c/ fallback
 pulse->alsa) — funciona com pulse hoje mas deveria ser auto p/ qualquer SDL.
 
 **COMO CONTINUAR (infra pronta):**
-- Device: **192.168.31.127** root (ssh por chave, sem senha). Game dir: `/storage/roms/sor4-test`.
+- Device: **<device-ip>** root (ssh por chave, sem senha). Game dir: `/storage/roms/sor4-test`.
 - ⚠️ SEMPRE `pkill -9 sor4host` antes de lançar. Lançar: `cd /storage/roms/sor4-test && SOR4_TEXSCALE=3
   SOR4_SHOT=300 nohup sh run_diag.sh >/dev/null 2>&1 &` (run_diag.sh já tem SDL_AUDIODRIVER=pulse +
   SDL_NO_SIGNAL_HANDLERS + mapping do controle).
 - Wrapper: `~/nextos_ports_android/ports/sor4wwise/` -> `bash build.sh` gera libWwise.so (toolchain NextOS
-  Amlogic-old) -> `scp libWwise.so root@192.168.31.127:/storage/roms/sor4-test/host_pkg/libs/libWwise.so`.
+  Amlogic-old) -> `scp libWwise.so root@<device-ip>:/storage/roms/sor4-test/host_pkg/libs/libWwise.so`.
   Fontes: src/wwise_native.c (wrapper/trampolins/AAsset/JNI/pump/NOPs), src/opensles_shim.c (SDL audio +
   logs PICO/ENQUEUE/RAWpeak). libWwise.real.so = a Wwise REAL do APK (já no device host_pkg/libs/).
-- VERIFICAÇÃO SEM OUVIR: `ssh root@192.168.31.127 'pactl list short sinks'` (RUNNING=tem stream) +
+- VERIFICAÇÃO SEM OUVIR: `ssh root@<device-ip> 'pactl list short sinks'` (RUNNING=tem stream) +
   `grep -E "RAWpeak|PICO|real init" /storage/roms/sor4-test/wwise.log` (RAWpeak>100 = Wwise produz som).
 - ⚠️ LIMPAR no final: logs [opensles]/[wwise-native]/ENQUEUE/PICO/RAWpeak + os probes [PAD]/[HI]/[HB] do
   MonoGame + titleprobe do SOR4.dll. NOPs hardcoded são da v1.4.5.
@@ -124,15 +124,15 @@ de fixes finais (depois do "carrega mas init=0"):
    quem chama e a thread do OpenSLES, AQUI ninguem chamava -> Wwise mandava 1 buffer, esperava o cb que
    nunca vinha, timeout, resetava o sink (retry!). FIX: **thread de pump no wrapper** (pump_thread_fn,
    chama opensles_shim_pump_callbacks() @250Hz). -> sink ESTAVEL, ENQUEUE counter cresce continuo.
-5. **🔑 SILENCIO (NextOS nao ouvia)**: faltavam os **613 arquivos .wem** (musica+SFX STREAMED) que NAO
+5. **🔑 SILENCIO (nao se ouvia)**: faltavam os **613 arquivos .wem** (musica+SFX STREAMED) que NAO
    foram extraidos do APK (so os bancos+xnb). A Wwise pedia ex 353312695.wem (5.4MB=tema do menu) ->
    AAsset FALHOU -> renderizava silencio. FIX: extrair `assets/*.wem` do APK (635MB) -> device gameassets/.
-VERIFICACAO SEM OUVIR (means do NextOS): `pactl list short sinks` = hdmi_real RUNNING (PulseAudio suspende
+VERIFICACAO SEM OUVIR: `pactl list short sinks` = hdmi_real RUNNING (PulseAudio suspende
 em silencio; RUNNING=som real) + ENQUEUE counter CRESCE (Wwise renderizando) + wem abre sem FALHOU.
 ARQUIVOS: ports/sor4wwise/ (wrapper libWwise.so + src/wwise_native.c + opensles_shim.c modificado +
 build.sh). libWwise.real.so (2.9MB do APK) no device host_pkg/libs/. Launcher run_diag.sh: SDL_AUDIODRIVER
 =pulse. FALTA polir: as offsets de NOP sao da v1.4.5 (hardcoded); remover logs [opensles]/[wwise-native]/
-ENQUEUE no final; confirmar SFX de gameplay no ouvido; load lento da fase (NextOS notou).
+ENQUEUE no final; confirmar SFX de gameplay no ouvido; load lento da fase (notado em teste).
 
 ### 🔊🟢 NATIVO — avanco cont.12: Wwise REAL CARREGA via so-loader (init=0 falta) [RESOLVIDO acima]
 ports/sor4wwise/ = wrapper glibc libWwise.so (PLUGIN do .NET) que so-carrega a Wwise REAL do APK.
@@ -170,19 +170,19 @@ CAMINHO NATIVO (detalhes anteriores):
   (6) deploy + depurar no device (reloc C++/RTTI/exceptions, TLS/canary bionic, thread de áudio Wwise).
   Backup do stub: host_pkg/libs/libWwise.so.stub.bak. P/Invoke do jogo = DllImport "Wwise" -> libWwise.so.
 
-### 🎮 CONTROLE — feedback do NextOS APÓS o fix de mapping (AINDA ABERTO)
+### 🎮 CONTROLE — feedback do porter APÓS o fix de mapping (AINDA ABERTO)
 - Mapping explícito ATIVO (gcName mudou). MAS: "A e B continuam virando START" + "analógico pra baixo
   pula 2 casas" (input duplicado). Logo: o assignment `a:b2,b:b1,...,start:b9` NÃO casa o layout FÍSICO
-  do pad do NextOS (unidade não-padrão). NextOS: "se vire com logs/pad virtual, não precisa eu apertar".
+  do pad do porter (unidade não-padrão). Pedido: "se vire com logs/pad virtual, não precisa eu apertar".
 - TEORIA: os botões físicos A/B dele emitem evdev 296/297 (que mapeei p/ back/start b8/b9) -> viram pause.
   Square(attack=X=b3=291) funciona -> ancora. DUPLO no dpad: mapeei dpad no hat0 + stick a0/a1; o pad dele
   manda movimento em a0/a1 (analógico) E hat -> 2x. FIX dpad: usar dpad DIGITAL só nos eixos
   (dpup:-a1,dpdown:+a1,dpleft:-a0,dpright:+a0) SEM leftx/lefty e SEM hat (igual o built-in que era "perfeito").
-- P/ achar o layout SEM o NextOS: pad VIRTUAL vpadd clona evdev exato -> unbind pad real (slot0) -> apertar
+- P/ achar o layout SEM o porter: pad VIRTUAL vpadd clona evdev exato -> unbind pad real (slot0) -> apertar
   cada evdev 288-299 + screenshot/efeito no menu (confirma/cancela/move/pausa) -> deduzir evdev->ação.
-  evcap.py (lê /dev/input/event2 cru) capturou VAZIO (NextOS não apertou na janela). Game ACEITA TECLADO tb.
+  evcap.py (lê /dev/input/event2 cru) capturou VAZIO (ninguém apertou na janela). Game ACEITA TECLADO tb.
 
-### 🖼️ CERCAS/OBJETOS BRANCOS no gameplay (task #3, ABERTO) — NextOS confirma persiste.
+### 🖼️ CERCAS/OBJETOS BRANCOS no gameplay (task #3, ABERTO) — confirmado que persiste.
 Provável: textura específica (cerca/chain-link/objetos) com alpha/blend/formato que o Mali renderiza branco
 (alpha-test? PNG transparência decodificada como branco? material aditivo?). Investigar textura/material em
 decors/main_campaign/stage_1. Resto do cenário ~100% correto.
@@ -200,7 +200,7 @@ decors/main_campaign/stage_1. Resto do cenário ~100% correto.
 ---
 
 ## Fatos confirmados do APK (FASE 0/1)
-APK fonte: `/home/nextos/Downloads/Streets-of-Rage-4-v1.4.5-unlocked-apkvision(1).apk`
+APK fonte: `/home/root/Downloads/Streets-of-Rage-4-v1.4.5-unlocked-apkvision(1).apk`
 (1,9 GB, 27.234 arquivos).
 
 - Engine = **MonoGame + .NET-for-Android (MonoVM)**. NÃO é Unity, NÃO é FNA.
@@ -221,7 +221,7 @@ extrair assemblies → rodar em .NET 8 arm64 no device → host próprio (Progra
 AndroidGameActivity) → MonoGame DesktopGL → gl4es p/ GLES2 no Mali-450 → stubar
 Mono.Android/EOS/Helpshift/Billing/pairip.
 
-## Device 192.168.31.127 (recon FASE 0)
+## Device <device-ip> (recon FASE 0)
 - Mali-450 Utgard, **GLES2-only**, **fbdev** (/dev/fb0, /dev/fb1, sem /dev/dri).
 - Kernel 3.14.79 EMUELEC aarch64, **glibc 2.43** (moderno — bom p/ .NET 8), 4 cores.
 - `/storage` = 996 MB livres (NÃO usar p/ dados). **`/storage/roms` (p3) = 21 GB livres** → usar.
@@ -229,7 +229,7 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 - SDL: `libSDL2-2.0.so.0.3200.69` (2.32, provável mali) + SDL3. `SDL_VIDEODRIVER=mali` p/ fbdev.
 - gptokeyb em `/storage/roms/ports/PortMaster/`.
 - **Sem runtime .NET/Mono no device** (só LÖVE em PortMaster/runtimes). → prover runtime nós mesmos.
-- SSH: `root@192.168.31.127` (sem senha via chave já configurada). Regra: nunca relançar sobre
+- SSH: `root@<device-ip>` (sem senha via chave já configurada). Regra: nunca relançar sobre
   instância viva (matcher por /proc/PID/exe — ver `ports/cuphead/run.sh`).
 
 ## Convenções de launcher (do port Cuphead, reaproveitar)
@@ -253,7 +253,7 @@ Mono.Android/EOS/Helpshift/Billing/pairip.
 ---
 
 ## 🎯 CAUSA-RAIZ do "trava aos 100%" ACHADA NOS LOGS (2026-06-16 cont.5) — NÃO é OOM/hang
-**Dado real** (device .127 `run.log` + `progress.log` após reboot do NextOS): o preload chega a 100%,
+**Dado real** (device .127 `run.log` + `progress.log` após reboot): o preload chega a 100%,
 o `ScreenManager` entra na **`StartGameVideoScreen`** (vídeo de abertura) e morre com **exceção
 gerenciada** (NÃO hang, NÃO OOM — `progress.log`: avail=147MB, swapused=250MB, rss caindo p/ 91MB
 quando morreu = morte por exceção, não falta de memória):
@@ -290,7 +290,7 @@ Depois do SDL fix + skipvideo + verstub, a sequencia de muros no caminho do menu
 PIPELINE SOR4.dll AGORA: patchgam -> noopm(AndroidServices.*+save) -> skipvideo -> verstub ->
 noopm EOSManager.PollMessage. Deploy extra: SharpFont.Core REAL + fontes .ttf/.otf + SOR4Bridge novo.
 Provavel proximo: mais stubs EOS/online no update loop (mesmo padrao, noopm) + audio (Wwise stub=mudo)
-+ input (gptokeyb). NextOS confirmou avanco ("porra deu certo"). Foco seguinte: SOM + CONTROLES.
++ input (gptokeyb). Avanco confirmado em teste real. Foco seguinte: SOM + CONTROLES.
 
 ## 🎮🟡 cont.10 — MISSÃO CONTROLES (objetivo da PRÓXIMA sessão): passar da tela de TAP + todos os botões
 ### OBJETIVO
@@ -309,7 +309,7 @@ Provavel proximo: mais stubs EOS/online no update loop (mesmo padrao, noopm) + a
 - Logs `[PAD]` (instrumentei MonoGame: GamePad.SDL.cs, Joystick.SDL.cs, SDLGamePlatform.cs — REMOVER no
   final) provam in-game: `JoyDeviceAdded → Joystick.AddDevice isGameController=1 → GamePad.AddDevice
   slot=0 total=1`; e `GetState idx=0` retorna A/B/X/Y/Start/Back/ombros/**dpad** TODOS corretos quando
-  NextOS aperta. Ou seja MonoGame↔SDL↔pad = 100% OK.
+  se aperta. Ou seja MonoGame↔SDL↔pad = 100% OK.
 - Cadeia do jogo: `input.update` → `platform.update_game_pad_state_array` → `platform_strict.
   get_game_pad_state(0)` → `GamePad.GetState(PlayerIndex.One)` (mapeia botões certos: A=0x1000 etc) →
   `GamePadState_s[]` (current/previous). `TitleScreen.handle_input`: `input.is_any_button_just_pressed
@@ -318,7 +318,7 @@ Provavel proximo: mais stubs EOS/online no update loop (mesmo padrao, noopm) + a
   `is_any_button_just_pressed_controller` (borda: current.is_pressed && !previous, botões enum 1,2,3,4,
   9,10) OU teclado (Enter=13/Space=32/Esc=27/Backspace=8 + currentPressedKeyList).
 - **MAS o título NÃO avança** apertando o pad. `start_load_save_and_config` NUNCA logou.
-- **TEORIA DO NEXTOS (forte, do Sonic Mania):** título mobile espera um **TAP NA TELA**; o controle só
+- **TEORIA DO PORTER (forte, do Sonic Mania):** título mobile espera um **TAP NA TELA**; o controle só
   funciona DEPOIS do tap. SoR4 é o mesmo caso provável. NOSSO MonoGame **NÃO alimenta TouchPanel**
   (sem mouse→touch, sem SDL_FINGER) → toque ausente → título preso.
 
@@ -417,14 +417,14 @@ gameplay; runtime tenta crescer/mmap sob thrash → memset/memcpy falha → SIGS
 DESCOBERTA: o `swap2g` (1GB) NÃO estava ativo pós-reboot (só swapfile 511MB) → virtual era só ~1.34GB.
 
 **EXPERIMENTO EM CURSO**: swapon swap2g + criei swap3 (1.5G) → swap total 3071MB + 832MB RAM ≈ 3.9GB.
-Relancei com **SOR4_TEXSCALE=3** (NextOS pediu; reduz RAM RETIDA das texturas GL; cache scale-3 é novo
+Relancei com **SOR4_TEXSCALE=3** (pedido; reduz RAM RETIDA das texturas GL; cache scale-3 é novo
 → run mais lenta, re-decodifica ASTC do zero — NÃO matar). Medir se passa de 97.6%→100%→[SVP] Play→menu.
 Launcher diagnóstico: `/storage/roms/sor4-test/run_diag.sh` (minidump on, EXITCODE no log, SHOT).
 Se passar = memória confirmada. Se crashar igual = não é só RAM retida (subir p/ analisar managed stack
 do minidump via dotnet-dump + DAC, ou stack-overflow no deserializer).
 
 ## 🏆🏆 IMAGENS REAIS + jogo boota completo (2026-06-16 cont.4)
-**NextOS confirmou: LOGO do SoR4 com TEXTURA REAL na tela** (ASTC decodificado). Estado:
+**Confirmado: LOGO do SoR4 com TEXTURA REAL na tela** (ASTC decodificado). Estado:
 - Boot 100%: render + assets + OnDeviceCreated + 1ºDraw + shaders + AfterFirstDraw + **bigfile
   protobuf desserializa** + program.initialize + carrega assets de gameplay (background thread).
 - **ASTC real**: `libsor4astc.so` (astcenc 5.0.0 decompressor NEON arm64, sem LTO) + Texture2DReader
@@ -451,7 +451,7 @@ do minidump via dotnet-dump + DAC, ou stack-overflow no deserializer).
 platform.save_save_game + save_config). Host: static_init + 3 delegates + set_as_main_thread.
 
 ## 🏆 GATE D ALCANÇADO: PRIMEIRA IMAGEM NA TELA + jogo inicializa fundo (2026-06-16 cont.3)
-**NEXTOS CONFIRMOU imagens na TV.** O jogo agora roda MUITO fundo na inicialização. Cadeia que
+**CONFIRMADAS imagens na TV.** O jogo agora roda MUITO fundo na inicialização. Cadeia que
 JÁ FUNCIONA (boot → render → init):
 - .NET 9 CoreCLR + MonoGame GLES + SDL3-mali → contexto + GraphicsDevice ✅
 - Asset loading via bridge (get_AssetManager patchado p/ AssetBridge.GetAssets) ✅

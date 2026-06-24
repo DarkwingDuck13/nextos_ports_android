@@ -2,7 +2,7 @@
 
 > Status: **✅ RESOLVIDO E VALIDADO 2026-06-19 — P2 ENTRA E JOGA (Axel P1 + Blaze P2 na fase, 2 barras de vida).**
 > Validado autônomo via inject (event2=P1, event5=P2): seleção mostrou cursores P1 E P2, gameplay
-> com 2 personagens/HUD. Regra: só commit no master, SEM co-autor Agente.
+> com 2 personagens/HUD. Regra: só commit no master, SEM co-autor.
 
 ## A RECEITA QUE FUNCIONOU (duas camadas — AMBAS necessárias)
 O build mobile bloqueia co-op em DUAS camadas. O patch (`port/tools/coopsplit`) corrige as duas:
@@ -37,7 +37,7 @@ DLL final co-op (device DLL + coopsplit, SEM diag): aplicada e validada. Gate `S
 - **Artefato de teste PRONTO**: `/tmp/SOR4.coop.ready.dll` (md5 ff8ac5bb) = SOR4.dll do device + coopsplit.
   Backup da original do device: `/tmp/SOR4.device.now.dll` (md5 806821f5).
 
-## DEPLOY + TESTE (quando o NextOS voltar com 2 controles)
+## DEPLOY + TESTE (quando houver 2 controles disponíveis)
 > O install do device tem `.setup_done` → NÃO re-roda o progressor. Então testa-se trocando a DLL direto.
 1. **Matar + confirmar 0** (regra): `pkill -9 -x sor4host` + checar por `/proc/*/exe` = 0.
 2. **Backup + deploy** no device `/storage/roms/ports/sor4/host_pkg/`:
@@ -51,7 +51,7 @@ DLL final co-op (device DLL + coopsplit, SEM diag): aplicada e validada. Gate `S
    ANTES do nosso patch). Reverter: `cp SOR4.dll.precoop.bak SOR4.dll`.
 6. **Se funcionar**: virar o default do gate p/ ON (`${SOR4_COOP:-1}`) no extract.src + rebuildar o zip.
 
-## O PROBLEMA (reportado pelo NextOS)
+## O PROBLEMA (reportado)
 Plugando 2 controles, **os 2 movem o MESMO personagem** e o Player 2 nunca entra.
 
 ## CAUSA-RAIZ (confirmada no IL — /tmp/sor4_il.txt, 18MB, gerado por dumpil)
@@ -91,7 +91,7 @@ Roda 3 fases por frame:
   (a cadeia de `sor4host --run-dll` que patcha o SOR4.dll). Gate opcional por env (ex.: `SOR4_COOP=1`)
   pra poder ligar/desligar.
 
-## VALIDAR (precisa do NextOS na TV — não dá por ssh, pad é SDL nativo)
+## VALIDAR (precisa de validação na TV — não dá por ssh, pad é SDL nativo)
 1. 2 controles físicos plugados ANTES de abrir (de preferência mesmo modelo → mesmo
    SDL_GAMECONTROLLERCONFIG do launcher cobre os dois).
 2. P1: Story/Arcade → entra na tela de seleção de personagem.
@@ -109,5 +109,5 @@ Roda 3 fases por frame:
 ## ARQUIVOS-CHAVE
 - IL dump: `/tmp/sor4_il.txt` (regerar com `port/tools/dumpil` se sumir).
 - Pipeline de patch: `port/tools/buildfix.sh` + progressor BYO em `port/package/tools/`.
-- Memória: ver entrada 2026-06-19 em
-  `~/.agente/projects/-home-nextos/memory/project_sor4_streets_of_rage4_mali450.md`.
+- Memória: ver entrada 2026-06-19 nas notas internas do projeto
+  (`project_sor4_streets_of_rage4_mali450`).

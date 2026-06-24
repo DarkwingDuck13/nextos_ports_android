@@ -222,7 +222,7 @@ p/ os streams alocarem e a geometria preencher. Comparável a Hollow Knight em d
 | Teste | Método | Resultado |
 |---|---|---|
 | Fix genstreams | DYSMANTLE_GENSTREAMS (chama GenerateVertexStreamsFromInterleaved p/ fmt0) | rodou 6x mas streams continuam NULOS (fmt=0) — a função lê o formato de this+232 que é a CONTAGEM (=2), não o formato; ambiguidade de layout. Não populou |
-| Teoria memória textura (NextOS) | DYSMANTLE_TEX_HALF (reduz texturas ≥256 pela metade, box2x2) | TEXHALF rodou (4+ texturas) MAS branco 0.58 inalterado → NÃO é limite de memória de textura do Utgard. Geometria não desenha (≠ Bully) |
+| Teoria memória textura (porter) | DYSMANTLE_TEX_HALF (reduz texturas ≥256 pela metade, box2x2) | TEXHALF rodou (4+ texturas) MAS branco 0.58 inalterado → NÃO é limite de memória de textura do Utgard. Geometria não desenha (≠ Bully) |
 
 **CONFIRMADO:** o terreno/objetos complexos NÃO desenham por GEOMETRIA (format-0/vertex-stream
 em objeto interleaved), não por textura nem memória. O fix via GenerateVertexStreamsFromInterleaved
@@ -325,7 +325,7 @@ real (GLVER=3.0, egl_shim pede major=3) — branco igual.
    `createvb(0,...)` falha ("unknown vertex format", 2299×) → chão/pedras/lixeiras/
    árvores/água invisíveis. Sombras dos shards apareciam pq usam fmt=7 HARDCODED
    (ActorRenderer::OnShadowUpdate @0xaeb4fc).
-- Relato do NextOS no Mali-450 bateu 100%: aparece o que usa material sem sombra
+- Relato no Mali-450 bateu 100%: aparece o que usa material sem sombra
   (carros/portas/prateleiras/tapete), some o que usa `*Shadows` (fundo do mapa,
   pedras, lixeiras).
 
@@ -335,7 +335,7 @@ carrega: tira `Shadows`→`Reflections`→`Heights`→`Specular`→`Normals`→`
 `Fur`→`Diffuse`, e por fim tira `Lit` (TagWaterLit→TagWater, BillboardLit→
 Billboard). Resultado X5M: **43 aliases, 0 shaders fmt=0, 0 erros de vertex
 buffer, MUNDO RENDERIZA** (grama/terreno/carro/casas/props com cor — screenshot
-/tmp/dys_fix.png; NextOS: "as gramas apareceram todas"). Env:
+/tmp/dys_fix.png; confirmado: "as gramas apareceram todas"). Env:
 `DYSMANTLE_KEEP_SHADOW_SHADERS=1` desliga o alias.
 - Fix A alternativo (X5M/ES3): `DYSMANTLE_SHTARGET=2` (hook_inittrans, GOT de
   ShaderUtility::InitializeTranslator) sobe renderer+1120 → carregaria os Shadows
@@ -345,11 +345,11 @@ buffer, MUNDO RENDERIZA** (grama/terreno/carro/casas/props com cor — screensho
   (shader do material das surfaces quebradas), diff dos XMLs TreeLeaves vs
   TreeLeavesShadows (feature_level=2).
 - Deploy: X5M /storage/roms/ports/dysmantle (testado, rodando) + Mali-450 .89
-  /storage/roms/dysmantle (dysmantle.pre-shalias.bak = backup; falta NextOS validar).
+  /storage/roms/dysmantle (dysmantle.pre-shalias.bak = backup; falta validar).
 - ⚠️ X5M: para liberar o KMSDRM parei o ES: `systemctl stop essway` (religar com
   `systemctl start essway` ao terminar os testes). DRM master demora ~5s p/ soltar
   após pkill (kmsdrm "not available" transitório → esperar e relançar).
-- PENDENTE pós-fix: NextOS validar Mali-450 (chão/lixeiras/pedras); investigar
+- PENDENTE pós-fix: validar Mali-450 (chão/lixeiras/pedras); investigar
   gargalo/travamento de ÁUDIO no Mali-450 (relato 2026-06-12, possivelmente só
   perf geral); visual sem shadow maps (aceitável; SHTARGET=2 no X5M se quiser
   sombras reais).

@@ -553,7 +553,7 @@ static void re4_gp_poll(void){
       }
     }
     /* DIAG GUIADO: loga QUALQUER mudanca de botao/hat/eixo cru (RE4_RAWALL).
-       Permite descobrir exatamente o que o adaptador do NextOS envia por input. */
+       Permite descobrir exatamente o que o adaptador do usuário envia por input. */
     if(getenv("RE4_RAWALL")){
       SDL_Joystick *rj = SDL_GameControllerGetJoystick(g_re4_gp_ctrl);
       if(rj){

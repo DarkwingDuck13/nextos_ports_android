@@ -1,13 +1,13 @@
 # DuckTales: Remastered — ESTUDO / PLANO DE PORT (pré-go)
 
 > Recon 2026-06-23. Engine WayForward nativa **ES2** + NativeActivity → perfil amigável p/ Mali-450.
-> COMEÇAR só no "go" do NextOS. Base de dev = **Mali-450 .164** (`192.168.31.164`, senha `emuelec`,
+> COMEÇAR só no "go" do porter. Base de dev = **Mali-450 .164** (`<device-ip>`, senha `<senha>`,
 > EmuELEC, fbdev Utgard, fb 1280x720). Régua: Crazy Taxi (NativeActivity-ish so-loader + fmod),
 > RE4 (bridge fmod→AudioTrack), SOTN/Mina (ES2 puro).
 
 ---
 ## APK
-- **`/home/nextos/Downloads/Telegram Desktop/DuckTales_Remastered_Android.apk`** (485 MB compactado, ~600 MB descompactado).
+- **`/home/root/Downloads/DuckTales_Remastered_Android.apk`** (485 MB compactado, ~600 MB descompactado).
 - Dev: **WayForward** (port do XBLA/PSN de 2013). 2.5D (sprites 2D em cena 3D Bullet).
 - ⚠️ confirmar `package` + nome da Activity no `AndroidManifest.xml` (AXML binário — usar `aapt`/`apkanalyzer` OU parser AXML; aapt não estava no host no recon).
 
@@ -71,7 +71,7 @@
 - Toolchain armhf: a mesma usada no RE4 (`build.sh` dele aponta o CC armhf).
 
 ## REGRAS HERDADAS (memória — OBRIGATÓRIO)
-- **Git:** SÓ master, ZERO co-autor / ZERO menção a Agente/anthropic. [[feedback_no_agente_coauthor_commit]] [[feedback_git_workflow_master_only]]
+- **Git:** SÓ master, commits limpos (zero co-autor). (notas internas do projeto)
 - **Matar+CONFIRMAR 0 instâncias** antes de lançar (2 jogos juntos travam o device). Kill por `/proc/*/exe`. [[feedback_matar_confirmar_jogo_antes_de_lancar]]
 - **Não parar / não explicar até IMAGEM na tela** em loop de port. [[feedback_nao_parar_nao_explicar_ate_imagem]]
 - Limpar/apagar com cuidado (alvos explícitos, staging primeiro). [[feedback_limpar_apagar_arquivos_com_cuidado]]
