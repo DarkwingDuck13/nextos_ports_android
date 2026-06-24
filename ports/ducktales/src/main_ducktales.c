@@ -619,14 +619,20 @@ static void hist_put(void *p) {
 }
 /* print the last-known allocation backtrace for chunk addr `p` (the UAF victim) */
 static void hist_dump(const char *tag, void *p) {
-  unsigned i = ((uintptr_t)p >> 4) & (HIST_N - 1);
-  if (g_histtab[i].ptr == p) {
-    fprintf(stderr, "[HIST] %s node=%p was last allocated by:\n", tag, p);
-    for (int k = 0; k < 6 && g_histtab[i].bt[k]; k++)
-      fprintf(stderr, "         duck+0x%lx\n", (unsigned long)g_histtab[i].bt[k]);
-  } else {
-    fprintf(stderr, "[HIST] %s node=%p no alloc record (slot has %p)\n", tag, p, g_histtab[i].ptr);
+  /* the free-list node is the chunk header; the recorded alloc key is the USER
+     pointer (chunk + header). Probe a few offsets to find the owning alloc. */
+  int offs[] = {0, 8, 16, 4, 12, -8, -16, 24, 32};
+  for (unsigned o = 0; o < sizeof(offs)/sizeof(offs[0]); o++) {
+    void *q = (char *)p + offs[o];
+    unsigned i = ((uintptr_t)q >> 4) & (HIST_N - 1);
+    if (g_histtab[i].ptr == q && g_histtab[i].bt[0]) {
+      fprintf(stderr, "[HIST] %s node=%p (user=%p, +%d) allocated by:\n", tag, p, q, offs[o]);
+      for (int k = 0; k < 6 && g_histtab[i].bt[k]; k++)
+        fprintf(stderr, "         duck+0x%lx\n", (unsigned long)g_histtab[i].bt[k]);
+      return;
+    }
   }
+  fprintf(stderr, "[HIST] %s node=%p no alloc record at any offset\n", tag, p);
 }
 static void at_remove(void *p) {
   if (!p) return;
@@ -1177,7 +1183,9 @@ static void my_unlink(void *r0, void *r1) {
   if (!su_ok(next) || !su_ok(prev)) {
     if (g_hist) { static int hn = 0; if (hn++ < 12) {
         fprintf(stderr, "[UAF] corrupt node=%p next=%p prev=%p sc=%u tid=%ld\n", (void *)node, next, prev, scb, (long)syscall(SYS_gettid));
-        hist_dump("victim", (void *)node); df_backtrace(); } }
+        hist_dump("victim", (void *)node);
+        if (g_atrack) at_dump_near("victim-owner", (uintptr_t)node);
+        df_backtrace(); } }
     else if (g_su_hits < 30) { g_su_hits++;
       fprintf(stderr, "[SAFEUNLINK] contained corrupt node=%p next=%p prev=%p\n", (void *)node, next, prev); }
     void *surv = NULL;
