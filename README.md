@@ -36,8 +36,8 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 | **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | 🟢 cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
 | **Cuphead** (Unity IL2CPP) | so-loader | 🔬 WIP | [`ports/cuphead`](ports/cuphead/) |
 | **Hollow Knight** (Unity IL2CPP) | so-loader | 🔬 pesquisa — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
-| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | so-loader (ref. **mtojek**) | 📦 referência (base do framework) — validam o so-loader no Utgard | — |
-| Crazy Taxi Classic (GLES2) | so-loader (loader de **initdream** sobre o framework) | 📦 referência (port da comunidade) — ✅ **jogável** no Mali-450 (render + áudio + **gptokeyb**) | [`ports/crazytaxi`](ports/crazytaxi/) |
+| Syberia (GLES1) · LEGO Star Wars: TCS (GLES2) | so-loader (ref. **mtojek**) | 📦 referência (base do framework) — ✅ **totalmente jogáveis** no Mali-450 (Utgard) | [`docs/reference/syberia-src`](docs/reference/syberia-src/) · [`lswtcs-src`](docs/reference/lswtcs-src/) |
+| Crazy Taxi Classic (GLES2) | so-loader (loader de **initdream** sobre o framework) | 📦 referência (port da comunidade) — ✅ **jogável** no Mali-450 (render + áudio + **gptokeyb**) | [`ports/crazytaxi`](ports/crazytaxi/) · [`docs/reference/crazytaxi-src`](docs/reference/crazytaxi-src/) |
 
 > ⚙️ **Dois caminhos**: a maioria é **so-loader** (carrega o `.so` Android e roda direto); alguns são **nativos** — Streets of Rage 4 roda o runtime **.NET 9 + MonoGame** compilado em GLES2, e Dusklight é um **recomp**. O empacotamento PortMaster (launcher + BYO-data) é o mesmo nos dois.
 
@@ -60,7 +60,7 @@ template/src/    # BASE por-jogo (copiada e adaptada pra cada port)
 tools/
   new-port.sh    # << gera um port novo a partir de um APK/.so >>
 ports/<jogo>/    # cada port gerado vive aqui
-docs/            # arquitetura + receita + referência (syberia GLES1 + lswtcs GLES2)
+docs/            # arquitetura + receita + referência (syberia + lswtcs + crazytaxi)
 ```
 
 ## Fluxo de um port novo
