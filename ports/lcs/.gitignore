@@ -1,0 +1,15 @@
+# build artifact (binário não versionado — regra)
+lcs
+# lib do jogo (proprietária, não versionada)
+libGame.so
+# dados de runtime / diagnóstico
+logs/
+userdata/
+save/
+*.raw
+fb_*.png
+*.png
+*.o
+run.log
+heartbeat.txt
+progress*.txt
