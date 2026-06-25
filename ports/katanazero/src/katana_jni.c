@@ -289,8 +289,15 @@ static void gp_send_hat(void) {
   float y = (g_hat_d ? 1.0f : 0.0f) - (g_hat_u ? 1.0f : 0.0f);
   g_gp_hat(g_gp_id, 0, x, y);
 }
+/* SELECT+START (BACK+START) = sair (hotkey nativo p/ o launcher PortMaster nao precisar de gptokeyb,
+ * que capturaria o controle e quebraria o gamepad NATIVO do jogo). Seta g_exit_combo -> loop faz teardown. */
+static int g_sel_held, g_start_held;
+volatile sig_atomic_t g_exit_combo = 0;
 /* trata um botao SDL (down/up) pelo path nativo de gamepad */
 static void gp_button(int sdl_btn, int down) {
+  if (sdl_btn == SDL_CONTROLLER_BUTTON_BACK)  g_sel_held = down;
+  if (sdl_btn == SDL_CONTROLLER_BUTTON_START) g_start_held = down;
+  if (g_sel_held && g_start_held) { fprintf(stderr, "[drv] SELECT+START -> sair\n"); g_exit_combo = 1; }
   switch (sdl_btn) {
     case SDL_CONTROLLER_BUTTON_DPAD_UP:    g_hat_u = down; gp_send_hat(); break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  g_hat_d = down; gp_send_hat(); break;
@@ -321,10 +328,17 @@ static void gp_register(void) {
   if (g_gp_connected) {
     static char nm[] = "Microsoft X-Box 360 pad";
     static char guid[] = "030000005e0400008e02000010010000";
-    g_gp_connected(g_gp_id, nm, guid, 0x045e, 0x028e, 17, 32, 6, 1);
+    /* ULTIMO arg = BUTTON BITMASK (SDL_GameControllerButton bits), NAO hatCount!
+     * Disasm de AndroidGamepadConnected: buttonMask = (ultimo_arg) | 0x7800.
+     * 0x7800 = dpad up/down/left/right (bits 11-14). Antes passavamos 1 -> mask
+     * 0x7801 = SO botao A (bit0) + dpad -> auto-mapping = "a:b0,dp..." -> X/B/Y nao
+     * mapeiam -> ataque [X] do gameplay (gp_face3=button2) nunca registra (menu so
+     * usa A+dpad, por isso funcionava). 0x7FFF = A,B,X,Y,BACK,GUIDE,START,LStick,
+     * RStick,LShoulder,RShoulder + dpad = controle COMPLETO. */
+    g_gp_connected(g_gp_id, nm, guid, 0x045e, 0x028e, 17, 32, 6, 0x7FFF);
     if (g_gp_change) g_gp_change();
     g_gp_ready = 1;
-    fprintf(stderr, "[gp] device %d registrado (Xbox 360, 17btn/6axis/1hat)\n", g_gp_id);
+    fprintf(stderr, "[gp] device %d registrado (Xbox 360, mask=0x7FFF FULL/6axis)\n", g_gp_id);
     /* dump da tabela keycode->gp_index (AndroidGamepadOnButtonDown le table[i]==keycode) */
     { extern void *text_base;
       uintptr_t tp = *(uintptr_t *)((char *)text_base + 0x47d4000 + 2696);
@@ -725,6 +739,7 @@ void jni_run(void) {
     if (maxf && f >= maxf) { fprintf(stderr, "[drv] KZ_MAXFRAMES atingido\n"); break; }
     if (maxs && (SDL_GetTicks() - t0) / 1000 >= (Uint32)maxs) { fprintf(stderr, "[drv] KZ_MAXSECONDS atingido\n"); break; }
     if (g_quit) { fprintf(stderr, "[drv] SIGTERM -> teardown\n"); break; }
+    if (g_exit_combo) { fprintf(stderr, "[drv] SELECT+START -> teardown\n"); break; }
   }
   kz_teardown();
 }

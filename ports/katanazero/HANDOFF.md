@@ -1,7 +1,29 @@
 # 🗡️ Katana ZERO — HANDOFF (Mali-450 so-loader)
 
-## ========================= LEIA PRIMEIRO — PRÓXIMA SESSÃO (s3) =========================
-### 🟢 ESTADO ATUAL (fim s2, 2026-06-25): JOGÁVEL até gameplay + ÁUDIO + 0 crash
+## ========================= LEIA PRIMEIRO — PRÓXIMA SESSÃO (s4) =========================
+### 🏆 s3 RESOLVIDO (2026-06-25): CONTROLE DO GAMEPLAY FUNCIONA! (NextOS confirmou "deu certoo")
+**RAIZ:** `AndroidGamepadConnected(id,name,guid,vendor,product, p5, p6, axisCount, BUTTONMASK)` — o
+ÚLTIMO arg NÃO é hatCount, é a **BITMASK de botões** (posições SDL_GameControllerButton). Disasm
+(0x1275188): `buttonMask = ultimo_arg | 0x7800` (0x7800 = bits 11-14 = DPAD up/down/left/right sempre
+add). Passávamos `1` → mask `0x7801` = **SÓ botão A (bit0) + dpad**. O engine FILTRA botões fora do
+mask → o auto-mapping virava só `a:b0,dp...` → X/B/Y/ombros nunca registravam. Menu funcionava porque
+só usa A + dpad (ambos no mask). Ataque [X] do gameplay = gp_face3 = SDL button 2 = bit2 → FORA do mask
+→ nunca registrava. **FIX (katana_jni.c:324):** último arg `1` → `0x7FFF` (15 botões: A,B,X,Y,BACK,
+GUIDE,START,LStick,RStick,LShoulder,RShoulder + dpad). Runtime confirma auto-mapping COMPLETO:
+`a:b0,b:b1,x:b2,y:b3,back:b4,guide:b5,start:b6,leftstick:b7,...`. 🔑 LIÇÃO REUSÁVEL p/ QUALQUER port
+GameMaker/YYC: o buttonMask do AndroidGamepadConnected é o ÚLTIMO arg e DEVE ser a bitmask completa SDL.
+DESCOBERTA via log de runtime "GAMEPAD auto mapping - ...a:b0..." (não dá p/ ver só na fonte estática).
+Hipóteses INVESTIGADAS e DESCARTADAS: save-fix (my_yyerror/BundleFileExists) NÃO toca o path do ataque
+(0 refs); YYError engolido no gameplay = 0; analógico/aim era 2ª camada mas o press já destravou.
+⚠️ inject_pad NÃO valida X: spoofa vendor/product Xbox360 → SDL aplica mapping real do Xbox (BTN codes
+≠ os do inject_pad) → só A passa. Validação real = controle físico do NextOS.
+
+### 🎯 PRÓXIMA TAREFA (s4): EMPACOTAR + COMMIT (controle JÁ resolvido)
+- [ ] launcher PortMaster: `launch.sh` + `katanazero.gptk` → `ports_scripts/Katana ZERO.sh` E `ports/`
+      (regra emuelec: deployar nos DOIS). SELECT+START sai.
+- [ ] R2 (ports_aio). Commit master (SEM co-autor Agente).
+
+### 🟢 ESTADO ANTERIOR (fim s2, 2026-06-25): JOGÁVEL até gameplay + ÁUDIO + 0 crash
 Device = **192.168.31.89** (mudou de IP; auth por **chave SSH**, NÃO senha vazia). Mali-450 Amlogic.
 Fluxo OK: boot → disclaimer(inglês) → título → New Game/Continue → cutscene/level_select → **room_factory_0
 (gameplay)**. Controle navega MENUS, áudio toca (música+SFX pela HDMI), autosave não crasha. SÓ FALTA: o
