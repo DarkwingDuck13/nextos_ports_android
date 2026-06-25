@@ -1,0 +1,8 @@
+# Katana ZERO — SO o codigo/loader vai pro repo. Binarios buildados e dados de jogo
+# (libyoyo.so/game.droid/.apk/.dat/.ogg/.zero — copyright) NUNCA (ja no .gitignore raiz).
+
+# binarios buildados (reproduziveis por build.sh / build_compat.sh)
+katanazero.compat
+katanazero.native-glibc238
+tools/inject
+tools/inject_pad
