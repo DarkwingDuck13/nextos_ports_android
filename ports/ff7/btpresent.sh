@@ -1,0 +1,17 @@
+#!/bin/sh
+GAMEDIR=/roms/ports/ff7
+cd "$GAMEDIR" || exit 1
+for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+  case "$(readlink /proc/$pid/exe 2>/dev/null)" in */ff7) kill -9 "$pid" 2>/dev/null;; esac
+done
+systemctl stop emustation 2>/dev/null
+sleep 1
+export HOME="$GAMEDIR" FF7_DATA="$GAMEDIR/gamedata" FF7_LANG=1
+gdb -batch \
+  -ex 'break ff7_present_cb' \
+  -ex 'run' \
+  -ex 'bt 25' \
+  -ex 'continue' \
+  -ex 'bt 25' \
+  -ex 'kill' \
+  --args ./ff7 2>&1 | grep -vE 'Reading|Loaded|warning:|No such|debugging|^\[New|is not a' | head -70

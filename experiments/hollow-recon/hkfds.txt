@@ -1,0 +1,34 @@
+=== snapshot 1 ===
+pid=4875 comm=UnityMain:
+lr-x------    1 root     root            64 Jun 18 14:45 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:45 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:45 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:45 8 -> /dev/input/event4
+lr-x------    1 root     root            64 Jun 18 14:45 9 -> /dev/input/mouse0
+abriu event2/js0:
+4841 
+=== snapshot 2 ===
+pid=4875 comm=UnityMain:
+lr-x------    1 root     root            64 Jun 18 14:45 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:45 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:45 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:45 8 -> /dev/input/event4
+lr-x------    1 root     root            64 Jun 18 14:45 9 -> /dev/input/mouse0
+abriu event2/js0:
+4841 
+=== snapshot 3 ===
+pid=4875 comm=UnityMain:
+lr-x------    1 root     root            64 Jun 18 14:45 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:45 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:45 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:45 8 -> /dev/input/event4
+lr-x------    1 root     root            64 Jun 18 14:45 9 -> /dev/input/mouse0
+abriu event2/js0:
+4841 
+--- devices ---
+event0: gpio_keypad
+event1: cec_input
+event2:  USB Gamepad          
+event3: meson-ir
+event4: MCE IR Keyboard/Mouse (meson-ir)
+js0:  USB Gamepad          

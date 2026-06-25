@@ -22,13 +22,17 @@ using Microsoft.Xna.Framework.Content.Pipeline.Utilities.LZ4;
 static class TexConv {
     [DllImport("sor4astc")] static extern int sor4_astc_decode(byte[] data, ulong len, int w, int h, int bx, int by, byte[] outRGBA);
     [DllImport("sor4astc")] static extern int sor4_etc1_encode(byte[] rgba, int w, int h, byte[] outEtc1);
+    [DllImport("sor4astc")] static extern int sor4_etc2_eac_rgba_encode(byte[] rgba, int w, int h, byte[] outEtc2);
 
     static readonly int[,] AstcBlk = {{4,4},{5,4},{5,5},{6,5},{6,6},{8,5},{8,6},{8,8},{10,5},{10,6},{10,8},{10,10},{12,10},{12,12}};
     const int SF_Color = 0;
+    const int SF_Bgra4444 = 3;    // BGRA4444 16bpp (fonte/UI) -> reader hoje explode p/ RGBA8 32bpp
     const int SF_RgbEtc1 = 60;
+    const int SF_Rgb8Etc2 = 90;   // GLES3: ETC2-RGB (4bpp, mesmo bitstream do ETC1)
+    const int SF_Rgba8Etc2 = 94;  // GLES3: ETC2-EAC RGBA (8bpp, com alpha)
     const int ASTC_MIN = 96;
 
-    static int Scale = 2;
+    static double Scale = 2;
     static bool Dry = false;
     // MASKFIX DESLIGADO por padrao: o diagnostico provou que NENHUMA fonte depende dele
     // (os atlas gui/fonts sao COLORIDOS, renderizam normal) e que ele so EMBRANQUECIA por
@@ -36,6 +40,16 @@ static class TexConv {
     // Reative com --maskfix se algum texto sumir (nao deve: fontes validadas legiveis sem ele).
     static bool NoMaskFix = true;
     static bool Diag = false;
+    // downscale tambem das texturas Color/RGBA8 FULL-SIZE (menus/fundos) que antes passavam batido.
+    // ON por padrao (reduzir CMA). ColorMin = so toca Color com lado >= N (poupa fonte/icone pequeno).
+    static bool DownColor = true;
+    static int ColorMin = 512;
+    // ETC2 (GLES3): opaca->ETC2-RGB(90), alpha->ETC2-EAC RGBA(94, 8bpp). Liga com --etc2 ou SOR4_ETC2=1.
+    // O bake decide pela VERSAO GLES do device (GLES3=on, GLES2=off->ETC1 como hoje).
+    static bool Etc2 = System.Environment.GetEnvironmentVariable("SOR4_ETC2")=="1";
+    // RESUME crash-safe: arquivo de progresso (1 nome de entrada por linha). Re-rodar pula o que ja
+    // foi feito (idempotente) -> sobrevive a reboot/power-loss (R36S reboota por bateria) sem zerar.
+    static string ResumeFile = null;
     [ThreadStatic] static int LastReason;
     [ThreadStatic] static bool LastWhitened;
 
@@ -48,10 +62,15 @@ static class TexConv {
             else if (args[i]=="--nomaskfix") NoMaskFix=true;
             else if (args[i]=="--maskfix") NoMaskFix=false;   // reativa o MASKFIX (default = OFF)
             else if (args[i]=="--diag") Diag=true;
-            else if (int.TryParse(args[i], out int sc)) Scale = sc;
+            else if (args[i]=="--nocolor") DownColor=false;            // NAO downscalar as Color full-size
+            else if (args[i]=="--colormin" && i+1<args.Length) int.TryParse(args[++i], out ColorMin);
+            else if (args[i]=="--etc2") Etc2=true;                     // GLES3: alpha em ETC2-EAC (8bpp)
+            else if (args[i]=="--noetc2") Etc2=false;
+            else if (args[i]=="--resume" && i+1<args.Length) ResumeFile=args[++i];  // resume crash-safe
+            else if (double.TryParse(args[i], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double sc)) Scale = sc;
             else pos.Add(args[i]);
         }
-        if (Scale<1) Scale=1; if (Scale>4) Scale=4;
+        if (Scale<1) Scale=1; if (Scale>8) Scale=8;   // permite escala FRACIONARIA (ex 4.5) p/ devices de pouca CMA
 
         int nthreads = Math.Max(1, Environment.ProcessorCount);
         { var e=Environment.GetEnvironmentVariable("SOR4_CONV_THREADS"); int t;
@@ -80,12 +99,25 @@ static class TexConv {
         Console.WriteLine($"[texconv] modo: {nthreads} thread(s)");
         Console.Out.Flush();
 
-        int done=0, conv=0, skip=0, copy=0, err=0; long saved=0;
+        int done=0, conv=0, skip=0, copy=0, err=0, resumed=0; long saved=0;
+        // RESUME: carrega os ja-feitos + abre writer de progresso (AutoFlush = crash-safe por linha).
+        var doneSet = new HashSet<string>(StringComparer.Ordinal);
+        StreamWriter resumeW = null; object resumeLock = new object();
+        if (ResumeFile != null){
+            try { if (File.Exists(ResumeFile)) foreach (var ln in File.ReadAllLines(ResumeFile)) if (ln.Length>0) doneSet.Add(ln); } catch {}
+            resumeW = new StreamWriter(new FileStream(ResumeFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)){ AutoFlush = true };
+            Console.WriteLine($"[texconv] resume: {doneSet.Count} entradas ja feitas, pulando");
+        }
         var po = new ParallelOptions{ MaxDegreeOfParallelism = nthreads };
         Parallel.ForEach(entries, po,
             () => ZipFile.OpenRead(apk),               // 1 ZipArchive por thread (thread-safe)
             (name, st, za) => {
                 string rel = name.Substring("assets/".Length);
+                if (resumeW != null && doneSet.Contains(rel)){     // RESUME: ja feito -> pula
+                    int dr = Interlocked.Increment(ref done); Interlocked.Increment(ref resumed);
+                    Console.WriteLine($"{dr}/{total}  {(int)((long)dr*100/total)}%  {rel}  (resume)"); Console.Out.Flush();
+                    return za;
+                }
                 try {
                     var entry = za.GetEntry(name);
                     byte[] raw;
@@ -105,6 +137,7 @@ static class TexConv {
                     } else {
                         if (!Diag){ File.WriteAllBytes(dst, raw); Interlocked.Increment(ref copy); }
                     }
+                    if (resumeW != null && !Diag) lock(resumeLock) resumeW.WriteLine(rel);  // RESUME: gravou OK -> marca feito
                 } catch (Exception e){ Interlocked.Increment(ref err); Console.Error.WriteLine($"[texconv] ERR {rel}: {e.Message}"); }
                 int d = Interlocked.Increment(ref done);
                 int pct = (int)((long)d*100/total);
@@ -112,7 +145,8 @@ static class TexConv {
                 return za;
             },
             (za) => za.Dispose());
-        Console.WriteLine($"Pronto! convertidas={conv} copiadas={copy} puladas={skip} erros={err}  (economia ~{saved/1024/1024} MB)");
+        resumeW?.Dispose();
+        Console.WriteLine($"Pronto! convertidas={conv} copiadas={copy} puladas={skip} erros={err} resumidas={resumed}  (economia ~{saved/1024/1024} MB)");
         Console.Out.Flush();
         return err>0 && conv==0 ? 1 : 0;
     }
@@ -217,19 +251,41 @@ static class TexConv {
         if (typeIdx < 1 || typeIdx > trCount) return 0;
 
         int fmt = br.ReadInt32();
-        if (fmt < ASTC_MIN){ LastReason=4; return 0; }   // nao-ASTC (ja Color/RGBA) - ok como esta
         int w = br.ReadInt32(), h = br.ReadInt32(), levelCount = br.ReadInt32();
         if (w<=0 || h<=0 || levelCount<=0){ LastReason=5; return 0; }
         int lvl0 = br.ReadInt32();
         if (lvl0<=0 || lvl0 > content.Length){ LastReason=5; return 0; }
-        byte[] astc = br.ReadBytes(lvl0);
 
-        int nb = lvl0/16, bx=0, by=0;
-        for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0], cby=AstcBlk[i,1];
-            if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
-        if (bx==0){ LastReason=6; return 0; }   // ASTC com bloco DESCONHECIDO (nao na tabela) - precisa de ajuste!
-        var full = new byte[w*h*4];
-        if (sor4_astc_decode(astc, (ulong)lvl0, w, h, bx, by, full) != 0){ LastReason=7; return -1; }
+        byte[] full;
+        double effScale = Scale;   // escala POR-textura: pequena nao-ASTC em ETC2 = sem downscale (fonte crisp)
+        if (fmt >= ASTC_MIN){
+            // ASTC -> decode p/ RGBA
+            byte[] astc = br.ReadBytes(lvl0);
+            int nb = lvl0/16, bx=0, by=0;
+            for (int i=0;i<AstcBlk.GetLength(0);i++){ int cbx=AstcBlk[i,0], cby=AstcBlk[i,1];
+                if (((w+cbx-1)/cbx)*((h+cby-1)/cby) == nb){ bx=cbx; by=cby; break; } }
+            if (bx==0){ LastReason=6; return 0; }   // ASTC com bloco DESCONHECIDO (nao na tabela) - precisa de ajuste!
+            full = new byte[w*h*4];
+            if (sor4_astc_decode(astc, (ulong)lvl0, w, h, bx, by, full) != 0){ LastReason=7; return -1; }
+        } else if (fmt==SF_Color && lvl0==w*h*4 && (Etc2 || (DownColor && (w>=ColorMin||h>=ColorMin)))){
+            // Color/RGBA8 (menus/fontes/fundos). Em ETC2 converte QUALQUER tamanho (8bpp) E
+            // aplica o downscale em TUDO (device apertado, nao da p/ poupar nada).
+            full = br.ReadBytes(lvl0);
+        } else if (Etc2 && fmt==SF_Bgra4444 && lvl0==w*h*2){
+            // BGRA4444 (16bpp) -> RGBA8 -> ETC2-EAC (8bpp). Antes o reader explodia p/ 32bpp na VRAM.
+            // Decode (igual Texture2DReader): nibbles B/G/R/A, cada um *17 (0..15 -> 0..255).
+            byte[] src = br.ReadBytes(lvl0);
+            full = new byte[w*h*4];
+            for (int i=0;i<w*h;i++){
+                int p = src[i*2] | (src[i*2+1]<<8);
+                full[i*4]   = (byte)(((p>>8)&0xF)*17);  // R
+                full[i*4+1] = (byte)(((p>>4)&0xF)*17);  // G
+                full[i*4+2] = (byte)(((p)   &0xF)*17);  // B
+                full[i*4+3] = (byte)(((p>>12)&0xF)*17); // A
+            }
+        } else {
+            LastReason=4; return 0;   // DXT/outros: deixa como esta
+        }
 
         if (!NoMaskFix){
             // MESMA regra do Texture2DReader.SOR4.cs: so e mascara de FONTE se entre os pixels
@@ -242,15 +298,19 @@ static class TexConv {
                 for (int p=0;p<full.Length;p+=4){ byte a=full[p+3]; full[p]=a; full[p+1]=a; full[p+2]=a; } }
         }
 
-        int tw=Math.Max(w/Scale,1), th=Math.Max(h/Scale,1);
+        int tw=Math.Max((int)(w/effScale),1), th=Math.Max((int)(h/effScale),1);
         byte[] rgba;
-        if (Scale<=1){ rgba=full; }
+        if (effScale<=1.0){ rgba=full; }
         else {
+            // box-filter de AREA (suporta escala fracionaria, ex 4.5): cada texel de saida media
+            // a regiao de origem [x*S,(x+1)*S) x [y*S,(y+1)*S). Reduz a equivalente p/ S inteiro.
             rgba = new byte[tw*th*4];
             for (int y=0;y<th;y++) for (int x=0;x<tw;x++){
-                int sx=x*Scale, sy=y*Scale, rr=0,gg=0,bb=0,aa=0,cnt=0;
-                for (int dy=0;dy<Scale;dy++) for (int dx=0;dx<Scale;dx++){
-                    int px=sx+dx, py=sy+dy; if(px>=w||py>=h) continue;
+                int sx0=(int)(x*effScale), sy0=(int)(y*effScale);
+                int sx1=(int)((x+1)*effScale); if(sx1<=sx0)sx1=sx0+1; if(sx1>w)sx1=w;
+                int sy1=(int)((y+1)*effScale); if(sy1<=sy0)sy1=sy0+1; if(sy1>h)sy1=h;
+                int rr=0,gg=0,bb=0,aa=0,cnt=0;
+                for (int py=sy0;py<sy1;py++) for (int px=sx0;px<sx1;px++){
                     int o=(py*w+px)*4; rr+=full[o]; gg+=full[o+1]; bb+=full[o+2]; aa+=full[o+3]; cnt++; }
                 int d=(y*tw+x)*4; if(cnt==0)cnt=1;
                 rgba[d]=(byte)(rr/cnt); rgba[d+1]=(byte)(gg/cnt); rgba[d+2]=(byte)(bb/cnt); rgba[d+3]=(byte)(aa/cnt);
@@ -260,9 +320,16 @@ static class TexConv {
         bool opaque=true;
         for (int p=3;p<rgba.Length;p+=4){ if (rgba[p] < 250){ opaque=false; break; } }
         int outFmt; byte[] outData;
+        int bwB=(tw+3)&~3, bhB=(th+3)&~3;
         if (opaque){
-            int bw=(tw+3)&~3, bh=(th+3)&~3; var etc1=new byte[(bw/4)*(bh/4)*8];
-            if (sor4_etc1_encode(rgba, tw, th, etc1)==0){ outFmt=SF_RgbEtc1; outData=etc1; }
+            var etc1=new byte[(bwB/4)*(bhB/4)*8];
+            // ETC1 bitstream = ETC2-RGB base valido -> mesmos bytes, so muda o enum (90 no GLES3).
+            if (sor4_etc1_encode(rgba, tw, th, etc1)==0){ outFmt = Etc2 ? SF_Rgb8Etc2 : SF_RgbEtc1; outData=etc1; }
+            else { outFmt=SF_Color; outData=rgba; }
+        } else if (Etc2){
+            // ALPHA em ETC2-EAC RGBA = 8bpp (vs 32bpp do SF_Color) -> 4x menos GPU, mantem resolucao.
+            var eac=new byte[(bwB/4)*(bhB/4)*16];
+            if (sor4_etc2_eac_rgba_encode(rgba, tw, th, eac)==0){ outFmt=SF_Rgba8Etc2; outData=eac; }
             else { outFmt=SF_Color; outData=rgba; }
         } else { outFmt=SF_Color; outData=rgba; }
 

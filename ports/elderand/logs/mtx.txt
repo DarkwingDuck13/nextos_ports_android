@@ -1,0 +1,75 @@
+[New LWP 11417]
+[New LWP 11416]
+[New LWP 11415]
+[New LWP 11412]
+[New LWP 11411]
+[New LWP 11410]
+[New LWP 11409]
+[New LWP 11408]
+[New LWP 11407]
+[New LWP 11406]
+[New LWP 11405]
+[New LWP 11404]
+[New LWP 11403]
+[New LWP 11402]
+[New LWP 11401]
+[New LWP 11400]
+[New LWP 11399]
+[New LWP 11398]
+[New LWP 11397]
+[New LWP 11396]
+[New LWP 11395]
+[New LWP 11394]
+[New LWP 11393]
+[New LWP 11392]
+[New LWP 11391]
+[New LWP 11390]
+[New LWP 11389]
+[New LWP 11388]
+[New LWP 11387]
+[New LWP 11386]
+[New LWP 11385]
+[New LWP 11384]
+[New LWP 11383]
+[New LWP 11382]
+[New LWP 11381]
+[New LWP 11380]
+
+warning: Unable to determine the number of hardware watchpoints available.
+
+warning: Unable to determine the number of hardware breakpoints available.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/libthread_db.so.1".
+0x0000007f84c870e4 in syscall () from /usr/lib/libc.so.6
+[Switching to thread 1 (Thread 0x7f84f13460 (LWP 11379))]
+#0  0x0000007f84c870e4 in syscall () from /usr/lib/libc.so.6
+
+==== main regs ====
+x19            0x7f30c1c318        546278851352
+x20            0x0                 0
+x21            0x7fceba2920        548929153312
+x22            0x62                98
+x23            0x80                128
+x24            0x0                 0
+
+==== x21 slot (bionic) -> ptr glibc ====
+0x7fceba2920:	0x0000000000000000	0x00000000000f4240
+
+==== *(x21) = glibc mutex; owner@+8 ====
+0x0:	Cannot access memory at address 0x0
+
+==== x19 deref ====
+0x7f30c1c318:	0x0000000000000000	0x0000000000000000
+0x7f30c1c328:	0x0000000000000000	0x0000000000000000
+
+==== thread 5 gfxworker regs ====
+[Switching to thread 5 (Thread 0x7e3dfbf060 (LWP 11412))]
+#0  0x0000007f84c870e4 in syscall () from /usr/lib/libc.so.6
+x0             0x7ea010fb20        543851346720
+x1             0x80                128
+x2             0x0                 0
+x19            0x7ea010fb20        543851346720
+x20            0x0                 0
+x21            0x7e3dfbe3e0        542205797344
+[Inferior 1 (process 11379) detached]
+PID=11379 UB=0x7f7de10000

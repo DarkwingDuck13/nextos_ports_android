@@ -1134,6 +1134,15 @@ static void (*real_glGetIntegerv)(unsigned, int *) = 0;
 static void my_glGetIntegerv(unsigned pname, int *p) {
   if (!real_glGetIntegerv)
     real_glGetIntegerv = (void (*)(unsigned, int *))dlsym(RTLD_DEFAULT, "glGetIntegerv");
+  /* HK_MAXTEX: reporta GL_MAX_TEXTURE_SIZE menor -> a Unity carrega o MIP MENOR dos
+     atlas ASTC (HK usa 2K-4K ASTC; Mali-450 nao faz ASTC -> decode em CPU = o GRIND).
+     Mip menor = MUITO menos ASTC a decodificar -> a cena carrega rapido. */
+  if (pname == 0x0D33 && getenv("HK_MAXTEX")) {  /* GL_MAX_TEXTURE_SIZE */
+    int v = atoi(getenv("HK_MAXTEX")); if (v < 64) v = 64;
+    if (p) p[0] = v;
+    static int lg = 0; if (lg++ < 2) fprintf(stderr, "[MAXTEX] GL_MAX_TEXTURE_SIZE -> %d (reduz decode ASTC)\n", v);
+    return;
+  }
   if (!getenv("HK_NOSPOOF")) {
     if (pname == 0x821B) { if (p) p[0] = 3; return; }  /* GL_MAJOR_VERSION */
     if (pname == 0x821C) { if (p) p[0] = 0; return; }  /* GL_MINOR_VERSION */

@@ -1,0 +1,1 @@
+(strace: fds que a HK leu durante a injecao acima)

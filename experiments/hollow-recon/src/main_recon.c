@@ -17,6 +17,8 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <sched.h>
+#include <sys/resource.h>
 #include <dlfcn.h>
 
 #include "so_util.h"
@@ -443,6 +445,39 @@ int main(int argc, char **argv) {
   setvbuf(stderr, NULL, _IOLBF, 0);
   g_main_tid = cur_tid();
 
+  /* AFINIDADE DE CPU: o 1o frame da cena faz conversao pesada de vertices em CPU
+     (fallback GLES2/Mali-450) que pega TODOS os 4 cores e STARVA o sistema/ssh ->
+     wedge total irrecuperavel. HK_AFFINITY=N restringe o processo (e threads filhas
+     herdadas) a N cores, deixando os demais livres p/ o kernel/ssh -> device fica
+     RESPONSIVO mesmo no pico, e da p/ deixar o frame lento completar. */
+  if (getenv("HK_AFFINITY")) {
+    int n = atoi(getenv("HK_AFFINITY"));
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n > 0 && n < (int)ncpu) {
+      cpu_set_t set; CPU_ZERO(&set);
+      for (int i = 0; i < n; i++) CPU_SET(i, &set);
+      int r = sched_setaffinity(0, sizeof(set), &set);
+      fprintf(stderr, "[AFFINITY] restrito a %d/%ld cores (rc=%d) -> %ld core(s) livre(s) p/ sistema\n",
+              n, ncpu, r, ncpu - n);
+    }
+  }
+
+  /* LIMITE DE CPU-TIME (rede de seguranca do KERNEL): o 1o frame da cena entra num
+     loop CPU pesado que pega todos os cores e STARVA o sistema -> wedge total em que
+     nem o watchdog interno (thread starvada) nem o trap do saferun conseguem rodar,
+     deixando o device irrecuperavel por ssh. setrlimit(RLIMIT_CPU, N) faz o KERNEL
+     enviar SIGXCPU/SIGKILL ao exceder N segundos de CPU-TIME (somados em todos os
+     cores!) -- garantido mesmo com o device 100% pegado. Runaway em ~4 cores estoura
+     N CPU-seg em ~N/4 seg reais -> auto-kill -> device recupera SOZINHO. HK_CPULIMIT=N. */
+  if (getenv("HK_CPULIMIT")) {
+    int sec = atoi(getenv("HK_CPULIMIT"));
+    if (sec > 0) {
+      struct rlimit rl; rl.rlim_cur = sec; rl.rlim_max = sec + 5;
+      int r = setrlimit(RLIMIT_CPU, &rl);
+      fprintf(stderr, "[CPULIMIT] RLIMIT_CPU=%ds (CPU-time somado) rc=%d -> kernel mata se exceder\n", sec, r);
+    }
+  }
+
   /* watchdog de seguranca (HK_WD segundos, default 30) -- iteracao sem travar o device */
   {
     int wd = getenv("HK_WD") ? atoi(getenv("HK_WD")) : 30;
@@ -738,6 +773,21 @@ int main(int argc, char **argv) {
       }
       } /* fim HK_SWAPPY34 */
     }
+    /* PATCH DA CONVERSAO CPU (HK_PATCHCONV): o 1o frame da cena trava o GfxDeviceWorker
+       na fn de conversao de formato per-elemento libunity+0x4e0bf0 (loop em +0x4b8100,
+       minutos -> wedge). Neutralizamos: `mov w0,#0; ret` -> cada conversao instantanea
+       -> o loop completa em segundos -> o frame DESTRAVA (geometria pode sair degenerada,
+       mas revela o proximo passo). HK_PATCHCONV=0x4e0bf0 (default) ou outro offset. */
+    if (getenv("HK_PATCHCONV")) {
+      unsigned long coff = strtoul(getenv("HK_PATCHCONV"), 0, 0);
+      if (coff < 0x1000) coff = 0x4e0bf0;  /* HK_PATCHCONV=1 -> usa o offset default */
+      unsigned int *pc0 = (unsigned int *)(utbg + coff);
+      fprintf(stderr, "[PATCHCONV] @unity+0x%lx antes: %08x %08x\n", coff, pc0[0], pc0[1]);
+      pc0[0] = 0x52800000;  /* mov w0, #0 */
+      pc0[1] = 0xd65f03c0;  /* ret */
+      __builtin___clear_cache((char *)pc0, (char *)pc0 + 8);
+      fprintf(stderr, "[PATCHCONV] aplicado (conversor neutralizado -> frame destrava)\n");
+    }
     /* input: nativeInjectEvent(env, this, KeyEvent) — jni_shim responde os
        getAction/getKeyCode/etc. a partir de g_hk_inject (setado por evento SDL). */
     void *inject = jni_find_native("nativeInjectEvent");
@@ -804,16 +854,21 @@ int main(int argc, char **argv) {
         if (autok_interval < 1) autok_interval = 1;
       }
       if (!getenv("HK_NOTRAP")) *trap_glob = 0; /* destrava o guard de input */
+      /* HK usa InControl/"TInput" que le CONTROLE (Unity mapeia gamepad KeyEvent ->
+         KeyCode.JoystickButtonN). Por isso source DEVE ser 0x401 (gamepad), nao 0x101
+         (teclado) -- o menu da HK ignora teclado. HK_AUTOKEY_SRC override (default 0x401). */
+      static int autok_src = -1;
+      if (autok_src < 0) autok_src = getenv("HK_AUTOKEY_SRC") ? (int)strtol(getenv("HK_AUTOKEY_SRC"), 0, 0) : 0x401;
       if (injfn && autok > 0 && frame >= autok_start && ((frame - autok_start) % autok_interval) == 0) {
         for (int ph = 0; ph < 2; ph++) {  /* down depois up */
-          g_hk_inject.action = ph; g_hk_inject.keycode = autok; g_hk_inject.source = 0x101;
-          g_hk_inject.deviceId = 0; g_hk_inject.eventTime = evt_clock;
+          g_hk_inject.action = ph; g_hk_inject.keycode = autok; g_hk_inject.source = autok_src;
+          g_hk_inject.deviceId = (autok_src == 0x401) ? 1 : 0; g_hk_inject.eventTime = evt_clock;
           g_hk_inject.downTime = evt_clock; evt_clock++;
           g_hk_inject.repeat = 0; g_hk_inject.metaState = 0;
           g_in_inject = 1;
           unsigned char ir = injfn(fake_env, &t, hk_keyevent_object());
           g_in_inject = 0;
-          fprintf(stderr, "[AUTOKEY] action=%d keycode=%d -> ret=%d\n", ph, autok, ir);
+          fprintf(stderr, "[AUTOKEY] action=%d keycode=%d src=0x%x -> ret=%d\n", ph, autok, autok_src, ir);
         }
       }
       /* bombeia eventos de teclado/gamepad -> injeta no Unity */

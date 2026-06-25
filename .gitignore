@@ -77,3 +77,11 @@ ports/*/payload/
 # shantae: binario + payload (lib do jogo, copyright)
 ports/shantae/shantae
 ports/shantae/payload/
+
+# game data / large artifacts (never commit - reproduce from APK/source)
+ports/*/deploy/gamedata/
+**/*.lgp
+**/*.webm
+**/*.obb
+ports/ff9/userdata/
+ports/ff9/bin/Data/

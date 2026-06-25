@@ -80,6 +80,33 @@ static const char *resolve_jstring(void *jstr) {
   return "";
 }
 
+/* ===== Injecao de command-line da engine via Intent extra "unity" =====
+   Unity Android le os args de linha de comando do extra "unity" do Intent:
+   getExtras() -> Bundle.containsKey("unity") -> Bundle.getStringArray("unity").
+   Sem isso a engine roda com command-line VAZIA (default = MULTI-THREAD
+   rendering = GfxDeviceWorker, que DEADLOCKA com a UnityMain no 1o frame da
+   cena no nosso so-loader). Injetando "-force-gfx-direct" a engine renderiza
+   DIRETO na thread principal (sem worker) -> mata o deadlock.
+   Gated por env HK_GFXARGS (string com args separados por espaco). */
+static int g_cmdline_array;            /* tag do String[] de args injetados */
+#define HK_MAX_ARGS 16
+static char *g_cmd_args[HK_MAX_ARGS];
+static int g_cmd_nargs = -1;           /* -1 = nao-init, 0 = desligado, >0 = N args */
+static int cmdline_args_init(void) {
+  if (g_cmd_nargs >= 0) return g_cmd_nargs;
+  g_cmd_nargs = 0;
+  const char *e = getenv("HK_GFXARGS");
+  if (!e || !*e) return 0;
+  char *dup = strdup(e);
+  char *tok = strtok(dup, " ");
+  while (tok && g_cmd_nargs < HK_MAX_ARGS) {
+    g_cmd_args[g_cmd_nargs++] = strdup(tok);
+    tok = strtok(NULL, " ");
+  }
+  free(dup);
+  return g_cmd_nargs;
+}
+
 /* ---- Registry de method/field IDs por NOME (recon Unity) ---- */
 struct mid_entry { const char *name; const char *sig; };
 static struct mid_entry g_midreg[1024];
@@ -410,11 +437,31 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
         strcmp(nm, "getCanonicalPath") == 0)
       return make_jstring("/storage/roms/hollow-recon/userdata");
-    /* SharedPreferences.getString(key, default) -> loga a chave + retorna default */
+    /* Bundle.getStringArray("unity") -> command-line da engine (injecao gfx-direct).
+       So' chamado no init pro extra "unity"; devolvemos nosso String[] tagueado. */
+    if (strcmp(nm, "getStringArray") == 0 && cmdline_args_init() > 0) {
+      debugPrintf("[CMDLINE] getStringArray -> injetando %d args (HK_GFXARGS)\n", g_cmd_nargs);
+      return &g_cmdline_array;
+    }
+    /* SharedPreferences.getString(key, default) -> loga a chave + retorna default.
+       EXCETO Bundle.getString("unity"): a engine Unity le os args de linha de
+       comando dai (string unica, separada por espaco) -> injetamos HK_GFXARGS
+       (ex: "-force-gfx-direct" p/ render single-thread, mata o deadlock da cena). */
     if (strcmp(nm, "getString") == 0) {
       void *keystr = va_arg(ap, void *);
       void *defstr = va_arg(ap, void *);
-      debugPrintf("[PREFS] getString key='%s'\n", resolve_jstring(keystr));
+      const char *key = resolve_jstring(keystr);
+      debugPrintf("[PREFS] getString key='%s'\n", key);
+      if (key && strcmp(key, "unity") == 0 && cmdline_args_init() > 0) {
+        static char joined[512];
+        joined[0] = 0;
+        for (int i = 0; i < g_cmd_nargs; i++) {
+          if (i) strncat(joined, " ", sizeof joined - strlen(joined) - 1);
+          strncat(joined, g_cmd_args[i], sizeof joined - strlen(joined) - 1);
+        }
+        debugPrintf("[CMDLINE] getString(\"unity\") -> '%s'\n", joined);
+        return make_jstring(joined);
+      }
       return defstr ? defstr : make_jstring("");
     }
     if (strcmp(nm, "toString") == 0)
@@ -438,6 +485,13 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   if (nm) {
     if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
     if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
+    /* Bundle.containsKey("unity") -> TRUE p/ a engine pedir getStringArray("unity")
+       (so' chamado pro extra "unity" no init). Habilita a injecao de command-line. */
+    if (strcmp(nm, "containsKey") == 0) {
+      int na = cmdline_args_init();
+      debugPrintf("[CMDLINE] containsKey -> %d (nargs=%d)\n", na > 0 ? 1 : 0, na);
+      if (na > 0) return 1;
+    }
   }
   return 0;
 }
@@ -681,8 +735,16 @@ static void *jni_ExceptionOccurred(void *env) {
 /* Array */
 static jint jni_GetArrayLength(void *env, void *array) {
   (void)env;
-  (void)array;
-  return 0;
+  if (array == &g_cmdline_array) return cmdline_args_init();
+  struct barr *b = barr_find(array);
+  return b ? b->len : 0;
+}
+/* GetObjectArrayElement (vt 173): so' tratamos o String[] de command-line. */
+static void *jni_GetObjectArrayElement(void *env, void *array, int index) {
+  (void)env;
+  if (array == &g_cmdline_array && index >= 0 && index < g_cmd_nargs)
+    return make_jstring(g_cmd_args[index]);
+  return NULL;
 }
 
 /* ---- JavaVM functions ---- */
@@ -771,6 +833,10 @@ void jni_shim_init(void **out_vm, void **out_env) {
     java_vm_vtable[i] = (uintptr_t)jni_stub;
   }
   jni_install_indexed(jni_env_vtable, JNI_VTABLE_SIZE);
+  /* Captura HK_GFXARGS CEDO (antes da Unity poder limpar o environ no init). */
+  { int na = cmdline_args_init();
+    fprintf(stderr, "[CMDLINE] init: HK_GFXARGS -> %d args\n", na);
+    for (int i = 0; i < na; i++) fprintf(stderr, "[CMDLINE]   arg[%d]='%s'\n", i, g_cmd_args[i]); }
 
   /*
    * JNIEnv vtable indices from Android NDK jni.h.
@@ -814,6 +880,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;        /* recon: Unity initJni */
   /* AssetManager bridge: byte-array functions */
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength_real;
+  jni_env_vtable[173] = (uintptr_t)jni_GetObjectArrayElement; /* String[] da command-line */
   jni_env_vtable[176] = (uintptr_t)jni_NewByteArray;
   jni_env_vtable[184] = (uintptr_t)jni_GetByteArrayElements;
   jni_env_vtable[192] = (uintptr_t)jni_ReleaseByteArrayElements;

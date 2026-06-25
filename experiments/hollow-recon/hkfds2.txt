@@ -1,0 +1,24 @@
+=== snapshot 1 ===
+pid=5620 comm=UnityMain abre:
+lr-x------    1 root     root            64 Jun 18 14:49 10 -> /dev/input/mouse0
+lr-x------    1 root     root            64 Jun 18 14:49 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:49 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:49 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:49 8 -> /dev/input/event5
+lr-x------    1 root     root            64 Jun 18 14:49 9 -> /dev/input/event4
+=== snapshot 2 ===
+pid=5620 comm=UnityMain abre:
+lr-x------    1 root     root            64 Jun 18 14:49 10 -> /dev/input/mouse0
+lr-x------    1 root     root            64 Jun 18 14:49 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:49 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:49 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:49 8 -> /dev/input/event5
+lr-x------    1 root     root            64 Jun 18 14:49 9 -> /dev/input/event4
+=== snapshot 3 ===
+pid=5620 comm=UnityMain abre:
+lr-x------    1 root     root            64 Jun 18 14:49 10 -> /dev/input/mouse0
+lr-x------    1 root     root            64 Jun 18 14:49 5 -> /dev/input/event3
+lr-x------    1 root     root            64 Jun 18 14:49 6 -> /dev/input/event0
+lr-x------    1 root     root            64 Jun 18 14:49 7 -> /dev/input/event1
+lr-x------    1 root     root            64 Jun 18 14:49 8 -> /dev/input/event5
+lr-x------    1 root     root            64 Jun 18 14:49 9 -> /dev/input/event4

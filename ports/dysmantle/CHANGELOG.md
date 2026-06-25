@@ -2,29 +2,45 @@
 
 ---
 
-## v5.1 — LEAN PAK (corta a duplicação de disco) + por que não dá "ETC1 puro sem cache"
+## 📋 MINI CHANGELOG — v3 → v5 (resumo do que mudou)
 
-### 🗜️ Disco: ~metade do que as texturas gastavam
-- O progressor agora **enxuga o pak** depois de gerar o cache (`texbake --leanpak`): as
-  texturas cobertas pelo cache viram um **placeholder mínimo** (o jogo lê os pixels REAIS
-  do cache no hook — só importam as dimensões, que batem), as de alpha vêm reais, e os
-  `.ktx` ETC2 (mortos no runtime, só serviam de fonte do bake) são **dropados**. Resultado:
-  o pak deixa de **duplicar** as texturas que já estão no cache → ~200 MB a menos no device.
-- **Atômico + seguro**: se faltar espaço no disco, PRESERVA o pak e cai pro modo `fixpak`
-  (texturas reais, sem enxugar). Nunca deixa pak corrompido. O APK é apagado logo após a
-  extração (libera espaço pro bake caber).
-- Com o cache presente o launcher força `TEXSCALE=1.0` (reduzir as dims bypassaria a guarda
-  de tamanho do cache → cache-miss → encode em runtime/stutter; o ETC1 já é 4bpp).
+- **v3** — Janela de **extração com progresso** (BYO-DATA: põe seu APK, o jogo extrai/conserta
+  sozinho na 1ª vez). Texturas garantidas (conserto ETC2→JPEG/PNG, anti-branco). 2 binários (ArkOS).
+- **v4** — 🔊 **ÁUDIO CORRIGIDO (importante):** os SFX de combate **sumiam após ~2 min** — a causa
+  era o `cb_dead` envenenando o **pool de 16 players** reusado pela engine (1 som morria → slot
+  morto pra sempre). Fix: guarda no callback + des-envenenar no reuse + ring 1 MB + pump thread
+  dedicada (4 ms) → `underruns=0 dead=0`. + frame pacing + ETC1 em runtime (T3) + render scale.
+- **v5** — **Conversão de textura 100% OFFLINE** no progressor (nada convertido durante o jogo =
+  sem stutter): cache **ETC1** (4 bpp, ~8× menos VRAM no Mali) + **downscale escolhível** (1.0/1.2/
+  1.3/2.0, estilo SOR4) + **1 binário universal** (glibc 2.27, roda em qualquer aarch64).
+- **v5 (final)** — 💗 **MAGENTA RESOLVIDO** com **verificação de conteúdo** + downscale como opção
+  real (re-gera o cache se você mudar a escala).
 
-### 🧱 Por que NÃO existe "ETC1 puro sem cache" (igual SOR4)
-- O motor do DYSMANTLE é FECHADO e **escolhe o decodificador de textura pelo formato do
-  MANIFEST**, não pela extensão do arquivo. Forçar a engine a carregar `.ktx` (renomeando)
-  faz ela tratar o KTX como JPEG → `LoadBitmapInternal` falha → crash. Mesmo gerando o KTX
-  ETC1 com a cadeia de mips IDÊNTICA à original, o muro persiste (é antes do upload GL).
-- Diferente do SOR4 (onde NÓS controlamos o motor MonoGame e mandamos carregar ETC1), aqui
-  a única via é o **hook no upload** (engine carrega JPEG → trocamos por ETC1). O ETC1 PRECISA
-  morar em algum lugar que o hook leia (o "cache" = o store ETC1, equivalente ao texcache do
-  próprio SOR4). O lean pak elimina a DUPLICAÇÃO, que era o custo real de disco.
+---
+
+## v5 (final) — MAGENTA RESOLVIDO (verificação de conteúdo) + downscale opção
+
+### 💗 Anti-magenta: verificação de conteúdo no upload
+- O cache é indexado por NOME, mas o nome da textura pode ficar **velho** entre uploads
+  (mips/atlas/FBO). Quando uma textura ERRADA batia a mesma dimensão (512²/256²/128² são comuns)
+  de uma entrada do cache, subia a **ETC1 errada → chão magenta**.
+- **Fix:** antes de subir a ETC1 do cache, o binário **decodifica uma amostra dos blocos e compara
+  com o RGBA real** que a engine vai desenhar. Bate (textura certa) → sobe ETC1; não bate (colisão
+  de nome) → usa a textura normal (RGBA8) → **cor correta, zero magenta**. Sem encode em runtime.
+
+### 🎚️ Downscale como OPÇÃO (estilo SOR4) — `DYSMANTLE_TEXSCALE`
+- `1.0` qualidade total · `1.2` leve · **`1.3` recomendado** · `2.0` máx economia (1 GB).
+- Aplicado **offline** (bakeado no cache na escala escolhida) **e** no runtime juntos → reduz
+  TODAS as texturas (não só as do cache) = o maior ganho de RAM em 1 GB. Mudar a escala **re-gera
+  o cache sozinho** na próxima abertura.
+
+### 🧱 Por que NÃO dá "ETC1 puro no pak" (igual SOR4) — muro do motor (confirmado)
+- O motor do DYSMANTLE é **FECHADO** e, neste device **ES2/Mali-450**, o carregador de `.ktx`
+  (`KtxImageLoader`) **dá NULL-deref/SIGSEGV ao abrir QUALQUER `.ktx`** — porque no ES2 o motor só
+  usa JPEG; o caminho `.ktx` só existe no ES3 e é quebrado aqui. Geramos o `.ktx` ETC1 **byte-idêntico
+  ao original** (com mips) e mesmo assim crasha **antes** do upload GL. Comprovado no crash.
+- Diferente do SOR4 (motor MonoGame **nosso**, mandamos carregar ETC1). Aqui a única via é o **hook
+  no upload** (engine carrega JPEG → trocamos por ETC1 do cache) — equivalente ao texcache do SOR4.
 
 ---
 

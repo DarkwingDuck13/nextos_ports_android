@@ -1,0 +1,357 @@
+[New LWP 10685]
+[New LWP 10684]
+[New LWP 10683]
+[New LWP 10680]
+[New LWP 10679]
+[New LWP 10678]
+[New LWP 10677]
+[New LWP 10676]
+[New LWP 10675]
+[New LWP 10674]
+[New LWP 10673]
+[New LWP 10672]
+[New LWP 10671]
+[New LWP 10670]
+[New LWP 10669]
+[New LWP 10668]
+[New LWP 10667]
+[New LWP 10666]
+[New LWP 10665]
+[New LWP 10664]
+[New LWP 10663]
+[New LWP 10662]
+[New LWP 10661]
+[New LWP 10660]
+[New LWP 10659]
+[New LWP 10658]
+[New LWP 10657]
+[New LWP 10656]
+[New LWP 10655]
+[New LWP 10654]
+[New LWP 10653]
+[New LWP 10652]
+[New LWP 10651]
+[New LWP 10650]
+[New LWP 10649]
+[New LWP 10648]
+
+warning: Unable to determine the number of hardware watchpoints available.
+
+warning: Unable to determine the number of hardware breakpoints available.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/usr/lib/libthread_db.so.1".
+0x0000007f93119280 in ?? () from /usr/lib/libc.so.6
+
+==== THREADS ====
+  Id   Target Id                                         Frame 
+* 1    Thread 0x7f9340c460 (LWP 10647) "UnityMain"       0x0000007f93119280 in ?? () from /usr/lib/libc.so.6
+  2    Thread 0x7e427cf060 (LWP 10685) "Loading.Preload" 0x0000007f85aa8248 in ?? ()
+  3    Thread 0x7e437ef060 (LWP 10684) "Filter1"         0x0000007f8ced6004 in ?? ()
+  4    Thread 0x7e42fdf060 (LWP 10683) "Filter1"         0x0000007f8ced5ffc in ?? ()
+  5    Thread 0x7e43fff060 (LWP 10680) "UnityGfxDeviceW" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  6    Thread 0x7f8b43e8e0 (LWP 10679) "UnityMain"       0x0000007f93123aac in ?? () from /usr/lib/libc.so.6
+  7    Thread 0x7e58f9f060 (LWP 10678) "UnityMain"       0x0000007f9317504c in ioctl () from /usr/lib/libc.so.6
+  8    Thread 0x7e597af060 (LWP 10677) "UnityMain"       0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+  9    Thread 0x7e59fbf060 (LWP 10676) "Loading.AsyncRe" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  10   Thread 0x7e5a7cf060 (LWP 10675) "BatchDeleteObje" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  11   Thread 0x7e5afdf060 (LWP 10674) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  12   Thread 0x7e5b7ef060 (LWP 10673) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  13   Thread 0x7e5bfff060 (LWP 10672) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  14   Thread 0x7e7cf9f060 (LWP 10671) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  15   Thread 0x7e7d7af060 (LWP 10670) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  16   Thread 0x7e7dfbf060 (LWP 10669) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  17   Thread 0x7e7e7cf060 (LWP 10668) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  18   Thread 0x7e7efdf060 (LWP 10667) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  19   Thread 0x7e7f7ef060 (LWP 10666) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  20   Thread 0x7e7ffff060 (LWP 10665) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  21   Thread 0x7f60b96060 (LWP 10664) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  22   Thread 0x7f613a6060 (LWP 10663) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  23   Thread 0x7f61bb6060 (LWP 10662) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  24   Thread 0x7f623c6060 (LWP 10661) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  25   Thread 0x7f62bd6060 (LWP 10660) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  26   Thread 0x7f633e6060 (LWP 10659) "Background Job." 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  27   Thread 0x7f63bf6060 (LWP 10658) "Job.Worker 2"    0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  28   Thread 0x7f64406060 (LWP 10657) "Job.Worker 1"    0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  29   Thread 0x7f64c16060 (LWP 10656) "Job.Worker 0"    0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  30   Thread 0x7f65426060 (LWP 10655) "GC Finalizer"    0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+  31   Thread 0x7f667cf060 (LWP 10654) "AssetGarbageCol" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  32   Thread 0x7f66fdf060 (LWP 10653) "AssetGarbageCol" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  33   Thread 0x7f677ef060 (LWP 10652) "AssetGarbageCol" 0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+  34   Thread 0x7f67fff060 (LWP 10651) "elderand"        0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+  35   Thread 0x7f80e6f060 (LWP 10650) "PulseHotplug"    0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+  36   Thread 0x7f8bd4f060 (LWP 10649) "PulseMainloop"   0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+  37   Thread 0x7f92d5f060 (LWP 10648) "elderand"        0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+
+==== BT MAIN (t1) ====
+[Switching to thread 1 (Thread 0x7f9340c460 (LWP 10647))]
+#0  0x0000007f93119280 in ?? () from /usr/lib/libc.so.6
+#0  0x0000007f93119280 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f9311eb9c in pthread_mutex_lock () from /usr/lib/libc.so.6
+#2  0x0000007f8c5d7950 in ?? ()
+#3  0x000000555c936278 in __frame_dummy_init_array_entry ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+==== BT ALL ====
+
+Thread 37 (Thread 0x7f92d5f060 (LWP 10648) "elderand"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f9314d480 in clock_nanosleep () from /usr/lib/libc.so.6
+#3  0x0000007f93156bf8 in nanosleep () from /usr/lib/libc.so.6
+#4  0x000000555c8ea818 in eld_hard_watchdog ()
+#5  0x0000007f9311bec8 in ?? () from /usr/lib/libc.so.6
+
+Thread 36 (Thread 0x7f8bd4f060 (LWP 10649) "PulseMainloop"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f93118ce8 in ?? () from /usr/lib/libc.so.6
+#3  0x0000007f9316ff54 in poll () from /usr/lib/libc.so.6
+#4  0x0000007f8c112cf0 in ?? () from /usr/lib/libpulse.so.0
+#5  0x0000007f8c10b15c in pa_mainloop_poll () from /usr/lib/libpulse.so.0
+
+Thread 35 (Thread 0x7f80e6f060 (LWP 10650) "PulseHotplug"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f93118fdc in ?? () from /usr/lib/libc.so.6
+#3  0x0000007f9311b4ec in pthread_cond_wait () from /usr/lib/libc.so.6
+#4  0x0000007f8c112ffc in pa_threaded_mainloop_wait () from /usr/lib/libpulse.so.0
+#5  0x0000007f92fd0f44 in ?? () from /usr/lib/libSDL3.so.0
+
+Thread 34 (Thread 0x7f67fff060 (LWP 10651) "elderand"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f9314d480 in clock_nanosleep () from /usr/lib/libc.so.6
+#3  0x0000007f93156bf8 in nanosleep () from /usr/lib/libc.so.6
+#4  0x0000007f93178b20 in usleep () from /usr/lib/libc.so.6
+#5  0x000000555c8e7234 in choreo_driver_thread ()
+
+Thread 33 (Thread 0x7f677ef060 (LWP 10652) "AssetGarbageCol"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a2428 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 32 (Thread 0x7f66fdf060 (LWP 10653) "AssetGarbageCol"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a2428 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 31 (Thread 0x7f667cf060 (LWP 10654) "AssetGarbageCol"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a2428 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 30 (Thread 0x7f65426060 (LWP 10655) "GC Finalizer"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f93118fdc in ?? () from /usr/lib/libc.so.6
+#3  0x0000007f9311b4ec in pthread_cond_wait () from /usr/lib/libc.so.6
+#4  0x000000555c8fa578 in pthread_cond_wait_fake ()
+#5  0x0000007f85b3d974 in ?? ()
+Backtrace stopped: Cannot access memory at address 0x346dc5d638865963
+
+Thread 29 (Thread 0x7f64c16060 (LWP 10656) "Job.Worker 0"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21d8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 28 (Thread 0x7f64406060 (LWP 10657) "Job.Worker 1"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21d8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 27 (Thread 0x7f63bf6060 (LWP 10658) "Job.Worker 2"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21d8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 26 (Thread 0x7f633e6060 (LWP 10659) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 25 (Thread 0x7f62bd6060 (LWP 10660) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 24 (Thread 0x7f623c6060 (LWP 10661) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 23 (Thread 0x7f61bb6060 (LWP 10662) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 22 (Thread 0x7f613a6060 (LWP 10663) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 21 (Thread 0x7f60b96060 (LWP 10664) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 20 (Thread 0x7e7ffff060 (LWP 10665) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 19 (Thread 0x7e7f7ef060 (LWP 10666) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 18 (Thread 0x7e7efdf060 (LWP 10667) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 17 (Thread 0x7e7e7cf060 (LWP 10668) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 16 (Thread 0x7e7dfbf060 (LWP 10669) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 15 (Thread 0x7e7d7af060 (LWP 10670) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 14 (Thread 0x7e7cf9f060 (LWP 10671) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 13 (Thread 0x7e5bfff060 (LWP 10672) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 12 (Thread 0x7e5b7ef060 (LWP 10673) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 11 (Thread 0x7e5afdf060 (LWP 10674) "Background Job."):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a21f8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 10 (Thread 0x7e5a7cf060 (LWP 10675) "BatchDeleteObje"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a23d8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 9 (Thread 0x7e59fbf060 (LWP 10676) "Loading.AsyncRe"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007fd10a23b8 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 8 (Thread 0x7e597af060 (LWP 10677) "UnityMain"):
+#0  0x0000007f93123aa8 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f93118fdc in ?? () from /usr/lib/libc.so.6
+#3  0x0000007f9311b4ec in pthread_cond_wait () from /usr/lib/libc.so.6
+#4  0x0000007f92447594 in _mali_osu_lock_wait () from /usr/lib/libGLESv2.so.2
+#5  0x0000007f9243eecc in ?? () from /usr/lib/libGLESv2.so.2
+
+Thread 7 (Thread 0x7e58f9f060 (LWP 10678) "UnityMain"):
+#0  0x0000007f9317504c in ioctl () from /usr/lib/libc.so.6
+#1  0x0000007f92447d6c in _mali_uku_wait_for_notification () from /usr/lib/libGLESv2.so.2
+#2  0x0000007f92449af0 in ?? () from /usr/lib/libGLESv2.so.2
+#3  0x0000000000800000 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 6 (Thread 0x7f8b43e8e0 (LWP 10679) "UnityMain"):
+#0  0x0000007f93123aac in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f93118ca0 in ?? () from /usr/lib/libc.so.6
+#2  0x0000007f93118ce8 in ?? () from /usr/lib/libc.so.6
+#3  0x0000007f930d55ac in sigtimedwait () from /usr/lib/libc.so.6
+#4  0x0000007f93126984 in ?? () from /usr/lib/libc.so.6
+#5  0x0000007f9311bec8 in ?? () from /usr/lib/libc.so.6
+
+Thread 5 (Thread 0x7e43fff060 (LWP 10680) "UnityGfxDeviceW"):
+#0  0x0000007f931770e4 in syscall () from /usr/lib/libc.so.6
+#1  0x000000555c8e9fec in my_syscall ()
+#2  0x0000007f8cdd9d00 in ?? ()
+#3  0x0000007e43fff780 in ?? ()
+#4  0x0000007f8d6b7520 in ?? ()
+Backtrace stopped: previous frame inner to this frame (corrupt stack?)
+
+Thread 4 (Thread 0x7e42fdf060 (LWP 10683) "Filter1"):
+#0  0x0000007f8ced5ffc in ?? ()
+#1  0x0000007fd10a2388 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 3 (Thread 0x7e437ef060 (LWP 10684) "Filter1"):
+#0  0x0000007f8ced6004 in ?? ()
+#1  0x0000007fd10a2388 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 2 (Thread 0x7e427cf060 (LWP 10685) "Loading.Preload"):
+#0  0x0000007f85aa8248 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+
+Thread 1 (Thread 0x7f9340c460 (LWP 10647) "UnityMain"):
+#0  0x0000007f93119280 in ?? () from /usr/lib/libc.so.6
+#1  0x0000007f9311eb9c in pthread_mutex_lock () from /usr/lib/libc.so.6
+#2  0x0000007f8c5d7950 in ?? ()
+#3  0x000000555c936278 in __frame_dummy_init_array_entry ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+[Inferior 1 (process 10647) detached]
+UB=0x7f8c300000 IB=0x7f84e70000
