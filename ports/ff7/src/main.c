@@ -252,7 +252,18 @@ static int fmv_decode_and_bind(void) {
 }
 
 static void my_enableOES(int en) {
-  if (en && getenv("FF7_NOFMV") == NULL && fmv_has_movie() && fmv_decode_and_bind()) {
+  /* GATE ESTREITO (era a CAUSA do campo preto / "cloud nao aparece"): injetar SO'
+   * durante o playback REAL do movie de abertura — NAO nos logos de boot e NAO depois
+   * do filme acabar. O gate antigo `fmv_has_movie()` ficava TRUE p/ logos e tb DEPOIS
+   * do eof (ate o reset) -> se o campo/batalha chamasse VIDEO_enableOES, a gente
+   * sequestrava (bind da textura do FMV + glActiveTexture) e corrompia o render do
+   * campo. g_ff7_movie_active = setado pelo MyDecoder.START, zerado no RESET (segue
+   * o estado do movie no engine); +!eof +nao-logo. */
+  extern int g_ff7_movie_active;
+  const char *mn = fmv_current_name();
+  int playing = g_ff7_movie_active && fmv_has_movie() && !fmv_eof()
+                && mn && !strstr(mn, "logo") && getenv("FF7_NOFMV") == NULL;
+  if (en && playing && fmv_decode_and_bind()) {
     static unsigned ic = 0;
     if (ic < 6 || ic % 100 == 0) debugPrintf("FMVINJECT #%u (en=1 -> 2D %dx%d)\n", ic, fmv_w(), fmv_h());
     ic++;
@@ -382,11 +393,22 @@ extern void opensles_shim_pump_callbacks(void) __attribute__((weak));
 
 /* screenshot via glReadPixels (fb0 falha durante render Mali). */
 extern void glReadPixels(int x, int y, int w, int h, unsigned fmt, unsigned type, void *px);
+extern void glBindFramebuffer(unsigned target, unsigned fb);
+extern void glGetIntegerv(unsigned pname, int *p);
 static void ff7_dump_shot(int w, int h, int frame) {
   size_t n = (size_t)w * h * 4;
   unsigned char *buf = malloc(n);
   if (!buf) return;
+  /* FF7_SHOTFB0: le o FRAMEBUFFER PADRAO (0) = exatamente o que vai pro swap/tela.
+   * Sem isso, glReadPixels le o FBO bindado (pode mostrar o campo que NAO chega na
+   * tela). NextOS ve preto pos-trem mas meu shot via FBO mostrava o campo -> testar. */
+  int prevfb = -1;
+  if (getenv("FF7_SHOTFB0")) {
+    glGetIntegerv(0x8CA6 /*FRAMEBUFFER_BINDING*/, &prevfb);
+    glBindFramebuffer(0x8D40 /*GL_FRAMEBUFFER*/, 0);
+  }
   glReadPixels(0, 0, w, h, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, buf);
+  if (prevfb >= 0) glBindFramebuffer(0x8D40, (unsigned)prevfb);
   const char *home = getenv("HOME"); if (!home) home = "/tmp";
   char path[256]; snprintf(path, sizeof path, "%s/ff7_shot_%04d.raw", home, frame);
   FILE *f = fopen(path, "wb");
@@ -427,8 +449,9 @@ static void ff7_pump_input(void) {
         if (down && e.cbutton.button == SDL_CONTROLLER_BUTTON_START && !hk_select) {
           const char *mn = fmv_current_name();
           if (fmv_has_movie() && mn && !strstr(mn, "logo") && !fmv_eof()) {
-            extern void fmv_force_eof(void); fmv_force_eof();
-            debugPrintf("FMV: SKIP (START) -> force eof\n");
+            extern void fmv_force_eof(void); fmv_force_eof();   /* para a injeção */
+            if (g_fw_stop_movie) g_fw_stop_movie();             /* encerra o movie no engine -> campo */
+            debugPrintf("FMV: SKIP (START) -> force eof + fw_stop_movie\n");
             break;
           }
         }
@@ -539,14 +562,26 @@ static void ff7_present_cb(void) {
    * o engine ENCERRAR o filme de vez e o script do campo spawnar o Cloud/party.
    * (campo carrega + musica toca, mas sem o stop limpo o script de entrada nao
    * spawna os personagens — relato do NextOS: "cloud nao aparece"). */
-  if (getenv("FF7_NOFMV") == NULL && g_fw_stop_movie && fmv_has_movie()) {
-    static int fmv_stopped = 0;
+  /* FIM DO FMV pelo CONTADOR DO ENGINE (0x1cd8c9c, avanca ~1/frame de forma
+   * CONFIAVEL). O decode (cur_frame) ESTAGNA quando a injecao para de ser chamada
+   * -> fmv_eof nunca disparava -> o engine "tocava" o filme p/ sempre (counter
+   * passava do total) -> o script do campo ESPERAVA o filme acabar -> CONGELAVA
+   * preto pos-trem. Quando o counter alcanca o total REAL do .ivf, forcamos o fim:
+   * fmv_force_eof (para a injecao) + fw_stop_movie (encerra no engine) -> o campo
+   * carrega de verdade (Cloud entra). Default ON; FF7_NOSTOP desliga. */
+  if (getenv("FF7_NOSTOP") == NULL && getenv("FF7_NOFMV") == NULL && g_fw_stop_movie
+      && fmv_has_movie() && text_base) {
+    static int movend = 0;
+    extern int fmv_total_frames(void);
     const char *mn = fmv_current_name();
     int isreal = mn && !strstr(mn, "logo");
-    if (isreal && !fmv_eof()) fmv_stopped = 0;       /* filme tocando -> rearma */
-    else if (isreal && fmv_eof() && !fmv_stopped) {  /* fim -> encerra 1x */
-      g_fw_stop_movie(); fmv_stopped = 1;
-      debugPrintf("FMV: fw_stop_movie() no eof -> campo deve spawnar Cloud\n");
+    int tot = fmv_total_frames();
+    unsigned ec = *(unsigned *)((uintptr_t)text_base + 0x1cd8c9c);
+    if (isreal && tot > 0 && ec < (unsigned)tot) movend = 0;   /* tocando -> rearma */
+    if (isreal && tot > 0 && ec >= (unsigned)tot && !movend) { /* atingiu o fim real */
+      extern void fmv_force_eof(void); fmv_force_eof();
+      g_fw_stop_movie(); movend = 1;
+      debugPrintf("FMV: engine counter %u >= total %d -> fw_stop_movie (campo deve carregar)\n", ec, tot);
     }
   }
   if (opensles_shim_pump_callbacks && getenv("FF7_NOAUDIOPUMP") == NULL)
@@ -568,26 +603,39 @@ static void ff7_present_cb(void) {
   /* idle so' em FMV "de verdade" (ex opening), NAO nos logos de boot (eidoslogo/
    * sqlogo) — esses a gente deixa o autoskip passar p/ chegar no New Game. */
   const char *mn = fmv_current_name();
-  int real_fmv = fmv_has_movie() && mn && !strstr(mn, "logo") && !fmv_eof() && getenv("FF7_NOFMV") == NULL;
-  if (getenv("FF7_AUTOSKIP") && onKey && !real_fmv) {
-    /* IMPORTANTE: para de injetar input quando o FMV (opening) comeca senao o B/A
-     * do ciclo PULA o video. Assim o FMV toca inteiro p/ ver/capturar. */
-    long menuf = getenv("FF7_SKIP_MENUFRAME") ? atol(getenv("FF7_SKIP_MENUFRAME")) : 400;
-    if (g_frame < menuf) {
-      long s = g_frame % 40;                       /* fase1: A skipa logo/creditos */
-      if (s == 5)  onKey(g_env, NULL, 4, 1);
-      if (s == 12) onKey(g_env, NULL, 4, 0);
-    } else {
-      /* fase2 AUTO-CORRETIVA: o cursor cai em "Continue?"; se A entrou na tela de
-       * saves, B volta. Ciclo: B(cancel) -> UP(p/ NEW GAME) -> A(entra). Repete. */
-      long c = (g_frame - menuf) % 160;
-      if (c == 0)  onKey(g_env, NULL, 5, 1);   /* B press  (5=cancel) */
-      if (c == 8)  onKey(g_env, NULL, 5, 0);
-      if (c == 40) onKey(g_env, NULL, 0, 1);   /* UP press (0=UP -> NEW GAME) */
-      if (c == 48) onKey(g_env, NULL, 0, 0);
-      if (c == 80) onKey(g_env, NULL, 4, 1);   /* A press  (4=OK -> entra) */
-      if (c == 88) onKey(g_env, NULL, 4, 0);
-    }
+  /* LATCH determinístico: assim que o filme de abertura ("opening", nao-logo) e'
+   * REQUISITADO pelo campo (AVI_open), JA' passamos do menu (New Game entrou + campo
+   * md1stin carregou). Desliga o autoskip PARA SEMPRE -> FMV/campo LIMPOS p/ observar.
+   * Independe de START (vale mesmo com FF7_FMVSTART=0, onde o filme nem toca). */
+  int real_movie = fmv_has_movie() && mn && !strstr(mn, "logo");
+  int real_fmv = real_movie && !fmv_eof() && getenv("FF7_NOFMV") == NULL;
+  /* LATCH p/ parar o autoskip assim que NEW GAME entra de fato: o movie de abertura
+   * ENGATA (movie_frame_counter@0x1cd8c9c > 0) ou um filme real abre. Para ANTES de
+   * o autoskip poder cancelar/sujar o jogo. */
+  unsigned mvc = 0;
+  if (text_base) mvc = *(unsigned *)((uintptr_t)text_base + 0x1cd8c9c);
+  static int g_skip_done = 0;
+  if (real_movie || (mvc > 0 && mvc < 0x40000000u)) g_skip_done = 1;
+  if (getenv("FF7_AUTOSKIP") && onKey && !g_skip_done && g_frame > 30) {
+    /* B (escapa tela de saves/Load) -> UP martelado (parka cursor no topo=NEW GAME)
+     * -> A (entra). O LATCH (real_movie/counter>0) desliga tudo assim que New Game
+     * entra, ANTES do proximo B poder cancelar. UP martelado evita cair em Continue;
+     * o B so' serve de rede se cair na tela de Load. */
+    long c = g_frame % 110;
+    if (c == 0)  onKey(g_env, NULL, 5, 1);   /* B press (escapa Load) */
+    if (c == 6)  onKey(g_env, NULL, 5, 0);
+    if (c >= 18 && c < 84) { if (c % 10 == 8) onKey(g_env, NULL, 0, 1);    /* UP press */
+                             if (c % 10 == 3) onKey(g_env, NULL, 0, 0); }  /* UP release */
+    if (c == 96) onKey(g_env, NULL, 4, 1);   /* A press (entra NEW GAME) */
+    if (c == 102) onKey(g_env, NULL, 4, 0);
+  }
+  /* FF7_AUTOADV (so' p/ VERIFICAR jogabilidade): DEPOIS do New Game e quando o FMV
+   * NAO esta' tocando, martela A p/ avancar dialogos/cutscene/entrar em batalha.
+   * Sem B/UP (nao cancela nada). Prova que pos-FMV continua jogavel ate a batalha. */
+  if (getenv("FF7_AUTOADV") && onKey && g_skip_done && !real_fmv) {
+    long c = g_frame % 50;
+    if (c == 0) onKey(g_env, NULL, 4, 1);
+    if (c == 8) onKey(g_env, NULL, 4, 0);
   }
   if (g_frame < 5 || g_frame % 120 == 0) debugPrintf("present frame %ld\n", g_frame);
   g_frame++;
