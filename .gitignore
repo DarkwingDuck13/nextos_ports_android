@@ -85,3 +85,10 @@ ports/*/deploy/gamedata/
 **/*.obb
 ports/ff9/userdata/
 ports/ff9/bin/Data/
+
+# dados de jogo extras (audio stream / game.droid / binarios de port)
+*.ogg
+*.droid
+ports/*/katanazero
+ports/*/*.zero
+options.ini
