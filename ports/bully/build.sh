@@ -3,9 +3,7 @@
 # Loader ELF aarch64 glibc; SDL2/GLESv2/EGL/OpenAL/mpg123 = runtime (dlopen).
 # Linkamos -lSDL2 (input no jni_shim) e -lEGL (egl_shim Mali fbdev).
 set -e
-TC=~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/aarch64-libreelec-linux-gnu-gcc
-SR=$TC/aarch64-libreelec-linux-gnu/sysroot
+
 cd "$(dirname "$0")"
 
 [ -x "$CC" ] || { echo "toolchain não encontrado: $CC"; exit 1; }
