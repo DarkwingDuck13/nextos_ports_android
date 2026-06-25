@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>Microsoft.Maui.Essentials</AssemblyName>
+    <RootNamespace>MauiEssentialsStub</RootNamespace>
+    <Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic><NoWarn>CS0660;CS0661</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>CarrionHost</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AutoreleasePoolSupport>false</AutoreleasePoolSupport>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="MonoGame.Framework"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/MonoGame/Artifacts/MonoGame.Framework/DesktopGL/Release/MonoGame.Framework.dll</HintPath></Reference>
+    <Reference Include="Mono.Android"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/shims/MonoAndroid/bin/Mono.Android.dll</HintPath></Reference>
+    <Reference Include="PlatformAPI"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/shims/PlatformAPI/bin/PlatformAPI.dll</HintPath></Reference>
+    <Reference Include="Carrion"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/Carrion.dll</HintPath></Reference>
+    <Reference Include="SharedMonogameTypes"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/SharedMonogameTypes.dll</HintPath></Reference>
+    <Reference Include="SharedTypes"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/SharedTypes.dll</HintPath></Reference>
+    <Reference Include="CarrionJson"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/CarrionJson.dll</HintPath></Reference>
+    <Reference Include="FMODWrapper"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/FMODWrapper.dll</HintPath></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/managed/Newtonsoft.Json.dll</HintPath></Reference>
+    <Reference Include="Microsoft.Maui.Essentials"><HintPath>/home/nextos/nextos_ports_android/ports/carrion/app/../shims/MauiEssentials/bin/Microsoft.Maui.Essentials.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

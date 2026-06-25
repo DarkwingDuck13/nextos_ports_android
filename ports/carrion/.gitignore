@@ -1,0 +1,42 @@
+# Carrion — SO o codigo/loader/shims vai pro repo. Dados de jogo (copyright Devolver/
+# Phobia), runtime .NET, DLLs do MonoGame buildado e o checkout do MonoGame NUNCA.
+
+# dados de jogo extraidos do APK (copyright) + binarios
+apk/
+assets/
+managed/
+libs/
+builds/
+devicepkg/
+
+# checkout do MonoGame (repo externo / embedded) — nao versionar aqui
+MonoGame/
+
+# binarios / artefatos
+*.so
+*.dll
+*.dex
+*.xnb
+*.apk
+*.blob
+*.bin
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+run.out
+*.log
+
+# build output .NET (gerado por build/publish)
+**/bin/
+**/obj/
+**/pub/
+**/out-coreclr/
+
+# tool de terceiros (repo externo clonado — reproduzir via git clone)
+tools/pyxamstore/
+
+# binarios compilados de tools (reproduziveis do source)
+tools/etcconv
+tools/dotnet-install.log
+__pycache__/
+*.pyc
