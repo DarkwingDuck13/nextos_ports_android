@@ -46,7 +46,14 @@ export CUP_FRAMES=999999999
 # TER_CHOREO: driver-thread dispara FrameCallback.doFrame(~60Hz) — o Unity trava o
 # render do frame 2 esperando o vsync do Choreographer (nosso Looper é fake).
 export TER_CHOREO=1
+# Poll-defenses contra lost-wakeup (job/sem/futex) — estabilizam o boot NÃO-determinístico:
+# cond/sem/futex viram timedwait curto → re-checa predicado → boot chega no render loop de forma
+# CONSISTENTE (em vez de travar aleatório no frame 0/1). Tunável.
+export CUP_CONDPOLL=${CUP_CONDPOLL:-100} CUP_SEMPOLL=${CUP_SEMPOLL:-50} TER_FUTEXPOLL=${TER_FUTEXPOLL:-100}
+# Patches DEFAULT-ON no binário (sem env): CHOREO_NOWAIT (bypassa deadlock do setup do
+# UnityChoreographer @0x61efe0), VSYNC_NOWAIT (bypassa wait do contador de vsync @0x61c5f8),
+# NULLGUARD (trampolim NULL-safe @0x439864). → render loop roda 200+ frames + eglSwapBuffers.
 export CUP_DLLOG=${CUP_DLLOG:-0}
 
-echo "[run] FF9 — fbdev Mali-450 + force-gles20"
+echo "[run] FF9 — fbdev Mali-450 (render loop OK; resta LVL/currentActivity p/ conteúdo)"
 exec ./ff9

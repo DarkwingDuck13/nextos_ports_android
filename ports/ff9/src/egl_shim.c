@@ -479,9 +479,12 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 
 EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
 
+/* router opcional (main.c -> ds_route): envolve gl* resolvidos (ex.: glShaderSource
+ * p/ normalizar precisão ES3->ES2). Setado em runtime; NULL = passthrough. */
+void *(*g_gl_proc_router)(const char *, void *) = NULL;
 void *egl_shim_GetProcAddress(const char *procname) {
   void *ptr = SDL_GL_GetProcAddress(procname);
-  if (ptr) return ptr;
+  if (ptr) { if (g_gl_proc_router) return g_gl_proc_router(procname, ptr); return ptr; }
 
   size_t len = strlen(procname);
   if (len > 3 && strcmp(procname + len - 3, "OES") == 0) {
@@ -490,7 +493,7 @@ void *egl_shim_GetProcAddress(const char *procname) {
       memcpy(stripped, procname, len - 3);
       stripped[len - 3] = '\0';
       ptr = SDL_GL_GetProcAddress(stripped);
-      if (ptr) return ptr;
+      if (ptr) { if (g_gl_proc_router) return g_gl_proc_router(procname, ptr); return ptr; }
     }
   }
 

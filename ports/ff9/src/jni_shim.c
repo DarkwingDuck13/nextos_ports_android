@@ -146,6 +146,10 @@ static int g_long_box_sentinel;         /* o Long boxed */
  * sendToTarget. */
 static int g_handlemsg_method_sentinel; /* Method fake p/ Handler$Callback.handleMessage(Message)Z */
 static int g_handlemsg_args_sentinel;   /* Object[1] = { Message } */
+static int g_file_array;                /* File[1] p/ getObbDirs (FF9) */
+static int g_obb_file_obj;              /* File (elemento de getObbDirs) — getPath nele = dir */
+static int g_appinfo_obj;               /* PackageInfo.applicationInfo (FF9) */
+static int g_empty_strarr;              /* String[0] vazio (campos split* do ApplicationInfo) */
 static int g_message_sentinel;          /* a Message (obtainMessage->sendToTarget) */
 static volatile int g_message_what;     /* msg.what passado ao obtainMessage */
 void jni_handlemessage(void *env);
@@ -425,6 +429,7 @@ static void *jni_NewByteArray(void *env, int len) {
 }
 static int jni_GetArrayLength_real(void *env, void *arr) {
   (void)env;
+  if (arr == (void *)&g_file_array) return 1;
   struct barr *b = barr_find(arr);
   return b ? b->len : 0;
 }
@@ -546,6 +551,23 @@ static void *jni_GetObjectField(void *env, void *obj, void *fieldID) {
     debugPrintf("[KBFIX] GetObjectField(PressedStates) -> boolean[512]\n");
     return boolarr_new(512);
   }
+  /* FF9: PackageInfo/ApplicationInfo campos String — sem isso o &fake_obj_field (lixo) é usado
+     como String → deref de bytes do nome do pacote como ponteiro → SIGSEGV nativo (libunity
+     +0xc16254, fault=".androi"). Devolve strings válidas. */
+  if (nm) {
+    if (strcmp(nm, "packageName") == 0)
+      return make_jstring(getenv("FF9_EMPTYPKG") ? "" : g_package_name);
+    if (strcmp(nm, "versionName") == 0) return make_jstring("1.5.4");
+    if (strcmp(nm, "sourceDir") == 0 || strcmp(nm, "publicSourceDir") == 0 ||
+        strcmp(nm, "dataDir") == 0 || strcmp(nm, "nativeLibraryDir") == 0)
+      return make_jstring("/storage/roms/ff9");
+    if (strcmp(nm, "applicationInfo") == 0) return &g_appinfo_obj;
+    /* campos String[] (splitPublicSourceDirs, splitSourceDirs, splitNames) → array VAZIO
+       (sem isso o fake vira array de lixo → deref do nome do pacote como ponteiro → SIGSEGV). */
+    if (strcmp(nm, "splitPublicSourceDirs") == 0 || strcmp(nm, "splitSourceDirs") == 0 ||
+        strcmp(nm, "splitNames") == 0 || strcmp(nm, "sharedLibraryFiles") == 0)
+      return &g_empty_strarr;
+  }
   static int fake_obj_field;
   return &fake_obj_field;
 }
@@ -559,6 +581,7 @@ static jint jni_GetIntField(void *env, void *obj, void *fieldID) {
     if (strcmp(nm, "widthPixels") == 0) { int w, h; ter_display_size(&w, &h); return w; }
     if (strcmp(nm, "heightPixels") == 0) { int w, h; ter_display_size(&w, &h); return h; }
     if (strcmp(nm, "densityDpi") == 0) return 160;
+    if (strcmp(nm, "versionCode") == 0) return 67;   /* FF9 OBB version */
   }
   return 0;
 }
@@ -597,9 +620,22 @@ static void *jni_GetStaticFieldID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetStaticFieldID(%s, %s)\n", name, sig);
-  if (getenv("TER_KBFIX") && name && strcmp(name, "currentActivity") == 0) {
-    debugPrintf("[KBFIX] GetStaticFieldID(currentActivity) -> activity field fake\n");
-    return &g_current_activity_field_id;
+  if (name && strcmp(name, "currentActivity") == 0) {
+    if (getenv("FF9_RALOG")) {
+      static int n2 = 0; n2++;
+      int want = getenv("FF9_RALOG_AT") ? atoi(getenv("FF9_RALOG_AT")) : 1;
+      if (n2 == want) {
+        extern uintptr_t ter_il2cpp_base(void);
+        uintptr_t ib = ter_il2cpp_base();
+        uintptr_t sp2 = (uintptr_t)&name;
+        for (int k = 0; k < 768; k++) {
+          uintptr_t v = ((uintptr_t *)sp2)[k];
+          if (ib && v >= ib + 0xe7291c && v < ib + 0x2787000)
+            debugPrintf("[FIDSCAN] +0x%lx\n", (unsigned long)(v - ib));
+        }
+      }
+    }
+    return &g_current_activity_field_id;   /* default (era TER_KBFIX) — Activity utilizável */
   }
   if (strcmp(name, "OBB_VERSIONCODE") == 0)
     return &g_method_tags[FID_OBB_VERSIONCODE];
@@ -644,7 +680,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       }
     }
     if (strcmp(nm, "getPackageName") == 0)
-      return make_jstring(g_package_name);
+      return make_jstring(getenv("FF9_EMPTYPKG") ? "" : g_package_name);
     /* ---- Gamepad Xbox 360 virtual (TER_GAMEPAD): InputManager.getInputDevice(id) + getters ---- */
     if (strcmp(nm, "getInputDevice") == 0) return &g_gamepad_device;
     if (obj == (void *)&g_gamepad_device) {
@@ -701,6 +737,14 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         return make_jstring(ASSET_BASE "libmain.so");
       if (ln && strstr(ln, "unity"))
         return make_jstring(ASSET_BASE "libunity.so");
+      /* libs nativas P/Invoke do FF9: path real -> il2cpp dlopen -> my_dlopen casa
+         "sdlib"/"SpecialEffect"/"burst" -> g_dl_* -> dlsym resolve no módulo so_load. */
+      if (ln && strstr(ln, "sdlib"))
+        return make_jstring(ASSET_BASE "libsdlib_android.so");
+      if (ln && strstr(ln, "SpecialEffect"))
+        return make_jstring(ASSET_BASE "libFF9SpecialEffectPlugin.so");
+      if (ln && strstr(ln, "burst"))
+        return make_jstring(ASSET_BASE "lib_burst_generated.so");
       return make_jstring("");
     }
     /* AudioManager.getProperty(key) -> valores válidos p/ o FMOD não configurar
@@ -758,8 +802,16 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         strcmp(nm, "getCacheDir") == 0 || strcmp(nm, "getExternalCacheDir") == 0 ||
         strcmp(nm, "getDataDir") == 0 || strcmp(nm, "getExternalStorageDirectory") == 0 ||
         strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
-        strcmp(nm, "getCanonicalPath") == 0)
+        strcmp(nm, "getCanonicalPath") == 0 ||
+        strcmp(nm, "getPackageCodePath") == 0 || strcmp(nm, "getPackageResourcePath") == 0 ||
+        strcmp(nm, "getParent") == 0)
       return make_jstring("/storage/roms/ff9/userdata");
+    /* FF9 AssetManagerForObb.Initialize: getObbDir()/getObbDirs() → o dir do OBB. Devolvemos
+       o dir REAL onde está aobb.bin (bin/Data). getObbDirs (File[]) → array de 1 elemento. */
+    if (strcmp(nm, "getObbDir") == 0)
+      return make_jstring("/storage/roms/ff9/bin/Data");
+    if (strcmp(nm, "getObbDirs") == 0)
+      return &g_file_array;   /* File[1] = {bin/Data} (GetArrayLength/Element tratam) */
     /* SharedPreferences.getString(key, default) -> valor ARMAZENADO se existir,
        senão o default. Faz o round-trip do save funcionar (era sempre default). */
     if (strcmp(nm, "getString") == 0) {
@@ -796,9 +848,11 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        → sig vazio → "Field X or type signature not found" → exceção em KeyboardInput.Update
        ABORTA o ExecuteFrame ANTES do Draw → tela preta. Devolver um nome de tipo válido faz a
        reflection montar uma assinatura e o GetFieldID/leitura seguir (campo lido = fake/0). */
-    if (getenv("TER_KBFIX") &&
-        (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
-         strcmp(nm, "getTypeName") == 0)) {
+    /* DEFAULT (era TER_KBFIX): reflection do tipo do campo currentActivity (sig vazio →
+       getType().getName()) precisa de um nome de classe VÁLIDO; senão a NRE per-frame
+       (AndroidJNIHelper.GetFieldID) bloqueia o render. */
+    if (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
+        strcmp(nm, "getTypeName") == 0) {
       static int gn = 0; if (gn++ < 30) { debugPrintf("[KBREFLECT] %s -> java.lang.Object\n", nm); }
       return make_jstring("java.lang.Object");
     }
@@ -1246,10 +1300,57 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
   (void)env;
   (void)clazz;
   const char *nm = mid_name(fieldID);
-  if (getenv("TER_KBFIX") &&
+  /* FF9_RALOG: 1× dump da cadeia de return-address (offsets libil2cpp) quando o C# busca
+     currentActivity → mapear via script.json o método C# que lança a NRE per-frame. */
+  if (getenv("FF9_RALOG") &&
+      (fieldID == &g_current_activity_field_id || (nm && strcmp(nm, "currentActivity") == 0))) {
+    static int g_ralog_n = 0;
+    g_ralog_n++;
+    /* FF9_RALOG_AT=N: captura na N-ésima chamada (default 1). Use ~300 p/ pegar o caller
+       PER-FRAME (depois do boot/OBB), não o 1º (verifier). */
+    int want = getenv("FF9_RALOG_AT") ? atoi(getenv("FF9_RALOG_AT")) : 1;
+    if (g_ralog_n == want) {
+      extern uintptr_t ter_il2cpp_base(void);
+      uintptr_t ib = ter_il2cpp_base();
+      void *ra[8];
+      ra[0]=__builtin_return_address(0); ra[1]=__builtin_return_address(1);
+      ra[2]=__builtin_return_address(2); ra[3]=__builtin_return_address(3);
+      ra[4]=__builtin_return_address(4); ra[5]=__builtin_return_address(5);
+      ra[6]=__builtin_return_address(6); ra[7]=__builtin_return_address(7);
+      for (int i = 0; i < 8; i++) {
+        uintptr_t a = (uintptr_t)ra[i];
+        if (ib && a >= ib && a < ib + 0x3000000)
+          debugPrintf("[RALOG] currentActivity RA[%d] = libil2cpp+0x%lx\n", i, (unsigned long)(a - ib));
+        else
+          debugPrintf("[RALOG] currentActivity RA[%d] = %p (fora il2cpp)\n", i, ra[i]);
+      }
+      /* stack-scan: sem frame-pointers em libil2cpp, varremos a pilha p/ achar TODOS os
+         return-addresses na .text do il2cpp (a cadeia de chamada incl. o método C# do jogo). */
+      uintptr_t sp = (uintptr_t)&ra[0];
+      for (int k = 0; k < 768; k++) {
+        uintptr_t v = ((uintptr_t *)sp)[k];
+        if (ib && v >= ib && v < ib + 0x2c00000)
+          debugPrintf("[RASCAN] +0x%lx\n", (unsigned long)(v - ib));
+      }
+    }
+  }
+  /* FF9_ACT_NULL: devolve NULL p/ currentActivity. Sem Activity funcional, o C# do jogo
+     (Google LVL + uso per-frame) lança NullReferenceException TODA frame ao usar o fake como
+     AndroidJavaObject → Update() aborta antes de desenhar. Hipótese: com NULL o C# faz
+     `if (activity != null)` e PULA o caminho de licença/per-frame graciosamente. */
+  if (getenv("FF9_ACT_NULL") &&
       (fieldID == &g_current_activity_field_id ||
        (nm && strcmp(nm, "currentActivity") == 0))) {
-    debugPrintf("[KBFIX] GetStaticObjectField(currentActivity) -> activity fake\n");
+    debugPrintf("[ACT_NULL] GetStaticObjectField(currentActivity) -> NULL\n");
+    return NULL;
+  }
+  /* currentActivity SEMPRE devolve o sentinel dedicado g_current_activity (GetObjectClass
+     mapeia → UnityPlayerActivity class → wrap AndroidJavaObject funciona). Era gated por
+     TER_KBFIX; agora default (FF9: a init do Unity Android e o AssetManagerForObb dependem
+     de uma Activity utilizável). */
+  if (fieldID == &g_current_activity_field_id ||
+      (nm && strcmp(nm, "currentActivity") == 0)) {
+    if (getenv("FF9_ACTLOG")) { static int n=0; if(n++<8) debugPrintf("jni_shim: GetStaticObjectField(currentActivity) -> g_current_activity\n"); }
     return &g_current_activity;
   }
   /* constantes String do AudioManager: devolver o NOME como valor p/ getProperty
@@ -1287,6 +1388,23 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
 }
 
 /* NewStringUTF (index 167) */
+/* NewString (index 163): UTF-16 → nossa jstring (char* UTF-8/ASCII). Estava NÃO-wired →
+   a reflection (Field.getDeclaringClass/getName p/ currentActivity) criava String via NewString
+   → stub lixo → String gerenciada lixo → NRE per-frame que travava AssetManagerForObb.Initialize. */
+static void *jni_NewString(void *env, const unsigned short *unicode, int len) {
+  (void)env;
+  if (!unicode || len < 0) return make_jstring("");
+  char *s = (char *)malloc((size_t)len + 1);
+  for (int i = 0; i < len; i++) s[i] = (char)(unicode[i] & 0xff);  /* ASCII downconvert */
+  s[len] = 0;
+  void *r = (void *)s;   /* mesmo formato de make_jstring (char* cru) */
+  return r;
+}
+/* FromReflectedMethod (idx 7) / FromReflectedField (idx 8): converte um Method/Field refletido
+   p/ jmethodID/jfieldID. Stub devolvia 0 (null) → o C# chamava methodID null → NRE per-frame na
+   reflection do currentActivity (AndroidJNIHelper). Devolve o PRÓPRIO objeto refletido como id
+   (não-null); a chamada subsequente cai no dispatch default (mid_name→fake) sem NRE. */
+static void *jni_FromReflectedMethod(void *env, void *m) { (void)env; static int s; return m ? m : (void*)&s; }
 static void *jni_NewStringUTF(void *env, const char *str) {
   (void)env;
   debugPrintf("jni_shim: NewStringUTF(%s)\n", str ? str : "(null)");
@@ -1300,6 +1418,28 @@ static void *jni_NewStringUTF(void *env, const char *str) {
   return make_jstring(str ? str : "");
 }
 
+/* GetStringLength (index 164) — nº de chars UTF-16. Nossas jstrings são char* UTF-8 (ASCII
+   na prática: nomes de pacote/path), então = strlen. SEM isto (não-wired), a String gerenciada
+   que o il2cpp monta de uma jstring nossa via GetStringChars fica com length/ptr lixo → SIGSEGV
+   nativo ao ler .Length (ex.: nome do pacote no init Android do FF9). */
+static jint jni_GetStringLength(void *env, void *jstr) {
+  (void)env;
+  return (jint)strlen(resolve_jstring(jstr));
+}
+/* GetStringChars (index 165) — devolve buffer UTF-16 (jchar). Aloca e converte (ASCII→u16). */
+static const unsigned short *jni_GetStringChars(void *env, void *jstr, void *isCopy) {
+  (void)env;
+  const char *s = resolve_jstring(jstr);
+  size_t n = strlen(s);
+  unsigned short *u = (unsigned short *)malloc((n + 1) * sizeof(unsigned short));
+  for (size_t i = 0; i < n; i++) u[i] = (unsigned char)s[i];
+  u[n] = 0;
+  if (isCopy) *(unsigned char *)isCopy = 1;
+  return u;
+}
+static void jni_ReleaseStringChars(void *env, void *jstr, const unsigned short *chars) {
+  (void)env; (void)jstr; if (chars) free((void *)chars);
+}
 /* GetStringUTFLength (index 168) */
 static jint jni_GetStringUTFLength(void *env, void *jstr) {
   (void)env;
@@ -1345,6 +1485,10 @@ static void jni_DeleteLocalRef(void *env, void *obj) {
 static void *jni_GetObjectClass(void *env, void *obj) {
   (void)env;
   if (obj == &g_obj_keyevent) return class_for("android/view/KeyEvent");
+  /* currentActivity: classe REAL nomeada (reflection getName etc. nossas tratam class_for) —
+     o &fake_obj_class anônimo compartilhado quebrava o wrap AndroidJavaObject (reflection do
+     class name → NRE em C#). */
+  if (obj == &g_current_activity) return class_for("com/unity3d/player/UnityPlayerActivity");
   static int fake_obj_class;
   return &fake_obj_class;
 }
@@ -1400,6 +1544,7 @@ static jint jni_GetArrayLength(void *env, void *array) {
   (void)env;
   if (array == (void *)&g_doframe_args_sentinel) return 1;   /* doFrame: Object[1] */
   if (array == (void *)&g_handlemsg_args_sentinel) return 1; /* handleMessage: Object[1] */
+  if (array == (void *)&g_file_array) return 1;             /* getObbDirs: File[1] */
   struct barr *b = barr_find(array);
   return b ? b->len : 0;
 }
@@ -1408,6 +1553,7 @@ static void *jni_GetObjectArrayElement(void *env, void *array, jint idx) {
   (void)env; (void)idx;
   if (array == (void *)&g_doframe_args_sentinel) return &g_long_box_sentinel;
   if (array == (void *)&g_handlemsg_args_sentinel) return &g_message_sentinel;
+  if (array == (void *)&g_file_array) return &g_obb_file_obj;
   return NULL;
 }
 /* int[] accessors (InputDevice IDs etc.) */
@@ -1677,6 +1823,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
    */
   jni_env_vtable[4] = (uintptr_t)jni_GetVersion;
   jni_env_vtable[6] = (uintptr_t)jni_FindClass;
+  jni_env_vtable[7] = (uintptr_t)jni_FromReflectedMethod;    /* idx 7 (FALTAVA) — reflection currentActivity */
   jni_env_vtable[8] = (uintptr_t)jni_FromReflectedField;
   jni_env_vtable[215] = (uintptr_t)jni_RegisterNatives;  /* recon: Unity */
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;        /* recon: Unity initJni */
@@ -1736,6 +1883,10 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[144] = (uintptr_t)jni_GetStaticFieldID;
   jni_env_vtable[145] = (uintptr_t)jni_GetStaticObjectField;
   jni_env_vtable[150] = (uintptr_t)jni_GetStaticIntField;
+  jni_env_vtable[164] = (uintptr_t)jni_GetStringLength;       /* UTF-16 length (FF9 init Android) */
+  jni_env_vtable[165] = (uintptr_t)jni_GetStringChars;        /* UTF-16 chars */
+  jni_env_vtable[166] = (uintptr_t)jni_ReleaseStringChars;
+  jni_env_vtable[163] = (uintptr_t)jni_NewString;            /* UTF-16 NewString (reflection) */
   jni_env_vtable[167] = (uintptr_t)jni_NewStringUTF;
   jni_env_vtable[168] = (uintptr_t)jni_GetStringUTFLength;
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;

@@ -522,6 +522,22 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
   crash_classify("x3", uc->uc_mcontext.regs[3]);
   crash_classify("x9", uc->uc_mcontext.regs[9]);
   crash_classify("x17", uc->uc_mcontext.regs[17]);
+  /* stack-scan dos return-addresses em libil2cpp (.text RX) — a cadeia de chamada C# (AOT) que
+     levou ao crash. Mapear os offsets via script.json (dump il2cpp). */
+  if (g_il2cpp_base) {
+    fprintf(stderr, "[CR] ==== il2cpp call-chain (stack RAs) ====\n");
+    int found = 0;
+    for (int k = 0; k < 1024 && found < 40; k++) {
+      uintptr_t a = sp + (uintptr_t)k * 8;
+      if (!addr_readable(a)) continue;
+      uintptr_t v = *(uintptr_t *)a;
+      if (v >= g_il2cpp_base + 0xe7291c && v < g_il2cpp_base + 0x2787000) {  /* RX do il2cpp */
+        fprintf(stderr, "[CR] RA libil2cpp+0x%lx\n", (unsigned long)(v - g_il2cpp_base));
+        found++;
+      }
+    }
+    dbg_sync();
+  }
   fprintf(stderr, "[CR] ==== fim ====\n");
   dbg_sync();
   _exit(128 + sig);
@@ -655,9 +671,17 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
       !strncmp(base, "globalgamemanagers", 18) || strstr(base, ".assets") ||
       strstr(base, ".resS") || strstr(base, ".resource") ||
       !strcmp(base, "data.unity3d") || !strcmp(base, "boot.config") ||
-      !strcmp(base, "unity default resources") || !strcmp(base, "unity_builtin_extra")) {
+      !strcmp(base, "unity default resources") || !strcmp(base, "unity_builtin_extra") ||
+      !strcmp(base, "aobb.bin") || !strcmp(base, "unity_obb_guid") ||
+      (strlen(base) == 32 && strspn(base, "0123456789abcdef") == 32)) {  /* FF9: aobb.bin + bundles <hash> */
     snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%s", base);
     if (access(buf, F_OK) == 0) return buf;
+    /* FF9 SHARD: hash em bin/Data/<2primeiros>/<hash> (limite FAT32 num só dir).
+       É AQUI que estava o branco do título: os hashes shardados não eram achados. */
+    if (strlen(base) == 32) {
+      snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%c%c/%s", base[0], base[1], base);
+      if (access(buf, F_OK) == 0) return buf;
+    }
     snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/Resources/%s", base);
     if (access(buf, F_OK) == 0) return buf;
   }
@@ -692,6 +716,20 @@ static int cmdline_fd(void) {
  * lseek/fstat/mmap/close) — diagnóstico do "guid is empty". */
 static int g_guidlog;
 static int g_guid_fd = -1;
+/* FF9 SHARD: hashes addressable shardados em <dir>/<2primeiros>/<hash> (limite FAT32 num só
+   dir). Se p termina em /<32-hex>, escreve o caminho shardado em out e devolve 1. */
+static int shard_alt(const char *p, char *out, size_t outsz) {
+  if (!p) return 0;
+  const char *base = strrchr(p, '/'); base = base ? base + 1 : p;
+  size_t bl = strlen(base);
+  if (bl != 32) return 0;
+  for (size_t i = 0; i < 32; i++) { char c = base[i]; if (!((c>='0'&&c<='9')||(c>='a'&&c<='f'))) return 0; }
+  size_t dl = base - p;
+  if (dl + 35 >= outsz) return 0;
+  memcpy(out, p, dl); out[dl]=base[0]; out[dl+1]=base[1]; out[dl+2]='/';
+  memcpy(out + dl + 3, base, bl + 1);
+  return 1;
+}
 static int my_open(const char *p, int fl, ...) {
   if (p && !strcmp(p, "/proc/cpuinfo")) {
     int nc = getenv("CUP_1CORE") ? 1 : 4;
@@ -718,6 +756,13 @@ static int my_open(const char *p, int fl, ...) {
   }
   va_list ap; va_start(ap, fl); int mo = va_arg(ap, int); va_end(ap);
   int fd = open(p, fl, mo);
+  if (fd < 0 && p) {  /* FF9 SHARD: tenta <dir>/<xx>/<hash> */
+    char sp[512];
+    if (shard_alt(p, sp, sizeof sp)) {
+      int sfd = open(sp, fl, mo);
+      if (sfd >= 0) { if (g_dllog) fprintf(stderr, "[open-shard] %s -> %s\n", p, sp); return sfd; }
+    }
+  }
   if (g_dllog && p) fprintf(stderr, "[open%s] %s\n", fd < 0 ? "-MISS" : "", p);
   if (g_guidlog && p && strstr(p, "unity_app_guid")) {
     g_guid_fd = fd;
@@ -774,6 +819,7 @@ static int my_stat(const char *p, void *st) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat-redir] %s -> %s\n", p, r);
   int rc = stat(r ? r : p, (struct stat *)st);
+  if (rc < 0) { char sp[512]; if (shard_alt(r ? r : p, sp, sizeof sp)) rc = stat(sp, (struct stat *)st); }
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat-MISS] %s\n", p);
   return rc;
 }
@@ -790,6 +836,7 @@ static int my_stat64(const char *p, void *st) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat64-redir] %s -> %s\n", p, r);
   int rc = stat64(r ? r : p, (struct stat64 *)st);
+  if (rc < 0) { char sp[512]; if (shard_alt(r ? r : p, sp, sizeof sp)) rc = stat64(sp, (struct stat64 *)st); }
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat64-MISS] %s\n", p);
   return rc;
 }
@@ -838,7 +885,9 @@ static void *my_enl_alloc(unsigned long size, unsigned long align, void *a2, int
 static int my_access(const char *p, int m) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[access-redir] %s -> %s\n", p, r);
-  return access(r ? r : p, m);
+  int rc = access(r ? r : p, m);
+  if (rc < 0) { char sp[512]; if (shard_alt(r ? r : p, sp, sizeof sp)) rc = access(sp, m); }
+  return rc;
 }
 /* statfs64: Unity checa espaço livre via statfs64(path) p/ "instalar resources".
    O path que ele passa pode ser Android (/data/...) inexistente -> erro -> 0 livre ->
@@ -1198,6 +1247,13 @@ static const char *GL_EXT_SHORT =
   "GL_OES_rgb8_rgba8 GL_OES_packed_depth_stencil GL_OES_vertex_array_object "
   "GL_EXT_texture_format_BGRA8888 GL_OES_standard_derivatives";
 static const unsigned char *my_glGetString(unsigned n){
+  /* FF9_FAKEES3: reporta ES3 p/ a Unity (cujo GfxDevice deste build pode exigir ES3 p/
+     submeter draws) MAS o contexto real é ES2 (Mali-450). Teste estilo shim Mina. */
+  if(getenv("FF9_FAKEES3")){
+    if(n==0x1F02) return (const unsigned char*)"OpenGL ES 3.0";
+    if(n==0x8B8C) return (const unsigned char*)"OpenGL ES GLSL ES 3.00";
+  }
+  { static int gln=0; if(gln++<12){ fprintf(stderr,"[GLSTR] glGetString(0x%x)\n",n); fsync(2);} }
   if(n==0x1F03) return (const unsigned char*)GL_EXT_SHORT;   /* GL_EXTENSIONS curto */
   if(!r_glGetString) r_glGetString=(const unsigned char*(*)(unsigned))dlsym(RTLD_DEFAULT,"glGetString");
   const unsigned char *s = r_glGetString ? r_glGetString(n) : NULL;
@@ -1307,6 +1363,52 @@ static void my_glShaderSource(unsigned sh, int count, const char **string, const
         fprintf(stderr, "[ALPHAFIX] shader=%u: ExternalAlpha->0 + _Color/_RendererColor->vec4(1)\n", sh);
         fsync(2);
         r_glShaderSource(sh, 1, (const char **)&out, NULL);
+        free(out); free(buf);
+        return;
+      }
+      free(buf);
+    }
+  }
+  /* FF9_SHFIX (default ON): ES2 exige MESMA precisão p/ um uniform em vertex e fragment.
+   * O blob do FF9 é ES3 (vertex=highp default, fragment=mediump default) -> link error
+   * "Uniform '_WorldSpaceLightPos0' differ on precision" -> nada renderiza (draws=0).
+   * Normaliza TODA precisão p/ uma só (FF9_SHPREC=highp|mediump, default highp) trocando
+   * os tokens mediump/lowp/highp -> alvo (são keywords, sempre standalone). Garante
+   * `precision <alvo> float;` no topo. Desliga com FF9_NOSHFIX. */
+  if (!getenv("FF9_NOSHFIX") && string && count > 0) {
+    const char *prec = getenv("FF9_SHPREC"); if (!prec || !*prec) prec = "highp";
+    size_t tot = 0;
+    for (int i = 0; i < count && string[i]; i++)
+      tot += (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+    char *buf = (tot < 262144) ? malloc(tot + 1) : NULL;
+    if (buf) {
+      size_t o = 0;
+      for (int i = 0; i < count && string[i]; i++) {
+        size_t l = (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+        memcpy(buf + o, string[i], l); o += l;
+      }
+      buf[o] = 0;
+      char *out = malloc(o + 64); /* prec é <= comprimento dos tokens trocados; +64 folga */
+      if (out) {
+        size_t w = 0;
+        size_t pl = strlen(prec);
+        for (size_t k = 0; k < o; ) {
+          static const char *toks[] = {"mediump", "lowp", "highp"};
+          int hit = 0;
+          for (int t = 0; t < 3; t++) {
+            size_t tl = strlen(toks[t]);
+            if (k + tl <= o && !memcmp(buf + k, toks[t], tl)) {
+              char b = k ? buf[k - 1] : ' ', a = (k + tl < o) ? buf[k + tl] : ' ';
+              if (!(isalnum((unsigned char)b) || b == '_') && !(isalnum((unsigned char)a) || a == '_')) {
+                memcpy(out + w, prec, pl); w += pl; k += tl; hit = 1; break;
+              }
+            }
+          }
+          if (!hit) out[w++] = buf[k++];
+        }
+        out[w] = 0;
+        r_glShaderSource(sh, 1, (const char **)&out, NULL);
+        if (getenv("FF9_SHFIXLOG")) { fprintf(stderr, "[SHFIX] shader=%u -> precisão %s\n", sh, prec); fsync(2); }
         free(out); free(buf);
         return;
       }
@@ -3456,6 +3558,11 @@ static void *ds_route(const char *nm, void *real) {
     if (!strcmp(nm, "glClear"))        { ds_r_Clear = real;        return (void *)my_glClear; }
     if (!strcmp(nm, "glClearColor"))   { ds_r_ClearColor = real;   return (void *)my_glClearColor; }
   }
+  /* FF9_SHFIX (default ON, independe de g_drawspy): rotear glShaderSource p/ normalizar
+     precisão (ES3->ES2 link error). Antes do gate de drawspy senão o jogo nunca renderiza. */
+  if (!getenv("FF9_NOSHFIX") && !strcmp(nm, "glShaderSource")) {
+    r_glShaderSource = real; return (void *)my_glShaderSource;
+  }
   if (!g_drawspy) return real;
   /* TEXTURAS (TEXHALF) — só estas precisam do roteamento em produção */
   if (!strcmp(nm, "glTexImage2D"))   { ds_r_TexImage2D = real;   w = (void *)my_glTexImage2D; }
@@ -3496,6 +3603,75 @@ static void ds_init(void) {
  * inválido e CRASHA ao chamá-lo (fault 0x7f10000004). Loga TODAS as resoluções
  * (com NULL destacado) p/ achar a culpada. CUP_NOVAO força NULL p/ as funções de
  * VAO (testa a hipótese de que GL_OES_vertex_array_object é a culpada). */
+/* FF9_EGLFIX (fbdev, default ON): Unity 2022 passa attribs ES3/desconhecidos p/ o
+ * eglChooseConfig REAL do Mali Utgard -> EGL_BAD_ATTRIBUTE -> 0 configs -> GfxDevice
+ * NULL-renderer -> 0 draws -> TELA PRETA. Substituímos a attrib_list por uma ES2 limpa
+ * (RGBA8 + depth24 + ES2_BIT + WINDOW) e chamamos o eglChooseConfig REAL -> config válida. */
+static unsigned (*r_real_choosecfg)(void *, const int *, void **, int, int *);
+static unsigned my_eglChooseConfig(void *dpy, const int *attribs, void **cfgs, int sz, int *n) {
+  if (!r_real_choosecfg) r_real_choosecfg = (unsigned (*)(void *, const int *, void **, int, int *))dlsym(RTLD_DEFAULT, "eglChooseConfig");
+  /* copia a attrib_list de Unity, sanitizando os bits ES3 que o Mali Utgard rejeita */
+  int buf[128]; int o = 0; int logged = 0;
+  static int dumped = 0;
+  if (attribs) {
+    for (int i = 0; attribs[i] != 0x3038 && o < 120; i += 2) {  /* até EGL_NONE */
+      int k = attribs[i], v = attribs[i + 1];
+      if (!dumped) fprintf(stderr, "[EGLFIX] in attr 0x%x = 0x%x\n", k, v);
+      if (k == 0x3040) v = 0x0004;            /* RENDERABLE_TYPE -> ES2_BIT */
+      else if (k == 0x3042) v = 0x0004;       /* CONFORMANT -> ES2_BIT */
+      else if (k == 0x3027) { continue; }     /* EGL_CONFIG_CAVEAT: dropar */
+      else if (k == 0x3028) { continue; }     /* EGL_CONFIG_ID: dropar (não filtrar por id) */
+      else if (k >= 0x3088) { continue; }     /* attribs EGL>=1.4/ES3/colorspace desconhecidos do Mali: dropar */
+      buf[o++] = k; buf[o++] = v; logged = 1;
+    }
+  }
+  if (!logged) { /* sem lista -> ES2 RGBA default */
+    buf[o++]=0x3024; buf[o++]=8; buf[o++]=0x3023; buf[o++]=8; buf[o++]=0x3022; buf[o++]=8;
+    buf[o++]=0x3040; buf[o++]=0x0004; buf[o++]=0x3033; buf[o++]=0x0004;
+  }
+  buf[o++] = 0x3038;  /* EGL_NONE */
+  dumped = 1;
+  unsigned r = r_real_choosecfg ? r_real_choosecfg(dpy, buf, cfgs, sz, n) : 0;
+  fprintf(stderr, "[EGLFIX] eglChooseConfig sanitized -> r=%u n=%d cfg0=%p\n", r, n ? *n : -1, (cfgs && sz > 0) ? cfgs[0] : 0);
+  fsync(2);
+  return r;
+}
+/* FF9_EGLFIX: Unity 2022 pede contexto ES3 (EGL_CONTEXT_CLIENT_VERSION=3); Mali-450 é
+ * ES2-only -> eglCreateContext falha -> sem GL -> preto. Força versão 2. */
+static void *(*r_real_createctx)(void *, void *, void *, const int *);
+static void *my_eglCreateContext(void *dpy, void *cfg, void *share, const int *attribs) {
+  if (!r_real_createctx) r_real_createctx = (void *(*)(void *, void *, void *, const int *))dlsym(RTLD_DEFAULT, "eglCreateContext");
+  int buf[64]; int o = 0;
+  if (attribs) for (int i = 0; attribs[i] != 0x3038 && o < 60; i += 2) {
+    int k = attribs[i], v = attribs[i + 1];
+    if (k == 0x3098) v = 2;          /* EGL_CONTEXT_CLIENT_VERSION/MAJOR -> 2 */
+    else if (k == 0x30FB) continue;  /* EGL_CONTEXT_MINOR_VERSION -> dropar */
+    else if (k == 0x30FD) continue;  /* EGL_CONTEXT_OPENGL_PROFILE_MASK -> dropar */
+    buf[o++] = k; buf[o++] = v;
+  }
+  if (o == 0) { buf[o++] = 0x3098; buf[o++] = 2; }
+  buf[o++] = 0x3038;
+  void *c = r_real_createctx ? r_real_createctx(dpy, cfg, share, buf) : 0;
+  fprintf(stderr, "[EGLFIX] eglCreateContext ES2 -> %p\n", c); fsync(2);
+  return c;
+}
+/* trace surface + makecurrent p/ achar onde o GfxDevice init quebra (ES3->ES2) */
+static void *(*r_real_createsurf)(void *, void *, void *, const int *);
+static void *my_eglCreateWindowSurface(void *dpy, void *cfg, void *win, const int *attribs) {
+  if (!r_real_createsurf) r_real_createsurf = (void *(*)(void *, void *, void *, const int *))dlsym(RTLD_DEFAULT, "eglCreateWindowSurface");
+  void *s = r_real_createsurf ? r_real_createsurf(dpy, cfg, win, attribs) : 0;
+  int err = 0; { int (*ge)(void) = (int(*)(void))dlsym(RTLD_DEFAULT, "eglGetError"); if (ge) err = ge(); }
+  fprintf(stderr, "[EGLFIX] eglCreateWindowSurface(cfg=%p win=%p) -> %p err=0x%x\n", cfg, win, s, err); fsync(2);
+  return s;
+}
+static unsigned (*r_real_makecur)(void *, void *, void *, void *);
+static unsigned my_eglMakeCurrent(void *dpy, void *draw, void *read, void *ctx) {
+  if (!r_real_makecur) r_real_makecur = (unsigned (*)(void *, void *, void *, void *))dlsym(RTLD_DEFAULT, "eglMakeCurrent");
+  unsigned r = r_real_makecur ? r_real_makecur(dpy, draw, read, ctx) : 0;
+  int err = 0; { int (*ge)(void) = (int(*)(void))dlsym(RTLD_DEFAULT, "eglGetError"); if (ge) err = ge(); }
+  static int c = 0; if (c++ < 8) { fprintf(stderr, "[EGLFIX] eglMakeCurrent(draw=%p ctx=%p) -> %u err=0x%x\n", draw, ctx, r, err); fsync(2); }
+  return r;
+}
 static void *(*r_eglGetProcAddress)(const char *);
 static unsigned g_egp_n = 0;
 static void *my_eglGetProcAddress(const char *nm) {
@@ -3516,6 +3692,10 @@ static void *my_eglGetProcAddress(const char *nm) {
 }
 
 static char g_dl_self, g_dl_il2cpp;
+/* libs nativas P/Invoke do FF9 (sdlib_android=som, FF9SpecialEffectPlugin, burst).
+ * Carregadas via so_load; dlopen/dlsym roteados p/ os módulos. */
+static char g_dl_sdlib, g_dl_specfx, g_dl_burst;
+static so_module *g_m_sdlib = NULL, *g_m_specfx = NULL, *g_m_burst = NULL;
 static so_module *g_m_unity = NULL, *g_m_il2cpp = NULL;
 
 /* ---- probe MemoryManager do libunity (RE: GetMemoryManager=0x3cbe2c) ----
@@ -4191,13 +4371,59 @@ static void *g_sa_string = NULL;
 void *my_streamingAssetsPath(void);
 void *my_streamingAssetsPath(void) {
   if (!g_sa_string && g_il2cpp_base) {
-    void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x1b62c38); /* il2cpp_string_new */
-    const char *p = getenv("CUP_SAPATH"); if (!p) p = "/storage/cuphead-sa";
+    /* il2cpp_string_new resolvido por NOME (export; FF9 != Cuphead offset). */
+    void *(*isn)(const char *) = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new");
+    if (!isn) isn = (void *(*)(const char *))(g_il2cpp_base + 0xff7ff0); /* fallback export RVA */
+    const char *p = getenv("CUP_SAPATH"); if (!p) p = "/storage/roms/ff9/bin/Data";
     g_sa_string = isn(p);
-    fprintf(stderr, "[SAPATH] streamingAssetsPath -> \"%s\" (il2cpp str=%p)\n", p, g_sa_string);
+    fprintf(stderr, "[SAPATH] streamingAssetsPath -> \"%s\" (il2cpp str=%p, isn=%p)\n", p, g_sa_string, (void*)isn);
     fsync(2);
   }
   return g_sa_string;
+}
+/* GooglePlayDownloader.GetExpansionFilePath / GetPatchOBBPath: no Android real montam o
+ * path do .obb a partir de currentActivity (reflection). No so-loader a cadeia de delegate
+ * interna lança NRE/bad_function_call por frame (RA=Initialize+0xa8) ABORTANDO Initialize
+ * ANTES de chegar em GetAssetBundleFilePath (que usa nosso SAPATH p/ carregar aobb.bin).
+ * Override: devolve String il2cpp benigna p/ Initialize seguir até GetAssetBundleFilePath.
+ * FF9_OBBPATH controla o valor (default "" → File.Exists falso → cai no streaming). */
+static void *g_obb_string;
+static void *g_main_obb_string, *g_patch_obb_string;
+static void *obb_str(const char *p) {
+  void *(*isn)(const char *) = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new");
+  if (!isn) isn = (void *(*)(const char *))(g_il2cpp_base + 0xff7ff0);
+  return isn(p);
+}
+/* ValidateExpansion abre estes paths como ZipArchive p/ validar entradas → DEVEM ser os
+   .obb ZIP REAIS (não o aobb.bin descomprimido). GetExpansionFilePath/GetMainOBBPath → main.obb;
+   GetPatchOBBPath → patch.obb. (FF9_MAINOBB/FF9_PATCHOBB sobrescrevem.) */
+void *my_main_obb_path(void);
+void *my_main_obb_path(void) {
+  if (!g_main_obb_string && g_il2cpp_base) {
+    const char *p = getenv("FF9_MAINOBB"); if (!p) p = "/storage/roms/ff9/userdata/main.obb";
+    g_main_obb_string = obb_str(p);
+    fprintf(stderr, "[OBBPATH] main/expansion -> \"%s\" (str=%p)\n", p, g_main_obb_string); fsync(2);
+  }
+  return g_main_obb_string;
+}
+void *my_patch_obb_path(void);
+void *my_patch_obb_path(void) {
+  if (!g_patch_obb_string && g_il2cpp_base) {
+    const char *p = getenv("FF9_PATCHOBB"); if (!p) p = "/storage/roms/ff9/userdata/patch.obb";
+    g_patch_obb_string = obb_str(p);
+    fprintf(stderr, "[OBBPATH] patch -> \"%s\" (str=%p)\n", p, g_patch_obb_string); fsync(2);
+  }
+  return g_patch_obb_string;
+}
+/* legado: gate de Initialize (FF9_OBBPATH, default abcache) — mantido p/ o modo forçado */
+void *my_obb_path(void);
+void *my_obb_path(void) {
+  if (!g_obb_string && g_il2cpp_base) {
+    const char *p = getenv("FF9_OBBPATH"); if (!p) p = "/storage/roms/ff9/userdata/abcache/aobb.bin";
+    g_obb_string = obb_str(p);
+    fprintf(stderr, "[OBBPATH] (legacy) -> \"%s\" (str=%p)\n", p, g_obb_string); fsync(2);
+  }
+  return g_obb_string;
 }
 /* AssetBundleLoader.getBasePath(location) (il2cpp 0x1031C8C): p/ StreamingAssets usa
  * streamingAssetsPath (já overridado), mas p/ DLC (location=1) usa OUTRA fonte que no
@@ -4214,6 +4440,10 @@ static void *my_dlopen(const char *nm, int flag) {
   if (g_dllog) fprintf(stderr, "[dlopen] \"%s\"\n", nm ? nm : "(null)");
   /* il2cpp: nosso modulo ja' carregado (F1). Casa "il2cpp" em qualquer forma. */
   if (nm && strstr(nm, "il2cpp")) { fprintf(stderr, "[DLOPEN] %s -> il2cpp module\n", nm); return &g_dl_il2cpp; }
+  /* libs nativas P/Invoke do FF9 (já so_load'adas) */
+  if (nm && strstr(nm, "sdlib")        && g_m_sdlib)  { fprintf(stderr, "[DLOPEN] %s -> sdlib module\n", nm); return &g_dl_sdlib; }
+  if (nm && strstr(nm, "SpecialEffect") && g_m_specfx) { fprintf(stderr, "[DLOPEN] %s -> specfx module\n", nm); return &g_dl_specfx; }
+  if (nm && strstr(nm, "burst")        && g_m_burst)  { fprintf(stderr, "[DLOPEN] %s -> burst module\n", nm); return &g_dl_burst; }
   /* FMOD (audio do Unity) faz dlopen("libOpenSLES.so") em runtime. CUP_NOSL=1
      desliga o shim (volta ao estado imagem-OK: FMOD cai no null output). */
   if (nm && strstr(nm, "OpenSLES") && !getenv("CUP_NOSL")) {
@@ -4226,6 +4456,13 @@ static void *my_dlsym(void *h, const char *nm) {
   if (!nm) return NULL;
   if (g_dllog) fprintf(stderr, "[dlsym] h=%p \"%s\"\n", h, nm);
   if (!strcmp(nm, "glGetString")) return (void *)my_glGetString;
+  /* FF9_SHFIX: glShaderSource SEMPRE roteado (Unity resolve core GL via dlsym(RTLD_DEFAULT),
+     libGLESv2 é RTLD_GLOBAL -> não passa pelo egl_shim). Normaliza precisão ES3->ES2. */
+  if (!getenv("FF9_NOSHFIX") && !strcmp(nm, "glShaderSource")) {
+    if (!r_glShaderSource) r_glShaderSource = dlsym(RTLD_DEFAULT, "glShaderSource");
+    fprintf(stderr, "[SHFIX] glShaderSource via my_dlsym -> my_glShaderSource\n");
+    return (void *)my_glShaderSource;
+  }
   if (g_drawspy && nm[0] == 'g' && nm[1] == 'l') {   /* cobre resolução de gl* via dlsym tb */
     void *p = dlsym(RTLD_DEFAULT, nm);
     void *w = ds_route(nm, p);
@@ -4284,6 +4521,28 @@ static void *my_dlsym(void *h, const char *nm) {
     fprintf(stderr, "[DLSYM:il2cpp] %s -> %p\n", nm, p);
     return p;
   }
+  /* sdlib_android (som): a SdSoundSystem_Create REAL chama slCreateEngine e deref
+     método null do objeto OpenSL (nosso shim FMOD não casa) -> SIGSEGV. P/ IMAGEM,
+     áudio é dispensável: stub genérico devolve handle/sucesso=1, no-op nas demais.
+     FF9_REALAUDIO usa as funções reais (quando o shim OpenSL casar). */
+  if (h == &g_dl_sdlib && !getenv("FF9_REALAUDIO") && !strncmp(nm, "Sd", 2)) {
+    extern long sd_stub();
+    fprintf(stderr, "[DLSYM:sd-stub] %s\n", nm);
+    return (void *)sd_stub;
+  }
+  /* P/Invoke das libs nativas FF9: resolve no módulo correspondente */
+  { so_module *aux = NULL;
+    if (h == &g_dl_sdlib)  aux = g_m_sdlib;
+    else if (h == &g_dl_specfx) aux = g_m_specfx;
+    else if (h == &g_dl_burst)  aux = g_m_burst;
+    if (aux) {
+      so_module *c = so_save(); so_use(aux);
+      void *p = (void *)so_find_addr_safe(nm);
+      so_use(c); free(c);
+      fprintf(stderr, "[DLSYM:aux] %s -> %p\n", nm, p);
+      return p;
+    }
+  }
   if (h == &g_dl_self) {
     void *p = (void *)so_find_addr_safe(nm);
     if (!p && g_m_il2cpp) { so_module *c = so_save(); so_use(g_m_il2cpp); p = (void *)so_find_addr_safe(nm); so_use(c); free(c); }
@@ -4295,6 +4554,49 @@ static void *my_dlsym(void *h, const char *nm) {
 static const char *my_dlerror(void) { return NULL; }
 static int my_dladdr(const void *a, void *i) { (void)a; (void)i; return 0; }
 static int my_dlclose(void *h) { (void)h; return 0; }
+
+/* Stub genérico p/ a API SdSoundSystem_* (áudio FF9): devolve 1 (handle válido /
+ * sucesso) e ignora args -> init de áudio "passa" sem OpenSL real, jogo prossegue
+ * p/ carregar a cena (imagem) sem crash. Som fica mudo (resolver depois). */
+long sd_stub();
+long sd_stub() { return 1; }
+
+/* Carrega uma lib nativa P/Invoke do FF9 (sdlib_android/SpecialEffect/burst) no nosso
+ * so-loader: so_load + relocate + resolve (imports libc via dynlib_functions) + GOT
+ * patches (dlopen/dlsym/log/slCreateEngine→shims) + init_array. Devolve o so_module
+ * (NULL em falha). Restaura o módulo ativo (il2cpp) ao sair. */
+extern int my_sigaction();
+static void ctype_resolve(void);
+static so_module *load_ff9_aux_lib(const char *fname, size_t heap_mb) {
+  extern DynLibFunction dynlib_functions[]; extern size_t dynlib_numfunctions;
+  so_module *prev = so_save();
+  size_t hs = heap_mb * 1024 * 1024;
+  void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (heap == MAP_FAILED) { fprintf(stderr, "[AUX] %s: mmap falhou\n", fname); so_use(prev); free(prev); return NULL; }
+  if (so_load(fname, heap, hs) < 0) { fprintf(stderr, "[AUX] %s: so_load FALHOU\n", fname); so_use(prev); free(prev); return NULL; }
+  so_relocate();
+  so_resolve(dynlib_functions, dynlib_numfunctions, 0);
+  ctype_resolve();
+  so_register_eh_frame();
+  /* shims que a lib pode usar em runtime */
+  patch_got("dlopen", (void *)my_dlopen);
+  patch_got("dlsym", (void *)my_dlsym);
+  patch_got("__android_log_print", (void *)my_alog_print);
+  patch_got("__android_log_write", (void *)my_alog_write);
+  patch_got("__android_log_vprint", (void *)my_alog_vprint);
+  patch_got("slCreateEngine", (void *)slCreateEngine_shim);
+  patch_got("sigaction", (void *)my_sigaction);
+  patch_got("exit", (void *)my_exit);
+  patch_got("_exit", (void *)my_exit);
+  patch_sem_shim();
+  patch_pthread_shim();
+  so_finalize(); so_flush_caches();
+  so_execute_init_array();
+  so_module *m = so_save();
+  so_use(prev); free(prev);
+  fprintf(stderr, "[AUX] %s carregado OK (module=%p)\n", fname, (void *)m);
+  return m;
+}
 
 /* ---------- TLS bridge (bionic keys -> slots nossos; 1 glibc key) ---------- */
 #define NSLOT 1024
@@ -4603,6 +4905,24 @@ extern int g_choreo_log;
    hardcodava 0x73cXXX que no FF9 caem em tabelas de dados -> SIGILL). Preenchidos no F1. */
 void *(*il2_domain_get)(void);
 void *(*il2_thread_attach)(void *);
+/* FF9_VSYNC: o frame-pacing do Unity (libunity 0x5f5150) ESPERA um contador GLOBAL de vsync
+   (g_unity_base+0x10785e8) alcançar um alvo derivado do tempo×refresh (waiter @0x61c5cc, loop
+   0x61c5f0). Esse contador é incrementado pelo handler de doFrame do Choreographer NATIVO
+   (0x61f2d4: counter++ + cond_broadcast no struct@0x1078590, cond@+0x28). Como o pump do
+   Choreographer não existe no so-loader (e bypassamos a setup), o contador nunca anda → a main
+   trava no frame 3 (1º frame com pacing real). FIX: a NOSSA driver-thread vira a FONTE de vsync —
+   a cada ~60Hz incrementa o contador (sob o mutex do engine, slot 0x1078590) e faz broadcast no
+   cond (slot 0x10785b8), replicando o efeito de 0x61f2d4. Default ON; FF9_NOVSYNC desliga. */
+static void ff9_vsync_tick(void) {
+  if (!g_unity_base) return;
+  void **mtx  = (void **)(g_unity_base + 0x1078590);
+  void **cond = (void **)(g_unity_base + 0x10785b8);
+  volatile long *ctr = (volatile long *)(g_unity_base + 0x10785e8);
+  ((int (*)(void **))pthread_mutex_lock_fake)(mtx);
+  (*ctr)++;
+  ((int (*)(void **))pthread_mutex_unlock_fake)(mtx);
+  ((int (*)(void **))pthread_cond_broadcast_fake)(cond);
+}
 static void *choreo_driver_thread(void *arg) {
   (void)arg;
   g_choreo_log = getenv("TER_CHOREOLOG") ? 1 : 0;
@@ -4616,12 +4936,24 @@ static void *choreo_driver_thread(void *arg) {
     void *th = il2_thread_attach(il2_domain_get());
     fprintf(stderr, "[CHOREO] FrameCallback pronto; il2cpp_thread_attach -> %p\n", th); fsync(2);
   } else fprintf(stderr, "[CHOREO] il2cpp API não resolvida (sem attach)\n");
+  /* TER_DRIVEHANDLEMSG: a setup do UnityChoreographer (libunity+0x61eebc) cria um
+     HandlerThread+Handler e BLOQUEIA num promise (obj[88][0]) que só o loop do HandlerThread
+     (handleMessage → postFrameCallback + signal) preencheria. Nosso HandlerThread é fake (não
+     roda). Dirigimos handleMessage AQUI, nesta thread (já anexada ao il2cpp), p/ rodar o
+     delegate C# que registra o frame-callback e libera o promise. */
+  if (getenv("TER_DRIVEHANDLEMSG")) {
+    extern void jni_handlemessage(void *env);
+    int n = getenv("TER_HANDLEMSG_N") ? atoi(getenv("TER_HANDLEMSG_N")) : 1;
+    fprintf(stderr, "[CHOREO] drive handleMessage x%d (destrava setup)\n", n); fsync(2);
+    for (int k = 0; k < n; k++) { jni_handlemessage(g_choreo_env); usleep(16000); }
+  }
   int started = 0;
   for (;;) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     long nanos = (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
     int r = jni_choreo_doframe(g_choreo_env, nanos);
     if (r && !started) { started = 1; fprintf(stderr, "[CHOREO] doFrame começou a disparar\n"); fsync(2); }
+    if (getenv("FF9_VSYNCTICK")) ff9_vsync_tick();   /* (alt) FONTE de vsync via contador global */
     usleep(16000);  /* ~60Hz */
   }
   return NULL;
@@ -4970,6 +5302,13 @@ int main(int argc, char **argv) {
   /* __stack_chk_fail nao esta na tabela de imports -> patch direto na GOT (apos resolve) */
   set_import("glGetString", (void *)my_glGetString);
   ds_init();  /* CUP_DRAWSPY: ring de draws + watchdog (intercepta via eglGetProcAddress) */
+  /* FF9_SHFIX (default ON): roteia gl* resolvidos pelo egl_shim por ds_route p/ normalizar
+     a precisão do glShaderSource (ES3->ES2 link error). Sem isto nada renderiza. */
+  if (!getenv("FF9_NOSHFIX")) {
+    extern void *(*g_gl_proc_router)(const char *, void *);
+    g_gl_proc_router = ds_route;
+    fprintf(stderr, "[SHFIX] g_gl_proc_router = ds_route (glShaderSource precision normalize)\n");
+  }
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     set_import("eglGetProcAddress", (void *)my_eglGetProcAddress);
   set_import("sysconf", (void *)my_sysconf);
@@ -5067,6 +5406,16 @@ int main(int argc, char **argv) {
   /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
   if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0"))
     patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
+  /* FF9_EGLFIX (fbdev): substitui eglChooseConfig da libunity p/ sanitizar attribs ES2
+     (senão Mali Utgard rejeita os attribs ES3 -> GfxDevice NULL -> 0 draws -> preto). */
+  if (!cup_use_kmsdrm() && !getenv("FF9_NOEGLFIX")) {
+    if (patch_got("eglChooseConfig", (void *)my_eglChooseConfig))
+      fprintf(stderr, "[EGLFIX] libunity eglChooseConfig -> my_eglChooseConfig (ES2 sanitize)\n");
+    if (patch_got("eglCreateContext", (void *)my_eglCreateContext))
+      fprintf(stderr, "[EGLFIX] libunity eglCreateContext -> my_eglCreateContext (force ES2)\n");
+    patch_got("eglCreateWindowSurface", (void *)my_eglCreateWindowSurface);
+    patch_got("eglMakeCurrent", (void *)my_eglMakeCurrent);
+  }
   /* dl* estavam COMENTADOS em imports.gen.c -> set_import foi no-op e o dlopen@plt
      caiu no glibc REAL (falha ao carregar .so Android). Sem isso o il2cpp nao carrega. */
   patch_got("dlopen", (void *)my_dlopen);
@@ -5520,6 +5869,15 @@ int main(int argc, char **argv) {
     so_execute_init_array();
     g_m_il2cpp = so_save();
     fprintf(stderr, "[F1] libil2cpp carregado OK\n");
+    /* F1b: libs nativas P/Invoke do FF9 (senão EntryPointNotFoundException no boot).
+       sdlib_android = som (SdSoundSystem_*); sem ela o AudioManager init lança e aborta
+       a cena. FF9_NOAUX desliga. */
+    if (!getenv("FF9_NOAUX")) {
+      g_m_sdlib  = load_ff9_aux_lib("libsdlib_android.so", 16);
+      g_m_specfx = load_ff9_aux_lib("libFF9SpecialEffectPlugin.so", 16);
+      g_m_burst  = load_ff9_aux_lib("lib_burst_generated.so", 8);
+      so_use(g_m_il2cpp);  /* volta o módulo ativo p/ il2cpp */
+    }
     mm_probe("pos-init_array-il2cpp");
     dbg_sync();
   } else {
@@ -5785,6 +6143,223 @@ int main(int argc, char **argv) {
     *flag = 1;
     fprintf(stderr, "[FORCETHREADED] flag c0da20 -> 1 (cset->mov#1 @0x2eaacc + write byte)\n");
   }
+  /* FF9_CHOREO_NOWAIT: a setup do UnityChoreographer (libunity+0x61eebc) cria um promise
+     (obj+88, flag em *promise) e BLOQUEIA em pthread_cond_wait (loop @0x61efe0) até o pump
+     NATIVO do choreographer (0x61f180, command-processor) marcar o flag + broadcast no cond
+     (obj+136). Esse pump roda na thread "UnityChoreographer" (HandlerThread) que NÃO existe no
+     so-loader (NewObject(HandlerThread)=NULL → sem looper/pump) → promise nunca preenchido →
+     DEADLOCK (tela preta). O wait é uma BARREIRA pura: o código pós-wait (0x61f000) só faz
+     mutex_unlock+ret, NUNCA lê o resultado do promise. Provado por gdb: setar o flag=1 destrava
+     a main pro render loop (frames 2,3+). FIX: patch do topo do loop de espera (0x61efe0
+     `ldr x8,[x19,#88]`) → `b 0x61f000` (pula a espera, vai direto pro unlock+ret). Default ON;
+     FF9_CHOREO_WAIT desliga. */
+  if (!getenv("FF9_CHOREO_WAIT") && g_unity_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t w = g_unity_base + 0x61efe0;
+    void *pw = (void *)(w & ~((uintptr_t)pgsz - 1));
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)w = 0x14000008u;   /* b 0x61f000 (+0x20) — pula o cond_wait do choreographer */
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pw, (char *)pw + pgsz * 2);
+    fprintf(stderr, "[CHOREO_NOWAIT] libunity+0x61efe0 -> b 0x61f000 (bypassa cond_wait do setup)\n");
+  }
+  /* FF9_VSYNC_NOWAIT: o 2º muro (frame 3) = o frame-pacing do Unity (0x5f5150) espera um contador
+     GLOBAL de vsync (g_unity_base+0x10785e8) alcançar um alvo de tempo×refresh, via waiter
+     0x61c5cc (loop 0x61c5f0: while(counter<target) cond_wait). O contador é incrementado pelo
+     pump nativo do Choreographer (0x61f2d4) que não existe no so-loader → nunca anda → deadlock.
+     O retorno do waiter NÃO é usado no cálculo do delta (5f51c0 recarrega [sp+8]); só serve de
+     barreira de pacing. FIX: patch do `b.ge 0x61c60c` (0x61c5f8) → `b 0x61c60c` (sempre "atingiu o
+     alvo", sai sem esperar; roda sem vsync-lock). Mais limpo que injetar o contador (que deixaria
+     o campo +0x5f0 do struct stale → null-deref downstream). Default ON; FF9_VSYNC_WAIT desliga. */
+  if (!getenv("FF9_VSYNC_WAIT") && g_unity_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t w = g_unity_base + 0x61c5f8;
+    void *pw = (void *)(w & ~((uintptr_t)pgsz - 1));
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)w = 0x14000005u;   /* b 0x61c60c (+0x14) — sai do loop sem esperar o contador */
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pw, (char *)pw + pgsz * 2);
+    fprintf(stderr, "[VSYNC_NOWAIT] libunity+0x61c5f8 b.ge->b (bypassa wait do contador de vsync)\n");
+  }
+  /* FF9_NULLGUARD: 3º muro (frame 3, após os bypasses) = SIGSEGV em libunity+0x439864
+     (`ldr w0,[x0,#300]; b 0x460320` — getter thunk) com x0=NULL. O caller (0x55fda8) passa NULL
+     quando um feature-flag (checker 0x4e723c) retorna false no nosso env → objeto não é criado
+     (0x453368 pulado). Provável feature de render ES3/URP ausente no Mali-450 ES2. Trampolim
+     torna o getter NULL-safe: se x0==0 retorna 0, senão executa o load original + tail-call p/
+     0x460320. Default ON (transforma o SIGSEGV num render-loop estável 200+ frames, fb0 presenta
+     via eglSwapBuffers); FF9_NO_NULLGUARD desliga. */
+  if (!getenv("FF9_NO_NULLGUARD") && g_unity_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t patch = g_unity_base + 0x439864;
+    uintptr_t hint = (g_unity_base + 0x2000000) & ~((uintptr_t)pgsz - 1);
+    void *tp = mmap((void *)hint, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tp == MAP_FAILED) tp = mmap(NULL, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    long d = (long)((uintptr_t)tp) - (long)patch;
+    if (tp != MAP_FAILED && d > -0x7000000L && d < 0x7000000L) {
+      uint32_t *t = (uint32_t *)tp;
+      t[0] = 0xB4000080u;   /* cbz  x0, t[4]            (NULL -> retorna 0) */
+      t[1] = 0xB9412C00u;   /* ldr  w0, [x0, #0x12c]    (insn original)    */
+      t[2] = 0x58000090u;   /* ldr  x16, [pc, #0x10]  -> alvo em t+0x18     */
+      t[3] = 0xD61F0200u;   /* br   x16                 (tail-call 0x460320)*/
+      t[4] = 0x52800000u;   /* mov  w0, #0                                  */
+      t[5] = 0xD65F03C0u;   /* ret                                          */
+      *(uint64_t *)((char *)tp + 0x18) = (uint64_t)(g_unity_base + 0x460320);
+      __builtin___clear_cache((char *)tp, (char *)tp + pgsz);
+      void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)patch = 0x14000000u | (uint32_t)(((d) >> 2) & 0x03FFFFFF);  /* b trampolim */
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pp, (char *)pp + pgsz * 2);
+      fprintf(stderr, "[NULLGUARD] libunity+0x439864 -> trampolim NULL-safe @%p (d=0x%lx)\n", tp, d);
+    } else {
+      fprintf(stderr, "[NULLGUARD] FALHOU mmap/alcance (tp=%p d=0x%lx)\n", tp, d);
+    }
+  }
+  /* FF9_NOOBB: 4º muro (conteúdo preto) = o C# `ExpansionVerifier.Start` roda TODA frame e chama
+     `GooglePlayDownloader.GetExpansionFilePath`→`populateOBBData` que usa `UnityPlayer.currentActivity`
+     (getObbDir/packageName) → NullReferenceException (sem Activity Android real) → o Update() do jogo
+     aborta antes de desenhar a cena (achado via stack-scan+il2cpp dump: RVAs 0x10d71c0/0x10d726c/
+     0x10ddaf4). Nossos assets JÁ estão em bin/Data (não em OBB). FIX: patcha
+     `GooglePlayDownloader.RunningOnAndroid` (RVA 0x10DA428) → `mov w0,#0; ret` (retorna false) →
+     pula TODO o caminho OBB/Android-download → loading de asset por disco (não-OBB). Default ON;
+     FF9_OBB desliga. */
+  if (!getenv("FF9_OBB") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t f = g_il2cpp_base + 0x10DA428;            /* RunningOnAndroid() */
+    void *pf = (void *)(f & ~((uintptr_t)pgsz - 1));
+    mprotect(pf, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    ((uint32_t *)f)[0] = 0x52800000u;                   /* mov w0, #0 */
+    ((uint32_t *)f)[1] = 0xD65F03C0u;                   /* ret        */
+    mprotect(pf, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)f, (char *)f + 8);
+    fprintf(stderr, "[NOOBB] libil2cpp+0x10DA428 RunningOnAndroid -> return false (pula OBB/currentActivity)\n");
+  }
+  /* FF9_NOOBBINIT: StartGame (0x10DA368) chama AssetManagerForObb.Initialize (`bl 0x14B8FFC`
+     @0x10DA3F0) que crasha nativo no marshalling da string do pacote (libunity+0xc16254). NOP
+     na call → StartGame pula a init do asset-manager OBB e segue pro load da cena (o logo/título
+     pode renderizar de assets-base). Default ON; FF9_OBBINIT desliga. */
+  if (!getenv("FF9_OBBINIT") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t c = g_il2cpp_base + 0x10DA3F0;            /* bl AssetManagerForObb.Initialize */
+    void *pc = (void *)(c & ~((uintptr_t)pgsz - 1));
+    mprotect(pc, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)c = 0xD503201Fu;                       /* nop */
+    mprotect(pc, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)c, (char *)c + 4);
+    fprintf(stderr, "[NOOBBINIT] libil2cpp+0x10DA3F0 bl Initialize -> nop (pula init OBB do StartGame)\n");
+  }
+  /* FF9_SAPATH: override Application.get_streamingAssetsPath (FF9 RVA 0x2538CC0) → my_streamingAssetsPath
+     (devolve String il2cpp "/storage/roms/ff9/bin/Data"). AssetManagerForObb monta o path do aobb.bin
+     a partir daí; o getter original devolve "jar:file://" (APK) → LoadFromFile não acha → assets
+     faltam → preto. Trampolim (il2cpp longe da nossa .text → b direto não alcança). Default ON. */
+  if (!getenv("FF9_NOSAPATH") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    extern void *my_streamingAssetsPath(void);
+    uintptr_t patch = g_il2cpp_base + 0x2538CC0;       /* get_streamingAssetsPath */
+    void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
+    mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    /* tail-call IN-PLACE (sem trampolim, sem alcance de `b`): ldr x16,[pc+8]; br x16; .quad fn */
+    ((uint32_t *)patch)[0] = 0x58000050u;              /* ldr x16, [pc, #8] -> patch+8 */
+    ((uint32_t *)patch)[1] = 0xD61F0200u;              /* br x16 */
+    *(uint64_t *)(patch + 8) = (uint64_t)(uintptr_t)my_streamingAssetsPath;
+    mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)patch, (char *)patch + 16);
+    fprintf(stderr, "[SAPATH] libil2cpp+0x2538CC0 get_streamingAssetsPath -> my_streamingAssetsPath (in-place)\n");
+  }
+  /* FF9_NOOBBPATH off (default ON): override GetExpansionFilePath(0x10d726c) + GetPatchOBBPath(0x10d865c)
+     → my_obb_path. A cadeia de delegate interna dessas funcs lança NRE/frame (RA Initialize+0xa8),
+     abortando Initialize antes de GetAssetBundleFilePath. In-place tail-call (mesma técnica do SAPATH). */
+  if (!getenv("FF9_NOOBBPATH") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    extern void *my_main_obb_path(void), *my_patch_obb_path(void), *my_obb_path(void);
+    /* FF9_OBBLEGACY=1 → modo antigo (ambos → abcache, p/ o caminho FORÇADO).
+       Default → REAL OBBs: GetExpansionFilePath(0x10d726c)+GetMainOBBPath(0x10dabfc)→main.obb,
+       GetPatchOBBPath(0x10d865c)→patch.obb (ValidateExpansion abre como ZipArchive). */
+    int legacy = getenv("FF9_OBBLEGACY") ? 1 : 0;
+    struct { uintptr_t rva; void *fn; } ov[] = {
+      { 0x10d726c, legacy ? my_obb_path : my_main_obb_path },
+      { 0x10dabfc, legacy ? my_obb_path : my_main_obb_path },
+      { 0x10d865c, legacy ? my_obb_path : my_patch_obb_path },
+    };
+    for (int i = 0; i < 3; i++) {
+      uintptr_t patch = g_il2cpp_base + ov[i].rva;
+      void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      ((uint32_t *)patch)[0] = 0x58000050u;            /* ldr x16, [pc, #8] */
+      ((uint32_t *)patch)[1] = 0xD61F0200u;            /* br x16 */
+      *(uint64_t *)(patch + 8) = (uint64_t)(uintptr_t)ov[i].fn;
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)patch, (char *)patch + 16);
+    }
+    fprintf(stderr, "[OBBPATH] %s: Expansion/Main(0x10d726c/0x10dabfc) + Patch(0x10d865c) overridden\n",
+            legacy ? "LEGACY(abcache)" : "REAL .obb ZIPs");
+  }
+  /* FF9_SPLASHDONE (opt-in): força UnityEngine.Rendering.SplashScreen.get_isFinished (0x2573820)
+     a devolver true. O ExpansionVerifier.Update ESPERA o splash terminar antes de validar/StartGame;
+     se o splash da Unity não "finaliza" no so-loader, o verifier trava antes da cena de conteúdo. */
+  if (getenv("FF9_SPLASHDONE") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t a = g_il2cpp_base + 0x2573820;
+    void *pp = (void *)(a & ~((uintptr_t)pgsz - 1));
+    mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    ((uint32_t *)a)[0] = 0x52800020u;   /* mov w0, #1 */
+    ((uint32_t *)a)[1] = 0xD65F03C0u;   /* ret */
+    mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)a, (char *)a + 8);
+    fprintf(stderr, "[SPLASHDONE] SplashScreen.get_isFinished(0x2573820) -> return true\n");
+  }
+  /* FF9_FORCE_STARTGAME: o ExpansionVerifier.Update (0x10D7BE0) é uma máquina de estados
+     (switch em currentState [this+68], valores 1-8); só o estado 8 chama StartGame (0x10DA368)
+     que init o AssetManagerForObb + carrega a cena. Com RunningOnAndroid=false o verifier PARKA
+     antes do estado 8. ValidateExpansion (0x10D8580, chamada no estado 1, com x0=this) é o ponto
+     natural p/ forçar: patchamos ela p/ `currentState=8; ret` → no próximo Update vai p/ StartGame.
+     (jump table 0x67d9c4: entry[7]=0x9a → 0x10D7F18 = case StartGame.) OPT-IN FF9_FORCE_STARTGAME. */
+  if (getenv("FF9_FORCE_STARTGAME") && g_il2cpp_base) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    /* ONE-SHOT (sacada do NextOS: forçar state=8 TODA frame = "segurar o botão" → StartGame
+       re-roda toda frame, a cena do título nunca assume → preto). Trampolim no switch
+       (0x10D7C88 `ldr w8,[x19,#68]`): na 1ª chamada força w8=8 (vai p/ StartGame) e seta um flag;
+       nas próximas executa o load original (`ldr w8,[x19,#68]`) → o state machine segue natural
+       (StartGame seta state=0 e a cena roda). */
+    uintptr_t patch = g_il2cpp_base + 0x10D7C88;
+    uintptr_t hint = (g_il2cpp_base + 0x3000000) & ~((uintptr_t)pgsz - 1);
+    void *tp = mmap((void *)hint, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tp == MAP_FAILED) tp = mmap(NULL, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    long d = (long)((uintptr_t)tp) - (long)patch;
+    if (tp != MAP_FAILED && d > -0x7000000L && d < 0x7000000L) {
+      uint32_t *t = (uint32_t *)tp;        /* FLAG@0x28, BACKLIT@0x30 */
+      t[0] = 0x10000149u;   /* adr  x9, #0x28  (-> FLAG)          */
+      t[1] = 0xB9400128u;   /* ldr  w8, [x9]   (flag)            */
+      t[2] = 0x350000A8u;   /* cbnz w8, t[7] (REAL: já forçou)   */
+      t[3] = 0x5280002Au;   /* mov  w10, #1                      */
+      t[4] = 0xB900012Au;   /* str  w10, [x9]  (seta flag)       */
+      t[5] = 0x52800108u;   /* mov  w8, #8     (força StartGame) */
+      t[6] = 0x14000002u;   /* b    t[8] (DONE)                  */
+      t[7] = 0xB9404668u;   /* REAL: ldr w8, [x19,#68] (original)*/
+      t[8] = 0x58000090u;   /* DONE: ldr x16, #0x10 (-> BACKLIT) */
+      t[9] = 0xD61F0200u;   /* br   x16                          */
+      *(uint32_t *)((char *)tp + 0x28) = 0;                       /* FLAG */
+      *(uint64_t *)((char *)tp + 0x30) = (uint64_t)(patch + 4);   /* BACKLIT = volta */
+      __builtin___clear_cache((char *)tp, (char *)tp + pgsz);
+      void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)patch = 0x14000000u | (uint32_t)(((d) >> 2) & 0x03FFFFFF); /* b tramp */
+      mprotect(pp, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pp, (char *)pp + 8);
+      fprintf(stderr, "[FORCE_STARTGAME] one-shot trampolim @%p (d=0x%lx): força state=8 1x\n", tp, d);
+    } else {
+      fprintf(stderr, "[FORCE_STARTGAME] FALHOU mmap/alcance — fallback every-frame\n");
+      void *pu = (void *)(patch & ~((uintptr_t)pgsz - 1));
+      mprotect(pu, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)patch = 0x52800108u;
+      mprotect(pu, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)patch, (char *)patch + 4);
+    }
+  }
   /* TER_JOBSPY: lê os contadores globais do job system (0xc10350..0xc10370) periódico p/
      diagnosticar agendado-vs-completado. */
   int jobspy = getenv("TER_JOBSPY") ? 1 : 0;
@@ -5928,6 +6503,40 @@ int main(int argc, char **argv) {
     /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
+    /* FF9_LOADSCENE=<nome>: força SceneManager.LoadScene(nome) 1× no frame FF9_LOADAT (default 300).
+       Thread do render loop está atachada ao il2cpp (roda nativeRender/C#). Testa se a cena de
+       conteúdo (Title/MainMenu) renderiza qdo carregada à força (o trigger boot->título não dispara). */
+    { static int ls_done = 0;
+      const char *lsn = getenv("FF9_LOADSCENE");
+      int lsat = getenv("FF9_LOADAT") ? atoi(getenv("FF9_LOADAT")) : 300;
+      if (lsn && !ls_done && f >= lsat && g_il2cpp_base) {
+        ls_done = 1;
+        void *(*isn)(const char *) = NULL;
+        if (g_m_il2cpp) { so_module *c = so_save(); so_use(g_m_il2cpp);
+          isn = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new"); so_use(c); free(c); }
+        fprintf(stderr, "[LOADSCENE] @f=%d isn=%p scene=\"%s\"\n", f, (void *)isn, lsn); fsync(2);
+        if (getenv("FF9_GAMEINIT")) {
+          /* GameInitializer.Initial() (0x14AF1B8): setup do AssetManager/sistemas do jogo
+             que o force pula -> sem ele os sprites do título ficam null (branco). */
+          fprintf(stderr, "[LOADSCENE] GameInitializer.Initial()...\n"); fsync(2);
+          ((void (*)(void *))(g_il2cpp_base + 0x14AF1B8))(NULL);
+          fprintf(stderr, "[LOADSCENE] GameInitializer.Initial() retornou\n"); fsync(2);
+        }
+        if (isn) {
+          void *str = isn(lsn);
+          if (getenv("FF9_USEDIRECTOR")) {
+            /* SceneDirector.ReplaceNow(string) (0x1486cd0): transição de cena GERENCIADA
+               (fade + setup) — evita o overlay de fade branco que o LoadScene cru deixa. */
+            fprintf(stderr, "[LOADSCENE] SceneDirector.ReplaceNow(\"%s\") str=%p\n", lsn, str); fsync(2);
+            ((void (*)(void *, void *))(g_il2cpp_base + 0x1486cd0))(str, NULL);
+          } else {
+            fprintf(stderr, "[LOADSCENE] SceneManager.LoadScene(\"%s\") str=%p\n", lsn, str); fsync(2);
+            ((void (*)(void *, void *))(g_il2cpp_base + 0x2570778))(str, NULL);
+          }
+          fprintf(stderr, "[LOADSCENE] retornou\n"); fsync(2);
+        }
+      }
+    }
     { /* FPS médio por janela de 600 frames (mede lag do mapa/fases p/ tuning) */
       static struct timespec t0; static int f0 = -1;
       if (f % 600 == 0) {
