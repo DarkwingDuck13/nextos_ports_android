@@ -22,6 +22,10 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 - **Streets of Rage 4** (MonoGame/.NET 9) — roda **nativo** (não so-loader): o runtime .NET 9 CoreCLR + MonoGame em GLES2 executam o código gerenciado direto, com host próprio no lugar da `MainActivity`. Jogável com áudio, música original (Wwise) por um reimpl OpenAL leve; texturas ASTC→ETC1 na 1ª execução. Veja [`ports/sor4`](ports/sor4/).
 
+- **Carrion** (MonoGame 3.8 / .NET 9) — o monstro-horror invertido roda **nativo** (mesma linhagem do SOR4, engine **nova**, não Unity): .NET 9 CoreCLR self-contained + MonoGame DesktopGL patchado + **gl4es** (GL desktop→GLES2 no Mali). **100% jogável** no Mali-450 **e no R36S**: render, controles, **som (FMOD real)** e jogo completo desbloqueado. Destraves: `SDL_NO_SIGNAL_HANDLERS` (SDL pisava no GC do .NET), stubs Mono.Android/Maui/InAppBilling, FMOD nativo via PulseAudio. Veja [`ports/carrion`](ports/carrion/).
+
+- **Katana ZERO** (GameMaker Studio 2 / YYC, edição Netflix) — so-loader do `libyoyo.so` no Mali-450 **e no R36S**, com **binário único universal** (glibc 2.27, roda em qualquer device). Jogável com **ataque/controle** (fix do `buttonMask` do gamepad nativo), áudio (música/SFX por OGG streamed), inglês e resolução automática. Destraves: bypass do Netflix SDK via async event, áudio da thread OGG (`getJNIEnv`/`GetJavaVM`), e o `buttonMask` que filtrava todos os botões menos A. Veja [`ports/katanazero`](ports/katanazero/).
+
 E mais jogáveis no Mali-450: **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
 
 ## Jogos portados
@@ -32,6 +36,8 @@ E mais jogáveis no Mali-450: **Shantae and the Pirate's Curse** (WayForward, co
 | **GTA: Vice City** (reVC) | so-loader 2-módulos | **Jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
 | **Sonic Mania Plus** (RSDKv5) | so-loader | **Jogável com som** — título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
 | **Streets of Rage 4** | MonoGame/.NET 9 nativo (não so-loader) | **Jogável** (Mali-450 GLES2) — música/SFX, texturas ETC1 | [`ports/sor4`](ports/sor4/) |
+| **Carrion** | MonoGame 3.8 / .NET 9 nativo (.NET9 CoreCLR + gl4es) | **Jogável** (Mali-450 + R36S) — render, controle, **som (FMOD)**, jogo completo | [`ports/carrion`](ports/carrion/) |
+| **Katana ZERO** (GameMaker/YYC, ed. Netflix) | so-loader (`libyoyo.so`) — **binário único universal** glibc 2.27 | **Jogável** (Mali-450 + R36S) — ataque/controle nativo, áudio, inglês, resolução auto | [`ports/katanazero`](ports/katanazero/) |
 | **DYSMANTLE** | so-loader (GameActivity) | **Jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
 | **Terraria** (Unity IL2CPP) | so-loader | **Jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | **Jogável** (Mali-450) — render, controle físico (padrão Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
