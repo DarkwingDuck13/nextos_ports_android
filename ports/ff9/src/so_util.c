@@ -47,10 +47,17 @@ static char *dynstrtab;
 void hook_arm64(uintptr_t addr, uintptr_t dst) {
   if (addr == 0)
     return;
+  /* garante página(s) graváveis: hooks em runtime (ex.: lazy install no render loop)
+   * podem cair em texto já restaurado p/ r-xp -> escrita direta dá SIGSEGV. O patch são
+   * 16 bytes; pode cruzar fronteira de página -> mprotect 2 páginas. */
+  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
+  uintptr_t pg = addr & ~((uintptr_t)ps - 1);
+  mprotect((void *)pg, (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
   uint32_t *hook = (uint32_t *)addr;
   hook[0] = 0x58000051u; // LDR X17, #0x8
   hook[1] = 0xd61f0220u; // BR X17
   *(uint64_t *)(hook + 2) = dst;
+  __builtin___clear_cache((char *)addr, (char *)(addr + 16));
 }
 
 void so_make_text_writable(void) {

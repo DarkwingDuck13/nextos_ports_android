@@ -4435,6 +4435,18 @@ void *my_getbasepath(int location) {
   return my_streamingAssetsPath();  /* mesmo dir; loader anexa "/AssetBundles/"+nome */
 }
 
+/* 🎮 INJEÇÃO DE INPUT NATIVO no FF9: AndroidEventInputManager.GetKeyTrigger(Control) (0x12BF390)
+ * é como a UI lê input (OnKeyConfirm etc). nativeInjectEvent é beco-sem-saída no Unity (eventos
+ * Android NDK). Hookamos GetKeyTrigger p/ devolver true p/ o Control injetado (edge, 1×). Sem
+ * input real (sem controle/touch) GetKeyTrigger sempre devolveria false, então não chamamos o
+ * original. Control: Confirm=0 Cancel=1 Menu=2 Up=10 Down=11 Left=12 Right=13. */
+volatile int g_inject_ctrl = -1;
+int my_GetKeyTrigger(void *thiz, int key, void *mi);
+int my_GetKeyTrigger(void *thiz, int key, void *mi) {
+  (void)thiz; (void)mi;
+  if (key == g_inject_ctrl) { g_inject_ctrl = -1; if (getenv("FF9_INJLOG")) { fprintf(stderr, "[INJECT] GetKeyTrigger(%d)->true\n", key); fsync(2); } return 1; }
+  return 0;
+}
 static char g_dl_sl; /* sentinela do handle de libOpenSLES (FMOD → opensles_shim) */
 static void *my_dlopen(const char *nm, int flag) {
   if (g_dllog) fprintf(stderr, "[dlopen] \"%s\"\n", nm ? nm : "(null)");
@@ -6296,6 +6308,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[OBBPATH] %s: Expansion/Main(0x10d726c/0x10dabfc) + Patch(0x10d865c) overridden\n",
             legacy ? "LEGACY(abcache)" : "REAL .obb ZIPs");
   }
+  /* 🎮 FF9_INJECT: hook AndroidEventInputManager.GetKeyTrigger(0x12BF390) → my_GetKeyTrigger.
+     ⚠️ NÃO instalar no init: hookar GetKeyTrigger durante o boot TRAVA o boot (confirmado:
+     sem hook boot OK try1, com hook 4/4 hung — "se voce pula voce trava"). A instalação é
+     DIFERIDA pro render loop (lazy, após o boot estabilizar) — ver FF9_INJHOOKAT. */
   /* FF9_SPLASHDONE (opt-in): força UnityEngine.Rendering.SplashScreen.get_isFinished (0x2573820)
      a devolver true. O ExpansionVerifier.Update ESPERA o splash terminar antes de validar/StartGame;
      se o splash da Unity não "finaliza" no so-loader, o verifier trava antes da cena de conteúdo. */
@@ -6503,6 +6519,35 @@ int main(int argc, char **argv) {
     /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
+    /* 🎮 input driver: FF9_AUTOCONFIRM=N → injeta Confirm(0) a cada N frames (dispensa disclaimer
+       + telas "press to continue" até o menu). FF9_INPUTSEQ="ctrl@frame,..." p/ sequência precisa
+       (ex.: 11@X=Down, 0@Y=Confirm p/ New Game). Control: Confirm0 Cancel1 Up10 Down11 Left12 Right13. */
+    { extern volatile int g_inject_ctrl;
+      /* lazy install do hook GetKeyTrigger: SÓ depois do boot estabilizar (default f>=180),
+         senão trava o boot. Instala 1× e só se FF9_NOINJECT off. */
+      static int inj_hooked = 0;
+      if (!inj_hooked && !getenv("FF9_NOINJECT") && g_il2cpp_base) {
+        int hat = getenv("FF9_INJHOOKAT") ? atoi(getenv("FF9_INJHOOKAT")) : 180;
+        if (f >= hat) {
+          extern int my_GetKeyTrigger(void *, int, void *);
+          hook_arm64(g_il2cpp_base + 0x12BF390, (uintptr_t)my_GetKeyTrigger);
+          inj_hooked = 1;
+          fprintf(stderr, "[INJECT] GetKeyTrigger hook instalado (lazy) @f=%d\n", f); fsync(2);
+        }
+      }
+      const char *ac = getenv("FF9_AUTOCONFIRM");
+      if (ac) { int per = atoi(ac); if (per < 20) per = 150; if (f > 60 && f % per == 0) g_inject_ctrl = 0; }
+      const char *seq = getenv("FF9_INPUTSEQ");
+      if (seq) { /* "ctrl@frame,ctrl@frame" */
+        const char *p = seq;
+        while (*p) {
+          int c = atoi(p); const char *at = strchr(p, '@'); if (!at) break;
+          int fr = atoi(at + 1);
+          if (f == fr) { g_inject_ctrl = c; fprintf(stderr, "[INJECT] seq ctrl=%d @f=%d\n", c, f); fsync(2); }
+          const char *cm = strchr(p, ','); if (!cm) break; p = cm + 1;
+        }
+      }
+    }
     /* FF9_LOADSCENE=<nome>: força SceneManager.LoadScene(nome) 1× no frame FF9_LOADAT (default 300).
        Thread do render loop está atachada ao il2cpp (roda nativeRender/C#). Testa se a cena de
        conteúdo (Title/MainMenu) renderiza qdo carregada à força (o trigger boot->título não dispara). */

@@ -7,6 +7,21 @@
 
 ---
 
+## s7 2026-06-25 — 🎮 INPUT INJECTION p/ menu/gameplay; X5M OBSOLETO (título JÁ renderiza sem X5M)
+
+> ⚠️ As seções s2/s3 abaixo estão DESATUALIZADAS no veredito X5M — o **título renderiza** (logo + CONTINUE/NEW GAME/LOAD/CLOUD) via **OBBs REAIS** (fluxo natural) no Mali-450, SEM X5M.
+>
+> **Fluxo natural OK:** OBBs reais (`userdata/main.obb` 1.05GB + `userdata/patch.obb` 707MB) validados como ZipArchive → disclaimer (Health/Safety, inglês) → logo FF9 → menu de título. NRE=0, 0 crash. Defaults: FF9_EMPTYPKG=1 FF9_OBBINIT=1 FF9_SPLASHDONE=1 FF9_OBB=1.
+>
+> **🔑 INPUT (s7):** disclaimer/menu esperam input via `AndroidEventInputManager.GetKeyTrigger(Control)` (il2cpp 0x12BF390). `nativeInjectEvent` é beco. Hook `my_GetKeyTrigger` retorna true p/ `g_inject_ctrl` (Control: Confirm0 Cancel1 Menu2 Up10 Down11 Left12 Right13). Driver no render loop: `FF9_AUTOCONFIRM=N`=Confirm a cada N frames; `FF9_INPUTSEQ="ctrl@frame,..."` p/ navegação precisa.
+> - 🚨 **LIÇÃO "se voce pula voce trava":** hookar GetKeyTrigger **NO INIT TRAVA O BOOT** (confirmado: sem hook boot OK try1; com hook no init 4/4 hung). FIX = instalação **LAZY** do hook no render loop (`FF9_INJHOOKAT`, default f>=180) — boot roda o fluxo natural intocado, hook entra só após estabilizar.
+> - Boot do fluxo natural é LENTO (validação ZIP do OBB 1GB) + ~não-determinístico: harness de retry deve dar >=120s p/ render>=300 e só tratar como hang real se render ficar 0 por >40s.
+>
+> **✅ s7 RESULTADO (infra de input FUNCIONA):** com lazy-hook + mprotect, boot estável até render 10860, NRE=0, 0 crash, hook instala @f=180 OK, `[INJECT] GetKeyTrigger` dispara. `FF9_AUTOCONFIRM=120` + `FF9_INJHOOKAT=180`.
+> - 🔴 **MAS o disclaimer (Health and Safety Notice) NÃO é dispensado por GetKeyTrigger(Confirm=0):** captura +40s e +90s = disclaimer ainda na tela (fade-in completa, fica mais claro mas não avança). `inj=1` (só 1 match) = a tela do disclaimer NÃO faz poll de GetKeyTrigger(Confirm) repetido → Confirm não é o input dele.
+> - 🎯 **PRÓXIMO PASSO (retomar aqui):** descobrir o que dispensa o disclaimer. Hipóteses: (a) **timer/auto-dismiss** (esperar +Ns sem input); (b) **tap/touch** (não botão) — disclaimer mobile costuma fechar em qualquer toque; (c) **outro Control** (testar Cancel=1, Menu=2, ou varrer 0..14 via FF9_INPUTSEQ); (d) o disclaimer É um logo/vídeo sequencial e avança sozinho mas LENTO. Logar QUAIS Controls o disclaimer realmente pollar (instrumentar my_GetKeyTrigger p/ logar TODO key chamado, não só o injetado) revela o input certo. Captura: m4_40/m4_90.png em scratch.
+> - 🔑 Binário bom = `ff9.INJECT-INFRA-OK` (local + device).
+
 ## ESTADO ATUAL (s2 2026-06-24) — 🟢 RENDER LOOP RODANDO 200+ frames, eglSwapBuffers PRESENTANDO; resta LVL/currentActivity p/ conteúdo
 
 **VIRADA s2:** a "tela preta" do s1 NÃO era job-system (diagnóstico s1 ERRADO). Eram **2 deadlocks em série no setup gráfico** + 1 crash, todos resolvidos. Agora o **render loop roda contínuo (200+ frames, 0 crash)** e o **fb0 é presentado** (`00 00 00 ff` = clear opaco, eglSwapBuffers funciona); shaders compilam ("Shader Skybox/Procedural"). O conteúdo do jogo ainda NÃO desenha porque o **C# do jogo lança NullReferenceException TODA FRAME** (3455×) acessando `UnityPlayer.currentActivity` — é o **Google Play Licensing (LVL)** + uso per-frame da Activity (trace: `GetStaticFieldID(BASE64_PUBLIC_KEY)` + `SALT` + `currentActivity` → NRE). Nosso `currentActivity` fake não é uma Activity funcional → NRE → Update() aborta antes de desenhar a cena.
