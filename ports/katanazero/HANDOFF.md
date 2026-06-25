@@ -1,6 +1,24 @@
 # 🗡️ Katana ZERO — HANDOFF (Mali-450 so-loader)
 
-## ========================= LEIA PRIMEIRO — PRÓXIMA SESSÃO (s4) =========================
+## ========================= LEIA PRIMEIRO — PRÓXIMA SESSÃO (s5) =========================
+### 🏆 s4 (2026-06-25): BINÁRIO ÚNICO UNIVERSAL (glibc 2.27) RODA NO R36S **E** NO MALI-450
+`build_compat.sh` (docker debian:bullseye) compila o loader contra glibc antiga → **GLIBC max 2.27** →
+binário ÚNICO p/ qualquer device. 🔑 stub **libz.so.1** com os 13 símbolos zlib que o `libyoyo` importa
+(compress/crc32/deflate*/inflate*/zError — descomprime game.droid do APK); SEM ele = `UNRESOLVED import
+zError` → crash. Device usa libSDL2/GLESv2/EGL/libz REAIS em runtime. Mesmo src/ (buttonMask+SELECT+START+
+R1/L1). Binário 189KB = `katanazero` oficial nos 2 devices + local (nativo glibc2.38 = katanazero.native-glibc238).
+**R36S/ArchR (169.254.170.2 root/archr)**: RODA E RENDERIZA (contexto GLES2 kmsdrm 640x480 OU wayland 1280x720;
+tela disclaimer Netflix em INGLÊS+estática VHS; SDK READY; room_optionsprompt). 🧱 MURO = **CMA 96MB** (R33S,
+MemTotal 480MB) → Mali OOM ao carregar (`mali gpu: OOM notifier: katanazero 70076kB`). Frontend essway+sway
+usa CMA; parar libera só ~55MB (algo segura ~41MB). Cada run morto VAZA CMA → **reboot limpa** (NextOS: "sempre
+reiniciar pra CMA limpo e suficiente"). Pra jogabilidade plena talvez `cma=192M` no /flash/extlinux.conf (NÃO
+autorizado ainda; tira RAM, 480→384MB; /flash read-only→remount). Services R36S: essway(ES)+sway(wayland)
+SEPARADOS; kmsdrm precisa parar OS DOIS (sway segura DRM). Launcher `Katana ZERO.r36s.sh` (/roms/ports).
+swapfile 2GB /storage/swapfile_kz (runtime). Commits: 72c120a/219a29e/a1a8e87.
+### 🔧 s4 controles extras (Mali-450): R1/L1 do controle do NextOS vêm como JOYBUTTON 5/4 que o SDL NÃO mapeia
+p/ shoulders → feed NATIVO direto (joy5→R1 kc103, joy4→L1 kc102, katana_jni.c). +SELECT+START exit nativo
+(g_exit_combo) + launch.sh/Katana ZERO.sh sem gptokeyb (gptokeyb quebraria o gamepad nativo).
+
 ### 🏆 s3 RESOLVIDO (2026-06-25): CONTROLE DO GAMEPLAY FUNCIONA! (NextOS confirmou "deu certoo")
 **RAIZ:** `AndroidGamepadConnected(id,name,guid,vendor,product, p5, p6, axisCount, BUTTONMASK)` — o
 ÚLTIMO arg NÃO é hatCount, é a **BITMASK de botões** (posições SDL_GameControllerButton). Disasm

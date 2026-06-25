@@ -531,30 +531,34 @@ static void post_social_event(const char *eventType) {
 }
 
 void jni_run(void) {
-  int W = 1280, H = 720;
+  int W = 1280, H = 720;   /* fallback */
   const char *ws = getenv("KZ_W"), *hs = getenv("KZ_H");
-  if (ws) W = atoi(ws); if (hs) H = atoi(hs);
   if (getenv("KZ_NFXINIT")) g_ext_double = atof(getenv("KZ_NFXINIT"));
 
   SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO);
+  /* RESOLUCAO NATIVA DO DEVICE (igual SOTN/Bully/SOR4): pergunta o modo REAL do display
+   * (640x480 R36S, 1280x720 Mali-450, 1920x1080 TV) e cria a janela COM esse tamanho +
+   * SDL_WINDOW_FULLSCREEN (NAO _DESKTOP). FULLSCREEN_DESKTOP + tamanho fixo dava o N gigante
+   * (renderizava 1280x720 num painel 640x480) E 4x a memoria das surfaces -> OOM de CMA. */
+  SDL_DisplayMode dm;
+  if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+    W = dm.w; H = dm.h;
+    fprintf(stderr, "[gl] desktop mode %dx%d\n", dm.w, dm.h);
+  }
+  if (ws) W = atoi(ws); if (hs) H = atoi(hs);   /* override manual KZ_W/KZ_H */
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
   g_win = SDL_CreateWindow("Katana ZERO", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+                           W, H, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
   if (!g_win) fprintf(stderr, "[gl] CreateWindow FALHOU: %s\n", SDL_GetError());
   g_ctx = SDL_GL_CreateContext(g_win);
   if (!g_ctx) fprintf(stderr, "[gl] CreateContext FALHOU: %s\n", SDL_GetError());
   SDL_GL_MakeCurrent(g_win, g_ctx);
   SDL_GL_SetSwapInterval(getenv("KZ_VSYNC") ? 1 : 0);
-  /* RESOLUCAO AUTOMATICA: usa o drawable REAL do device (FULLSCREEN_DESKTOP -> res nativa).
-   * Sem KZ_W/KZ_H explicito, W/H viram o tamanho nativo (640x480 R36S, 1280x720 Mali-450,
-   * 1920x1080, ...). Antes era fixo 1280x720 -> ZOOM/crop nos devices != 720p + render target
-   * maior que a tela = mais memoria GPU (contribuia pro OOM de CMA no R36S). */
   int dw = W, dh = H; SDL_GL_GetDrawableSize(g_win, &dw, &dh);
-  if (!ws && dw > 0) W = dw;   /* so auto se nao houver override KZ_W */
-  if (!hs && dh > 0) H = dh;   /* idem KZ_H */
+  if (dw > 0 && dh > 0) { W = dw; H = dh; }   /* drawable real = verdade final */
   g_screen_w = W; g_screen_h = H;   /* o que a JNI Width/Height devolve pro jogo */
   fprintf(stderr, "[gl] contexto GLES2 win=%p ctx=%p drawable=%dx%d -> render %dx%d\n", (void *)g_win, (void *)g_ctx, dw, dh, W, H);
 
