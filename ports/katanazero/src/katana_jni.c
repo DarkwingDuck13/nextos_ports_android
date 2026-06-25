@@ -29,6 +29,11 @@ static int g_showui_called = 0;
 static char fake_env[0x1000];
 static char fake_vm[0x100];
 static SDL_Window *g_win;
+/* resolucao REAL da tela (auto-detectada do drawable). Default 720p ate o window existir;
+ * depois vira o tamanho nativo do device (640x480 R36S, 1280x720 Mali-450, 1920x1080, etc).
+ * O jogo pergunta Width/Height via JNI e usa pro viewport/camera -> tem que ser o real,
+ * senao renderiza numa res fixa e da ZOOM/crop na tela do device. */
+static int g_screen_w = 1280, g_screen_h = 720;
 static SDL_GLContext g_ctx;
 static char fake_thiz[8192];
 static char fake_assetmgr[256];
@@ -64,8 +69,8 @@ static void j_CallVoidMethod(void *e, void *o, int id, ...) {
 }
 static int j_CallIntMethod(void *e, void *o, int id, ...) {
   (void)e; (void)o; const char *n = method_name(id);
-  if (strstr(n, "Width")) return 1280;
-  if (strstr(n, "Height")) return 720;
+  if (strstr(n, "Width")) return g_screen_w;
+  if (strstr(n, "Height")) return g_screen_h;
   /* DynamicAssetExists(path) -> LoadSave::BundleFileExists usa isso. Se 0, o jogo
    * chama YYError fatal (Audio_SoundPlay no room_title, musica streamed song_*.ogg).
    * Checa existencia REAL no disco (cwd=port dir): strip "assets/" + basename. */
@@ -543,8 +548,15 @@ void jni_run(void) {
   if (!g_ctx) fprintf(stderr, "[gl] CreateContext FALHOU: %s\n", SDL_GetError());
   SDL_GL_MakeCurrent(g_win, g_ctx);
   SDL_GL_SetSwapInterval(getenv("KZ_VSYNC") ? 1 : 0);
+  /* RESOLUCAO AUTOMATICA: usa o drawable REAL do device (FULLSCREEN_DESKTOP -> res nativa).
+   * Sem KZ_W/KZ_H explicito, W/H viram o tamanho nativo (640x480 R36S, 1280x720 Mali-450,
+   * 1920x1080, ...). Antes era fixo 1280x720 -> ZOOM/crop nos devices != 720p + render target
+   * maior que a tela = mais memoria GPU (contribuia pro OOM de CMA no R36S). */
   int dw = W, dh = H; SDL_GL_GetDrawableSize(g_win, &dw, &dh);
-  fprintf(stderr, "[gl] contexto GLES2 win=%p ctx=%p drawable=%dx%d\n", (void *)g_win, (void *)g_ctx, dw, dh);
+  if (!ws && dw > 0) W = dw;   /* so auto se nao houver override KZ_W */
+  if (!hs && dh > 0) H = dh;   /* idem KZ_H */
+  g_screen_w = W; g_screen_h = H;   /* o que a JNI Width/Height devolve pro jogo */
+  fprintf(stderr, "[gl] contexto GLES2 win=%p ctx=%p drawable=%dx%d -> render %dx%d\n", (void *)g_win, (void *)g_ctx, dw, dh, W, H);
 
   build_env();
   for (unsigned i = 0; i < sizeof(fake_vm) / sizeof(uintptr_t); i++)
@@ -683,12 +695,25 @@ void jni_run(void) {
           if (!g_rt_down && ev.caxis.value > 16000) { g_rt_down = 1; gp_trigger(1, 1); }
           else if (g_rt_down && ev.caxis.value < 10000) { g_rt_down = 0; gp_trigger(1, 0); }
         }
-      } else if ((ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) && getenv("KZ_JOYFEED")) {
-        /* SD_JOYBUTTON DESABILITADO por padrao: o USB Gamepad gera CONTROLLERBUTTON E JOYBUTTON
-         * juntos -> feed duplo/conflitante. So o CONTROLLERBUTTON (gamepad nativo) por padrao. */
-        if (inlog) fprintf(stderr, "[ev] JOYBUTTON %d %s\n", ev.jbutton.button, ev.type == SDL_JOYBUTTONDOWN ? "down" : "up");
-        int kc = 0; switch (ev.jbutton.button) { case 0: kc = 96; break; case 1: kc = 97; break; case 2: kc = 99; break; case 3: kc = 100; break; case 9: case 6: kc = 108; break; case 8: case 4: kc = 109; break; }
-        if (kc) key(kc, ev.type == SDL_JOYBUTTONDOWN);
+      } else if (ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) {
+        int jdown = (ev.type == SDL_JOYBUTTONDOWN);
+        if (inlog) fprintf(stderr, "[ev] JOYBUTTON %d %s\n", ev.jbutton.button, jdown ? "down" : "up");
+        /* 🎮 L1/R1 (ombros): neste controle vem como JOYBUTTON 4/5 e o SDL NAO mapeia p/
+         * SDL_CONTROLLER_BUTTON_LEFT/RIGHTSHOULDER -> caia fora -> o ROLL (R1=gp_shoulderrb)
+         * nunca chegava no gameplay. Alimenta NATIVO direto: joy4=L1(kc102), joy5=R1(kc103).
+         * (As faces A/B/X/Y JA vem como CONTROLLERBUTTON, entao nao mexemos nelas aqui.) */
+        int jkc = 0;
+        if (ev.jbutton.button == 4) jkc = 102;       /* L1 */
+        else if (ev.jbutton.button == 5) jkc = 103;  /* R1 */
+        if (jkc && g_gp_ready) {
+          if (jdown) { if (g_gp_btndown) g_gp_btndown(g_gp_id, jkc); }
+          else       { if (g_gp_btnup)   g_gp_btnup(g_gp_id, jkc); }
+          if (g_gp_change) g_gp_change();
+        }
+        if (getenv("KZ_JOYFEED")) {
+          int kc = 0; switch (ev.jbutton.button) { case 0: kc = 96; break; case 1: kc = 97; break; case 2: kc = 99; break; case 3: kc = 100; break; case 9: case 6: kc = 108; break; case 8: case 4: kc = 109; break; }
+          if (kc) key(kc, jdown);
+        }
       } else if (ev.type == SDL_CONTROLLERDEVICEADDED) SDL_GameControllerOpen(ev.cdevice.which);
     }
     cloud_drain(); /* completa cloud ops pendentes ANTES do timeout (10s) -> sem crash */
