@@ -158,9 +158,48 @@ static int upload_nonblack_pct(int w, int h, unsigned fmt, unsigned typ, const v
 }
 void drt_set_dim(int w, int h);
 void drt_set_fmt(int fmt);
+/* status de upload por textura: 0=nunca 1=ETC1-arte 2=RGBA-data 3=RGBA-NULL. expõe se
+   a textura que o movie amostra recebeu arte ou está vazia. */
+unsigned char g_tex_up[4096];
+static int curtex(void){ extern void glGetIntegerv(unsigned,int*); int b=0; glGetIntegerv(0x8069,&b); return b; }
+
+/* ===== TEXTURE MIRROR (DUCK_TEXMIRROR) =====
+   FIX da raiz do fundo: o movie uploada texturas em WORKER threads; o share group do Mali
+   não as torna visíveis à RENDER thread -> ela amostra textura vazia -> preto. Guardamos o
+   dado da textura no upload (qualquer thread) e RE-UPLOAMOS no contexto da render thread
+   logo antes do draw do movie (my_glDrawElements) -> a render thread passa a ter o dado. */
+typedef struct { void *data; int sz,w,h; unsigned ifmt; int compressed, dirty; } TexMir;
+static TexMir g_mir[4096];
+static int g_texmirror = -1;
+static void mir_store(int compressed, unsigned ifmt, int w, int h, int sz, const void *px) {
+  if (g_texmirror < 0) g_texmirror = getenv("DUCK_TEXMIRROR") ? 1 : 0;
+  if (!g_texmirror || !px || sz <= 0 || (w < 256 && h < 256)) return; /* só grandes (movie) */
+  int id = curtex(); if (id <= 0 || id >= 4096) return;
+  TexMir *m = &g_mir[id];
+  if (m->data && m->sz < sz) { free(m->data); m->data = NULL; }
+  if (!m->data) m->data = malloc(sz);
+  if (!m->data) return;
+  memcpy(m->data, px, sz);
+  m->sz = sz; m->w = w; m->h = h; m->ifmt = ifmt; m->compressed = compressed; m->dirty = 1;
+  { static int n=0; if(getenv("DUCK_MIRLOG") && n++<40) fprintf(stderr,"[MIRSTORE] id=%d %dx%d tid_thread=%lx\n",id,w,h,(unsigned long)pthread_self()); }
+}
+/* re-upload no contexto atual (render thread) da textura `id` se dirty. */
+static void mir_replay(unsigned id) {
+  if (g_texmirror <= 0 || id >= 4096) return;
+  TexMir *m = &g_mir[id]; if (!m->dirty || !m->data) return;
+  extern void glBindTexture(unsigned,unsigned);
+  extern void glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
+  glBindTexture(0x0DE1, id);
+  if (m->compressed) glCompressedTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,m->sz,m->data);
+  else glTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,0x1908,0x1401,m->data);
+  m->dirty = 0;
+  { static int n=0; if(n++<6) fprintf(stderr,"[MIRROR] replay tex%u %dx%d na render thread\n",id,m->w,m->h); }
+}
 static void my_glTexImage2D(unsigned t, int l, int ifmt, int w, int h, int b, unsigned fmt, unsigned typ, const void *px) {
   glTexImage2D(t, l, ifmt, w, h, b, fmt, typ, px);
-  if (l == 0) { drt_set_dim(w, h); drt_set_fmt(fmt); }
+  if (l == 0) { drt_set_dim(w, h); drt_set_fmt(fmt);
+    int bt=curtex(); if(bt>0&&bt<4096){ int nb=px?upload_nonblack_pct(w,h,fmt,typ,px):-1; g_tex_up[bt]= px ? (nb>0?2:4) : 3; }
+    mir_store(0, fmt, w, h, w*h*4, px); }
   if (g_gltexlog) { unsigned e = glGetError(); static int n = 0;
     if (n < 400 && (w >= 256 || h >= 256 || e)) { n++;
       int nbp = upload_nonblack_pct(w, h, fmt, typ, px);
@@ -169,7 +208,31 @@ static void my_glTexImage2D(unsigned t, int l, int ifmt, int w, int h, int b, un
 }
 static void my_glCompressedTexImage2D(unsigned t, int l, unsigned ifmt, int w, int h, int b, int sz, const void *px) {
   glCompressedTexImage2D(t, l, ifmt, w, h, b, sz, px);
-  if (l == 0) { drt_set_dim(w, h); drt_set_fmt(ifmt); }
+  if (l == 0) { drt_set_dim(w, h); drt_set_fmt(ifmt); { int bt=curtex(); if(bt>0&&bt<4096) g_tex_up[bt]=1; }
+    mir_store(1, ifmt, w, h, sz, px); }
+  /* DUCK_TEXFLUSH: glFinish após upload de textura grande -> torna o dado VISÍVEL ao
+     contexto do render thread (a worker uploada noutro contexto compartilhado; sem
+     flush/sync o render thread amostra textura vazia -> fundo preto). */
+  { static int tf=-1; if(tf<0) tf=getenv("DUCK_TEXFLUSH")?1:0;
+    if (tf && (w>=256||h>=256)) { extern void glFinish(void); glFinish(); } }
+  /* DUCK_ETCCHECK: decodifica a ETC1 EM SOFTWARE e loga nonblack% -> se a ETC1 que
+     SOBE já é preta, o problema é load/decode do .pak (não o Mali). Se é não-preta mas
+     o Mali renderiza preto, é issue de ETC1 1024² no Mali. Só nas grandes (movie). */
+  if (l == 0 && getenv("DUCK_ETCCHECK") && (w >= 512 || h >= 512) && px && sz > 0) {
+    static int n = 0;
+    if (n++ < 30) {
+      /* scan dos BYTES CRUS da ETC1: nonzero% e luminância-base média (ETC1: cada bloco
+         de 8 bytes tem 2 base colors RGB444/555). Se nonzero~0 -> textura SUBIU VAZIA
+         (placeholder zero, preenchida depois e o fill não roda). Se nonzero alto ->
+         dado ETC1 presente (mas renderiza preto = Mali/format). */
+      const unsigned char *p = (const unsigned char *)px;
+      long nz = 0; long s = 0;
+      for (int i = 0; i < sz; i += 4) { if (p[i]) nz++; s++; }
+      extern void glGetIntegerv(unsigned, int *); int bt=0; glGetIntegerv(0x8069, &bt);
+      fprintf(stderr, "[ETCCHK] TEXID=%d %dx%d ifmt0x%x sz=%d -> RAW nonzero=%ld%% (b0=%02x b1=%02x)\n",
+              bt, w, h, ifmt, sz, s ? nz*100/s : -1, p[0], p[1]);
+    }
+  }
   if (g_gltexlog) { unsigned e = glGetError(); static int n = 0;
     if (n < 400) { n++; fprintf(stderr, "[GLCTEX] %dx%d lvl=%d ifmt=0x%x size=%d err=0x%x\n", w, h, l, ifmt, sz, e); } }
 }
@@ -223,7 +286,21 @@ extern void glGetShaderSource(unsigned, int, int *, char *);
    textured-fill fragment shader to output the raw texture (ignore g_tint/g_add).
    If the bg/sprites then appear, the modulate color (g_tint) is wrong/zero. */
 static int g_shaderfix = 0;
+static int g_shaderred = -1;
 static void my_glShaderSource(unsigned sh, int cnt, const char *const *str, const int *len) {
+  if (g_shaderred < 0) g_shaderred = getenv("DUCK_SHADERRED") ? 1 : 0;
+  /* DUCK_SHADERRED: força TODO fragment shader a cor sólida vermelha. Se a área do
+     fundo Duckburg ficar vermelha -> a geometria do movie cobre a tela (problema=cor/
+     blend/tint). Se ficar preta -> geometria/blend descarta. Teste decisivo. */
+  if (g_shaderred && cnt >= 1 && str && str[0] &&
+      (strstr(str[0], "gl_FragData") || strstr(str[0], "gl_FragColor"))) {
+    static const char *rs =
+      "void main(){ gl_FragData[0] = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+    int rl = (int)strlen(rs);
+    glShaderSource(sh, 1, &rs, &rl);
+    static int n=0; if (n++<8) fprintf(stderr, "[SHADERRED] frag %u -> solid red\n", sh);
+    return;
+  }
   if (g_shaderfix && cnt >= 1 && str && str[0]) {
     const char *s = str[0];
     int frag = strstr(s, "gl_FragData") || strstr(s, "gl_FragColor");
@@ -268,6 +345,16 @@ extern void glAttachShader(unsigned prog, unsigned sh);
 static void my_glAttachShader(unsigned prog, unsigned sh) {
   glAttachShader(prog, sh);
   if (g_glshlog) { static int n=0; if (n++<60) fprintf(stderr, "[ATTACH] prog=%u shader=%u\n", prog, sh); }
+}
+/* DUCK_NOPROGBIN: no-op no glProgramBinaryOES -> o programa fica SEM link do cache;
+   se o engine checa LINK_STATUS e faz fallback p/ compilar do glShaderSource, os
+   shaders do movie passam a vir do SOURCE (bons, e SHADERFIX/RED os alcançam). Se o
+   menu QUEBRAR, não há fallback. Test do "GFx shaders vêm do cache". */
+static int g_noprogbin = 0;
+static void my_glProgramBinaryOES(unsigned pr, unsigned fmt, const void *bin, int len) {
+  (void)pr;(void)fmt;(void)bin;(void)len;
+  static int n=0; if (n++<6) fprintf(stderr, "[NOPROGBIN] skip glProgramBinaryOES prog=%u (forca source)\n", pr);
+  /* no-op: não carrega o binário do cache */
 }
 static void my_glLinkProgram(unsigned pr) {
   glLinkProgram(pr);
@@ -415,6 +502,8 @@ static void draw_dbg(const char *kind, int count) {
 static int g_fixsamplers = 1, g_fixdbg = 0;
 extern unsigned glGetError(void);
 static int g_loc_color[DRT_N], g_loc_alpha[DRT_N], g_loc_light[DRT_N], g_loc_known[DRT_N];
+static int g_loc_tint[DRT_N], g_loc_add[DRT_N];
+static int movie_is_big(void); /* fwd */
 static _Thread_local unsigned g_cur_prog = 0;
 static unsigned g_useprog_n=0, g_fix_n=0, g_fix_nop=0, g_fix_nosamp=0;
 static void my_glUseProgram(unsigned p) { extern void glUseProgram(unsigned); glUseProgram(p); g_cur_prog = p; g_useprog_n++; }
@@ -426,6 +515,20 @@ static void fix_samplers(void) {
     g_loc_color[p] = glGetUniformLocation(p, "g_textureSampler");
     g_loc_alpha[p] = glGetUniformLocation(p, "g_textureSamplerA");
     g_loc_light[p] = glGetUniformLocation(p, "g_lightSampler");
+    g_loc_tint[p]  = glGetUniformLocation(p, "g_tint");
+    g_loc_add[p]   = glGetUniformLocation(p, "g_addColor");
+  }
+  /* DUCK_MVTINT: nos draws de MOVIE (textura 1024²) loga e/ou força g_tint=(1,1,1,1).
+     Se o fundo aparecer -> g_tint estava zerado (causa do preto). */
+  { static int mvt=-1; if (mvt<0) mvt=getenv("DUCK_MVTINT")?1:0;
+    if (mvt && movie_is_big()) {
+      extern void glGetUniformfv(unsigned,int,float*); extern void glUniform4f(int,float,float,float,float);
+      if (g_loc_tint[p] >= 0) {
+        float tv[4]={9,9,9,9}; glGetUniformfv(p, g_loc_tint[p], tv);
+        static int n=0; if (n++<10) fprintf(stderr,"[MVTINT] prog=%u g_tint=(%.3f,%.3f,%.3f,%.3f) loc=%d\n",p,tv[0],tv[1],tv[2],tv[3],g_loc_tint[p]);
+        if (getenv("DUCK_FORCETINT")) glUniform4f(g_loc_tint[p], 1.f,1.f,1.f,1.f);
+      } else { static int n=0; if(n++<3) fprintf(stderr,"[MVTINT] prog=%u SEM g_tint\n",p); }
+    }
   }
   if (g_loc_color[p] < 0 && g_loc_alpha[p] < 0) { g_fix_nosamp++; return; }   /* no samplers in this prog */
   /* which of units 0/1 holds the color (non-GL_ALPHA) texture? */
@@ -435,6 +538,10 @@ static void fix_samplers(void) {
   int colorUnit = 0, alphaUnit = 1;
   if (a0 && !a1) { colorUnit = 1; alphaUnit = 0; }     /* alpha on 0 -> color on 1 */
   else { colorUnit = 0; alphaUnit = 1; }
+  /* DUCK_MVSWAP: nos draws de MOVIE (ambas ETC1, fix_samplers chuta colorUnit=0),
+     troca color<->alpha -> testa se o engine bindou a COR na unit 1. */
+  { static int sw=-1; if (sw<0) sw=getenv("DUCK_MVSWAP")?1:0;
+    if (sw && movie_is_big()) { int t=colorUnit; colorUnit=alphaUnit; alphaUnit=t; } }
   if (g_loc_color[p] >= 0) glUniform1i(g_loc_color[p], colorUnit);
   if (g_loc_alpha[p] >= 0) glUniform1i(g_loc_alpha[p], alphaUnit);
   if (g_loc_light[p] >= 0) glUniform1i(g_loc_light[p], 2);
@@ -451,19 +558,75 @@ static void fix_samplers(void) {
               g_fix_n, g_useprog_n, g_fix_nop, g_fix_nosamp, egl_shim_frame_count());
   }
 }
+/* DUCK_MVDBG: loga o ESTADO GL dos draws de MOVIE (textura 1024², o fundo Duckburg):
+   blend on/src/dst, depth test/func, scissor, viewport. Revela se o fundo é descartado
+   por blend multiplicativo / depth / scissor (vs geometria fora da tela). */
+unsigned g_dbg_movie_tex = 0; /* exposto p/ egl_shim texdump: última textura de cor do movie */
+static int g_mvdbg = -1;
+static void movie_state_log(int count) {
+  { if (movie_is_big()) g_dbg_movie_tex = g_unit_tex[0]; }
+  if (g_mvdbg < 0) g_mvdbg = getenv("DUCK_MVDBG") ? 1 : 0;
+  if (!g_mvdbg) return;
+  unsigned u0=g_unit_tex[0];
+  int big = (u0<DRT_N && (g_texw[u0]>=1024 || g_texh[u0]>=1024));
+  if (!big) return;
+  int fc = egl_shim_frame_count();
+  if (fc < 850) return;
+  static int n=0; if (n>=18) return; n++;
+  int blend=glIsEnabled(0x0BE2), depth=glIsEnabled(0x0B71), scissor=glIsEnabled(0x0C11);
+  /* enums ES2 CORRETOS: SRC_RGB=0x80C9 DST_RGB=0x80C8 SRC_A=0x80CB DST_A=0x80CA
+     BLEND_EQ_RGB=0x8009 COLOR_WRITEMASK=0x0C23 */
+  int sr=0,dr=0,sa=0,da=0,eq=0,dfunc=0,cwm[4]={9,9,9,9}; int vp[4]={0,0,0,0};
+  while(glGetError()!=0){}
+  glGetIntegerv(0x80C9,&sr); glGetIntegerv(0x80C8,&dr);
+  glGetIntegerv(0x80CB,&sa); glGetIntegerv(0x80CA,&da);
+  glGetIntegerv(0x8009,&eq); glGetIntegerv(0x0B74,&dfunc);
+  glGetIntegerv(0x0C23,cwm); glGetIntegerv(0x0BA2,vp);
+  int prog=0; glGetIntegerv(0x8B8D,&prog); unsigned ge=glGetError();
+  unsigned u1=g_unit_tex[1];
+  unsigned f0=(u0<DRT_N?g_texfmt[u0]:0), f1=(u1<DRT_N?g_texfmt[u1]:0);
+  extern unsigned char g_tex_up[4096];
+  fprintf(stderr,"[MV] fc=%d prog=%d u0=tex%u(%dx%d fmt0x%x UP=%d) u1=tex%u(fmt0x%x UP=%d) blend=%d cwm=%d%d%d%d (UP: 0=nunca 1=ETC1 2=RGBA-art 3=NULL 4=RGBA-preto)\n",
+    fc,prog,u0,g_texw[u0],g_texh[u0],f0,(u0<4096?g_tex_up[u0]:9),u1,f1,(u1<4096?g_tex_up[u1]:9),blend,cwm[0],cwm[1],cwm[2],cwm[3]);
+}
+/* DUCK_MVNOBLEND: nos draws de MOVIE (textura 1024²) desabilita o blend -> output =
+   cor crua do fragmento (ignora alpha/backdrop). Se o fundo aparecer -> era src.alpha=0
+   (transparente sobre backdrop preto). Se continuar preto -> a COR do fragmento é preta. */
+static int g_mvnoblend = -1;
+static int movie_is_big(void) {
+  unsigned u0=g_unit_tex[0];
+  return (u0<DRT_N && (g_texw[u0]>=1024 || g_texh[u0]>=1024));
+}
+static int mv_blend_off(void) {
+  if (g_mvnoblend < 0) g_mvnoblend = getenv("DUCK_MVNOBLEND") ? 1 : 0;
+  if (!g_mvnoblend || !movie_is_big()) return 0;
+  extern void glDisable(unsigned); glDisable(0x0BE2); return 1;
+}
+/* antes do draw do movie, re-uploa (no contexto da render thread) as texturas dele */
+static void mir_replay_movie(void) {
+  if (g_texmirror <= 0 || !movie_is_big()) return;
+  extern void glActiveTexture(unsigned);
+  glActiveTexture(0x84C1); mir_replay(g_unit_tex[1]); /* unit 1 */
+  glActiveTexture(0x84C0); mir_replay(g_unit_tex[0]); /* unit 0 (deixa current=0) */
+}
 static void my_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
+  movie_state_log(count);
+  mir_replay_movie();
+  int reb = mv_blend_off();
   if (g_drawlog) drt_record();
   if (g_drawdbg) draw_dbg("elem", count);
   if (g_fixsamplers) fix_samplers();
-  if (drawstop_skip()) return;
-  glDrawElements(mode, count, type, idx);
+  if (!drawstop_skip()) glDrawElements(mode, count, type, idx);
+  if (reb) { extern void glEnable(unsigned); glEnable(0x0BE2); }
 }
 static void my_glDrawArrays(unsigned mode, int first, int count) {
+  movie_state_log(count);
+  int reb = mv_blend_off();
   if (g_drawlog) drt_record();
   if (g_drawdbg) draw_dbg("arr", count);
   if (g_fixsamplers) fix_samplers();
-  if (drawstop_skip()) return;
-  glDrawArrays(mode, first, count);
+  if (!drawstop_skip()) glDrawArrays(mode, first, count);
+  if (reb) { extern void glEnable(unsigned); glEnable(0x0BE2); }
 }
 
 /* ---- stencil-mask A/B test (DUCK_NOSTENCIL=1) ----
@@ -667,6 +830,9 @@ static void *pool_malloc_wrap(void *a, void *b, void *c, void *d, void *e, void 
   void *r = g_pool_malloc_tramp(a, b, c, d, e, f, g, h);
   if (g_df_on) df_alloced(r);
   if (g_hist) hist_put(r);
+  /* track fine pool chunks too, so at_dump_near(victim) finds the immediately
+     adjacent allocation = the buffer that overflowed into the corrupted chunk. */
+  if (g_atrack) at_insert(r);
   pool_unlock();
   return r;
 }
@@ -744,6 +910,8 @@ static void *pool_free_wrap(void *a, void *b, void *c, void *d, void *e, void *f
     return r;
   }
   void *r = g_pool_free_tramp(a, b, c, d, e, f, g, h);
+  void wp_check_onfree(void);
+  wp_check_onfree();   /* arm the watchpoint the instant the victim is freed self-circular */
   pool_unlock();
   return r;
 }
@@ -784,6 +952,7 @@ static void *at_alloc_wrap(void *a, void *b, void *c, void *d, void *e, void *f,
   if (g_heapslack && b && (size_t)b < 0x40000000) b = (void *)(((size_t)b + g_heapslack));
   void *r = g_at_alloc_tramp(a, b, c, d, e, f, g, h);
   if (g_dedup && r) { unsigned i = ((uintptr_t)r >> 4) & (HF_N - 1); if (g_hf_freed[i] == r) g_hf_freed[i] = NULL; }
+  if (g_hist) hist_put(r);   /* record HeapAlloc allocations too -> identify the UAF victim object */
   if (g_atrack) { pool_lock(); at_insert(r); pool_unlock(); }
   if (g_heaplock) aunlock();
   return r;
@@ -957,15 +1126,18 @@ static void *low_alloc(size_t n) { return low_alloc_aligned(n, 16); }
    them, glibc's doesn't. Padding each block absorbs the overrun harmlessly.
    DUCK_SLACK overrides the byte count (default 256). */
 static size_t g_slack = 256;
+static int g_zalloc = 0;   /* DUCK_ZALLOC: zero every allocation (bionic-like) */
 static void *m16_malloc(size_t n) {
   size_t t = n + g_slack;
-  if (g_lowheap && t >= LOWHEAP_THRESH) { void *r = low_alloc(t); if (r) return r; }
-  return memalign(16, t ? t : 16);
+  if (g_lowheap && t >= LOWHEAP_THRESH) { void *r = low_alloc(t); if (r) { if (g_zalloc) memset(r, 0, t); return r; } }
+  void *r = memalign(16, t ? t : 16); if (r && g_zalloc) memset(r, 0, t ? t : 16);
+  return r;
 }
 static void *m16_memalign(size_t align, size_t n) {
   size_t t = n + g_slack;
-  if (g_lowheap && t >= LOWHEAP_THRESH) { void *r = low_alloc_aligned(t, align); if (r) return r; }
-  return memalign(align < 16 ? 16 : align, t ? t : 16);
+  if (g_lowheap && t >= LOWHEAP_THRESH) { void *r = low_alloc_aligned(t, align); if (r) { if (g_zalloc) memset(r, 0, t); return r; } }
+  void *r = memalign(align < 16 ? 16 : align, t ? t : 16); if (r && g_zalloc) memset(r, 0, t ? t : 16);
+  return r;
 }
 static int m16_posix_memalign(void **out, size_t align, size_t n) {
   void *p = m16_memalign(align, n); if (!p) return 12; *out = p; return 0;
@@ -1464,9 +1636,24 @@ static volatile int g_wp_need_rearm = 0;
 static int g_wp_frame = 0;
 static int g_wp_hits = 0;
 static int g_procmem = -1;
+static int g_wp_onfree = 0;          /* DUCK_WP_ONFREE: arm WP the instant the victim is freed */
 static void wp_protect(int ro) {
   if (!g_wp_page) return;
   mprotect((void *)g_wp_page, 4096, ro ? PROT_READ : (PROT_READ | PROT_WRITE));
+}
+/* Called from pool_free_wrap right after a real TLSF free, under the heap lock.
+   When the watched address has just become self-circular (node[0]==node, i.e. the
+   victim block was freed into an empty bin), protect its page so the very next
+   store to it (the UAF writer zeroing node[0]) faults and is caught -> minimal
+   window, far less perturbation than arming at a fixed frame. */
+void wp_check_onfree(void) {
+  if (!g_wp_onfree || g_wp_armed || !g_wp_addr) return;
+  if (*(volatile uintptr_t *)g_wp_addr != g_wp_addr) return;   /* not self-circular yet */
+  g_wp_page = g_wp_addr & ~0xfffUL;
+  wp_protect(1);
+  g_wp_armed = 1;
+  fprintf(stderr, "[WP] armed-on-free: page=0x%lx watching=0x%lx (self-circular) frame=%d\n",
+          (unsigned long)g_wp_page, (unsigned long)g_wp_addr, egl_shim_frame_count());
 }
 static void *wp_arm_thread(void *a) {
   (void)a;
@@ -1793,15 +1980,22 @@ int main(int argc, char *argv[]) {
   { const char *wp = getenv("DUCK_WP");
     if (wp && wp[0]) {
       g_wp_addr = (uintptr_t)strtoul(wp, NULL, 0);
-      g_wp_frame = getenv("DUCK_WPFRAME") ? atoi(getenv("DUCK_WPFRAME")) : 600;
-      pthread_t th; pthread_create(&th, NULL, wp_arm_thread, NULL); pthread_detach(th);
-      fprintf(stderr, "[WP] watch 0x%lx armed-at-frame %d\n", (unsigned long)g_wp_addr, g_wp_frame);
+      if (getenv("DUCK_WP_ONFREE")) {
+        g_wp_onfree = 1;   /* armed lazily by pool_free_wrap when the victim is freed */
+        fprintf(stderr, "[WP] watch 0x%lx arm-on-free (lazy)\n", (unsigned long)g_wp_addr);
+      } else {
+        g_wp_frame = getenv("DUCK_WPFRAME") ? atoi(getenv("DUCK_WPFRAME")) : 600;
+        pthread_t th; pthread_create(&th, NULL, wp_arm_thread, NULL); pthread_detach(th);
+        fprintf(stderr, "[WP] watch 0x%lx armed-at-frame %d\n", (unsigned long)g_wp_addr, g_wp_frame);
+      }
     } }
   if (getenv("DUCK_NO_FREEGUARD")) g_free_guard = 0;
   if (getenv("DUCK_NO_QUARANTINE")) g_quarantine = 0;
+  if (getenv("DUCK_ZALLOC")) { g_zalloc = 1; debugPrintf("[zalloc] all allocations zeroed (bionic-like)\n"); }
   if (getenv("DUCK_NO_ALLOCREC")) g_allocrec = 0;
   if (getenv("DUCK_NO_DEDUP")) g_dedup = 0;
   if (getenv("DUCK_NO_BQ")) g_bq = 0;
+  if (getenv("DUCK_BQ")) { g_bq = 1; debugPrintf("[bq] TLSF-free quarantine ENABLED (defer %u frees)\n", QBF); }
   { const char *hs = getenv("DUCK_HEAPSLACK");
     if (hs && hs[0]) { long v = atol(hs); if (v < 0) v = 0; g_heapslack = (size_t)((v + 15) & ~15L);
       debugPrintf("[heapslack] GMemoryHeap::Alloc padded by %zu bytes\n", g_heapslack); } }
@@ -1813,6 +2007,12 @@ int main(int argc, char *argv[]) {
     dt_set_import("glCompressedTexImage2D", (void *)my_glCompressedTexImage2D);
     dt_set_import("glTexSubImage2D", (void *)my_glTexSubImage2D);
     tslog("init", "GLTEXLOG: glTexImage2D/Compressed/Sub logged");
+  }
+  if (getenv("DUCK_NOPROGBIN")) {
+    g_noprogbin = 1;
+    dt_set_import("glProgramBinaryOES", (void *)my_glProgramBinaryOES);
+    dt_set_import("glShaderSource", (void *)my_glShaderSource); /* p/ source path + SHADERFIX/RED */
+    tslog("init", "NOPROGBIN: glProgramBinaryOES no-op (forca compilar shaders do source)");
   }
   if (getenv("DUCK_GLFBLOG")) {
     g_glfblog = 1;
@@ -1833,6 +2033,10 @@ int main(int argc, char *argv[]) {
     g_shaderfix = 1;
     dt_set_import("glShaderSource", (void *)my_glShaderSource);
     tslog("init", "SHADERFIX: textured frag -> passthrough (A/B test)");
+  }
+  if (getenv("DUCK_SHADERRED")) {   /* SHADERRED tb precisa do hook glShaderSource */
+    dt_set_import("glShaderSource", (void *)my_glShaderSource);
+    tslog("init", "SHADERRED: frag -> solid red (geometry test)");
   }
   if (getenv("DUCK_U1ILOG")) {
     g_u1ilog = 1;
@@ -1953,6 +2157,9 @@ int main(int argc, char *argv[]) {
   so_flush_caches();
   so_execute_init_array();
   g_main_text = (uintptr_t)text_base; g_main_text_sz = text_size;
+  { /* publish the load base so an external ptrace tracer can resolve offsets */
+    FILE *bf = fopen("/tmp/duck_base.txt", "w");
+    if (bf) { fprintf(bf, "%lx %zu %d\n", (unsigned long)g_main_text, g_main_text_sz, (int)getpid()); fclose(bf); } }
   install_ducktales_hooks();
   g_m_main = so_save();
 

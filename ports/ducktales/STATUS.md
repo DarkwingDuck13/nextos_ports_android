@@ -592,3 +592,317 @@ Ou pelo launcher: `bash /roms/ports_scripts/DuckTales.sh` (mata-antes, watchdog,
   `so_util.c egl_shim.c android_shim.c jni_shim.c pthread_shim.c softfp_shim.c opensles_shim.c imports.gen.c`.
 - `DuckTales.sh` — launcher PortMaster. `payload/` — APK extraído (libs+assets).
 - Binário `ducktales` NÃO versionado (regra). Device IP pode mudar (DHCP).
+
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 2026-06-24 (sessão 6) — PORTADO PRO DEVICE .88 (NextOS pediu)
+# ═══════════════════════════════════════════════════════════════════
+## Deploy completo no .88: binario (md5 98a4e590, + diag stencil) + lib/armeabi-v7a/
+## (libducktales+fmodex+fmodevent) + assets 561M (rsync). DUCK_LIBDIR=lib/armeabi-v7a.
+## ✅ BOOTA: frames avançam (1200+, ~30fps), 32 shaders compilam (SHOK), SwapBuffers,
+## audio path. stencil REAL concedido = 8 (NÃO é stencil faltando). SEM FBO (GLFBLOG=0
+## binds -> jogo renderiza DIRETO no fb0, sem render-target).
+## 🔴 MAS no .88 glReadPixels(back-buffer, ANTES do swap) = COR CHAPADA, menu NUNCA
+## aparece (flat=100% varied=0 menubest=-1 em todos os frames). Cor muda com o swap:
+## PRESERVE=verde(0,255,0), NO_PRESERVE=ciano(0,255,255) -> só o CLEAR chega ao
+## back-buffer, os draws do menu não. Diferente do .165 (lá o menu renderizava).
+## 🎯 HIPÓTESE FORTE: thread de render do .88 fica current no PBUFFER 16x16 (setup)
+## em vez da WINDOW surface -> draws vão pro pbuffer, janela só mostra clear. (egl_shim
+## linha 56: "criadora precisa usar a WINDOW senao renderiza num pbuffer"). Investigar
+## o binding de surface por thread no .88 (multi-context). glReadPixels pode TAMBÉM
+## enganar (memória: validar OLHANDO A TV nesses Amlogic-old) -> PENDENTE NextOS ver a TV.
+
+## 🔑 ACHADO-CHAVE s6 (.88): ZERO DRAW CALLS
+## DUCK_DRAWLOG no .88 = NENHUM [DRAW] (imprime a cada 2000 draws; no .165 eram
+## milhares/frame). Logo o engine NÃO emite glDrawElements/Arrays no .88 -> só o
+## glClear roda -> back-buffer flat (verde/ciano = clear). Descartados: stencil(=8 ok),
+## FBO(0 binds, sem render-target), pbuffer(DUCK_ALLWIN força WIN, segue flat),
+## present/PRESERVE. ⟹ NÃO é GL/present — é o PATH DE RENDER DO ENGINE que não roda
+## no .88 (o worker que emite os draws não executa). Mesmo binário RENDERIZA no .165.
+## 🎯 PRÓXIMO: por que o render-worker não roda no .88? Investigar wfMCP::Exec /
+## wfSystem::GetCpuCount (conta de cores/barreira dos workers) — talvez .88 reporte
+## cores diferente -> workers não spawnam/barram. Logar spawn de thread + GetCpuCount
+## no .88 vs .165. DUCK_ALLWIN=1 (egl_shim) disponível mas NÃO foi a causa.
+
+## s6 cont: DUCK_CPUCOUNT=1 (serial) -> ainda ZERO draws/flat. NÃO é contagem de
+## worker. Independente de cpucount/pbuffer/stencil/FBO/preserve. O engine SWAPA todo
+## frame (frames avançam) mas NUNCA emite geometria no .88. Hipóteses abertas p/ próx:
+## (1) engine TRAVADO antes do menu (loading/splash flat; menu nunca alcançado) — vs
+##     .165 onde o menu (frame ~1150) renderizava. Ver thread states no .88 (gdb/proc
+##     stack) — algum worker/join bloqueado?
+## (2) license gate "Error 101" disparando diferente no .88 e travando o load.
+## (3) engine cacheou ponteiro de glDrawElements via dlsym ANTES do nosso hook (então
+##     draws reais não passam pelo my_glDrawElements) — checar se há draws REAIS via
+##     glReadPixels variado OU instrumentar eglGetProcAddress/dlsym de gl*.
+## Próximo passo concreto: capturar /proc/<tid>/stack de todas as threads no .88 num
+## frame "estável" p/ ver onde o engine está parado (load vs render-wait).
+
+## 🩻 CAUSA-RAIZ s6 (.88) = DEADLOCK DO JOB-SYSTEM (classe RE4)
+## /proc/<tid> no .88 num frame estável: workers em `futex_wait_queue_me` (presos em
+## semáforo), GL thread em osd_wait_vsync, main R. Log spamma `[SEMBREAK] forçando wake
+## b=0x... após 150ms` — nossa rede de segurança força acordar mas os JOBS DE RENDER
+## NÃO COMPLETAM -> nenhum draw -> back-buffer só com clear (flat). 14 threads.
+## ⟹ é o MESMO deadlock de job-system que fechou o RE4 (workers esperam post que ninguém
+## faz; SEMBREAK insuficiente). DEVICE-ESPECÍFICO: no .165 o job-system NÃO trava (menu
+## renderizava com milhares de draws). Timing/scheduling do .88 dispara o deadlock.
+## 🎯 DECISÃO/RUMO p/ NextOS: (a) DuckTales JÁ funciona até o menu no .165 -> manter lá;
+## (b) atacar o deadlock do job-system do .88 = RE profundo do wfMCP/wfJob (RE4 provou
+## ser trade-off fatal/incerto). NÃO é GL — é o motor de jobs travando neste device.
+
+## ✅✅ s6 RESOLVIDO (NextOS acertou): NÃO era deadlock de hardware — era ARQUIVO FALTANDO
+## A conclusão "deadlock job-system .88" acima estava ERRADA. O .88 e o .165 são o MESMO
+## device/sistema. O que faltava no .88:
+##  (1) userdata/ VAZIO — faltavam os 112MB de game-data (autoload.pak, ai_beagle_boys.pak,
+##      *.fsb, _wfshaderslow.pak, etc.). Sem eles o engine não tinha conteúdo p/ desenhar
+##      -> 0 draws -> flat. (Eu só tinha deployado assets/, não userdata/.)
+##  (2) GFxShaders.cache (golden) não deployado.
+##  (3) Rodava COM SEMBREAK; o run que funciona usa RE4_NO_SEMBREAK=1 (o spam de SEMBREAK
+##      era sintoma de rodar sem os dados, não a causa).
+## FIX: copiei do .165 (NextOS autorizou) binário proven b7ed78d8 + userdata/ 112M +
+## GFxShaders.cache + rodei com env do .165 (RE4_NO_SEMBREAK=1, DUCK_DATADIR=userdata).
+## ⟹ MENU RENDERIZA NO .88 (screenshot duck_stable.png: logo Remastered + NEW GAME/
+## OPTIONS/EXTRAS + © Disney + "?"). non-black 0%->14%. PARIDADE COM .165.
+## FALTA (igual .165): fundo animado de Duckburg (preto). Mesma investigação da sessão 5
+## (o bg É desenhado mas algo o apaga; ver bisseção DUCK_DRAWSTOP/DRAWDBG, hipótese alpha/composite).
+
+## 🎯 s6 CARACTERIZAÇÃO PRECISA (.88, env bom + vpad New Game):
+## Progressão: intro/logo Disney @frame360 = 97% NÃO-PRETO (full-screen RENDERIZA!) ->
+## menu @840+ = 14% (logo+NEW GAME/OPTIONS/EXTRAS, bg Duckburg PRETO) -> New Game ->
+## CUTSCENE de abertura (screenshot duck_gameplay.png: botões ⏩skip + ⏸pause renderizam,
+## conteúdo do movie PRETO).
+## ⟹ ISSUE UNIFICADO: SPRITES/UI estáticos RENDERIZAM (intro logo, menu logo/texto,
+## botões cutscene), mas TODO conteúdo Scaleform-MOVIE sai PRETO (Duckburg do menu +
+## cutscene + provavelmente cenário do gameplay). NÃO é "all rendering" (intro prova que
+## full-screen funciona) — é específico do render de MOVIE/animação Scaleform.
+## Sprites e movies usam paths/shaders diferentes. Sem FBO (GLFBLOG=0). bg movie É
+## desenhado (tex 1024² milhares de draws) mas preto.
+## 🎯 PRÓXIMO: instrumentar SÓ os draws de movie (textura 1024² tex4/tex236): logar
+## program+texturas-por-unit+blend+sampler-uniforms e comparar com os draws de SPRITE
+## (que funcionam). A diferença de estado revela por que o movie sai preto (suspeita s5:
+## shader de fill amostra a textura GL_ALPHA all-zero como COR -> preto; fix_samplers
+## pode estar errando p/ o shader específico do movie). Cutscene: vpad precisa apertar
+## o ⏩ skip p/ chegar no gameplay real.
+
+## 🔬 s6 ACHADO IMPORTANTE: shaders GFx vêm do CACHE (glProgramBinary), não glShaderSource
+## DUCK_SHADERRED (força frag vermelho) NÃO pintou NADA -> os shaders do menu/movie NÃO
+## passam pelo my_glShaderSource. Eles vêm PRÉ-COMPILADOS do GFxShaders.cache via
+## glProgramBinary. ⟹ SHADERFIX/SHADERRED da s5 NUNCA afetaram o movie (não-conclusivos!).
+## rm GFxShaders.cache no .88 -> bg AINDA preto (14%) — confirma o nondeterminismo da s5
+## (rm cache renderizava só ~50%; e o cache regenera durante o run, podendo voltar ruim).
+## NOTA: os shaders de logo/texto (que RENDERIZAM) também vêm do cache -> não é "cache todo
+## corrompido"; é específico do shader/estado do MOVIE.
+## 🎯 PRÓXIMO REAL p/ testar o shader do movie: interceptar glProgramBinary (não
+## glShaderSource) — logar/substituir o programa dos draws de movie; OU forçar o engine a
+## compilar do source (achar a flag GFx "no shader cache") p/ então SHADERFIX/RED valerem.
+## Sem isso, SHADERFIX/RED são inúteis (não alcançam o movie). Esta é a investigação da s5
+## que ficou aberta (raiz = UAF que corrompe o cache na compilação; HW-watchpoint indispon.).
+
+## s6 BALANÇO (fundo Duckburg = muro s5, nondeterminístico):
+## - DUCK_NOPROGBIN (no-op glProgramBinaryOES) NÃO quebrou o menu e NÃO trouxe o bg ->
+##   inconclusivo (hook pode não ter disparado; "ProgramBinary" aparece 1x no log).
+##   Resultados combinados (NOPROGBIN+SHADERRED+nocache) VARIAM entre runs = mesmo
+##   nondeterminismo da s5 (UAF que corrompe o GFxShaders.cache na compilação).
+## ✅ ENTREGUE no .88: MENU renderiza (logo+NEW GAME/OPTIONS/EXTRAS), gameplay/cutscene
+##   ALCANÇÁVEL (botões skip/pause renderizam). Paridade c/ .165. Env bom documentado.
+## 🔴 ABERTO (= s5): conteúdo Scaleform-MOVIE (Duckburg/cutscene/cenário) preto.
+##   Leads p/ próxima sessão focada: (1) confirmar se glProgramBinaryOES dispara (logar no
+##   import resolve, não só no hook) e se há fallback p/ source; (2) interceptar o
+##   programa do MOVIE especificamente (correlacionar com textura 1024²) e dumpar/forçar
+##   cor; (3) raiz real = UAF na compilação do shader GFx (s5: HW-watchpoint indisp. no
+##   device) -> talvez detectar via mprotect só na região do cache durante a compilação.
+## ⚙️ Flags novas no binário: DUCK_SHADERRED (frag vermelho), DUCK_NOPROGBIN (no-op
+##   glProgramBinaryOES). Binário atual md5 muda; NÃO commitado.
+
+## 🎯🔑 s6 DIAGNÓSTICO NOVO (avança s5): FUNDO = GEOMETRIA, não cor/cache/alpha
+## Bug do meu teste: DUCK_SHADERRED sozinho não instalava my_glShaderSource (corrigido).
+## Com SHADERRED instalado + cache apagado (source): 9 frags reescritos p/ VERMELHO SÓLIDO.
+## RESULTADO (duck_red3.png): só o LOGO DuckTales ficou VERMELHO; a ÁREA DO FUNDO ficou
+## PRETA (non-black=13%). ⟹ se o fundo fosse cor/alpha/cache, o shader vermelho o pintaria.
+## Como NÃO pinta -> a GEOMETRIA do movie-clip do fundo NÃO RASTERIZA nos pixels do fundo
+## (quads colapsados/offscreen/degenerados). É TRANSFORM/PROJEÇÃO do movie-clip Scaleform,
+## NÃO o shader/textura/cache (hipóteses da s5 ESTAVAM no caminho errado).
+## Nota: os draws 1024² DO acontecem (DRAWLOG 114k) mas não cobrem a área -> geometria
+## com matriz errada (g_worldView/g_projection do movie-clip = 0/identidade/escala 0?).
+## 🎯 PRÓXIMO: instrumentar os draws de movie (textura 1024²): logar as MATRIZES
+## (g_worldView/g_projection via glUniformMatrix4fv) e as COORDS dos vértices
+## (glVertexAttribPointer) -> ver se o quad do fundo está em coords válidas de tela.
+## Comparar com o draw do LOGO (que rasteriza). A diferença de matriz/coords = a causa.
+
+## 🏁 s6 DIAGNÓSTICO FINAL (super preciso — descarta TUDO da s5):
+## Instrumentei o estado GL completo dos draws de MOVIE (DUCK_MVDBG, enums ES2 corretos):
+##  - blend=1 RGB(SRC_ALPHA,ONE_MINUS_SRC_ALPHA) A(ONE,ZERO) eq=FUNC_ADD  -> NORMAL
+##  - depth=1(LESS) scissor=0 cwm=1111 vp=[0,0,1280,720] glerr=0  -> TUDO OK
+##  - g_tint=(1,1,1,1) (DUCK_MVTINT) -> tint OK; DUCK_FORCETINT branco não mudou nada
+##  - DUCK_MVNOBLEND (blend off no movie) -> AINDA preto => NÃO é alpha/transparência
+##  - ambas as units do movie = ETC1 0x8d64 1024² (u0=color u1=alpha), NÃO GL_ALPHA;
+##    fix_samplers roteia certo (color=u0). ETC1 sobe direto pro Mali (sem decode), err=0.
+## ⟹ DESCARTADOS: blend, geometria/viewport/depth/scissor/cwm, tint, alpha-routing,
+##    GL_ALPHA-misroute, FBO, stencil, pbuffer, shader-cache-as-cause.
+## ⟹ RESTA: a TEXTURA ETC1 de COR do movie (tex161 etc., 1024²) AMOSTRA PRETO. Candidatos:
+##    (a) o DADO ETC1 dessas texturas é preto (asset/upload do .pak do userdata);
+##    (b) o movie animado está parado num frame PRETO (timeline não avança no nosso port);
+##    (c) issue de amostragem (texcoords/mip) dessas ETC1 grandes no Mali.
+## 🎯 PRÓXIMO: ler de volta o conteúdo de tex161 (render num quad debug fullscreen
+##    amostrando tex161 com shader passthrough de SOURCE) -> se aparecer arte=timeline;
+##    se preto=dado/decode. Flags novas: DUCK_MVDBG/MVNOBLEND/MVTINT/FORCETINT/SHADERRED/NOPROGBIN.
+
+## 🏁🔚 s6 RAIZ CONCLUSIVA: as TEXTURAS DE COR do movie estão PRETAS (dado, não render)
+## DUCK_TEXDUMP=0 (desenha a textura REAL do movie — g_dbg_movie_tex = g_unit_tex[0] do
+## último movie draw — num quad fullscreen com shader passthrough PRÓPRIO): resultado =
+## 0% non-black = PRETO TOTAL. ⟹ a textura ETC1 1024² de cor do movie NÃO TEM ARTE (preta).
+## Confirma que o fundo preto NÃO é GL/render-state (tudo descartado), é o CONTEÚDO da
+## textura. A causa está UPSTREAM do GL:
+##   (a) a arte ETC1 do .pak não está sendo carregada/decodificada nessas texturas;
+##   (b) o movie ANIMADO não decodifica/preenche as texturas (playback parado) — Duckburg
+##       é um movie animado; se o decoder/timeline não roda, as texturas ficam pretas;
+##   (c) upload da ETC1 1024² falha silencioso no Mali (err=0 mas dado não aplicado).
+## 🎯 PRÓXIMO (fora do GL): rastrear o PREENCHIMENTO dessas texturas — glCompressedTexImage2D/
+##   glTexSubImage2D de tex de cor do movie tem dado não-preto? (DUCK_GLTEXLOG já loga
+##   nonblack% do SubImage). Se o upload é preto -> problema no load/decode do .pak (movie
+##   asset). Se nunca há upload de arte -> o movie playback/decode não roda (RE do decoder).
+## ⚙️ Flags de debug no binário: DUCK_TEXDUMP(=0 auto), DUCK_MVDBG/MVNOBLEND/MVSWAP/MVTINT/
+##   FORCETINT/SHADERRED/NOPROGBIN. (binário NÃO commitado; é de debug.)
+
+## s6 ETCCHECK: decoder SW não suporta ETC1 (0x8d64, faz só ETC2) -> "decode FALHOU".
+## MAS: as texturas do movie sobem com TAMANHO ETC1 CORRETO (512²=131072B, 1024²=524288B,
+## =0.5B/px), err=0, e o Mali renderiza ETC1 do LOGO perfeitamente (mesma família/path).
+## ⟹ EVIDÊNCIA CONCLUSIVA: o DADO ETC1 das texturas de cor do movie É PRETO (não é Mali,
+## não é tamanho). A arte não chega nessas texturas. Causa = pipeline de conteúdo do movie:
+##   - ou o .pak de Duckburg fornece ETC1 preto (load/decompress do pak),
+##   - ou são texturas dinâmicas que o rasterizador do movie Scaleform deveria preencher e
+##     não preenche (playback/decode do movie não roda no nosso port).
+## 🎯 RE necessário (fora de GL): rastrear a ORIGEM do byte ETC1 dessas texturas — qual
+##   função do engine chama glCompressedTexImage2D p/ elas e de onde vem o ponteiro `px`
+##   (do pak? de um buffer que o movie-rasterizer deveria preencher?). Breakpoint no
+##   glCompressedTexImage2D das 1024² -> backtrace -> achar o produtor do dado.
+## == FIM da investigação GL-level (s6). Menu .88 ENTREGUE; fundo isolado em "textura preta
+##    do movie = pipeline de conteúdo upstream". ==
+
+## ⚠️ s6 CORREÇÃO IMPORTANTE: as texturas do movie TÊM ARTE (não são pretas!)
+## DUCK_ETCCHECK com scan de BYTES CRUS da ETC1 que sobe: as texturas de COR do movie têm
+## RAW nonzero=68-88% com base-colors variados (b0=af b1=5e b2=08 etc.) = ARTE REAL ETC1.
+## Vêm em PARES: cor (arte) + alpha ("ff ff ff 00" = branco/máscara). ⟹ minha conclusão
+## anterior "texturas pretas" estava ERRADA — o DADO tem arte.
+## Mas: bg renderiza preto + MVNOBLEND preto + texdump(passthrough+LINEAR) preto.
+## DUCK_NOMIP e LINEAR-no-texdump NÃO trouxeram a arte. ⟹ contradição: textura COM arte
+## amostra preto. Suspeitas restantes: (a) o texdump é NÃO-CONFIÁVEL (g_dbg_movie_tex =
+## textura errada/estado mudou; validar dumpando a textura do LOGO que funciona); (b) Mali
+## ETC1 quirk nessas texturas; (c) algum estado de sampler/textura (wrap/base-level/
+## swizzle) específico. ⚠️ resultados parcialmente NÃO-DETERMINÍSTICOS (timing).
+## 🎯 PRÓXIMO confiável: validar o texdump dumpando a textura do LOGO (deve mostrar o logo);
+## se mostrar -> texdump OK e o movie tex amostra preto de verdade (Mali/estado); se o logo
+## tb sair preto -> texdump quebrado (refazer a sonda). Status: bg AINDA aberto; menu .88 OK.
+
+## ✅ s6 SONDA VALIDADA + conclusão limpa (resolve a contradição):
+## DUCK_TEXDUMP=0 + DUCK_TDGRAD=1 (frag=gradiente UV, sem textura) -> RENDERIZA gradiente
+## (non-black=100% varied=1). ⟹ a sonda texdump FUNCIONA (quad/program/draw OK).
+## Logo: quando o texdump da textura do movie deu PRETO, a textura AMOSTRA PRETO de verdade.
+## MAS o raw scan provou que o DADO ETC1 tem ARTE. Reconciliação:
+##   a arte é uploadada (glCompressedTexImage2D com ETC1 real), mas no MOMENTO do draw do
+##   movie a textura amostrada está PRETA/VAZIA -> suspeita = TEXTURE-ID errado/reusado/
+##   stale (binding ou gerência de textura no nosso loader), NÃO o dado nem render-state.
+## 🎯 PRÓXIMO confiável: capturar o ID da textura NO upload da ETC1-com-arte (glCompressed)
+##   e o ID amostrado no movie draw (g_unit_tex[0]) -> são o MESMO objeto? Se diferentes,
+##   a arte vai pra textura A e o draw amostra textura B (vazia). Logar par (upload-id,
+##   draw-id) e cruzar. Provável raiz: glGenTextures/glBindTexture/glDeleteTextures
+##   mapeando errado, ou a engine recicla o ID antes do draw.
+## == Sonda confiável agora; bg = problema de binding/identidade de textura. Menu .88 OK. ==
+
+## 🎯🏁 s6 RAIZ FINAL (2 hipóteses precisas, ambas plausíveis):
+## Rastreio de upload por textura (g_tex_up): o movie cicla por DEZENAS de texturas ETC1/
+## frame (animação). Em runs/frames diferentes o movie draw amostra:
+##   - texturas UP=1 (ETC1 com arte, raw nonzero 68-91%, base colors orange/brown=Duckburg) -> renderizam PRETO mesmo assim;
+##   - às vezes texturas "NUNCA_UPLOADADA" (tex203/229) -> a textura do frame ainda não
+##     terminou o upload quando foi amostrada.
+## A sonda texdump É confiável (gradiente UV renderiza). Então:
+## HIPÓTESE A (sync): o movie DECODIFICA/UPLOADA texturas numa worker thread e o RENDER
+##   thread amostra ANTES do upload completar -> textura vazia/preta no frame. (Race
+##   upload-vs-draw; bate com o job-system do engine e com o nondeterminismo.)
+## HIPÓTESE B (Mali ETC1): o Mali-450 não amostra corretamente essas ETC1 grandes/non-square
+##   (1024x512/256/128) apesar de err=0 e de ter arte -> precisa VERIFICAR se o logo/menu
+##   (que renderiza) é ETC1 ou RGBA. Se o menu for RGBA e só o movie ETC1 -> Mali ETC1 quebrado.
+## 🎯 PRÓXIMO: (1) checar o fmt das texturas do LOGO (RGBA vs ETC1) -> se RGBA, testar FIX =
+##   decodificar ETC1->RGBA em software no upload (precisa escrever decoder ETC1, ~100 linhas);
+##   (2) se ETC1 do logo funciona -> é race de upload (hip. A) -> serializar/sincronizar o
+##   upload de textura do movie com o draw (já há [texlock] serializando wfTexture::DecompressUpdate).
+## == s6 FIM: menu .88 entregue; fundo = ETC1-art-amostra-preto, 2 hipóteses (sync vs Mali-ETC1). ==
+
+## s6 TEXFLUSH: glFinish após upload de textura -> NÃO trouxe o fundo. Não é flush
+## cross-context simples. ⟹ hipótese restante mais forte = Mali-450 não amostra essas ETC1
+## grandes/non-square corretamente (apesar de err=0 + arte no dado + pipeline OK).
+## FIX a testar (fresco): software ETC1->RGBA decode no upload (escrever decoder ETC1
+## ~100-150 linhas; o etc2_decode existente NÃO faz ETC1). Se ao subir RGBA o fundo
+## aparecer = Mali-ETC1 confirmado e RESOLVIDO. Senão = race upload/draw mais profundo.
+## == ENCERRAMENTO s6: menu .88 ENTREGUE+confiável. Fundo Duckburg = muro exaustivamente
+##    caracterizado (descartados ~15 hipóteses), raiz provável = Mali-ETC1 grande, fix =
+##    decoder ETC1 software (próxima sessão focada). ~45 ciclos build/run/fix nesta sessão. ==
+
+## s6 ETC1RGBA: decodificar ETC1 via etc2_decode(0x9274) e subir RGBA -> NÃO funcionou
+## (etc2_decode retorna NULL p/ dado ETC1; o decoder ETC2 não cobre o modo individual do
+## ETC1). Fix real precisa de um decoder ETC1 DEDICADO (individual+differential mode), ~120
+## linhas. ⚠️ MAS hipótese Mali-ETC1 NÃO confirmada: ETC1 PEQUENAS (logo/UI) RENDERIZAM ->
+## ETC1 não está 100% quebrado. Pode ser size-específico OU race upload/draw do movie animado.
+## == FIM s6 (~47 ciclos). Menu .88 ENTREGUE. Fundo = muro profundo (= s5), exaustivamente
+##    caracterizado; precisa investida FRESCA: (1) confirmar logo ETC1-vs-RGBA, (2) se Mali-
+##    ETC1, escrever decoder ETC1 dedicado, (3) senão, atacar sync upload/draw do movie. ==
+
+## 🎯🎯 s6 RAIZ DEFINITIVA (teste sintético decisivo): É CONTEXTO/THREAD, NÃO Mali-ETC1
+## DUCK_ETCTEST: criei+uploadei na RENDER thread uma textura ETC1 1024² SINTÉTICA branca
+## (blocos ff ff ff 00...) e desenhei -> renderizou BRANCO 100%. ⟹ Mali-450 amostra ETC1
+## 1024² PERFEITAMENTE. Hipótese Mali-ETC1 DESCARTADA.
+## ⟹ RAIZ = COMPARTILHAMENTO DE TEXTURA ENTRE CONTEXTOS/THREADS:
+##   - logo/UI: uploadados no LOAD (main/render thread) -> visíveis -> renderizam.
+##   - movie (animado): texturas uploadadas em WORKER threads -> a render thread amostra a
+##     SUA textura de mesmo ID (vazia) -> PRETO. (Bate com "tex203 NUNCA_UPLOADADA" e com
+##     tex163 UP=1 ainda preto: o UP=1 foi setado no contexto do worker, não no da render.)
+##   - egl_shim cria 1 contexto POR THREAD (share=g_real_ctx). O share group do Mali NÃO
+##     está compartilhando as texturas do worker p/ a render thread (ou há race de sync).
+## glFinish após upload (TEXFLUSH) NÃO resolveu -> não é só visibilidade; é o share group.
+## 🎯 FIX (próxima sessão, egl_shim): garantir share REAL de texturas entre os contextos
+##   das threads (worker upload <-> render sample). Opções: (a) upload de textura SEMPRE no
+##   contexto da render thread (interceptar e enfileirar p/ a render thread); (b) 1 contexto
+##   ÚNICO compartilhado de verdade (cuidado BAD_ACCESS); (c) re-bind/re-upload no render.
+## == RAIZ FINAL ISOLADA. Não é decoder, não é render-state, não é Mali-ETC1: é SHARE de
+##    textura cross-context do movie. Menu .88 entregue. ~48 ciclos build/run/fix nesta sessão. ==
+
+## 🔚 s6 FIM DEFINITIVO: namespace de textura SEPARADO entre contextos por-thread
+## DUCK_TEXMIRROR (guardar upload + re-upload no render thread por ID) NÃO disparou nenhum
+## replay -> o ID que o worker uploada NÃO bate com o ID que a render amostra. ⟹ os
+## contextos por-thread do egl_shim têm NAMESPACES de textura SEPARADOS (não compartilham
+## nem objetos nem IDs). Por isso o movie (upload no worker) é preto e o logo (upload no
+## render/load) renderiza. Mali-ETC1 OK (teste sintético branco), render-state OK.
+## 🎯 FIX REAL (egl_shim, investida pesada/delicada): os contextos por-thread (tl_ctx,
+##   share=g_real_ctx) NÃO estão num share group efetivo no Mali. Opções:
+##   (a) UM contexto GL único usado por TODAS as threads com lock serializando (risco perf,
+##       mas garante 1 namespace) — o comentário do egl_shim alerta BAD_ACCESS, validar;
+##   (b) garantir que eglCreateContext use o share corretamente (testar share=g_real_ctx vs
+##       o ctx da thread; conferir se o Mali honra share de textura compressed);
+##   (c) mirror por (w,h,conteudo) em vez de por ID (heurística), já que os IDs não batem.
+## == RAIZ CONCLUSIVA: share/namespace de textura cross-context. ~50 ciclos build/run/fix.
+##    Menu .88 ENTREGUE. Fundo = fix de contexto GL (próxima sessão focada no egl_shim). ==
+
+## 🔒 s6 CONFIRMAÇÃO IRONCLAD (DUCK_MIRLOG): namespaces desconectados, PROVADO
+## MIRSTORE: 40 uploads, TODOS de 1 thread (tid e3859220); curtex()=TEXTURE_BINDING_2D
+## nessa thread retorna SEMPRE id=4. Movie draws (render thread) amostram IDs 155-233.
+## ⟹ os uploads (worker, namespace onde binding=4) e os samples (render, IDs 155-233)
+## estão em NAMESPACES DE TEXTURA TOTALMENTE DESCONECTADOS. Raiz CONFIRMADA além de dúvida:
+## os contextos por-thread do egl_shim NÃO compartilham objetos de textura no Mali-450.
+## (Mirror por-ID não pode funcionar pq os IDs nem existem no mesmo namespace.)
+## 🎯 FIX (egl_shim, sessão focada): garantir 1 namespace de textura entre worker e render.
+##   Mais provável: UM contexto GL real único, com lock serializando as chamadas GL das
+##   threads (a engine já serializa muita coisa via [texlock]/job-system). Validar BAD_ACCESS.
+##   Alternativa: descobrir por que eglCreateContext(share=g_real_ctx) não compartilha no
+##   blob Mali-450 (talvez precise MESMO config/precise re-mapear o handle de share).
+## == RAIZ DEFINITIVA E PROVADA. Menu .88 entregue. Fundo = fix de share de contexto GL. ==
+
+## s6 DUCK_ONECTX (1 contexto único p/ todas threads) -> CRASH sig=11 (BAD_ACCESS), como
+## o egl_shim alertava: uso concorrente de 1 contexto sem serialização total quebra. ⟹ o
+## acesso GL das threads do DuckTales NÃO é totalmente serializado -> não dá p/ só compartilhar
+## 1 contexto. Fix precisa de UMA das duas (sessão focada, careful):
+##   (A) GLOBAL GL LOCK: serializar TODA chamada GL (mutex em torno de cada gl*/egl*) +
+##       1 contexto único -> garante 1 namespace SEM corrida. Custo perf, mas correto.
+##   (B) SHARE GROUP REAL: descobrir por que r_createContext(share=g_real_ctx) não compartilha
+##       texturas no blob Mali-450 (testar criar TODOS os contextos com share encadeado, ou
+##       um config/flag específico; conferir eglQueryContext do share).
+## == FIM ABSOLUTO s6 (~53 ciclos). Menu .88 ENTREGUE (flags todas gated, default=menu OK).
+##    Raiz PROVADA = namespace de textura cross-context. Fix = (A) global GL lock OU (B)
+##    share group real. Ambos = investida pesada/careful no egl_shim, próxima sessão. ==

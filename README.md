@@ -22,7 +22,7 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 - **Streets of Rage 4** (MonoGame/.NET 9) — roda **nativo** (não so-loader): o runtime .NET 9 CoreCLR + MonoGame em GLES2 executam o código gerenciado direto, com host próprio no lugar da `MainActivity`. Jogável com áudio, música original (Wwise) por um reimpl OpenAL leve; texturas ASTC→ETC1 na 1ª execução. Veja [`ports/sor4`](ports/sor4/).
 
-E mais jogáveis no Mali-450: **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP), **DYSMANTLE** (Mali-450 + X5M) e **Crazy Taxi Classic**. Tabela completa abaixo.
+E mais jogáveis no Mali-450: **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
 
 ## Jogos portados
 | Jogo | Engine / método | Estado | Pasta |
@@ -35,6 +35,7 @@ E mais jogáveis no Mali-450: **Chrono Trigger** (Cocos2d-x, controle físico + 
 | **DYSMANTLE** | so-loader (GameActivity) | **Jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
 | **Terraria** (Unity IL2CPP) | so-loader | **Jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | **Jogável** (Mali-450) — render, controle físico (padrão Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
+| **Shantae and the Pirate's Curse** (WayForward "Black") | so-loader (NativeActivity **armv7**, ES2 nativo + OpenSL ES) | **Jogável** (Mali-450) — render + áudio + 60fps + inglês, **controles completos** (dpad/analógico navegam menu e andam, botões Xbox, SELECT+START sai) | [`ports/shantae`](ports/shantae/) |
 | **Crazy Taxi Classic** | so-loader (loader de **initdream** sobre o framework) | **Jogável** (Mali-450) — render + áudio + gptokeyb | [`ports/crazytaxi`](ports/crazytaxi/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | **Parcial** — gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity) | so-loader | **Demo** — menu + entrada Cap.1 OK; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |

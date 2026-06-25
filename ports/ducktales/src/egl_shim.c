@@ -73,6 +73,7 @@ static int real_current_is_window_surface(void) {
 }
 
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
+static void egl_shim_texdump(void); /* fwd: dump de textura p/ debug do fundo */
 
 /* ---- on-GL-thread screenshot (DUCK_SHOT=1) ----
    /dev/fb0 reads return 0 bytes while the Mali fbdev is owned by our GL client,
@@ -201,6 +202,15 @@ void egl_shim_create_window(void) {
     return;
   }
   debugPrintf("egl_shim: GL share-root context created\n");
+
+  /* DIAG decisivo: quanto stencil/depth o Mali REALMENTE concedeu? Se stencil=0,
+     a mascara stencil do Scaleform (fundo animado) falha -> fundo recortado/preto. */
+  { int sst=-1, sdp=-1, sa=-1;
+    SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &sst);
+    SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &sdp);
+    SDL_GL_GetAttribute(SDL_GL_ALPHA_SIZE, &sa);
+    debugPrintf("egl_shim: GRANTED stencil=%d depth=%d alpha=%d %s\n",
+                sst, sdp, sa, sst <= 0 ? "<<< STENCIL=0! mascara Scaleform falha" : ""); }
 
   /* captura os objetos EGL REAIS criados pelo SDL2-mali (contexto current agora=share_root) */
   r_getCurDisplay=dlsym(RTLD_DEFAULT,"eglGetCurrentDisplay");
@@ -407,13 +417,24 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
       /* UM contexto real compartilhado POR THREAD (a Unity passa o MESMO handle p/ varias threads;
          compartilhar 1 contexto entre threads = BAD_ACCESS). Cada thread cria o seu (share=root)
          na 1a vez. A thread de SETUP usa PBUFFER, a de RENDER usa o WINDOW. */
+      /* DUCK_ONECTX: TODAS as threads usam o MESMO contexto real (g_real_ctx) -> 1
+         namespace de textura compartilhado (fix da raiz: worker uploada e render amostra
+         a MESMA textura). Funciona se o acesso GL for serializado (engine tem [texlock]/
+         job-system). Risco BAD_ACCESS -> gated por env, default inalterado. */
+      static int onectx = -1; if (onectx < 0) onectx = getenv("DUCK_ONECTX") ? 1 : 0;
       static _Thread_local void *tl_ctx=NULL;
-      if (!tl_ctx) {
+      if (onectx) { tl_ctx = g_real_ctx; }
+      else if (!tl_ctx) {
         int ctxattr[]={0x3098,2,0x3038};
         tl_ctx = r_createContext(g_real_dpy, g_real_cfg, g_real_ctx, ctxattr);
         if(!tl_ctx) tl_ctx = (context->real_ctx?context->real_ctx:g_real_ctx);
       }
-      void *surf = (me==g_creator_tid && g_real_pbuf && !g_creator_win) ? g_real_pbuf : g_real_surf;
+      /* DUCK_ALLWIN: força TODAS as threads na WINDOW surface. No .88 a thread que
+         renderiza o menu parece ser a creator (que ia pro pbuffer 16x16) -> draws no
+         pbuffer, janela só mostra o clear. All-window faz o menu chegar ao scanout. */
+      static int allwin = -1;
+      if (allwin < 0) allwin = getenv("DUCK_ALLWIN") ? 1 : 0;
+      void *surf = (!allwin && me==g_creator_tid && g_real_pbuf && !g_creator_win) ? g_real_pbuf : g_real_surf;
       r = r_makeCurrent(g_real_dpy, surf, surf, tl_ctx);
       if (r == 0 && surf!=g_real_surf) { r = r_makeCurrent(g_real_dpy, g_real_surf, g_real_surf, tl_ctx); surf=g_real_surf; }
       has_real_gl = (r != 0);
@@ -484,6 +505,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (g_use_real_egl) {
     if (r_swapBuffers && g_real_dpy && g_real_surf && real_current_is_window_surface()) {
+      egl_shim_texdump();
       egl_shim_maybe_shot(screen_width(), screen_height());
       r_swapBuffers(g_real_dpy, g_real_surf);
       int fc = ++frame_count; static int sl=0;
@@ -648,7 +670,94 @@ static void *egl_shim_lookup_egl_proc(const char *procname) {
   return NULL;
 }
 
+/* DUCK_TEXDUMP=N: desenha a textura N num quad fullscreen com shader passthrough
+   PRÓPRIO (compilado do source, não o do jogo) ANTES do shot -> a captura mostra o
+   CONTEÚDO da textura. Se aparecer arte = a textura tem dado (problema é a amostragem/
+   movie); se preto = o dado da textura é preto (asset/upload). Decide a raiz do fundo. */
+/* DUCK_ETCTEST: sobe uma textura ETC1 1024² SINTÉTICA branca (blocos ff ff ff 00 00 00
+   00 00) e a desenha. Branco=Mali ETC1 1024² OK (bg=race); preto=Mali ETC1 grande quebrado. */
+static unsigned g_etctest_tex = 0;
+static void egl_shim_etctest(void) {
+  static int en=-2; if(en==-2) en=getenv("DUCK_ETCTEST")?1:0;
+  if(!en) return;
+  extern void glGenTextures(int,unsigned*); extern void glBindTexture(unsigned,unsigned);
+  extern void glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
+  extern void glTexParameteri(unsigned,unsigned,int); extern unsigned glGetError(void);
+  if(!g_etctest_tex){
+    static unsigned char *buf=NULL; int sz=1024*1024/2; /* ETC1 0.5B/px */
+    buf=malloc(sz); for(int i=0;i<sz;i+=8){buf[i]=0xff;buf[i+1]=0xff;buf[i+2]=0xff;buf[i+3]=0;buf[i+4]=0;buf[i+5]=0;buf[i+6]=0;buf[i+7]=0;}
+    glGenTextures(1,&g_etctest_tex); glBindTexture(0x0DE1,g_etctest_tex);
+    glCompressedTexImage2D(0x0DE1,0,0x8d64,1024,1024,0,sz,buf);
+    glTexParameteri(0x0DE1,0x2801,0x2601); glTexParameteri(0x0DE1,0x2800,0x2601);
+    debugPrintf("egl_shim: [ETCTEST] tex sintetica ETC1 1024² branca criada=%u err=0x%x\n",g_etctest_tex,glGetError());
+  }
+}
+static void egl_shim_texdump(void) {
+  egl_shim_etctest();
+  static int en = -2;
+  if (en == -2) { const char *e = getenv("DUCK_TEXDUMP"); en = e ? atoi(e) : -1; }
+  if (g_etctest_tex && getenv("DUCK_ETCTEST")) { /* dump da sintetica */
+    extern void glDisable(unsigned); (void)glDisable;
+  }
+  if (en < 0 && !g_etctest_tex) return;
+  extern unsigned g_dbg_movie_tex; /* main: última textura de cor do movie */
+  int tid = g_etctest_tex ? (int)g_etctest_tex   /* ETCTEST: dump da sintetica branca */
+          : (en == 0) ? (int)g_dbg_movie_tex : en;
+  if (tid <= 0) return;
+  { static int lg=0; if(lg++<4) debugPrintf("egl_shim: [TEXDUMP] desenhando tex%d (auto=%d g_dbg=%u)\n", tid, en==0, g_dbg_movie_tex); }
+  extern unsigned glCreateShader(unsigned); extern void glShaderSource(unsigned,int,const char*const*,const int*);
+  extern void glCompileShader(unsigned); extern unsigned glCreateProgram(void); extern void glAttachShader(unsigned,unsigned);
+  extern void glLinkProgram(unsigned); extern void glUseProgram(unsigned); extern int glGetAttribLocation(unsigned,const char*);
+  extern int glGetUniformLocation(unsigned,const char*); extern void glUniform1i(int,int);
+  extern void glEnableVertexAttribArray(unsigned); extern void glVertexAttribPointer(unsigned,int,unsigned,unsigned char,int,const void*);
+  extern void glActiveTexture(unsigned); extern void glBindTexture(unsigned,unsigned); extern void glDrawArrays(unsigned,int,int);
+  extern void glDisable(unsigned); extern void glViewport(int,int,int,int); extern void glBindBuffer(unsigned,unsigned);
+  static unsigned prog = 0;
+  if (!prog) {
+    const char *vs = "attribute vec2 p; varying vec2 uv; void main(){ uv=p*0.5+0.5; gl_Position=vec4(p,0.0,1.0); }";
+    /* DUCK_TDGRAD: frag = gradiente UV (sem textura) p/ validar o pipeline da sonda.
+       Se aparecer gradiente -> sonda OK. Senão -> sonda quebrada. */
+    const char *fs = getenv("DUCK_TDGRAD")
+      ? "precision mediump float; varying vec2 uv; void main(){ gl_FragColor=vec4(uv,0.5,1.0); }"
+      : "precision mediump float; uniform sampler2D t; varying vec2 uv; void main(){ gl_FragColor=vec4(texture2D(t,uv).rgb,1.0); }";
+    unsigned v=glCreateShader(0x8B31), f=glCreateShader(0x8B30);
+    int vl=(int)strlen(vs), fl=(int)strlen(fs);
+    glShaderSource(v,1,&vs,&vl); glCompileShader(v);
+    glShaderSource(f,1,&fs,&fl); glCompileShader(f);
+    prog=glCreateProgram(); glAttachShader(prog,v); glAttachShader(prog,f); glLinkProgram(prog);
+    debugPrintf("egl_shim: [TEXDUMP] prog=%u criado p/ tex%d\n", prog, tid);
+  }
+  static const float quad[8] = {-1,-1, 1,-1, -1,1, 1,1};
+  glDisable(0x0BE2); glDisable(0x0B71); glDisable(0x0C11); /* blend/depth/scissor off */
+  glViewport(0,0,screen_width(),screen_height());
+  glUseProgram(prog);
+  glBindBuffer(0x8892,0); /* ARRAY_BUFFER 0 -> usa client array */
+  int lp=glGetAttribLocation(prog,"p");
+  if (lp>=0){ glEnableVertexAttribArray((unsigned)lp); glVertexAttribPointer((unsigned)lp,2,0x1406,0,0,quad); }
+  int lt=glGetUniformLocation(prog,"t"); if(lt>=0) glUniform1i(lt,0);
+  glActiveTexture(0x84C0); glBindTexture(0x0DE1,(unsigned)tid);
+  /* filtro NÃO-MIP (LINEAR): se a textura tinha min-filter de mipmap sem mips uploadados,
+     ela estava INCOMPLETA -> amostrava preto. Forçando LINEAR a arte do nível 0 aparece. */
+  { extern void glTexParameteri(unsigned,unsigned,int);
+    glTexParameteri(0x0DE1,0x2801,0x2601); /* MIN_FILTER=LINEAR */
+    glTexParameteri(0x0DE1,0x2800,0x2601); /* MAG_FILTER=LINEAR */ }
+  glDrawArrays(0x0005,0,4); /* TRIANGLE_STRIP */
+}
+/* no-op p/ glProgramBinaryOES (DUCK_NOPROGBIN): impede o engine de carregar o shader
+   pré-compilado do GFxShaders.cache -> força recompilar do glShaderSource. glProgram-
+   BinaryOES é EXTENSÃO -> o engine resolve via eglGetProcAddress (NÃO pela import table),
+   então a interceptação TEM que ser aqui. */
+static void noop_glProgramBinaryOES(unsigned pr, unsigned fmt, const void *bin, int len) {
+  (void)pr;(void)fmt;(void)bin;(void)len;
+  static int n=0; if (n++<6) debugPrintf("egl_shim: [NOPROGBIN] glProgramBinaryOES no-op prog=%u\n", pr);
+}
 void *egl_shim_GetProcAddress(const char *procname) {
+  static int npb = -1;
+  if (npb < 0) npb = getenv("DUCK_NOPROGBIN") ? 1 : 0;
+  if (npb && procname && strcmp(procname, "glProgramBinaryOES") == 0) {
+    debugPrintf("egl_shim: eglGetProcAddress(glProgramBinaryOES) -> NO-OP (NOPROGBIN)\n");
+    return (void *)noop_glProgramBinaryOES;
+  }
   void *ptr = egl_shim_lookup_egl_proc(procname);
   if (ptr) {
     debugPrintf("egl_shim: eglGetProcAddress(%s) -> shim\n", procname);
