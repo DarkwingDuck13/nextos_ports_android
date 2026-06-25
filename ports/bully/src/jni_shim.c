@@ -851,6 +851,56 @@ static void hook_clarity(void) {
   }
 }
 
+/* ---- SHADOWS (e outras linhas) no menu de display ----
+ * BullySettings::GetDisplayShadowOption() retorna 0 (linha ESCONDIDA) a nao ser
+ * que o tier grafico do device seja >= 3; o Mali-450 real reporta tier baixo ->
+ * a opcao some (sobra so a Clarity). Forcamos a exibicao + o range, igual o
+ * hook_clarity faz com a resolucao. GetMaxShadowOption define quantos niveis a
+ * opcao tem (Off/On). Offsets fixos = vaddr (text comeca em vaddr 0), iguais ao
+ * libGame 1.4.311 (BuildID 6139a628). Opt-in: BULLY_SHADOWS_MENU=1.
+ * BULLY_SHADOWS_MAX ajusta o nº de niveis (default 1 = Off/On). */
+static int my_GetDisplayShadowOption(void *self) { (void)self; return 1; }
+static int my_GetMaxShadowOption(void *self) {
+  (void)self;
+  const char *e = getenv("BULLY_SHADOWS_MAX");
+  return e && *e ? atoi(e) : 1;
+}
+static void hook_shadow_menu(void) {
+  if (!getenv("BULLY_SHADOWS_MENU")) return;
+  uintptr_t a = so_symbol(&mod_game, "_ZN13BullySettings22GetDisplayShadowOptionEv");
+  if (!a && text_base) a = (uintptr_t)text_base + 0x1033ccc;
+  uintptr_t b = so_symbol(&mod_game, "_ZN13BullySettings18GetMaxShadowOptionEv");
+  if (!b && text_base) b = (uintptr_t)text_base + 0x1033d24;
+  if (a) hook_x64(a, (uintptr_t)my_GetDisplayShadowOption);
+  if (b) hook_x64(b, (uintptr_t)my_GetMaxShadowOption);
+  fprintf(stderr, "[shadows] menu option forced: display=%p max=%p\n", (void *)a, (void *)b);
+}
+
+/* ---- DIAG/FORCE do nivel de sombra no render ----
+ * GetShadowLevel mapeia o setting -> nivel de render (Off/Low=0, Med=1, High=2);
+ * nivel>=1 ativa o shadow-map RTT que crasha o Utgard. BULLY_SHADOW_FORCE=N
+ * forca o retorno (reproduz Med/High no boot sem navegar o menu, p/ debugar). */
+/* ---- BULLY_SHADOW_FORCE=N: forca o nivel de sombra (0=Off 1=Low 2=Med 3=High)
+ * NO LOAD via GetShadowDefault. Medium/High SO funcionam setados no load (o
+ * engine cria o shadow-map junto com a cena); mudar AO VIVO no menu de pausa
+ * crasha o driver Mali (Utgard) ao alocar o RT no meio do frame. Por isso o
+ * menu fica em Off/Low (BULLY_SHADOWS_MAX=1, ambos rodam ao vivo); quem quiser
+ * Med/High usa este knob de launcher (aplicado limpo no load). Off por padrao. */
+static int g_shadow_force = -2;
+static int my_GetShadowDefault(void *self) {
+  (void)self;
+  return g_shadow_force >= 0 ? g_shadow_force : 0;
+}
+static void hook_shadow_force(void) {
+  const char *e = getenv("BULLY_SHADOW_FORCE");
+  if (!e) return;
+  g_shadow_force = atoi(e);
+  uintptr_t a = so_symbol(&mod_game, "_ZN13BullySettings16GetShadowDefaultEv");
+  if (!a && text_base) a = (uintptr_t)text_base + 0x1033f40;
+  if (a) hook_x64(a, (uintptr_t)my_GetShadowDefault);
+  fprintf(stderr, "[shadows] FORCE setting=%d no load (GetShadowDefault=%p)\n", g_shadow_force, (void *)a);
+}
+
 /* ---- ASYNC FILE WORKER (porta do bully-NX) — A PEÇA QUE FALTAVA ----
  * No Android os arquivos carregam ASSÍNCRONO: uma fila (AndroidFile::
  * firstAsyncFile) é avançada por AND_FileUpdated(delta) a cada frame por um
@@ -999,6 +1049,8 @@ void jni_load(void) {
   hook_screen();  /* OS_ScreenGetWidth/Height + render gates como função */
   hook_cxa();     /* __cxa_guard simples -> statics C++ (whitetexture?) inicializam */
   hook_clarity(); /* GetResolutionDefault -> RS_High (engine sempre poe Low em 1GB) */
+  hook_shadow_menu(); /* GetDisplayShadowOption -> mostra a linha Shadows (BULLY_SHADOWS_MENU=1) */
+  hook_shadow_force(); /* BULLY_SHADOW_FORCE=N -> Med/High no load (menu fica Off/Low) */
   if (getenv("BULLY_BAKEALL")) hook_render(); /* captura a cena ativa p/ o force-render */
   if (getenv("BULLY_EVICT")) hook_evict();    /* EXPERIMENTO: religa o despejo de streaming (estilo GTA SA) */
   so_make_text_executable();

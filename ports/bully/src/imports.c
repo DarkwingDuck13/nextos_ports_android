@@ -186,6 +186,38 @@ static int bully_try_etc1(unsigned tgt, int lvl, int w, int h, unsigned fmt, uns
   return 0;
 }
 
+/* ETC1 RUNTIME (sem cache/bake): encoda a 565 opaca -> ETC1 e SOBE na hora (4x menos VRAM).
+ * A textura ETC1 fica RESIDENTE (pequena) e NAO e registrada p/ paginacao -> corta a I/O do
+ * texswap (causa do engasgo). E o modelo do v10, mas encodando em runtime (custo = CPU no load).
+ * Gate: BULLY_ETC1_RUNTIME. Independe de trilinear (no fbdev o filtro ja e forcado LINEAR). */
+static int g_etc1_rt = -1;
+static int bully_etc1_runtime(void) { if (g_etc1_rt < 0) g_etc1_rt = getenv("BULLY_ETC1_RUNTIME") ? 1 : 0; return g_etc1_rt; }
+static int bully_try_etc1_runtime(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur = 0;                   /* base atual virou ETC1? -> pula seus mips */
+  if (!bully_etc1_runtime()) return 0;
+  if (bully_is_kmsdrm()) return 0;      /* so fbdev/Utgard (ES2 ETC1) */
+  if (lvl > 0) return cur;              /* pula mips da textura que virou ETC1 (LINEAR) */
+  cur = 0;
+  if (type != 0x8363 || fmt != 0x1907 || !px) return 0;   /* SO 565 opaco com pixels */
+  if (w < 64 || h < 64 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
+  size_t etcsz = (size_t)(w / 4) * (h / 4) * 8;
+  unsigned char *rgb = malloc((size_t)w * h * 3);
+  unsigned char *etc = malloc(etcsz);
+  int ok = 0;
+  if (rgb && etc) {
+    bully_expand565(px, w, h, rgb);
+    etc1_encode_image(rgb, w, h, 3, etc);
+    if (!real_glCompressedTexImage2D2) real_glCompressedTexImage2D2 = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+    if (real_glCompressedTexImage2D2) {
+      real_glCompressedTexImage2D2(tgt, 0, GL_ETC1_RGB8_OES, w, h, 0, (int)etcsz, etc);
+      ok = 1; cur = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc1rt] '%s' %dx%d -> ETC1 %zuB\n", bully_cur_tex_path, w, h, etcsz); up++; }
+    }
+  }
+  free(rgb); free(etc);
+  return ok;
+}
+
 /* ===================== ETC2 (GLES3: R36S/G31 e qualquer GLES3) =====================
  * ETC2_RGBA8_EAC (0x9278): 4x menos VRAM que RGBA8888, COM alpha (vs ETC1 = so opaco) e resolucao
  * CHEIA. Cobre o JOGO INTEIRO (opaco+recorte). G31 sobe nativo (zero decode em runtime). Resolve o
@@ -649,17 +681,38 @@ static int my_fstat(int fd, void *buf) {
   return r;
 }
 
-/* ---- glGetString nunca-NULL ---- */
+/* ---- glGetString nunca-NULL ----
+ * SPOOF opcional do device: o perfprofile do Bully casa o GL_RENDERER (regex
+ * "Mali-(\w+)" / "Adreno .TM. (.+)") contra uma tabela e ESCONDE opcoes do menu
+ * (Shadows etc.) em GPU de tier baixo/desconhecido. BULLY_GPU_RENDERER e
+ * BULLY_GPU_VENDOR fingem outro aparelho p/ destravar o menu, SEM mudar a GPU
+ * real (so o nome que o jogo le). 0x1F01=GL_RENDERER, 0x1F00=GL_VENDOR. */
 static const unsigned char *w_glGetString(unsigned name) {
   static const unsigned char *(*real)(unsigned) = NULL;
   if (!real) real = dlsym(RTLD_DEFAULT, "glGetString");
+  if (name == 0x1F01) { const char *e = getenv("BULLY_GPU_RENDERER"); if (e && *e) return (const unsigned char *)e; }
+  if (name == 0x1F00) { const char *e = getenv("BULLY_GPU_VENDOR");   if (e && *e) return (const unsigned char *)e; }
   const unsigned char *r = real ? real(name) : NULL;
   return r ? r : (const unsigned char *)"";
 }
 
 /* ---- bionic-only (não existem na glibc; libc++/libGame usam) ---- */
 static void b_set_abort_message(const char *m) { fprintf(stderr, "[abort_msg] %s\n", m ? m : "?"); }
-static int b_system_property_get(const char *name, char *value) { (void)name; if (value) value[0] = 0; return 0; }
+/* SPOOF opcional do modelo (alguns perfis casam por ro.product.model/board em
+ * vez do GL_RENDERER). BULLY_DEV_MODEL / BULLY_DEV_MANUF / BULLY_DEV_BOARD. */
+static int b_system_property_get(const char *name, char *value) {
+  if (!value) return 0;
+  value[0] = 0;
+  if (name) {
+    const char *e = NULL;
+    if (!strcmp(name, "ro.product.model"))             e = getenv("BULLY_DEV_MODEL");
+    else if (!strcmp(name, "ro.product.manufacturer")) e = getenv("BULLY_DEV_MANUF");
+    else if (!strcmp(name, "ro.board.platform") ||
+             !strcmp(name, "ro.hardware"))              e = getenv("BULLY_DEV_BOARD");
+    if (e && *e) { strncpy(value, e, 91); value[91] = 0; return (int)strlen(value); }
+  }
+  return 0;
+}
 
 /* ---- C++ thread-local init helpers (_ZTH*): no-op ---- */
 static void tl_noop(void) {}
@@ -924,6 +977,10 @@ static int bully_sized_to_fmt(unsigned s, int *gli, unsigned *fmt, unsigned *typ
     default: return 0;
   }
 }
+/* fwd: escala global de textura (def. perto do my_glTexImage2D) -- usada tb no caminho ES3 */
+static double bully_tex_scale(void);
+static void bully_scaled_dim(int w, int h, int *nw, int *nh);
+static int bully_tex_resample(const unsigned char *src, int w, int h, unsigned fmt, unsigned type, int nw, int nh, unsigned char *dst);
 static void (*real_glTexStorage2D)(unsigned, int, unsigned, int, int) = NULL;
 static void my_glTexStorage2D(unsigned t, int levels, unsigned ifmt, int w, int h) {
   if (!real_glTexStorage2D) real_glTexStorage2D = dlsym(RTLD_DEFAULT, "glTexStorage2D");
@@ -946,11 +1003,12 @@ static void my_glTexStorage2D(unsigned t, int levels, unsigned ifmt, int w, int 
       bully_page_evict(t, g_cur_tex2d);
     static void (*rImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
     if (!rImg) rImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
-    if (rImg) rImg(t, 0, gli, w, h, 0, fmt, type, NULL); /* MUTAVEL nivel 0 */
+    int aw, ah; bully_scaled_dim(w, h, &aw, &ah);   /* TEX_SCALE: aloca o storage JA menor (ES3) */
+    if (rImg) rImg(t, 0, gli, aw, ah, 0, fmt, type, NULL); /* MUTAVEL nivel 0 (escalado) */
     g_tex_emul[g_cur_tex2d] = 1; g_tex_etc2[g_cur_tex2d] = 0; g_tex_emul_ifmt[g_cur_tex2d] = gli;
     { static void(*rP)(unsigned,unsigned,int)=NULL; if(!rP)rP=dlsym(RTLD_DEFAULT,"glTexParameteri");
       if(rP){ rP(t,0x2801,0x2601); rP(t,0x2800,0x2601); } } /* LINEAR (sem mip) */
-    int bb = bpp_of(fmt,type); long b = bb>0 ? (long)w*h*bb : 0;
+    int bb = bpp_of(fmt,type); long b = bb>0 ? (long)aw*ah*bb : 0;
     if (b>0) { g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d]=b; }
     return;
   }
@@ -971,6 +1029,20 @@ static void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsign
       bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*16));
       if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
       return;
+    }
+    int aw, ah; bully_scaled_dim(w, h, &aw, &ah);   /* TEX_SCALE (ES3): storage alocado em aw x ah */
+    if (aw < w || ah < h) {
+      int sbpp = bpp_of(fmt, type);
+      unsigned char *rs = (sbpp > 0) ? malloc((size_t)aw * ah * sbpp) : NULL;
+      if (rs && bully_tex_resample(px, w, h, fmt, type, aw, ah, rs)) {
+        if (real_glTexSubImage2D) real_glTexSubImage2D(t, 0, 0, 0, aw, ah, fmt, type, rs);
+        bully_page_write_swap(g_cur_tex2d, g_tex_emul_ifmt[g_cur_tex2d], aw, ah, fmt, type, rs);
+        if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+        free(rs);
+        static int sl2 = 0; if (sl2 < 6) { fprintf(stderr, "[texscale-es3] %s -> %dx%d\n", bully_cur_tex_path[0]?bully_cur_tex_path:"?", aw, ah); sl2++; }
+        return;
+      }
+      free(rs);
     }
     if (real_glTexSubImage2D) real_glTexSubImage2D(t, l, xo, yo, w, h, fmt, type, px); /* bake: sobe RGBA na mutavel */
     bully_page_write_swap(g_cur_tex2d, g_tex_emul_ifmt[g_cur_tex2d], w, h, fmt, type, px); /* registra p/ despejo */
@@ -1079,6 +1151,70 @@ static int bpp_of(unsigned fmt, unsigned type) {
 static int g_tex_half = -1;
 static void (*real_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = NULL;
 static void (*real_glGenerateMipmap)(unsigned) = NULL;
+
+/* ===== ESCALA GLOBAL configuravel (BULLY_TEX_SCALE) =====================================
+ * Reduz TODA textura de conteudo por um fator (ex: 0.9 = 10% menor), bilinear, MANTENDO o
+ * formato (565/4444/5551/8888/888) p/ economizar memoria de verdade. NAO poupa nada (opaca
+ * E alpha). So nao toca em render-target (px=NULL). Independe de streaming/ETC1. */
+static double g_tex_scale = -1.0;
+static double bully_tex_scale(void) {
+  if (g_tex_scale < 0) { const char *e = getenv("BULLY_TEX_SCALE"); g_tex_scale = e ? atof(e) : 1.0;
+    if (g_tex_scale <= 0.05 || g_tex_scale > 1.0) g_tex_scale = 1.0; }
+  return g_tex_scale;
+}
+/* dimensoes escaladas (multiplo de 4, >=4, nunca maior que o original) */
+static void bully_scaled_dim(int w, int h, int *nw, int *nh) {
+  double sc = bully_tex_scale();
+  int a = (int)(w * sc + 0.5) & ~3, b = (int)(h * sc + 0.5) & ~3;
+  if (a < 4) a = 4; if (b < 4) b = 4;
+  if (a > w) a = w; if (b > h) b = h;
+  *nw = a; *nh = b;
+}
+static void bully_rd_px(const unsigned char *s, size_t i, unsigned fmt, unsigned type, int o[4]) {
+  if (type == 0x1401) {                                  /* UNSIGNED_BYTE */
+    if (fmt == 0x1908) { o[0]=s[i*4]; o[1]=s[i*4+1]; o[2]=s[i*4+2]; o[3]=s[i*4+3]; }      /* RGBA8888 */
+    else { o[0]=s[i*3]; o[1]=s[i*3+1]; o[2]=s[i*3+2]; o[3]=255; }                          /* RGB888 */
+  } else { unsigned v = s[i*2] | (s[i*2+1] << 8);
+    if (type == 0x8363) { o[0]=((v>>11)&31)*255/31; o[1]=((v>>5)&63)*255/63; o[2]=(v&31)*255/31; o[3]=255; }       /* 565 */
+    else if (type == 0x8033) { o[0]=((v>>12)&15)*17; o[1]=((v>>8)&15)*17; o[2]=((v>>4)&15)*17; o[3]=(v&15)*17; }   /* 4444 */
+    else { o[0]=((v>>11)&31)*255/31; o[1]=((v>>6)&31)*255/31; o[2]=((v>>1)&31)*255/31; o[3]=(v&1)?255:0; }          /* 5551 */
+  }
+}
+static void bully_wr_px(unsigned char *d, size_t i, unsigned fmt, unsigned type, int p[4]) {
+  for (int k = 0; k < 4; k++) { if (p[k] < 0) p[k] = 0; if (p[k] > 255) p[k] = 255; }
+  if (type == 0x1401) {
+    if (fmt == 0x1908) { d[i*4]=p[0]; d[i*4+1]=p[1]; d[i*4+2]=p[2]; d[i*4+3]=p[3]; }
+    else { d[i*3]=p[0]; d[i*3+1]=p[1]; d[i*3+2]=p[2]; }
+  } else { unsigned v;
+    if (type == 0x8363) v = ((p[0]>>3)<<11) | ((p[1]>>2)<<5) | (p[2]>>3);
+    else if (type == 0x8033) v = ((p[0]>>4)<<12) | ((p[1]>>4)<<8) | ((p[2]>>4)<<4) | (p[3]>>4);
+    else v = ((p[0]>>3)<<11) | ((p[1]>>3)<<6) | ((p[2]>>3)<<1) | (p[3] >= 128 ? 1 : 0);
+    d[i*2] = v & 0xFF; d[i*2+1] = (v >> 8) & 0xFF;
+  }
+}
+/* bilinear src(w,h) -> dst(nw,nh) no MESMO formato. retorna 1 ok. */
+static int bully_tex_resample(const unsigned char *src, int w, int h, unsigned fmt, unsigned type, int nw, int nh, unsigned char *dst) {
+  if (w < 2 || h < 2 || nw < 1 || nh < 1) return 0;
+  for (int y = 0; y < nh; y++) {
+    double fy = (y + 0.5) * h / nh - 0.5; int y0 = (int)fy; if (y0 < 0) y0 = 0; int y1 = y0 + 1; if (y1 >= h) y1 = h - 1;
+    double wy = fy - (int)fy; if (wy < 0) wy = 0;
+    for (int x = 0; x < nw; x++) {
+      double fx = (x + 0.5) * w / nw - 0.5; int x0 = (int)fx; if (x0 < 0) x0 = 0; int x1 = x0 + 1; if (x1 >= w) x1 = w - 1;
+      double wx = fx - (int)fx; if (wx < 0) wx = 0;
+      int a[4], b[4], c[4], e[4], p[4];
+      bully_rd_px(src, (size_t)y0*w + x0, fmt, type, a);
+      bully_rd_px(src, (size_t)y0*w + x1, fmt, type, b);
+      bully_rd_px(src, (size_t)y1*w + x0, fmt, type, c);
+      bully_rd_px(src, (size_t)y1*w + x1, fmt, type, e);
+      for (int k = 0; k < 4; k++) {
+        double top = a[k]*(1-wx) + b[k]*wx, bot = c[k]*(1-wx) + e[k]*wx;
+        p[k] = (int)(top*(1-wy) + bot*wy + 0.5);
+      }
+      bully_wr_px(dst, (size_t)y*nw + x, fmt, type, p);
+    }
+  }
+  return 1;
+}
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int bord, unsigned fmt, unsigned type, const void *px) {
   if (!real_glTexImage2D) real_glTexImage2D = dlsym(RTLD_DEFAULT, "glTexImage2D");
   int pf = (lvl == 0) ? g_path_fresh : 0; if (lvl == 0) g_path_fresh = 0; /* consome frescura: RT (px=NULL, path stale) -> pf=0 -> sem ETC2/ETC1 */
@@ -1118,6 +1254,10 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
     }
     return;
   }
+  /* ETC1 RUNTIME (sem cache): encoda 565 opaca -> ETC1 e sobe na hora. Fica RESIDENTE
+   * (pequena, nao pagina) -> 4x menos VRAM + corta a I/O do texswap (engasgo). ANTES do
+   * cache ETC1 e compativel com paginacao (so as 565 opacas; alpha seguem paginando). */
+  if ((lvl > 0 || pf) && bully_try_etc1_runtime(tgt, lvl, w, h, fmt, type, px)) return;
   /* CACHE ETC1 offline: textura opaca 565 com ETC1 bakeado -> sobe ETC1 (4x menos VRAM)
    * e PULA o resto (conversoes/halving/mips). No bake, grava e segue o caminho normal. */
   if ((lvl > 0 || pf) && !bully_paging() && bully_try_etc1(tgt, lvl, w, h, fmt, type, px)) { /* FASE 2: paginando = NATIVO (sem ETC1 lossy); textura cai no swap kind=2 */
@@ -1138,8 +1278,10 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
   if (ifmt == 0x8058) ifmt = 0x1908;       /* GL_RGBA8 -> GL_RGBA (GLES2 não aceita sized) */
   else if (ifmt == 0x8051) ifmt = 0x1907;  /* GL_RGB8 -> GL_RGB */
   /* pula mipmaps: como forço MIN_FILTER=LINEAR, os níveis >0 nunca são usados ->
-   * só desperdiçam memória de textura da GPU (o Mali Utgard trava ao estourar). */
-  if (g_tex_half && lvl > 0) return;
+   * só desperdiçam memória de textura da GPU (o Mali Utgard trava ao estourar).
+   * TEX_SCALE: tb pula os mips DO ENGINE (tamanho original) -> a cadeia e
+   * REGENERADA (glGenerateMipmap) sobre o nivel 0 ja escalado, consistente. */
+  if ((g_tex_half || bully_tex_scale() < 0.999) && lvl > 0) return;
   /* LUMINANCE vazia (px=NULL) = alvo de render-to-texture da roupa; Mali não
    * renderiza p/ LUMINANCE -> aloca RGBA (renderável). Sem reduzir (é o alvo). */
   if ((fmt == 0x1909 || fmt == 0x190A) && type == 0x1401 && !px && w > 0 && h > 0) {
@@ -1221,6 +1363,19 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
           for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = (size_t)ny[k]*W+nx[k];
             if (d[n] & 1) { d[o] = (unsigned short)((d[n] & 0xFFFE) | (d[o] & 1)); break; } } }
         if (conv) free(conv); conv = (unsigned char*)d; data = (unsigned char*)d; }
+    }
+  }
+  /* ESCALA GLOBAL (BULLY_TEX_SCALE<1): reduz TODA textura de conteudo (opaca+alpha) por um
+   * fator, bilinear, mantendo o formato. NAO poupa nada. (RT/px=NULL nao chega aqui c/ data.) */
+  if (lvl == 0 && data && bully_tex_scale() < 0.999) {
+    int nw, nh; bully_scaled_dim(w, h, &nw, &nh);
+    int sbpp = bpp_of(ufmt, utype);
+    if (sbpp > 0 && (nw < w || nh < h)) {
+      unsigned char *rs = malloc((size_t)nw * nh * sbpp);
+      if (rs && bully_tex_resample(data, w, h, ufmt, utype, nw, nh, rs)) {
+        if (conv) free(conv); conv = rs; data = rs; w = nw; h = nh;
+        static int sl = 0; if (sl < 6) { fprintf(stderr, "[texscale] %s -> %dx%d (x%.2f)\n", bully_cur_tex_path[0]?bully_cur_tex_path:"?", nw, nh, bully_tex_scale()); sl++; }
+      } else free(rs);
     }
   }
   int bpp = bpp_of(ufmt, utype);

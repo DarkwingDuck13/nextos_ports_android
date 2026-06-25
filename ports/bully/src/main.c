@@ -75,6 +75,11 @@ static void crash_handler(int sig, siginfo_t *info, void *uc) {
   fprintf(stderr, "  PC=%p", (void *)pc);
   if (tb && pc >= tb && pc < tb + text_size)
     fprintf(stderr, " = libGame+0x%lx", (unsigned long)(pc - tb));
+  Dl_info di;
+  if (dladdr((void *)pc, &di) && di.dli_fname)
+    fprintf(stderr, " [%s%s%s+0x%lx]", di.dli_fname,
+            di.dli_sname ? " " : "", di.dli_sname ? di.dli_sname : "",
+            (unsigned long)(pc - (uintptr_t)(di.dli_saddr ? di.dli_saddr : di.dli_fbase)));
   fprintf(stderr, "\n");
 #endif
   fflush(stderr);
