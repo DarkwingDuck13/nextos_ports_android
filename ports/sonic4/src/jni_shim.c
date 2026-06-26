@@ -41,12 +41,21 @@ enum {
   MID_GET_DEFAULT_LOCALE,
   MID_GET_LANGUAGE,
   MID_GET_COUNTRY,
+  MID_LOCAL_PATH,   /* Sonic4 F2F: getLocalPath/getBundlePath -> dir gravável */
+  MID_REGION,       /* getRegionCode -> "US" */
+  MID_LANG_CODE,    /* getLanguageCode -> "en" */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_GENERIC,
 };
 
-static int g_method_tags[16]; /* unique addresses used as method IDs */
+static int g_method_tags[24]; /* unique addresses used as method IDs */
+/* Sonic4: caminho local gravável p/ o F2F (Sonic4ep2.f2f). Default = CWD. */
+char jni_local_path[512] = ".";
+void jni_shim_set_local_path(const char *p) {
+  if (p) { strncpy(jni_local_path, p, sizeof(jni_local_path) - 1);
+           jni_local_path[sizeof(jni_local_path) - 1] = 0; }
+}
 
 /* ---- Configurable package/OBB ---- */
 static const char *g_package_name = "com.microids.syberia";
@@ -123,6 +132,14 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_GET_LANGUAGE];
   if (strcmp(name, "getCountry") == 0)
     return &g_method_tags[MID_GET_COUNTRY];
+  /* Sonic4 F2F: paths e região/idioma (senão getLocalPath="" -> "/Sonic4ep2.f2f"
+     no root, não-gravável -> save F2F falha -> trava no boot). */
+  if (strcmp(name, "getLocalPath") == 0 || strcmp(name, "getBundlePath") == 0)
+    return &g_method_tags[MID_LOCAL_PATH];
+  if (strcmp(name, "getRegionCode") == 0)
+    return &g_method_tags[MID_REGION];
+  if (strcmp(name, "getLanguageCode") == 0)
+    return &g_method_tags[MID_LANG_CODE];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -186,6 +203,13 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
     debugPrintf("jni_shim:   -> getCountry = \"US\"\n");
     return make_jstring("US");
   }
+  /* Sonic4 F2F */
+  if (methodID == &g_method_tags[MID_LOCAL_PATH]) {
+    debugPrintf("jni_shim:   -> getLocalPath/BundlePath = \"%s\"\n", jni_local_path);
+    return make_jstring(jni_local_path);
+  }
+  if (methodID == &g_method_tags[MID_REGION])    return make_jstring("US");
+  if (methodID == &g_method_tags[MID_LANG_CODE]) return make_jstring("en");
   static int fake_obj;
   return &fake_obj;
 }

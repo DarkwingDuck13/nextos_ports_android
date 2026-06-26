@@ -17,5 +17,6 @@ void jni_shim_set_package(const char *package_name, int obb_version);
 // Servido por GetArrayLength/GetIntArrayRegion/GetFloatArrayRegion.
 void *jni_shim_make_array(const void *data, int len);
 void *jni_shim_new_string(const char *value);
+void jni_shim_set_local_path(const char *p);
 
 #endif

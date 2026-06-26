@@ -136,6 +136,7 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "=== SONIC 4 EPISODE II (NN/fox) so-loader / NextOS armv7 Mali-450 ===\n");
 
   jni_shim_set_package("com.sega.sonic4episode2", 22);
+  { const char *d = getenv("SONIC_DATADIR"); jni_shim_set_local_path(d ? d : "."); }
 
   build_base_table();
   load_module(GAME_SO, GAME_HEAP_MB, g_base, g_base_n);
