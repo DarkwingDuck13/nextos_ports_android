@@ -54,7 +54,17 @@ Tudo 32-bit (o client e o `libminecraftpe.so` armeabi-v7a vivem no MESMO process
 2. Pôr o APK em `mcpe_launcher/` e rodar `SetupMcpe.sh` → extrai `lib/armeabi-v7a/*.so` + `assets/`
    pra `versions/<nome-do-apk>/`. Depois remover o APK.
 
-## 🔴 Pendências (s1)
+## ✅ Controle + Empacotamento + R2 (s1, concluído)
+- **SELECT+START fecha o jogo** (NextOS confirmou): padrão PortMaster `$GPTOKEYB2 "MINECRAFT MAIN"`
+  (control.txt já embute o `LD_PRELOAD=libinterpose.<arch>.so`). 🔑 mata por **comm "MINECRAFT MAIN"**
+  (o client renomeia a main thread → `pkill 'mcpelauncher-client'` NÃO casa). Jogo usa gamepad nativo.
+  ⚠️ NÃO chamar `gptokeyb2` direto (faltava libinterpose) — usar a variável `$GPTOKEYB2`.
+- **Launcher ES** = `Minecraft Bedrock.sh` (em `ports/` E `ports_scripts/` → aparece "Minecraft Bedrock").
+- **Subido pro R2 privado**: `ports_aio/nextos_elite_exclusivos/Minecraft Bedrock (NextOS Elite).tar.gz`
+  (96MB; tar de `ports/mcpe_launcher/` + `ports_scripts/Minecraft Bedrock.sh`, com a versão 1.16.201 já
+  extraída em versions/). Visível no worker de listagem → baixável pelo gerenciador NextOS.
+
+## 🔴 Pendências (próxima sessão)
 - **Áudio:** FMOD host não carregou (`libfmod.so.10.20` não achado) → cai pro backend sdl3/opensl
   stub. Validar som (provável mudo). `mcpelauncher-client-settings.txt: audio_backend=sdl3`.
 - **Xbox Live:** falha de SSL CA cert (esperado, offline). README roda em `unshare --net`; nós
