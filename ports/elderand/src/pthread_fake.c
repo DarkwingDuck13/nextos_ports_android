@@ -75,6 +75,7 @@ volatile void *g_choreo_syncobj;       /* objeto da fila do handshake (main) */
 volatile void *g_choreo_syncobj_gfx;   /* idem p/ o UnityGfxDeviceWorker (2º) */
 static volatile void *g_main_wait_cslot;
 static int g_condtrace = -1;
+static uintptr_t g_hsfake_ready[2] = { 1, 0x40000000u };
 static int condtrace_on(void) { if (g_condtrace < 0) g_condtrace = getenv("TER_CONDTRACE") ? 1 : 0; return g_condtrace; }
 static const char *ra_name(unsigned long ra, unsigned long *po) {
   if (g_pt_ub && ra >= g_pt_ub && ra < g_pt_ub + 0x2000000) { *po = ra - g_pt_ub; return "libunity"; }
@@ -191,6 +192,17 @@ int pthread_cond_wait_fake(void **cslot, void **mslot) {
         g_choreo_syncobj_gfx = obj;
         fprintf(stderr, "[HANDSHAKE] gfx sync obj=%p tid=%d\n", obj, (int)syscall(SYS_gettid)); fsync(2);
       }
+      if (getenv("ELD_HSFAKE")) {
+        void **slot = (void **)((char *)obj + 0x58);
+        void *cur = *slot;
+        if (!cur || !*(void **)cur) {
+          *slot = g_hsfake_ready;
+          fprintf(stderr, "[HSFAKE] obj=%p slot=%p -> ready-wrapper=%p tid=%d\n",
+                  obj, slot, (void *)g_hsfake_ready, (int)syscall(SYS_gettid));
+          fsync(2);
+        }
+        return 0;
+      }
     }
   }
   if (getenv("TER_CONDWHO")) condwho_log();
@@ -284,7 +296,7 @@ const char *ter_thread_comm(pthread_t t) {
   }
   return "?(unreg)";
 }
-struct thr_boot { void *(*start)(void *); void *arg; };
+struct thr_boot { void *(*start)(void *); void *arg; void *caller; unsigned seq; };
 static void *thr_trampoline(void *p) {
   struct thr_boot b = *(struct thr_boot *)p;
   free(p);
@@ -294,14 +306,24 @@ static void *thr_trampoline(void *p) {
      do JobQueue/contexto de CADA worker → resolve "1 ou 2 instâncias de JobQueue" do handoff. */
   if (getenv("TER_JOBLOG")) {
     extern uintptr_t ter_unity_base(void);
+    extern uintptr_t ter_il2cpp_base(void);
     uintptr_t ub = ter_unity_base();
+    uintptr_t ib = ter_il2cpp_base();
     uintptr_t so = (uintptr_t)b.start;
+    uintptr_t ca = (uintptr_t)b.caller;
     int tid = (int)syscall(178 /*arm64 gettid*/);
     char comm[20] = ""; FILE *f = fopen("/proc/self/comm", "r");
     if (f) { if (fgets(comm, sizeof comm, f)) { char *nl = strchr(comm, '\n'); if (nl) *nl = 0; } fclose(f); }
     char line[512]; int n = 0;
-    n += snprintf(line + n, sizeof line - n, "[JOBTHR] tid=%d(%s) start=libunity+0x%lx arg=%p",
-                  tid, comm, ub ? so - ub : so, b.arg);
+    n += snprintf(line + n, sizeof line - n, "[JOBTHR] #%u tid=%d(%s) start=libunity+0x%lx",
+                  b.seq, tid, comm, ub ? so - ub : so);
+    if (ub && ca >= ub && ca < ub + 0x2000000)
+      n += snprintf(line + n, sizeof line - n, " caller=libunity+0x%lx", ca - ub);
+    else if (ib && ca >= ib && ca < ib + 0x5000000)
+      n += snprintf(line + n, sizeof line - n, " caller=libil2cpp+0x%lx", ca - ib);
+    else
+      n += snprintf(line + n, sizeof line - n, " caller=%p", b.caller);
+    n += snprintf(line + n, sizeof line - n, " arg=%p", b.arg);
     if (b.arg) { void **a = (void **)b.arg;
       for (int i = 0; i < 6 && n < (int)sizeof line - 32; i++) {
         uintptr_t v = (uintptr_t)a[i];
@@ -329,9 +351,11 @@ static void *thr_trampoline(void *p) {
 }
 int pthread_create_fake(pthread_t *t, const void *attr, void *(*start)(void *), void *arg) {
   (void)attr;
+  static unsigned seq;
   struct thr_boot *b = malloc(sizeof *b);
   if (!b) return pthread_create(t, NULL, start, arg);
-  b->start = start; b->arg = arg;
+  b->start = start; b->arg = arg; b->caller = __builtin_return_address(0);
+  b->seq = __sync_add_and_fetch(&seq, 1);
   int rc = pthread_create(t, NULL, thr_trampoline, b);
   if (rc) { free(b); rc = pthread_create(t, NULL, start, arg); }
   return rc;

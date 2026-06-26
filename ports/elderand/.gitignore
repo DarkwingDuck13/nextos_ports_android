@@ -4,3 +4,6 @@ terraria
 *.o
 run.out
 debug.log
+logs/*.log
+logs/_fb*.raw
+logs/frame_*.png

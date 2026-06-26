@@ -110,7 +110,7 @@ void jni_shim_set_package(const char *package_name, int obb_version) {
 
 /* ---- Fake jstring tracking ---- */
 /* We return tagged pointers as jstrings and map them to C strings */
-#define MAX_JSTRINGS 1024
+#define MAX_JSTRINGS 16384
 static struct {
   void *handle;
   char *value; /* copia propria (strdup) */
@@ -122,7 +122,18 @@ static int g_jstring_count = 0;
    guardado pelo Unity) -> apos >1024 jstrings, Unity usava ponteiro liberado -> crash em
    strchrnul/vsnprintf("%s_tmp", path_liberado). Identidade resolve isso (vaza, mas sessao limitada). */
 static void *make_jstring(const char *value) {
-  return (void *)strdup(value ? value : "");
+  char *p = strdup(value ? value : "");
+  if (g_jstring_count < MAX_JSTRINGS) {
+    g_jstrings[g_jstring_count].handle = p;
+    g_jstrings[g_jstring_count].value = p;
+    g_jstring_count++;
+  }
+  return (void *)p;
+}
+static int is_jstring_handle(void *p) {
+  for (int i = 0; i < g_jstring_count; i++)
+    if (g_jstrings[i].handle == p) return 1;
+  return 0;
 }
 /* tamanho LEGÍVEL de um arquivo (stat falha p/ /proc → lê o conteúdo e conta bytes). */
 static long file_readable_len(const char *path) {
@@ -210,16 +221,20 @@ static int prefs_contains(const char *key) {
   return (i >= 0 && (g_prefs[i].has_s || g_prefs[i].has_i)) ? 1 : 0;
 }
 
-/* ---- Registry de method/field IDs por NOME (recon Unity) ---- */
+/* ---- Registry de method/field IDs por NOME+ASSINATURA (recon Unity) ---- */
 struct mid_entry { const char *name; const char *sig; };
 static struct mid_entry g_midreg[8192];
 static int g_midreg_count = 0;
 
 static void *reg_mid(const char *name, const char *sig) {
-  for (int i = 0; i < g_midreg_count; i++)
-    if (g_midreg[i].name == name ||
-        (name && g_midreg[i].name && strcmp(g_midreg[i].name, name) == 0))
+  for (int i = 0; i < g_midreg_count; i++) {
+    int same_name = (g_midreg[i].name == name) ||
+                    (name && g_midreg[i].name && strcmp(g_midreg[i].name, name) == 0);
+    int same_sig = (g_midreg[i].sig == sig) ||
+                   (sig && g_midreg[i].sig && strcmp(g_midreg[i].sig, sig) == 0);
+    if (same_name && same_sig)
       return &g_midreg[i];
+  }
   if (g_midreg_count >= 8192) return &g_midreg[8191];  /* clamp estável (tags não podem mudar) */
   int i = g_midreg_count++;
   /* strdup: o pairip passa nomes em buffers TEMPORÁRIOS (stack/heap liberado) → guardar o
@@ -461,6 +476,10 @@ static void *asset_open(const char *path) {
   if (!strncmp(p, "file://", 7)) p += 7;
   snprintf(full, sizeof(full), ASSET_BASE "%s", p);
   FILE *fp = fopen(full, "rb");
+  if (!fp) {
+    snprintf(full, sizeof(full), ASSET_BASE "assets/%s", p);
+    fp = fopen(full, "rb");
+  }
   debugPrintf("asset: open(%s) -> %s\n", path ? path : "?",
               fp ? "OK" : "FALHOU (sem arquivo)");
   if (!fp) return NULL;
@@ -565,6 +584,75 @@ static void rel(const char *tag, void *lr) {
   else
     fprintf(stderr, "    <%s caller=%p>\n", tag, lr);
 }
+static int class_name_method(const char *nm) {
+  return nm && (!strcmp(nm, "getName") ||
+                !strcmp(nm, "getCanonicalName") ||
+                !strcmp(nm, "getTypeName"));
+}
+static void dot_class_name(const char *src, char *dst, size_t cap) {
+  if (!dst || cap == 0) return;
+  if (!src || !*src) src = "java/lang/Object";
+  size_t i = 0;
+  for (; src[i] && i + 1 < cap; i++)
+    dst[i] = (src[i] == '/') ? '.' : src[i];
+  dst[i] = 0;
+}
+static void slash_class_name(const char *src, char *dst, size_t cap) {
+  if (!dst || cap == 0) return;
+  if (!src || !*src) src = "java/lang/Object";
+  size_t i = 0;
+  for (; src[i] && i + 1 < cap; i++)
+    dst[i] = (src[i] == '.') ? '/' : src[i];
+  dst[i] = 0;
+}
+static int is_class_handle(void *obj) {
+  const char *cn = class_name_of(obj);
+  return cn && strcmp(cn, "?") != 0;
+}
+static void *class_from_jname(const char *name) {
+  char tmp[256];
+  slash_class_name(name, tmp, sizeof tmp);
+  return class_for(tmp);
+}
+static void *class_name_jstring(void *clazz) {
+  const char *cn = class_name_of(clazz);
+  if (!cn || !strcmp(cn, "?")) cn = "java/lang/Object";
+  char tmp[256];
+  dot_class_name(cn, tmp, sizeof tmp);
+  return make_jstring(tmp);
+}
+static const char *object_class_name(void *obj) {
+  if (!obj) return "java/lang/Object";
+  if (obj == &g_obj_keyevent) return "android/view/KeyEvent";
+  if (obj == &g_current_activity) return "android/app/Activity";
+  if (obj == &g_gamepad_device) return "android/view/InputDevice";
+  if (obj == &g_assetmgr) return "android/content/res/AssetManager";
+  if (obj == &g_appinfo) return "android/content/pm/ApplicationInfo";
+  if (obj == &g_fmod_device_obj) return "org/fmod/FMODAudioDevice";
+  if (obj == &g_message_sentinel) return "android/os/Message";
+  if (obj == &g_long_box_sentinel) return "java/lang/Long";
+  if (obj == &g_empty_list) return "java/util/List";
+  if (obj == &g_iterator) return "java/util/Iterator";
+  if (is_jstring_handle(obj)) return "java/lang/String";
+  { struct jobj *jo = jobj_find(obj);
+    if (jo) {
+      const char *cn = class_name_of(jo->clazz);
+      return (cn && strcmp(cn, "?")) ? cn : "java/lang/Object";
+    }
+  }
+  if (oarr_find(obj)) return "[Ljava/lang/Object;";
+  if (barr_find(obj)) return "[B";
+  if (proxy_handle(obj)) return "java/lang/reflect/Proxy";
+  return "java/lang/Object";
+}
+static void *jni_find_library_result(const char *ln) {
+  if (ln && strstr(ln, "il2cpp")) return make_jstring(ASSET_BASE "libil2cpp.so");
+  if (ln && strstr(ln, "main")) return make_jstring(ASSET_BASE "libmain.so");
+  if (ln && strstr(ln, "unity")) return make_jstring(ASSET_BASE "libunity.so");
+  if (ln && strstr(ln, "fmodstudio")) return make_jstring(ASSET_BASE "libfmodstudio.so");
+  if (ln && strstr(ln, "fmod")) return make_jstring(ASSET_BASE "libfmod.so");
+  return make_jstring("");
+}
 static void *jni_FindClass(void *env, const char *name) {
   (void)env;
   debugPrintf("jni_shim: FindClass(%s)\n", name);
@@ -602,6 +690,17 @@ static void *jni_GetFieldID(void *env, void *clazz, const char *name,
   return reg_mid(name, sig);   /* registra por nome (DisplayMetrics fields) */
 }
 
+static void *jni_FromReflectedMethod(void *env, void *method) {
+  (void)env;
+  if (getenv("TER_REFLOG")) debugPrintf("[REF] FromReflectedMethod(%p) -> same\n", method);
+  return method;
+}
+static void *jni_ToReflectedMethod(void *env, void *clazz, void *methodID, unsigned char isStatic) {
+  (void)env; (void)clazz; (void)isStatic;
+  if (getenv("TER_REFLOG")) debugPrintf("[REF] ToReflectedMethod(%p) -> same\n", methodID);
+  return methodID;
+}
+
 static void *jni_FromReflectedField(void *env, void *field) {
   (void)env;
   if (getenv("TER_KBFIX") && field == &g_pressedstates_field_obj) {
@@ -614,6 +713,16 @@ static void *jni_FromReflectedField(void *env, void *field) {
 static void *jni_GetObjectField(void *env, void *obj, void *fieldID) {
   (void)env; (void)obj;
   const char *nm = mid_name(fieldID);
+  if (obj == &g_appinfo && nm) {
+    if (strcmp(nm, "sourceDir") == 0 || strcmp(nm, "publicSourceDir") == 0)
+      return make_jstring("/storage/roms/ports/elderand");
+    if (strcmp(nm, "splitSourceDirs") == 0 || strcmp(nm, "splitPublicSourceDirs") == 0) {
+      void *pack = make_jstring("/storage/roms/ports/elderand");
+      void *arr = oarr_new(1, pack);
+      debugPrintf("jni_shim: ApplicationInfo.%s -> [%s]\n", nm, "/storage/roms/ports/elderand");
+      return arr;
+    }
+  }
   if (getenv("TER_KBFIX") &&
       (fieldID == &g_pressedstates_field_id || (nm && strcmp(nm, "PressedStates") == 0))) {
     debugPrintf("[KBFIX] GetObjectField(PressedStates) -> boolean[512]\n");
@@ -670,8 +779,8 @@ static void *jni_GetStaticFieldID(void *env, void *clazz, const char *name,
   (void)env;
   (void)clazz;
   debugPrintf("jni_shim: GetStaticFieldID(%s, %s)\n", name, sig);
-  if (getenv("TER_KBFIX") && name && strcmp(name, "currentActivity") == 0) {
-    debugPrintf("[KBFIX] GetStaticFieldID(currentActivity) -> activity field fake\n");
+  if (name && strcmp(name, "currentActivity") == 0) {
+    debugPrintf("jni_shim: GetStaticFieldID(currentActivity) -> activity field fake\n");
     return &g_current_activity_field_id;
   }
   if (strcmp(name, "OBB_VERSIONCODE") == 0)
@@ -690,6 +799,28 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   VMT("CallObject obj=%p cls=%s m=%s%s\n", obj, JCLS(obj), nm?nm:"?", mid_sig(methodID)?:"");
   static int fake_obj;
   if (nm) {
+    if (strcmp(nm, "getClass") == 0) {
+      void *clazz = class_for(object_class_name(obj));
+      if (getenv("TER_REFLOG")) debugPrintf("[REF] getClass obj=%p -> %s\n", obj, class_name_of(clazz));
+      return clazz;
+    }
+    if (class_name_method(nm) && is_class_handle(obj)) {
+      if (getenv("TER_REFLOG")) debugPrintf("[REF] Class.%s(%s)\n", nm, class_name_of(obj));
+      return class_name_jstring(obj);
+    }
+    if (strcmp(nm, "loadClass") == 0) {
+      void *name_j = va_arg(ap, void *);
+      const char *cn = resolve_jstring(name_j);
+      void *clazz = class_from_jname(cn);
+      debugPrintf("jni_shim: loadClass(%s) -> %s\n", cn ? cn : "?", class_name_of(clazz));
+      return clazz;
+    }
+    if (strcmp(nm, "getSuperclass") == 0 && is_class_handle(obj))
+      return class_for("java/lang/Object");
+    if (strcmp(nm, "getComponentType") == 0 && is_class_handle(obj)) {
+      const char *cn = class_name_of(obj);
+      return (cn && cn[0] == '[') ? class_for("java/lang/Object") : NULL;
+    }
     if (getenv("TER_KBFIX")) {
       if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
         void *name_j = va_arg(ap, void *);
@@ -733,7 +864,13 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     /* Play Asset Delivery: getAssetPackPath(name) -> dir REAL onde estão os arquivos
        do pack. Nossos dados estão em ASSET_BASE/bin/Data; Unity lê <path>/bin/Data/...
        então o path do pack é o ASSET_BASE (sem barra final). */
-    if (strcmp(nm, "getAssetPackPath") == 0)
+    if (strcmp(nm, "getAssetPackPath") == 0) {
+      void *name_j = va_arg(ap, void *);
+      const char *pn = resolve_jstring(name_j);
+      debugPrintf("jni_shim: getAssetPackPath(%s) -> /storage/roms/ports/elderand\n", pn ? pn : "?");
+      return make_jstring("/storage/roms/ports/elderand");
+    }
+    if (strcmp(nm, "getPackageCodePath") == 0 || strcmp(nm, "getPackageResourcePath") == 0)
       return make_jstring("/storage/roms/ports/elderand");
     /* anti-pirataria: jogo checa se foi instalado da Play Store. "" trava/loopa. */
     if (strcmp(nm, "getInstallerPackageName") == 0)
@@ -769,13 +906,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       void *libname = va_arg(ap, void *);
       const char *ln = resolve_jstring(libname);
       debugPrintf("jni_shim: findLibrary(%s)\n", ln);
-      if (ln && strstr(ln, "il2cpp"))
-        return make_jstring(ASSET_BASE "libil2cpp.so");
-      if (ln && strstr(ln, "main"))
-        return make_jstring(ASSET_BASE "libmain.so");
-      if (ln && strstr(ln, "unity"))
-        return make_jstring(ASSET_BASE "libunity.so");
-      return make_jstring("");
+      return jni_find_library_result(ln);
     }
     /* AudioManager.getProperty(key) -> valores válidos p/ o FMOD não configurar
        buffer/samplerate=0 (parseInt do nosso stub dava 0 -> mixer travava no boot) */
@@ -862,6 +993,11 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       if (stored) return make_jstring(stored);
       return defstr ? defstr : make_jstring("");
     }
+    if (class_name_method(nm)) {
+      static int gn = 0;
+      if (gn++ < 40) debugPrintf("[REF] %s on non-Class obj=%p -> java.lang.Object\n", nm, obj);
+      return make_jstring("java.lang.Object");
+    }
     if (strcmp(nm, "toString") == 0)
       return make_jstring("");
     /* 🔑 TER_KBFIX: Class.getName()/getCanonicalName() na reflection de campos (Unity
@@ -870,12 +1006,8 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        → sig vazio → "Field X or type signature not found" → exceção em KeyboardInput.Update
        ABORTA o ExecuteFrame ANTES do Draw → tela preta. Devolver um nome de tipo válido faz a
        reflection montar uma assinatura e o GetFieldID/leitura seguir (campo lido = fake/0). */
-    if (getenv("TER_KBFIX") &&
-        (strcmp(nm, "getName") == 0 || strcmp(nm, "getCanonicalName") == 0 ||
-         strcmp(nm, "getTypeName") == 0)) {
-      static int gn = 0; if (gn++ < 30) { debugPrintf("[KBREFLECT] %s -> java.lang.Object\n", nm); }
+    if (getenv("TER_KBFIX") && class_name_method(nm))
       return make_jstring("java.lang.Object");
-    }
     /* log de métodos de reflection p/ diagnóstico (gated) */
     if (getenv("TER_REFLOG") &&
         (strstr(nm,"Field")||strstr(nm,"Type")||strstr(nm,"Component")||
@@ -895,6 +1027,28 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
 static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (nm) {
+    if (strcmp(nm, "getClass") == 0)
+      return class_for(object_class_name(obj));
+    if (class_name_method(nm) && is_class_handle(obj))
+      return class_name_jstring(obj);
+    if (strcmp(nm, "loadClass") == 0) {
+      const char *cn = args ? resolve_jstring(args[0].l) : "";
+      return class_from_jname(cn);
+    }
+    if (strcmp(nm, "findLibrary") == 0) {
+      const char *ln = args ? resolve_jstring(args[0].l) : "";
+      debugPrintf("jni_shim: findLibraryA(%s)\n", ln);
+      return jni_find_library_result(ln);
+    }
+    if (strcmp(nm, "getAssetPackPath") == 0) {
+      const char *pn = args ? resolve_jstring(args[0].l) : "";
+      debugPrintf("jni_shim: getAssetPackPathA(%s) -> /storage/roms/ports/elderand\n", pn ? pn : "?");
+      return make_jstring("/storage/roms/ports/elderand");
+    }
+    if (strcmp(nm, "getPackageCodePath") == 0 || strcmp(nm, "getPackageResourcePath") == 0)
+      return make_jstring("/storage/roms/ports/elderand");
+  }
   if (nm && getenv("TER_KBFIX")) {
     if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
       const char *fnm = args ? resolve_jstring(args[0].l) : "";
@@ -921,6 +1075,8 @@ static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const j
       return make_jstring("[Z");
     }
   }
+  if (nm && class_name_method(nm))
+    return make_jstring("java.lang.Object");
   static int fake_obj;
   return &fake_obj;
 }
@@ -947,7 +1103,11 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
     /* 🔑 Play Core (Asset Delivery) AUSENTE: sem isso o Unity tenta o caminho de
      * asset-pack/OBB (ZipFile do main.0.*.obb inexistente) → crash. TRUE faz o
      * Unity usar os assets do APK direto (bin/Data via AssetManager), que temos. */
-    if (strcmp(nm, "playCoreApiMissing") == 0) { debugPrintf("jni_shim: playCoreApiMissing -> true (sem Play Core, usa APK)\n"); return 1; }
+    if (strcmp(nm, "playCoreApiMissing") == 0) {
+      int missing = getenv("ELD_PLAYCORE") ? 0 : 1;
+      debugPrintf("jni_shim: playCoreApiMissing -> %s\n", missing ? "true (sem Play Core, usa APK)" : "false (Play Core fake/PAD)");
+      return (unsigned char)missing;
+    }
     /* Handler.post/postDelayed(Runnable[,delay]) -> RODA o Runnable, retorna true.
        (init deferida do Unity usa Handler.post; sem rodar, o boot trava no poll.) */
     if (strcmp(nm, "post") == 0 || strcmp(nm, "postDelayed") == 0 ||
@@ -1169,6 +1329,57 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   (void)clazz;
   const char *nm = mid_name(methodID);
   VMT("CallStaticObject cls=%s m=%s%s\n", class_name_of(clazz), nm?:"?", mid_sig(methodID)?:"");
+  if (nm && !strcmp(nm, "forName")) {
+    void *name_j = va_arg(ap, void *);
+    const char *cn = resolve_jstring(name_j);
+    void *klass = class_from_jname(cn);
+    debugPrintf("jni_shim: Class.forName(%s) -> %s\n", cn ? cn : "?", class_name_of(klass));
+    return klass;
+  }
+  if (nm && (!strcmp(nm, "getSystemClassLoader") || !strcmp(nm, "getClassLoader"))) {
+    static int fake_classloader;
+    return &fake_classloader;
+  }
+  if (nm && (!strcmp(nm, "getMethodID") || !strcmp(nm, "getConstructorID"))) {
+    (void)va_arg(ap, void *);
+    void *name_j = NULL;
+    void *sig_j = NULL;
+    if (!strcmp(nm, "getMethodID")) {
+      name_j = va_arg(ap, void *);
+      sig_j = va_arg(ap, void *);
+      (void)va_arg(ap, int);
+    } else {
+      name_j = make_jstring("<init>");
+      sig_j = va_arg(ap, void *);
+    }
+    const char *mn = resolve_jstring(name_j);
+    const char *sig = resolve_jstring(sig_j);
+    debugPrintf("jni_shim: ReflectionHelper.%s(%s, %s) -> reflected method\n",
+                nm, mn ? mn : "?", sig ? sig : "");
+    return reg_mid(mn, sig);
+  }
+  if (nm && !strcmp(nm, "getFieldID")) {
+    (void)va_arg(ap, void *);
+    void *name_j = va_arg(ap, void *);
+    void *sig_j = va_arg(ap, void *);
+    (void)va_arg(ap, int);
+    const char *fnm = resolve_jstring(name_j);
+    const char *sig = resolve_jstring(sig_j);
+    if (getenv("TER_KBFIX") && fnm && !strcmp(fnm, "PressedStates")) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
+                  sig ? sig : "");
+      return &g_pressedstates_field_obj;
+    }
+    debugPrintf("jni_shim: ReflectionHelper.getFieldID(%s, %s) -> reflected field\n",
+                fnm ? fnm : "?", sig ? sig : "");
+    return reg_mid(fnm, sig);
+  }
+  if (nm && !strcmp(nm, "getFieldSignature")) {
+    void *field = va_arg(ap, void *);
+    if (field == &g_pressedstates_field_obj) return make_jstring("[Z");
+    const char *sig = mid_sig(field);
+    return make_jstring((sig && *sig) ? sig : "Ljava/lang/Object;");
+  }
   /* 🌉 BRIDGE VMRunner.invoke(String name, Object[] args): o ExecuteProgram do pairip chama isto
    * (no app real é DEX que lê o asset e chama executeVM). Fazemos NÓS: ler asset[name] + executeVM
    * com o Object[] REAL que o ExecuteProgram montou (não dummy). */
@@ -1250,6 +1461,50 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, 
 static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
   (void)env; (void)clazz;
   const char *nm = mid_name(methodID);
+  if (nm && !strcmp(nm, "forName")) {
+    const char *cn = args ? resolve_jstring(args[0].l) : "";
+    void *klass = class_from_jname(cn);
+    debugPrintf("jni_shim: Class.forNameA(%s) -> %s\n", cn ? cn : "?", class_name_of(klass));
+    return klass;
+  }
+  if (nm && (!strcmp(nm, "getSystemClassLoader") || !strcmp(nm, "getClassLoader"))) {
+    static int fake_classloader;
+    return &fake_classloader;
+  }
+  if (nm && (!strcmp(nm, "getMethodID") || !strcmp(nm, "getConstructorID"))) {
+    void *name_j = NULL;
+    void *sig_j = NULL;
+    if (!strcmp(nm, "getMethodID")) {
+      name_j = args ? args[1].l : NULL;
+      sig_j = args ? args[2].l : NULL;
+    } else {
+      name_j = make_jstring("<init>");
+      sig_j = args ? args[1].l : NULL;
+    }
+    const char *mn = resolve_jstring(name_j);
+    const char *sig = resolve_jstring(sig_j);
+    debugPrintf("jni_shim: ReflectionHelper.%sA(%s, %s) -> reflected method\n",
+                nm, mn ? mn : "?", sig ? sig : "");
+    return reg_mid(mn, sig);
+  }
+  if (nm && !strcmp(nm, "getFieldID")) {
+    const char *fnm = args ? resolve_jstring(args[1].l) : "";
+    const char *sig = args ? resolve_jstring(args[2].l) : "";
+    if (getenv("TER_KBFIX") && fnm && !strcmp(fnm, "PressedStates")) {
+      debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
+                  sig ? sig : "");
+      return &g_pressedstates_field_obj;
+    }
+    debugPrintf("jni_shim: ReflectionHelper.getFieldIDA(%s, %s) -> reflected field\n",
+                fnm ? fnm : "?", sig ? sig : "");
+    return reg_mid(fnm, sig);
+  }
+  if (nm && !strcmp(nm, "getFieldSignature")) {
+    void *field = args ? args[0].l : NULL;
+    if (field == &g_pressedstates_field_obj) return make_jstring("[Z");
+    const char *sig = mid_sig(field);
+    return make_jstring((sig && *sig) ? sig : "Ljava/lang/Object;");
+  }
   if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
     const char *fnm = args ? resolve_jstring(args[1].l) : "";
     const char *sig = args ? resolve_jstring(args[2].l) : "";
@@ -1305,11 +1560,41 @@ static jint jni_CallStaticIntMethodV(void *env, void *clazz, void *methodID, va_
 }
 
 /* CallStaticVoidMethod (index 145) */
+static void static_void_dispatch(void *methodID, void *arg0) {
+  const char *nm = mid_name(methodID);
+  if (nm && !strcmp(nm, "load")) {
+    debugPrintf("jni_shim: System.load(%s) -> ok\n", resolve_jstring(arg0));
+    return;
+  }
+  if (nm && !strcmp(nm, "init")) {
+    debugPrintf("jni_shim: static init%s -> ok\n", mid_sig(methodID) ? mid_sig(methodID) : "");
+    return;
+  }
+  debugPrintf("jni_shim: CallStaticVoidMethod(%s)\n", nm ? nm : "?");
+}
 static void jni_CallStaticVoidMethod(void *env, void *clazz, void *methodID,
                                      ...) {
   (void)env;
   (void)clazz;
-  debugPrintf("jni_shim: CallStaticVoidMethod(mid=%p)\n", methodID);
+  const char *nm = mid_name(methodID);
+  void *arg0 = NULL;
+  va_list ap; va_start(ap, methodID);
+  if (nm && (!strcmp(nm, "load") || !strcmp(nm, "init")))
+    arg0 = va_arg(ap, void *);
+  va_end(ap);
+  static_void_dispatch(methodID, arg0);
+}
+static void jni_CallStaticVoidMethodV(void *env, void *clazz, void *methodID, va_list ap) {
+  (void)env; (void)clazz;
+  const char *nm = mid_name(methodID);
+  void *arg0 = NULL;
+  if (nm && (!strcmp(nm, "load") || !strcmp(nm, "init")))
+    arg0 = va_arg(ap, void *);
+  static_void_dispatch(methodID, arg0);
+}
+static void jni_CallStaticVoidMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
+  (void)env; (void)clazz;
+  static_void_dispatch(methodID, args ? args[0].l : NULL);
 }
 
 /* GetStaticIntField (index 155) */
@@ -1338,10 +1623,9 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
   (void)env;
   (void)clazz;
   const char *nm = mid_name(fieldID);
-  if (getenv("TER_KBFIX") &&
-      (fieldID == &g_current_activity_field_id ||
-       (nm && strcmp(nm, "currentActivity") == 0))) {
-    debugPrintf("[KBFIX] GetStaticObjectField(currentActivity) -> activity fake\n");
+  if (fieldID == &g_current_activity_field_id ||
+      (nm && strcmp(nm, "currentActivity") == 0)) {
+    debugPrintf("jni_shim: GetStaticObjectField(currentActivity) -> activity fake\n");
     return &g_current_activity;
   }
   /* constantes String do AudioManager: devolver o NOME como valor p/ getProperty
@@ -1379,6 +1663,68 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
 }
 
 /* NewStringUTF (index 167) */
+static void *jni_NewString(void *env, const unsigned short *chars, int len) {
+  (void)env;
+  if (!chars || len <= 0) return make_jstring("");
+  char tmp[1024];
+  int n = 0;
+  for (int i = 0; i < len && n + 4 < (int)sizeof tmp; i++) {
+    unsigned int c = chars[i];
+    if (c < 0x80) {
+      tmp[n++] = (char)c;
+    } else if (c < 0x800) {
+      tmp[n++] = (char)(0xc0 | (c >> 6));
+      tmp[n++] = (char)(0x80 | (c & 0x3f));
+    } else {
+      tmp[n++] = (char)(0xe0 | (c >> 12));
+      tmp[n++] = (char)(0x80 | ((c >> 6) & 0x3f));
+      tmp[n++] = (char)(0x80 | (c & 0x3f));
+    }
+  }
+  tmp[n] = 0;
+  debugPrintf("jni_shim: NewString(len=%d) -> %s\n", len, tmp);
+  return make_jstring(tmp);
+}
+static jint jni_GetStringLength(void *env, void *jstr) {
+  (void)env;
+  const unsigned char *s = (const unsigned char *)resolve_jstring(jstr);
+  int n = 0;
+  while (s && *s) {
+    if ((*s & 0xc0) != 0x80) n++;
+    s++;
+  }
+  return n;
+}
+static const unsigned short *jni_GetStringChars(void *env, void *jstr, void *isCopy) {
+  (void)env;
+  if (isCopy) *(unsigned char *)isCopy = 1;
+  const unsigned char *s = (const unsigned char *)resolve_jstring(jstr);
+  int cap = jni_GetStringLength(env, jstr) + 1;
+  unsigned short *out = (unsigned short *)calloc(cap > 0 ? cap : 1, sizeof(unsigned short));
+  if (!out) return NULL;
+  int n = 0;
+  while (s && *s && n + 1 < cap) {
+    unsigned int c;
+    if ((*s & 0x80) == 0) {
+      c = *s++;
+    } else if ((*s & 0xe0) == 0xc0 && s[1]) {
+      c = ((s[0] & 0x1f) << 6) | (s[1] & 0x3f);
+      s += 2;
+    } else if ((*s & 0xf0) == 0xe0 && s[1] && s[2]) {
+      c = ((s[0] & 0x0f) << 12) | ((s[1] & 0x3f) << 6) | (s[2] & 0x3f);
+      s += 3;
+    } else {
+      c = *s++;
+    }
+    out[n++] = (unsigned short)c;
+  }
+  out[n] = 0;
+  return out;
+}
+static void jni_ReleaseStringChars(void *env, void *jstr, const unsigned short *chars) {
+  (void)env; (void)jstr;
+  free((void *)chars);
+}
 static void *jni_NewStringUTF(void *env, const char *str) {
   (void)env;
   debugPrintf("jni_shim: NewStringUTF(%s)\n", str ? str : "(null)");
@@ -1436,9 +1782,10 @@ static void jni_DeleteLocalRef(void *env, void *obj) {
 }
 static void *jni_GetObjectClass(void *env, void *obj) {
   (void)env;
-  if (obj == &g_obj_keyevent) return class_for("android/view/KeyEvent");
-  static int fake_obj_class;
-  return &fake_obj_class;
+  const char *cn = object_class_name(obj);
+  void *clazz = class_for(cn);
+  if (getenv("TER_REFLOG")) debugPrintf("[REF] GetObjectClass obj=%p -> %s\n", obj, cn);
+  return clazz;
 }
 static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
   (void)env;
@@ -1931,7 +2278,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
    */
   jni_env_vtable[4] = (uintptr_t)jni_GetVersion;
   jni_env_vtable[6] = (uintptr_t)jni_FindClass;
+  jni_env_vtable[7] = (uintptr_t)jni_FromReflectedMethod;
   jni_env_vtable[8] = (uintptr_t)jni_FromReflectedField;
+  jni_env_vtable[9] = (uintptr_t)jni_ToReflectedMethod;
   jni_env_vtable[215] = (uintptr_t)jni_RegisterNatives;  /* recon: Unity */
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;        /* recon: Unity initJni */
   /* AssetManager bridge: byte-array functions */
@@ -1990,10 +2339,15 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;
   jni_env_vtable[130] = (uintptr_t)jni_CallStaticIntMethodV; /* V (va_list) */
   jni_env_vtable[141] = (uintptr_t)jni_CallStaticVoidMethod;
-  jni_env_vtable[142] = (uintptr_t)jni_CallStaticVoidMethod; /* V */
+  jni_env_vtable[142] = (uintptr_t)jni_CallStaticVoidMethodV; /* V */
+  jni_env_vtable[143] = (uintptr_t)jni_CallStaticVoidMethodA; /* A */
   jni_env_vtable[144] = (uintptr_t)jni_GetStaticFieldID;
   jni_env_vtable[145] = (uintptr_t)jni_GetStaticObjectField;
   jni_env_vtable[150] = (uintptr_t)jni_GetStaticIntField;
+  jni_env_vtable[163] = (uintptr_t)jni_NewString;
+  jni_env_vtable[164] = (uintptr_t)jni_GetStringLength;
+  jni_env_vtable[165] = (uintptr_t)jni_GetStringChars;
+  jni_env_vtable[166] = (uintptr_t)jni_ReleaseStringChars;
   jni_env_vtable[167] = (uintptr_t)jni_NewStringUTF;
   jni_env_vtable[168] = (uintptr_t)jni_GetStringUTFLength;
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;

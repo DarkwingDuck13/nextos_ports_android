@@ -24,6 +24,7 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <sys/syscall.h>
 #include <SDL2/SDL.h>
 
@@ -35,6 +36,8 @@
 #include <link.h>
 
 #define HEAP_MB 96
+
+static so_module *g_m_unity = NULL, *g_m_il2cpp = NULL;
 
 /* ---- dl_iterate_phdr custom (INTERPÕE o da libc) ----
  * O unwinder C++ da libgcc acha o .eh_frame de cada lib via dl_iterate_phdr. Nossos
@@ -354,6 +357,250 @@ static void ter_nuke_methods(void) {
     if (getenv(targets[t].env) && !(patched_mask & (1u << t))) all = 0;
   if (all) done = 1;
   (void)patched;
+}
+
+/* Elderand usa FMOD via RuntimeManager, mas este APK não contém resources.assets;
+ * RuntimeManager.Initialize cai em Settings default parcial e lança NRE antes do
+ * primeiro swap. Para avançar o jogo, neutralizamos o RuntimeManager por API IL2CPP:
+ * métodos de controle viram no-op, getters/handles retornam valores neutros. */
+static void ter_fmod_nuke(void) {
+  static int done = 0;
+  static int tries = 0;
+  if (done || getenv("ELD_NOFMODNUKE")) return;
+  if (!g_m_il2cpp) return;
+  if (tries++ > 300) { done = 1; return; }
+  so_module *cm = so_save(); so_use(g_m_il2cpp);
+  void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) =
+      (const void **(*)(void *, size_t *))so_find_addr_safe("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) =
+      (void *(*)(const void *))so_find_addr_safe("il2cpp_assembly_get_image");
+  void *(*cls_from_name)(void *, const char *, const char *) =
+      (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+  void *(*cls_methods)(void *, void **) =
+      (void *(*)(void *, void **))so_find_addr_safe("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) =
+      (const char *(*)(void *))so_find_addr_safe("il2cpp_method_get_name");
+  so_use(cm); free(cm);
+  if (!dom_get || !dom_asms || !asm_img || !cls_from_name || !cls_methods || !meth_name) {
+    if (tries == 1 || !(tries % 60))
+      fprintf(stderr, "[FMODNUKE] aguardando símbolos il2cpp dom=%p asms=%p img=%p cls=%p methods=%p name=%p\n",
+              (void *)dom_get, (void *)dom_asms, (void *)asm_img, (void *)cls_from_name,
+              (void *)cls_methods, (void *)meth_name);
+    return;
+  }
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  void *cls = NULL;
+  for (size_t i = 0; i < na && !cls; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    cls = cls_from_name(img, "FMODUnity", "RuntimeManager");
+  }
+  if (!cls) return;
+
+  const char *ret1[] = {
+    "get_IsInitialized", "get_HaveAllBanksLoaded", "get_HaveMasterBanksLoaded",
+    "HasBankLoaded", NULL
+  };
+  const char *ret0[] = {
+    "get_IsMuted", "get_Instance", "get_StudioSystem", "get_CoreSystem",
+    "GetChannelCountForFormat", "AnyBankLoading", "AnySampleDataLoading",
+    "BanksToLoad", "PathToGUID", "PathToEventReference", "CreateInstance",
+    "GetEventDescription", "GetBus", "GetVCA", NULL
+  };
+  const char *noop[] = {
+    "DEBUG_CALLBACK", "ERROR_CALLBACK", "CheckInitResult", "ReleaseStudioSystem",
+    "Initialize", "SetThreadAffinities", "Update", "AttachInstanceToGameObject",
+    "DetachInstanceFromGameObject", "ExecuteOnGUI", "Start", "DrawDebugOverlay",
+    "OnDestroy", "OnApplicationPause", "ReferenceLoadedBank", "RegisterLoadedBank",
+    "ExecuteSampleLoadRequestsIfReady", "loadFromWeb", "LoadBank", "LoadBanks",
+    "UnloadBank", "WaitForAllLoads", "WaitForAllSampleLoading", "PlayOneShot",
+    "PlayOneShotAttached", "SetListenerLocation", "PauseAllEvents", "MuteAllEvents",
+    "ApplyMuteState", NULL
+  };
+
+  int patched = 0;
+  void *it = NULL, *m = NULL;
+  while ((m = cls_methods(cls, &it))) {
+    const char *nm = meth_name(m);
+    if (!nm) continue;
+    int mode = -1;
+    for (int i = 0; ret1[i]; i++) if (!strcmp(nm, ret1[i])) { mode = 1; break; }
+    for (int i = 0; mode < 0 && ret0[i]; i++) if (!strcmp(nm, ret0[i])) { mode = 0; break; }
+    for (int i = 0; mode < 0 && noop[i]; i++) if (!strcmp(nm, noop[i])) { mode = 2; break; }
+    if (mode < 0) continue;
+    void *mp = *(void **)m;
+    if (!mp) continue;
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pgsz - 1));
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    uint32_t *pc = (uint32_t *)mp;
+    if (mode == 1) { pc[0] = 0xD2800020u; pc[1] = 0xD65F03C0u; }      /* mov x0,#1; ret */
+    else if (mode == 0) { pc[0] = 0xD2800000u; pc[1] = 0xD65F03C0u; } /* mov x0,#0; ret */
+    else pc[0] = 0xD65F03C0u;                                         /* ret */
+    mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+    patched++;
+  }
+  fprintf(stderr, "[FMODNUKE] RuntimeManager neutralizado (%d métodos)\n", patched);
+  fsync(2);
+  done = 1;
+}
+
+/* Elderand também tenta inicializar TextMeshPro via Resources/TMP Settings.
+ * Sem resources.assets, TMP_Settings.defaultStyleSheet fica nulo e Rebuild()
+ * lança NRE dentro do CanvasUpdate. Para avançar até a renderização real, pulamos
+ * o rebuild/pre-render de TMP; texto de UI pode sumir, mas evita abortar o frame. */
+static void ter_tmp_nuke(void) {
+  static int done = 0;
+  static int tries = 0;
+  if (done || getenv("ELD_NOTMPNUKE")) return;
+  if (!g_m_il2cpp) return;
+  if (tries++ > 300) { done = 1; return; }
+  so_module *cm = so_save(); so_use(g_m_il2cpp);
+  void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) =
+      (const void **(*)(void *, size_t *))so_find_addr_safe("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) =
+      (void *(*)(const void *))so_find_addr_safe("il2cpp_assembly_get_image");
+  void *(*cls_from_name)(void *, const char *, const char *) =
+      (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+  void *(*cls_methods)(void *, void **) =
+      (void *(*)(void *, void **))so_find_addr_safe("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) =
+      (const char *(*)(void *))so_find_addr_safe("il2cpp_method_get_name");
+  so_use(cm); free(cm);
+  if (!dom_get || !dom_asms || !asm_img || !cls_from_name || !cls_methods || !meth_name) return;
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+
+  struct target { const char *ns, *cn; const char **names; int mode; };
+  static const char *tmpugui_noop[] = {
+    "Rebuild", "OnPreRenderCanvas", "UpdateGeometry", "UpdateVertexData", NULL
+  };
+  static const char *tmptext_noop[] = {
+    "ParseInputText", "PopulateTextProcessingArray", "SetVerticesDirty",
+    "SetLayoutDirty", "SetMaterialDirty", NULL
+  };
+  static const char *tmpsettings_ret0[] = {
+    "get_defaultStyleSheet", "get_defaultFontAsset", "get_defaultSpriteAsset", NULL
+  };
+  const struct target targets[] = {
+    { "TMPro", "TextMeshProUGUI", tmpugui_noop, 2 },
+    { "TMPro", "TMP_Text", tmptext_noop, 2 },
+    { "TMPro", "TMP_Settings", tmpsettings_ret0, 0 },
+  };
+
+  int patched = 0;
+  for (size_t ai = 0; ai < na; ai++) {
+    void *img = asm_img(asms[ai]); if (!img) continue;
+    for (size_t ti = 0; ti < sizeof targets / sizeof targets[0]; ti++) {
+      void *cls = cls_from_name(img, targets[ti].ns, targets[ti].cn);
+      if (!cls) continue;
+      void *it = NULL, *m = NULL;
+      while ((m = cls_methods(cls, &it))) {
+        const char *nm = meth_name(m);
+        if (!nm) continue;
+        int hit = 0;
+        for (int ni = 0; targets[ti].names[ni]; ni++)
+          if (!strcmp(nm, targets[ti].names[ni])) { hit = 1; break; }
+        if (!hit) continue;
+        void *mp = *(void **)m;
+        if (!mp) continue;
+        long pgsz = sysconf(_SC_PAGESIZE);
+        void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pgsz - 1));
+        mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+        uint32_t *pc = (uint32_t *)mp;
+        if (targets[ti].mode == 0) { pc[0] = 0xD2800000u; pc[1] = 0xD65F03C0u; }
+        else pc[0] = 0xD65F03C0u;
+        mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+        __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+        patched++;
+      }
+    }
+  }
+  if (patched) {
+    fprintf(stderr, "[TMPNUKE] TextMeshPro neutralizado (%d métodos)\n", patched);
+    fsync(2);
+    done = 1;
+  }
+}
+
+/* EssentialKit/VoxelBusters é plugin mobile ausente no port. GameManager.Awake chama
+ * GameServices.Authenticate(); sem settings Android, isso lança NRE e corta o bootstrap
+ * antes de qualquer draw. Neutraliza serviços sociais/cloud/achievements para seguir offline. */
+static void ter_voxel_nuke(void) {
+  static int done = 0;
+  static int tries = 0;
+  if (done || getenv("ELD_NOVOXELNUKE")) return;
+  if (!g_m_il2cpp) return;
+  if (tries++ > 300) { done = 1; return; }
+  so_module *cm = so_save(); so_use(g_m_il2cpp);
+  void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) =
+      (const void **(*)(void *, size_t *))so_find_addr_safe("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) =
+      (void *(*)(const void *))so_find_addr_safe("il2cpp_assembly_get_image");
+  void *(*cls_from_name)(void *, const char *, const char *) =
+      (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+  void *(*cls_methods)(void *, void **) =
+      (void *(*)(void *, void **))so_find_addr_safe("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) =
+      (const char *(*)(void *))so_find_addr_safe("il2cpp_method_get_name");
+  so_use(cm); free(cm);
+  if (!dom_get || !dom_asms || !asm_img || !cls_from_name || !cls_methods || !meth_name) return;
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+
+  struct target { const char *ns, *cn; const char **names; int mode; };
+  static const char *noop[] = {
+    "Authenticate", "Initialize", "OnSingletonAwake", "Init",
+    "LoadAchievementDescriptions", "LoadAchievements", "ReportProgress",
+    "ShowLeaderboards", "ShowAchievements", NULL
+  };
+  static const char *ret0[] = {
+    "get_IsAuthenticated", "get_IsAvailable", "get_IsInitialized", NULL
+  };
+  const struct target targets[] = {
+    { "VoxelBusters.EssentialKit", "GameServices", noop, 2 },
+    { "VoxelBusters.EssentialKit", "GameServices", ret0, 0 },
+    { "VoxelBusters.EssentialKit", "EssentialKitManager", noop, 2 },
+    { "VoxelBusters.CoreLibrary", "PrivateSingletonBehaviour`1", noop, 2 },
+  };
+
+  int patched = 0;
+  for (size_t ai = 0; ai < na; ai++) {
+    void *img = asm_img(asms[ai]); if (!img) continue;
+    for (size_t ti = 0; ti < sizeof targets / sizeof targets[0]; ti++) {
+      void *cls = cls_from_name(img, targets[ti].ns, targets[ti].cn);
+      if (!cls) continue;
+      void *it = NULL, *m = NULL;
+      while ((m = cls_methods(cls, &it))) {
+        const char *nm = meth_name(m);
+        if (!nm) continue;
+        int hit = 0;
+        for (int ni = 0; targets[ti].names[ni]; ni++)
+          if (!strcmp(nm, targets[ti].names[ni])) { hit = 1; break; }
+        if (!hit) continue;
+        void *mp = *(void **)m;
+        if (!mp) continue;
+        long pgsz = sysconf(_SC_PAGESIZE);
+        void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pgsz - 1));
+        mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+        uint32_t *pc = (uint32_t *)mp;
+        if (targets[ti].mode == 0) { pc[0] = 0xD2800000u; pc[1] = 0xD65F03C0u; }
+        else pc[0] = 0xD65F03C0u;
+        mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+        __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+        patched++;
+      }
+    }
+  }
+  if (patched) {
+    fprintf(stderr, "[VOXELNUKE] EssentialKit neutralizado (%d métodos)\n", patched);
+    fsync(2);
+    done = 1;
+  }
 }
 
 /* 🖤 TER_FIXSP: tela preta ao clicar Single Player. SelectSinglePlayer→Main.LoadPlayers→
@@ -787,6 +1034,7 @@ static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long o
 }
 /* /proc/cpuinfo + /sys/.../cpu: Unity conta cores p/ dimensionar job workers. */
 static int g_dllog;
+#define REDIR_PATH_MAX 2048
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
 static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
@@ -795,7 +1043,7 @@ static FILE *my_fopen(const char *p, const char *m) {
   if (p && (!strcmp(p, "/sys/devices/system/cpu/possible") || !strcmp(p, "/sys/devices/system/cpu/present") || !strcmp(p, "/sys/devices/system/cpu/online"))) {
     FILE *t = tmpfile(); if (t) { fputs(getenv("CUP_1CORE") ? "0\n" : "0-3\n", t); rewind(t); return t; }
   }
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r) {
     if (g_dllog) fprintf(stderr, "[fopen-redir] %s -> %s\n", p, r);
     return fopen(r, m);
@@ -803,21 +1051,149 @@ static FILE *my_fopen(const char *p, const char *m) {
   return fopen(p, m);
 }
 #define ASSET_BASE_M "/storage/roms/ports/elderand/"
+#define DATA_BASE_M ASSET_BASE_M "assets/bin/Data/"
+#define DATA_BASE_ALT_M ASSET_BASE_M "bin/Data/"
+static const char *data_redirect_path(char *buf, size_t bufsz, const char *fmt, ...) {
+  char rel[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(rel, sizeof rel, fmt, ap);
+  va_end(ap);
+  snprintf(buf, bufsz, DATA_BASE_M "%s", rel);
+  if (access(buf, F_OK) == 0) return buf;
+  snprintf(buf, bufsz, DATA_BASE_ALT_M "%s", rel);
+  if (access(buf, F_OK) == 0) return buf;
+  snprintf(buf, bufsz, DATA_BASE_M "%s", rel);
+  return buf;
+}
+
+/* Addressables do APK saiu com separador Windows no catálogo
+ * ("{RuntimePath}\\Android\\..."). O C# decodifica isso como backslash real e o
+ * AssetBundleProvider rejeita a URI antes de chegar no nosso open/stat. Quando o
+ * catálogo é lido, servimos uma cópia em /tmp convertendo pares JSON "\\" em "/"
+ * e fixando RuntimePath direto no diretório real de assets. */
+static int g_catalog_overlay_ready;
+static char g_catalog_overlay_path[128];
+static int make_catalog_overlay(const char *src, char *out, size_t outsz) {
+  char src_copy[REDIR_PATH_MAX];
+  snprintf(src_copy, sizeof src_copy, "%s", src ? src : "");
+  if (!src_copy[0]) return 0;
+  if (g_catalog_overlay_ready && access(g_catalog_overlay_path, F_OK) == 0) {
+    snprintf(out, outsz, "%s", g_catalog_overlay_path);
+    return 1;
+  }
+
+  int in = open(src_copy, O_RDONLY);
+  if (in < 0) return 0;
+  struct stat sb;
+  if (fstat(in, &sb) < 0 || sb.st_size <= 0) { close(in); return 0; }
+  size_t sz = (size_t)sb.st_size;
+  char *ibuf = malloc(sz);
+  char *obuf = malloc(sz + 1);
+  if (!ibuf || !obuf) { free(ibuf); free(obuf); close(in); return 0; }
+
+  size_t got = 0;
+  while (got < sz) {
+    ssize_t nr = read(in, ibuf + got, sz - got);
+    if (nr <= 0) break;
+    got += (size_t)nr;
+  }
+  close(in);
+  if (got == 0) { free(ibuf); free(obuf); return 0; }
+
+  char tmp[] = "/tmp/eld_catalog_XXXXXX";
+  int fd = mkstemp(tmp);
+  if (fd < 0) { free(ibuf); free(obuf); return 0; }
+
+  static const char runtime_pat[] = "{UnityEngine.AddressableAssets.Addressables.RuntimePath}";
+  static const char runtime_rep[] = ASSET_BASE_M "assets/aa";
+  const size_t pat_len = sizeof runtime_pat - 1;
+  const size_t rep_len = sizeof runtime_rep - 1;
+  size_t on = 0, i = 0;
+  unsigned long slash_repl = 0, runtime_repl = 0;
+  while (i < got) {
+    if (i + pat_len <= got && memcmp(ibuf + i, runtime_pat, pat_len) == 0) {
+      memcpy(obuf + on, runtime_rep, rep_len);
+      on += rep_len;
+      i += pat_len;
+      runtime_repl++;
+    } else if (i + 1 < got && ibuf[i] == '\\' && ibuf[i + 1] == '\\') {
+      obuf[on++] = '/';
+      i += 2;
+      slash_repl++;
+    } else {
+      obuf[on++] = ibuf[i++];
+    }
+  }
+  size_t wr = 0;
+  while (wr < on) {
+    ssize_t nw = write(fd, obuf + wr, on - wr);
+    if (nw <= 0) break;
+    wr += (size_t)nw;
+  }
+  free(ibuf);
+  free(obuf);
+  fsync(fd);
+  close(fd);
+  if (slash_repl == 0 && runtime_repl == 0) {
+    unlink(tmp);
+    return 0;
+  }
+  if (wr != on) {
+    unlink(tmp);
+    return 0;
+  }
+  snprintf(g_catalog_overlay_path, sizeof g_catalog_overlay_path, "%s", tmp);
+  g_catalog_overlay_ready = 1;
+  snprintf(out, outsz, "%s", g_catalog_overlay_path);
+  if (g_dllog) fprintf(stderr, "[AA-CATALOG] %s -> %s (%lu slash, %lu runtime fixes)\n",
+                       src_copy, out, slash_repl, runtime_repl);
+  return 1;
+}
+
+static int maybe_catalog_overlay(const char *path, char *buf, size_t bufsz) {
+  if (!path) return 0;
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  if (strcmp(base, "catalog.json") != 0) return 0;
+  if (!strstr(path, "/assets/aa/")) return 0;
+  return make_catalog_overlay(path, buf, bufsz);
+}
+
 /* redirect genérico de assets: o engine monta paths de dados com bases erradas
    (APK inexistente, filesdir). Mapeia qualquer tentativa p/ os arquivos REAIS
-   deployados em bin/Data (mesma receita do global-metadata.dat, generalizada:
+   deployados em assets/bin/Data ou bin/Data (mesma receita do global-metadata.dat, generalizada:
    pega o sufixo após "bin/Data/", senão o basename de arquivos conhecidos do
    engine — globalgamemanagers, level*, sharedassets*, *.assets/.resS/.resource). */
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
   if (!p) return NULL;
+  char norm[REDIR_PATH_MAX];
+  if (strchr(p, '\\')) {
+    size_t i = 0;
+    for (; p[i] && i + 1 < sizeof norm; i++) norm[i] = (p[i] == '\\') ? '/' : p[i];
+    norm[i] = 0;
+    p = norm;
+  }
+  if (strstr(p, "/assets/aa/catalog.json") && maybe_catalog_overlay(p, buf, bufsz)) return buf;
   /* Addressables/StreamingAssets URI "jar:file://<apk>!/assets/aa/..." (ou file://) →
    * mapeia p/ ASSET_BASE/<rel>. Cobre o file-IO/UnityWebRequest do catálogo Addressables. */
   { const char *bang = strstr(p, "!/assets/");
     const char *rel = NULL;
     if (bang) rel = bang + 9;
-    else if (!strncmp(p, "jar:", 4)) { const char *as = strstr(p, "/assets/"); if (as) rel = as + 8; }
+    else if (!strncmp(p, "jar:", 4) || !strncmp(p, "file:", 5)) { const char *as = strstr(p, "/assets/"); if (as) rel = as + 8; }
     if (rel) {
       if (!strncmp(rel, "assets/", 7)) rel += 7;
+      if (!strncmp(rel, "bin/Data/", 9)) return data_redirect_path(buf, bufsz, rel + 9);
+      snprintf(buf, bufsz, ASSET_BASE_M "%s", rel);
+      if (access(buf, F_OK) == 0) {
+        if (maybe_catalog_overlay(buf, buf, bufsz)) return buf;
+        return buf;
+      }
+      snprintf(buf, bufsz, ASSET_BASE_M "assets/%s", rel);
+      if (access(buf, F_OK) == 0) {
+        if (maybe_catalog_overlay(buf, buf, bufsz)) return buf;
+        return buf;
+      }
       snprintf(buf, bufsz, ASSET_BASE_M "%s", rel);
       return buf;
     }
@@ -858,20 +1234,20 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
   }
   /* anti-loop: só pula o que JÁ aponta pro alvo (bin/Data real); paths de
      userdata/ sob a base ainda precisam de redirect (il2cpp/Metadata) */
-  if (!strncmp(p, ASSET_BASE_M "bin/Data/", sizeof(ASSET_BASE_M "bin/Data/") - 1)) return NULL;
+  if (!strncmp(p, DATA_BASE_M, sizeof(DATA_BASE_M) - 1) && access(p, F_OK) == 0) return NULL;
+  if (!strncmp(p, DATA_BASE_ALT_M, sizeof(DATA_BASE_ALT_M) - 1) && access(p, F_OK) == 0) return NULL;
   const char *sub = strstr(p, "bin/Data/");
   if (sub) {
-    snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%s", sub + 9);
+    data_redirect_path(buf, bufsz, sub + 9);
     if (access(buf, F_OK) == 0) return buf;
   }
   const char *base = strrchr(p, '/'); base = base ? base + 1 : p;
   if (!strcmp(base, "global-metadata.dat")) {
-    snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/Managed/Metadata/global-metadata.dat");
-    return buf;
+    return data_redirect_path(buf, bufsz, "Managed/Metadata/global-metadata.dat");
   }
   /* il2cpp procura <userdata>/il2cpp/Resources/*-resources.dat */
   if (strstr(base, "-resources.dat")) {
-    snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/Managed/Resources/%s", base);
+    data_redirect_path(buf, bufsz, "Managed/Resources/%s", base);
     if (access(buf, F_OK) == 0) return buf;
   }
   if (!strncmp(base, "level", 5) || !strncmp(base, "sharedassets", 12) ||
@@ -879,9 +1255,9 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
       strstr(base, ".resS") || strstr(base, ".resource") ||
       !strcmp(base, "data.unity3d") || !strcmp(base, "boot.config") ||
       !strcmp(base, "unity default resources") || !strcmp(base, "unity_builtin_extra")) {
-    snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%s", base);
+    data_redirect_path(buf, bufsz, base);
     if (access(buf, F_OK) == 0) return buf;
-    snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/Resources/%s", base);
+    data_redirect_path(buf, bufsz, "Resources/%s", base);
     if (access(buf, F_OK) == 0) return buf;
   }
   return NULL;
@@ -923,7 +1299,7 @@ static int my_open(const char *p, int fl, ...) {
       fflush(t); int fd = dup(fileno(t)); fclose(t); lseek(fd, 0, SEEK_SET); return fd; }
   }
   if (p && strstr(p, "cmdline") && !getenv("CUP_NOGFXARGS")) return cmdline_fd();
-  char rb[512];
+  char rb[REDIR_PATH_MAX];
   const char *r = asset_redirect(p, rb, sizeof rb);
   if (r) {
     int rmode = 0;
@@ -994,14 +1370,14 @@ static FILE *my_fdopen(int fd, const char *mode) {
    abrir ("No GlobalGameManagers file" pode vir de um stat, não do open).
    Layout de struct stat arm64 = kernel em bionic E glibc → pass-through ok. */
 static int my_stat(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat-redir] %s -> %s\n", p, r);
   int rc = stat(r ? r : p, (struct stat *)st);
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat-MISS] %s\n", p);
   return rc;
 }
 static int my_lstat(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   return lstat(r ? r : p, (struct stat *)st);
 }
 /* 🔑 stat64: libunity importa stat64 (NÃO stat). O leitor de arquivos (ReadAllBytes
@@ -1010,14 +1386,14 @@ static int my_lstat(const char *p, void *st) {
    -> lê 0 bytes -> guid "is empty" -> re-extract -> "Unable to initialize". O open()
    funcionava (redirecionado) mas o size não. arm64: struct stat == struct stat64. */
 static int my_stat64(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat64-redir] %s -> %s\n", p, r);
   int rc = stat64(r ? r : p, (struct stat64 *)st);
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat64-MISS] %s\n", p);
   return rc;
 }
 static int my_lstat64(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   return lstat64(r ? r : p, (struct stat64 *)st);
 }
 /* === Enlighten allocator (GI) === FIX do null-deref no HLRTManager/GeoArray.
@@ -1059,7 +1435,7 @@ static void *my_enl_alloc(unsigned long size, unsigned long align, void *a2, int
   return r;
 }
 static int my_access(const char *p, int m) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[REDIR_PATH_MAX]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[access-redir] %s -> %s\n", p, r);
   return access(r ? r : p, m);
 }
@@ -1113,6 +1489,9 @@ extern void gc_wait_restore(void *oldp);
 #ifndef SYS_rt_sigprocmask
 #define SYS_rt_sigprocmask 135
 #endif
+#ifndef SYS_tgkill
+#define SYS_tgkill 131
+#endif
 static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
   /* 🔑 As threads do GC (Finalizer/Loading, bionic-static) BLOQUEIAM SIGPWR(30)/SIGXCPU(24) via
      rt_sigprocmask CRU (não passam pelos nossos shims pthread). Com SIGPWR bloqueado, o stop-the-world
@@ -1148,7 +1527,52 @@ static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long
       else { static int wn; if (wn++ > 400) show = 0; }
       if (show) {
         char comm[20] = ""; FILE *f = fopen("/proc/self/comm", "r"); if (f) { if (fgets(comm, sizeof comm, f)) { char *nl = strchr(comm, '\n'); if (nl) *nl = 0; } fclose(f); }
-        fprintf(stderr, "[FX] %s tid=%d(%s) uaddr=%p val=%ld\n", isw ? "WAIT" : "WAKE", tid, comm, (void *)a1, a3); fsync(2);
+        uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+        const char *lib = "?";
+        unsigned long off = (unsigned long)ra;
+        if (g_unity_base && ra >= g_unity_base && ra < g_unity_base + text_size) {
+          lib = "libunity";
+          off = (unsigned long)(ra - g_unity_base);
+        } else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000) {
+          lib = "libil2cpp";
+          off = (unsigned long)(ra - g_il2cpp_base);
+        }
+        fprintf(stderr, "[FX] %s tid=%d(%s) uaddr=%p val=%ld caller=%s+0x%lx\n",
+                isw ? "WAIT" : "WAKE", tid, comm, (void *)a1, a3, lib, off);
+        fsync(2);
+      }
+    }
+    if (getenv("TER_FUTEXMAIN") && (op == 0 || op == 9)) {
+      int tid = (int)syscall(178 /*arm64 gettid*/);
+      char comm[24] = "", path[64];
+      snprintf(path, sizeof path, "/proc/self/task/%d/comm", tid);
+      FILE *f = fopen(path, "r");
+      if (f) {
+        if (fgets(comm, sizeof comm, f)) { char *nl = strchr(comm, '\n'); if (nl) *nl = 0; }
+        fclose(f);
+      }
+      if (!strncmp(comm, "UnityMain", 9)) {
+        uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+        const char *lib = "?";
+        unsigned long off = (unsigned long)ra;
+        if (g_unity_base && ra >= g_unity_base && ra < g_unity_base + text_size) {
+          lib = "libunity";
+          off = (unsigned long)(ra - g_unity_base);
+        } else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000) {
+          lib = "libil2cpp";
+          off = (unsigned long)(ra - g_il2cpp_base);
+        }
+        int show = 1;
+        static struct { int tid; long ua; unsigned long off; } seen[96];
+        static int ns, total;
+        for (int i = 0; i < ns; i++)
+          if (seen[i].tid == tid && seen[i].ua == a1 && seen[i].off == off) { show = 0; break; }
+        if (show && ns < 96) { seen[ns].tid = tid; seen[ns].ua = a1; seen[ns].off = off; ns++; }
+        if (show && total++ < 80) {
+          fprintf(stderr, "[FXMAIN] tid=%d(%s) op=%d uaddr=%p val=%ld timeout=%p caller=%s+0x%lx\n",
+                  tid, comm, (int)a2, (void *)a1, a3, (void *)a4, lib, off);
+          fsync(2);
+        }
       }
     }
     if (op == 0 || op == 9) {   /* FUTEX_WAIT / FUTEX_WAIT_BITSET: thread vai BLOQUEAR */
@@ -1194,6 +1618,20 @@ static int my_pthread_kill(pthread_t t, int sig) {
   }
   return pthread_kill(t, sig);
 }
+static int my_sigsuspend(const unsigned long *bmask) {
+  if (!getenv("ELD_REAL_SIGSUSP")) {
+    errno = EINTR;
+    return -1;
+  }
+  sigset_t gm;
+  sigemptyset(&gm);
+  if (bmask) {
+    unsigned long m = *bmask;
+    for (int s = 1; s < 64; s++)
+      if (m & (1UL << (s - 1))) sigaddset(&gm, s);
+  }
+  return sigsuspend(&gm);
+}
 static void *my_memalign(unsigned long alignment, unsigned long size) {
   if (alignment < sizeof(void *)) alignment = sizeof(void *);
   if (alignment & (alignment - 1)) { unsigned long a = sizeof(void *); while (a < alignment) a <<= 1; alignment = a; }
@@ -1213,7 +1651,15 @@ static int my_statfs64(const char *p, void *buf) {
   if (!real) { real = (void *)dlsym(RTLD_DEFAULT, "statfs64");
                if (!real) real = (void *)dlsym(RTLD_DEFAULT, "statfs"); }
   int rc = real ? real("/storage/roms/ports/elderand", buf) : -1;
-  if (g_dllog) fprintf(stderr, "[statfs64] path=%s -> GAMEDIR rc=%d\n", p ? p : "?", rc);
+  if (rc == 0 && buf) {
+    struct statfs *st = (struct statfs *)buf;
+    st->f_bsize = 4096;
+    st->f_frsize = 4096;
+    st->f_blocks = 26214400;  /* 100GB */
+    st->f_bfree = 13107200;   /* 50GB */
+    st->f_bavail = 13107200;  /* 50GB */
+  }
+  if (g_dllog) fprintf(stderr, "[statfs64] path=%s -> GAMEDIR rc=%d fake_free=50GB\n", p ? p : "?", rc);
   return rc;
 }
 /* exit() do jogo: loga QUEM chamou (lr) + stack antes de morrer — a morte
@@ -1421,6 +1867,10 @@ static const char *GL_EXT_SHORT =
   "GL_OES_rgb8_rgba8 GL_OES_packed_depth_stencil GL_OES_vertex_array_object "
   "GL_EXT_texture_format_BGRA8888 GL_OES_standard_derivatives";
 static const unsigned char *my_glGetString(unsigned n){
+  if (getenv("ELD_FAKE_ES3")) {
+    if (n == 0x1F02) return (const unsigned char *)"OpenGL ES 3.0";
+    if (n == 0x8B8C) return (const unsigned char *)"OpenGL ES GLSL ES 3.00";
+  }
   if(n==0x1F03) return (const unsigned char*)GL_EXT_SHORT;   /* GL_EXTENSIONS curto */
   if(!r_glGetString) r_glGetString=(const unsigned char*(*)(unsigned))dlsym(RTLD_DEFAULT,"glGetString");
   const unsigned char *s = r_glGetString ? r_glGetString(n) : NULL;
@@ -3739,7 +4189,6 @@ static void *my_eglGetProcAddress(const char *nm) {
 }
 
 static char g_dl_self, g_dl_il2cpp;
-static so_module *g_m_unity = NULL, *g_m_il2cpp = NULL;
 
 /* ---- probe MemoryManager do libunity (RE: GetMemoryManager=0x3cbe2c) ----
  * gMemoryManager (bss)  vaddr 0x1292B48; cursor da arena estatica vaddr 0x11EF4D0;
@@ -4445,6 +4894,162 @@ void *my_getbasepath(int location) {
   return my_streamingAssetsPath();  /* mesmo dir; loader anexa "/AssetBundles/"+nome */
 }
 
+static char g_dl_fmod;  /* fallback: libfmod/libfmodstudio nao carregadas via so_loader ainda */
+static char g_fmod_core, g_fmod_studio, g_fmod_vca, g_fmod_bus, g_fmod_bank;
+static char g_fmod_event_desc, g_fmod_event_inst, g_fmod_channel_group, g_fmod_sound, g_fmod_channel;
+static int fmod_stub_ok(void) { return 0; }
+static int fmod_stub_valid(void *p) { (void)p; return 1; }
+static int fmod_memory_get_stats(int *cur, int *max, int blocking) {
+  (void)blocking;
+  if (cur) *cur = 0;
+  if (max) *max = 0;
+  return 0;
+}
+static int fmod_core_create(void **out, unsigned ver) {
+  (void)ver;
+  if (out) *out = &g_fmod_core;
+  return 0;
+}
+static int fmod_studio_create(void **out, unsigned ver) {
+  (void)ver;
+  if (out) *out = &g_fmod_studio;
+  return 0;
+}
+static int fmod_studio_get_core(void *studio, void **out) {
+  (void)studio;
+  if (out) *out = &g_fmod_core;
+  return 0;
+}
+static int fmod_get_version(void *sys, unsigned *ver) {
+  (void)sys;
+  if (ver) *ver = 0x00020231;
+  return 0;
+}
+static int fmod_get_i2(void *a, int *v) {
+  (void)a;
+  if (v) *v = 0;
+  return 0;
+}
+static int fmod_get_bool2(void *a, int *v) {
+  (void)a;
+  if (v) *v = 0;
+  return 0;
+}
+static int fmod_get_float2(void *a, float *v) {
+  (void)a;
+  if (v) *v = 1.0f;
+  return 0;
+}
+static int fmod_get_volume(void *a, float *v, float *final) {
+  (void)a;
+  if (v) *v = 1.0f;
+  if (final) *final = 1.0f;
+  return 0;
+}
+static int fmod_get_dsp_buf(void *sys, unsigned *len, int *num) {
+  (void)sys;
+  if (len) *len = 1024;
+  if (num) *num = 4;
+  return 0;
+}
+static int fmod_get_software_format(void *sys, int *rate, int *mode, int *raw) {
+  (void)sys;
+  if (rate) *rate = 48000;
+  if (mode) *mode = 2;
+  if (raw) *raw = 0;
+  return 0;
+}
+static int fmod_get_handle2(void *a, void **out) {
+  (void)a;
+  if (out) *out = &g_fmod_channel_group;
+  return 0;
+}
+static int fmod_studio_get_vca(void *sys, const char *path, void **out) {
+  (void)sys; (void)path;
+  if (out) *out = &g_fmod_vca;
+  return 0;
+}
+static int fmod_studio_get_bus(void *sys, const char *path, void **out) {
+  (void)sys; (void)path;
+  if (out) *out = &g_fmod_bus;
+  return 0;
+}
+static int fmod_studio_get_event(void *sys, const char *path, void **out) {
+  (void)sys; (void)path;
+  if (out) *out = &g_fmod_event_desc;
+  return 0;
+}
+static int fmod_studio_get_bank(void *sys, const char *path, void **out) {
+  (void)sys; (void)path;
+  if (out) *out = &g_fmod_bank;
+  return 0;
+}
+static int fmod_studio_load_bank_file(void *sys, const char *path, unsigned flags, void **out) {
+  (void)sys; (void)path; (void)flags;
+  if (out) *out = &g_fmod_bank;
+  return 0;
+}
+static int fmod_studio_load_bank_memory(void *sys, const void *buf, int len, unsigned mode, unsigned flags, void **out) {
+  (void)sys; (void)buf; (void)len; (void)mode; (void)flags;
+  if (out) *out = &g_fmod_bank;
+  return 0;
+}
+static int fmod_event_create_instance(void *desc, void **out) {
+  (void)desc;
+  if (out) *out = &g_fmod_event_inst;
+  return 0;
+}
+static int fmod_event_get_description(void *inst, void **out) {
+  (void)inst;
+  if (out) *out = &g_fmod_event_desc;
+  return 0;
+}
+static int fmod_create_sound(void *sys, const char *path, unsigned mode, void *ex, void **out) {
+  (void)sys; (void)path; (void)mode; (void)ex;
+  if (out) *out = &g_fmod_sound;
+  return 0;
+}
+static int fmod_play_sound(void *sys, void *sound, void *group, int paused, void **out) {
+  (void)sys; (void)sound; (void)group; (void)paused;
+  if (out) *out = &g_fmod_channel;
+  return 0;
+}
+static int fmod_get_path(void *obj, char *path, int size, int *retrieved) {
+  (void)obj;
+  if (path && size > 0) path[0] = 0;
+  if (retrieved) *retrieved = 0;
+  return 0;
+}
+static void *fmod_route(const char *nm) {
+  if (!strncmp(nm, "FMOD5_", 6) || !strncmp(nm, "FMOD_", 5))
+    fprintf(stderr, "[FMODSTUB] %s\n", nm);
+  if (!strcmp(nm, "FMOD5_Memory_GetStats") || !strcmp(nm, "FMOD_Memory_GetStats")) return fmod_memory_get_stats;
+  if (!strcmp(nm, "FMOD5_System_Create") || !strcmp(nm, "FMOD_System_Create")) return fmod_core_create;
+  if (!strcmp(nm, "FMOD_Studio_System_Create")) return fmod_studio_create;
+  if (!strcmp(nm, "FMOD_Studio_System_GetCoreSystem")) return fmod_studio_get_core;
+  if (strstr(nm, "GetVersion")) return fmod_get_version;
+  if (strstr(nm, "GetDSPBufferSize")) return fmod_get_dsp_buf;
+  if (strstr(nm, "GetSoftwareFormat")) return fmod_get_software_format;
+  if (strstr(nm, "GetVolume")) return fmod_get_volume;
+  if (strstr(nm, "GetPaused") || strstr(nm, "GetMute") || strstr(nm, "IsPlaying") || strstr(nm, "GetPlaybackState")) return fmod_get_bool2;
+  if (strstr(nm, "GetTimelinePosition") || strstr(nm, "GetChannelsPlaying") || strstr(nm, "GetNum") || strstr(nm, "GetDriver")) return fmod_get_i2;
+  if (strstr(nm, "GetCPUUsage") || strstr(nm, "GetFileUsage")) return fmod_stub_ok;
+  if (strstr(nm, "IsValid")) return fmod_stub_valid;
+  if (strstr(nm, "GetVCA")) return fmod_studio_get_vca;
+  if (strstr(nm, "GetBus")) return fmod_studio_get_bus;
+  if (strstr(nm, "GetEvent")) return fmod_studio_get_event;
+  if (strstr(nm, "GetBank")) return fmod_studio_get_bank;
+  if (strstr(nm, "LoadBankFile")) return fmod_studio_load_bank_file;
+  if (strstr(nm, "LoadBankMemory")) return fmod_studio_load_bank_memory;
+  if (strstr(nm, "CreateInstance")) return fmod_event_create_instance;
+  if (strstr(nm, "GetDescription")) return fmod_event_get_description;
+  if (strstr(nm, "CreateSound") || strstr(nm, "CreateStream")) return fmod_create_sound;
+  if (strstr(nm, "PlaySound")) return fmod_play_sound;
+  if (strstr(nm, "GetMasterChannelGroup") || strstr(nm, "CreateChannelGroup")) return fmod_get_handle2;
+  if (strstr(nm, "GetPath")) return fmod_get_path;
+  return fmod_stub_ok;
+}
+
 static char g_dl_sl; /* sentinela do handle de libOpenSLES (FMOD → opensles_shim) */
 static void *my_dlopen(const char *nm, int flag) {
   if (g_dllog) fprintf(stderr, "[dlopen] \"%s\"\n", nm ? nm : "(null)");
@@ -4454,6 +5059,10 @@ static void *my_dlopen(const char *nm, int flag) {
      desliga o shim (volta ao estado imagem-OK: FMOD cai no null output). */
   if (nm && strstr(nm, "OpenSLES") && !getenv("CUP_NOSL")) {
     fprintf(stderr, "[DLOPEN] %s -> opensles_shim\n", nm); return &g_dl_sl; }
+  if (nm && strstr(nm, "fmod")) {
+    fprintf(stderr, "[DLOPEN] %s -> fmod stubs\n", nm);
+    return &g_dl_fmod;
+  }
   if (!nm || !nm[0] || strstr(nm, "libc") || strstr(nm, "libunity") || strstr(nm, "libmain"))
     return &g_dl_self;
   void *h = dlopen(nm, flag); return h ? h : &g_dl_self;
@@ -4472,6 +5081,7 @@ static void *my_dlsym(void *h, const char *nm) {
     if (!strcmp(nm, "glLinkProgram")) return (void *)my_glLinkProgram;
   }
   if (nm[0] == 'e' && nm[1] == 'g' && nm[2] == 'l') { void *p = egl_route(nm); if (p) return p; }
+  if (h == &g_dl_fmod || !strncmp(nm, "FMOD5_", 6) || !strncmp(nm, "FMOD_", 5)) return fmod_route(nm);
   /* AUDIO: dlsym do handle de libOpenSLES -> opensles_shim (slCreateEngine + SL_IID_*
      com as identidades DO SHIM — ele compara ponteiro, receita re4/Dysmantle) */
   if (h == &g_dl_sl) {
@@ -5354,7 +5964,9 @@ static void *eld_thr_census(void *arg) {
   write(2, "[CENSUS] ==== tid -> comm/state ====\n", 37);
   while ((e = readdir(d))) {
     if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
-    char path[64], comm[32] = "", st[256] = ""; int n;
+    char path[64], comm[32] = "", st[256] = "", wchan[128] = "", sysc[256] = "";
+    char kstack[768] = "";
+    int n;
     snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
     int fd = open(path, O_RDONLY);
     if (fd >= 0) { n = read(fd, comm, sizeof comm - 1); if (n > 0) { comm[n] = 0; char *nl = strchr(comm, '\n'); if (nl) *nl = 0; } close(fd); }
@@ -5362,7 +5974,35 @@ static void *eld_thr_census(void *arg) {
     snprintf(path, sizeof path, "/proc/self/task/%s/stat", e->d_name);
     fd = open(path, O_RDONLY);
     if (fd >= 0) { n = read(fd, st, sizeof st - 1); if (n > 0) { st[n] = 0; char *rp = strrchr(st, ')'); if (rp && rp[1] && rp[2]) state = rp[2]; } close(fd); }
-    fprintf(stderr, "[CENSUS] tid=%s comm=%s state=%c\n", e->d_name, comm, state); fsync(2);
+    snprintf(path, sizeof path, "/proc/self/task/%s/wchan", e->d_name);
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) { n = read(fd, wchan, sizeof wchan - 1); if (n > 0) { wchan[n] = 0; char *nl = strchr(wchan, '\n'); if (nl) *nl = 0; } close(fd); }
+    snprintf(path, sizeof path, "/proc/self/task/%s/syscall", e->d_name);
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) { n = read(fd, sysc, sizeof sysc - 1); if (n > 0) { sysc[n] = 0; char *nl = strchr(sysc, '\n'); if (nl) *nl = 0; } close(fd); }
+    if (state == 'D' || getenv("TER_THRCENSUS_STACK")) {
+      snprintf(path, sizeof path, "/proc/self/task/%s/stack", e->d_name);
+      fd = open(path, O_RDONLY);
+      if (fd >= 0) {
+        n = read(fd, kstack, sizeof kstack - 1);
+        if (n > 0) {
+          kstack[n] = 0;
+          for (char *p = kstack; *p; p++) if (*p == '\n') *p = '|';
+        }
+        close(fd);
+      }
+    }
+    fprintf(stderr, "[CENSUS] tid=%s comm=%s state=%c wchan=%s syscall=%s stack=%s\n",
+            e->d_name, comm, state, wchan[0] ? wchan : "-", sysc[0] ? sysc : "-",
+            kstack[0] ? kstack : "-");
+    fsync(2);
+    if (getenv("TER_THRCENSUS_SIG") && !strncmp(comm, "UnityMain", 9)) {
+      int tid = atoi(e->d_name);
+      fprintf(stderr, "[CENSUS] SIGUSR1 -> tid=%d(%s)\n", tid, comm);
+      fsync(2);
+      syscall(SYS_tgkill, getpid(), tid, SIGUSR1);
+      usleep(20000);
+    }
   }
   closedir(d);
   write(2, "[CENSUS] ==== fim ====\n", 23);
@@ -5497,6 +6137,7 @@ int main(int argc, char **argv) {
   set_import("memalign", (void *)my_memalign);
   set_import("syscall", (void *)my_syscall);
   set_import("pthread_kill", (void *)my_pthread_kill);
+  set_import("sigsuspend", (void *)my_sigsuspend);
   set_import("__memmove_chk", (void *)my_memmove_chk);
   set_import("__memcpy_chk", (void *)my_memcpy_chk);
   set_import("__memset_chk", (void *)my_memset_chk);
@@ -5600,9 +6241,11 @@ int main(int argc, char **argv) {
   patch_got("memalign", (void *)my_memalign);
   patch_got("syscall", (void *)my_syscall);
   patch_got("pthread_kill", (void *)my_pthread_kill);
+  patch_got("sigsuspend", (void *)my_sigsuspend);
   patch_got("memalign", (void *)my_memalign);
   patch_got("syscall", (void *)my_syscall);
   patch_got("pthread_kill", (void *)my_pthread_kill);
+  patch_got("sigsuspend", (void *)my_sigsuspend);
   patch_got("__memmove_chk", (void *)my_memmove_chk);
   patch_got("__memcpy_chk", (void *)my_memcpy_chk);
   patch_got("__memset_chk", (void *)my_memset_chk);
@@ -5637,17 +6280,18 @@ int main(int argc, char **argv) {
   for (int i = 0; ndk_noop[i]; i++) patch_got(ndk_noop[i], (void *)ndk_stub0);
   eld_wire_stdio_patchgot();  /* stdio __sF -> map_sf (F0 libunity) */
 
-  /* TER: bypass do "Not enough storage space to install required resources".
-   * RE (libunity): em 0x2d8fac `tbz w0,#0, 0x2d9068` — se a checagem de espaço/resources
-   * (0x22b7e0) retorna falso, pula pro bloco que monta o AlertDialog (string 0x9288ef).
-   * Esse bloco SÓ é alcançável por esse branch. NOP -> sempre segue o caminho de sucesso
-   * (dados já estão em bin/Data, lidos via AssetManager). */
-  if (!getenv("TER_NOSTORAGEPATCH")) {
+  /* ELD: bypass do "Not enough storage space to install required resources".
+   * No libunity 1.3.22 o bloco de extracao dos recursos IL2CPP cai em
+   * 0x437548 -> 0x437588 (AlertDialog com a string 0x100ee5f) quando a tentativa
+   * de extracao falha. No so-loader os dados ja estao em assets/bin/Data; nao
+   * dependemos dessa copia Android. NOP no tbz de 0x43748c força o caminho sem dialog. */
+  if ((getenv("ELD_DEVLIB") && !getenv("ELD_NOSTORAGEPATCH")) ||
+      (!getenv("ELD_DEVLIB") && !getenv("TER_NOSTORAGEPATCH"))) {
     extern void so_make_text_writable(void), so_make_text_executable(void);
     so_make_text_writable();
-    *(uint32_t *)((uintptr_t)text_base + 0x2d8fac) = 0xd503201fu; /* NOP */
+    *(uint32_t *)((uintptr_t)text_base + 0x43748c) = 0xd503201fu; /* NOP */
     so_make_text_executable(); so_flush_caches();
-    fprintf(stderr, "[TER] storage-check 0x2d8fac (tbz->dialog) NOPado\n");
+    fprintf(stderr, "[ELD] il2cpp-resources storage dialog branch 0x43748c NOPado\n");
   }
 
   /* 🔑 ELD_SKIPOBB (default ON p/ 1.3.22): a rotina de discovery do OBB/asset-pack
@@ -5662,6 +6306,22 @@ int main(int argc, char **argv) {
     *(uint32_t *)((uintptr_t)text_base + 0x437c10) = 0xd65f03c0u; /* ret */
     so_make_text_executable(); so_flush_caches();
     fprintf(stderr, "[SKIPOBB] OBB discovery 0x437c10 -> ret (usa APK bin/Data)\n");
+  }
+
+  /* Elderand 1.3.22 vem com blobs GLES3+, mas neste loader Unity escolhe
+   * ShaderCompilerPlatform GLES20 (5) e aborta antes de enviar shader source.
+   * A tabela em 0x105abac mapeia GraphicsDeviceType -> ShaderCompilerPlatform;
+   * o slot observado no device e' 8, cujo valor original e' 5. Forcamos para
+   * GLES3Plus (9) para carregar a variante existente e deixar o shim GLES3->GLES2
+   * tratar o que o Mali-450 nao suporta. */
+  if (getenv("ELD_DEVLIB") && !getenv("ELD_NO_GLES3_SHADER")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    uint32_t *slot = (uint32_t *)((uintptr_t)text_base + 0x105abcc);
+    so_make_text_writable();
+    uint32_t old = *slot;
+    *slot = 9u;
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[ELD] shader platform table[8] 0x105abcc %u -> 9 (GLES3Plus)\n", old);
   }
 
   /* O FIX REAL do null-deref do Enlighten é o `memalign` (acima, deixou de ser stub).
@@ -6094,6 +6754,29 @@ int main(int argc, char **argv) {
     so_make_text_executable(); so_flush_caches();
     fprintf(stderr, "[NOFATAL] FatalError(0xf7c354)+brk(0x452484) -> ret\n");
   }
+  /* ELD_SWAPPYWAIT: libunity+0x45084c espera um contador global de frame pacing
+   * avançar via Swappy/Android. No so-loader esse produtor não sinaliza a cond
+   * (caller final do frame 3: libunity+0x450888), então retornamos o próprio alvo
+   * em x0 e deixamos o render seguir. */
+  if (!getenv("ELD_REAL_SWAPPYWAIT")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x45084c) = 0xd65f03c0u; /* ret: x0 já é o target */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[SWAPPYWAIT] libunity+0x45084c -> ret\n");
+  }
+  /* ELD_NULLOPTCB: libunity+0xb9d8e0 consulta um serviço/callback global opcional.
+   * No loader ele pode existir parcialmente (flag ligada, vtable interna nula) e
+   * b9d958 dereferencia x0+16 com x0=0. Retornar false desliga esse caminho. */
+  if (!getenv("ELD_REAL_OPTCB")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    uint32_t *p = (uint32_t *)((uintptr_t)text_base + 0xb9d8e0);
+    p[0] = 0x52800000u;  /* mov w0,#0 */
+    p[1] = 0xd65f03c0u;  /* ret */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[OPTCB] libunity+0xb9d8e0 -> false\n");
+  }
   fprintf(stderr, "[F0] init_array...\n");
   so_execute_init_array();
   fprintf(stderr, "[F0] libunity init OK\n");
@@ -6161,6 +6844,7 @@ int main(int argc, char **argv) {
        instalava um handler CORROMPIDO (0x7f10000004) p/ SIGPWR -> stop-the-world
        crashava. Com my_sigaction + CUP_GCSIG, bloqueamos -> nosso handler válido fica. */
     { extern int my_sigaction(); patch_got("sigaction", (void *)my_sigaction); }
+    patch_got("sigsuspend", (void *)my_sigsuspend);
     patch_got("fopen", (void *)my_fopen);
     patch_got("stat", (void *)my_stat);
     patch_got("lstat", (void *)my_lstat);
@@ -6414,7 +7098,7 @@ int main(int argc, char **argv) {
      (anexada ao il2cpp) p/ destravar o nativeRender do frame 2 que espera o vsync/doFrame
      que nosso Looper fake nunca entrega. Default ON; TER_NOCHOREO desliga. */
   g_choreo_env = env;
-  if (getenv("TER_CHOREO")) {  /* OPT-IN: dispara doFrame mas ainda NÃO destrava (WIP) */
+  if (getenv("TER_CHOREO") && !getenv("TER_NOCHOREO")) {  /* OPT-IN: dispara doFrame mas ainda NÃO destrava (WIP) */
     pthread_t ct; pthread_create(&ct, NULL, choreo_driver_thread, NULL);
     pthread_detach(ct);
     fprintf(stderr, "[CHOREO] driver-thread de doFrame criada (~60Hz)\n");
@@ -6721,6 +7405,9 @@ int main(int argc, char **argv) {
       ((unsigned char (*)(void *, void *))render)(env, &thiz);
     }
     if (f < 200) { fprintf(stderr, "<r%d]\n", f); dbg_sync(); }  /* SAIU do render */
+    ter_fmod_nuke();
+    ter_tmp_nuke();
+    ter_voxel_nuke();
     opensles_shim_pump_callbacks();
     /* bombeia eventos SDL (foco/janela) p/ o input do Unity não esfomear */
     SDL_Event ev; while (SDL_PollEvent(&ev)) {}

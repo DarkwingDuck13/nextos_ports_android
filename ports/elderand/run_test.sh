@@ -7,10 +7,13 @@
 set -u
 PORT="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$PORT/logs"; mkdir -p "$LOGS"
-D=root@192.168.31.100
-SSH="sshpass -p archr ssh -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=8 -o ServerAliveInterval=5"
-SCP="sshpass -p archr scp -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=8"
-GD=/storage/roms/ports/elderand
+ELD_HOST="${ELD_HOST:-192.168.31.100}"
+ELD_PASS="${ELD_PASS:-archr}"
+ELD_USER="${ELD_USER:-root}"
+D="$ELD_USER@$ELD_HOST"
+SSH="ssh -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=5"
+SCP="scp -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+GD="${ELD_GD:-/storage/roms/ports/elderand}"
 SECS="${1:-40}"; shift 2>/dev/null || true
 EXTRA_ENV="$*"
 CLEAN_TAG="run_test.sh guard"
@@ -20,7 +23,8 @@ glog() { echo "[$(ts)] $*" >> "$LOGS/game_test.log"; } # persistente
 both() { log "$*"; glog "$*"; }
 
 cleanup_remote() {
-  timeout 15 $SSH $D "systemctl stop emustation 2>/dev/null || true; \
+  timeout 30 $SSH $D "systemctl stop emustation emulationstation 2>/dev/null || true; \
+    killall -9 emustation emulationstation 2>/dev/null || true; \
     for p in /proc/[0-9]*; do \
       e=\$(readlink \$p/exe 2>/dev/null); \
       case \"\$e\" in \"$GD/elderand\"*) kill -9 \${p##*/} 2>/dev/null;; esac; \
@@ -68,19 +72,18 @@ if [ "${BRC:-1}" != "0" ]; then both "BUILD FALHOU (rc=$BRC) — ver logs/build.
 MD5=$(md5sum "$PORT/elderand" | awk '{print $1}'); both "BUILD OK md5=$MD5"
 
 # ---- 2) DEVICE alcançável? (watchdog de conexão) ----
-if ! with_retry "timeout 10 $SSH $D \"echo ok\" >/dev/null 2>&1"; then
+if ! with_retry "timeout 30 $SSH $D \"echo ok\" >/dev/null 2>&1"; then
   both "BLOQUEIO EXTERNO: device $D inacessível (ssh timeout). Abortando."; exit 2; fi
 
 # ---- 3) MATAR instância anterior + CONFIRMAR 0 (regra NextOS #3) ----
 both "matando instância anterior + parando emustation..."
-cleanup_remote
-if ! with_retry "timeout 20 $SSH $D \"systemctl stop emustation 2>/dev/null; \
-  for p in /proc/[0-9]*; do e=\$(readlink \$p/exe 2>/dev/null); case \"\$e\" in \"$GD/elderand\"*) kill -9 \${p##*/} 2>/dev/null;; esac; done; \
-  sleep 1; n=0; for p in /proc/[0-9]*; do e=\$(readlink \$p/exe 2>/dev/null); case \"\$e\" in \"$GD/elderand\"*) n=\$((n+1));; esac; done; echo INSTANCIAS=\$n\""; then
+CLEAN_OUT="$(cleanup_remote 2>&1 || true)"
+echo "$CLEAN_OUT"
+if ! echo "$CLEAN_OUT" | grep -q 'remaining_eld_pids=0'; then
   both "BLOQUEIO EXTERNO: falha ao limpar instância anterior."; exit 2; fi
 # ---- 4) DEPLOY binário ----
 if ! with_retry "timeout 60 $SCP \"$PORT/elderand\" $D:$GD/elderand >/dev/null 2>&1"; then both "SCP binário FALHOU"; exit 3; fi
-timeout 10 $SSH $D "chmod +x $GD/elderand"; both "binário deployado"
+timeout 30 $SSH $D "chmod +x $GD/elderand"; both "binário deployado"
 
 # ---- 5) RUN com WATCHDOG (timeout duro + heartbeat) ----
 both "RUN (watchdog ${SECS}s)..."
@@ -94,6 +97,14 @@ export SDL_VIDEODRIVER=mali LD_LIBRARY_PATH=/usr/lib:\$GD
   export TER_NOSTORAGEPATCH=1 CUP_NOLOGFILE=1 CUP_FRAMES=999999999 TER_SCREEN_W=1280 TER_SCREEN_H=720 ELD_MAXSECONDS=$((SECS+6))
   $(for kv in $EXTRA_ENV; do echo "export $kv"; done)
 rm -f /dev/shm/eld.log
+mkdir -p "\$GD/userdata/il2cpp/Metadata" "\$GD/userdata/il2cpp/Resources"
+ln -sf "\$GD/assets/bin/Data/Managed/Metadata/global-metadata.dat" "\$GD/userdata/il2cpp/Metadata/global-metadata.dat"
+for f in "\$GD"/assets/bin/Data/Managed/Resources/*-resources.dat; do
+  [ -e "\$f" ] || continue
+  ln -sf "\$f" "\$GD/userdata/il2cpp/Resources/\${f##*/}"
+done
+W=\$(cut -d, -f1 /sys/class/graphics/fb0/virtual_size 2>/dev/null); H=\$(cut -d, -f2 /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+dd if=/dev/zero of=/dev/fb0 bs=1M count=\$(( (\${W:-1280}*\${H:-720}*4)/1048576 + 1 )) 2>/dev/null || true
 # heartbeat em bg: a cada 5s loga se o processo está vivo + nº de threads
 ( for i in \$(seq 1 $((SECS/5+1))); do sleep 5; \
     pid=\$(for p in /proc/[0-9]*; do e=\$(readlink \$p/exe 2>/dev/null); case \"\$e\" in \"\$GD/elderand\"*) echo \${p##*/}; break;; esac; done); \
@@ -106,7 +117,6 @@ RC=\$?
 kill \$HBPID 2>/dev/null
 echo "[RUNEXIT] rc=\$RC (124=watchdog-timeout/travou, 139=SIGSEGV, 0=saiu-limpo)"
 # screenshot fb0
-W=\$(cut -d, -f1 /sys/class/graphics/fb0/virtual_size 2>/dev/null); H=\$(cut -d, -f2 /sys/class/graphics/fb0/virtual_size 2>/dev/null)
 dd if=/dev/fb0 of=/dev/shm/eld_fb.raw bs=1M count=\$(( (\${W:-1280}*\${H:-720}*4)/1048576 + 1 )) 2>/dev/null
 echo "[FB] \${W}x\${H} -> /dev/shm/eld_fb.raw"
 # garante que NADA ficou vivo (regra NextOS #3)

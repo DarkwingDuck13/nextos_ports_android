@@ -18,6 +18,13 @@ i=0; while [ -n "$(eld_pids)" ] && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 # backend de vídeo: fbdev (Mali-450 Utgard) — EGL real do Mali via SDL2-mali
 export SDL_VIDEODRIVER=mali
 export LD_LIBRARY_PATH=/usr/lib:$GAMEDIR
+mkdir -p "$GAMEDIR/userdata/il2cpp/Metadata" "$GAMEDIR/userdata/il2cpp/Resources"
+ln -sf "$GAMEDIR/assets/bin/Data/Managed/Metadata/global-metadata.dat" \
+  "$GAMEDIR/userdata/il2cpp/Metadata/global-metadata.dat"
+for f in "$GAMEDIR"/assets/bin/Data/Managed/Resources/*-resources.dat; do
+  [ -e "$f" ] || continue
+  ln -sf "$f" "$GAMEDIR/userdata/il2cpp/Resources/${f##*/}"
+done
 _m=
 [ -r /sys/class/graphics/fb0/mode ]  && read -r _m < /sys/class/graphics/fb0/mode  || true
 [ -z "$_m" ] && [ -r /sys/class/graphics/fb0/modes ] && read -r _m < /sys/class/graphics/fb0/modes || true
@@ -34,7 +41,8 @@ fi
 #  CUP_NOSIGH     = não deixar a Unity sobrescrever nosso handler de SIGSEGV
 #  TER_CHOREO     = thread que dispara doFrame (game logic)
 #  ELD_GCOFF      = desabilita o GC do il2cpp no boot (evita crash de GC scan)
-#  TER_NOSTORAGEPATCH=1 desliga o patch .text default-ON específico do Terraria (0x2d8fac).
+#  TER_NOSTORAGEPATCH=1 mantém desligados patches antigos de Terraria; ELD_DEVLIB ainda liga
+#  o bypass correto do dialog de storage IL2CPP (libunity 1.3.22).
 export TER_NOSTORAGEPATCH=1 CUP_NOLOGFILE=1
 export ELD_MAXSECONDS=${ELD_MAXSECONDS:-35}
 export CUP_FRAMES=999999999
