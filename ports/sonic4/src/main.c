@@ -22,6 +22,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <SDL2/SDL.h>
+
 #include "so_util.h"
 #include "egl_shim.h"
 #include "jni_shim.h"
@@ -193,6 +195,15 @@ int main(int argc, char *argv[]) {
   /* fallback opt-in: forçar IsValid->1 global (crasha no save, só p/ depurar). */
   if (getenv("SONIC_FORCEDEMOGATE"))
     patch_retval("_ZThn20_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE", 1);
+  /* 🔑 F2F age gate / GDPR consent: ao apertar "Press any button" o jogo chama
+     showAgeGate (dialog Java de idade/consent que não temos) e espera a resposta.
+     Bypass: isEnoughtAge->1 (idade ok => haveRemoveAgeGate=1) + isConsentCountry->0
+     (não é país GDPR => pula o consent). Assim avança do título pro menu sem o dialog. */
+  if (!getenv("SONIC_KEEPAGEGATE")) {
+    patch_retval("_ZN12F2FExtension12isEnoughtAgeEv", 1);
+    patch_ret0("_ZN12F2FExtension16isConsentCountryEv");
+    patch_ret0("_ZN12F2FExtension19getIsConsentCountryEv");
+  }
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -237,8 +248,10 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "=== fox: SetGamePath(0, dir=%s) ===\n", gamedir);
   if (fox.SetGamePath) fox.SetGamePath(env, thiz, (void *)0, jni_shim_new_string(gamedir));
 
-  fprintf(stderr, "=== fox: SetLanguageId(0=EN) ===\n");
-  if (fox.SetLanguageId) fox.SetLanguageId(env, thiz, 0);
+  /* idioma: tabela lang_name_tbl = 0:JP 1:US(inglês) 2:FR 3:IT 4:GE 5:SP 6:KO 7:CH 8:TA.
+     Id 1 = US/inglês (id 0 carregava as variantes _JP japonesas). */
+  fprintf(stderr, "=== fox: SetLanguageId(1=US/EN) ===\n");
+  if (fox.SetLanguageId) fox.SetLanguageId(env, thiz, 1);
 
   /* f2fextension (camada F2F/ads): precisa do context/JavaVM senão getF2FJavaVM()
      retorna NULL -> crash em Android_getLocalPath. Chamar os setups JNI. */
@@ -311,9 +324,65 @@ int main(int argc, char *argv[]) {
   void (*introCB)(JEnv, void *) =
       (void *)so_find_addr_safe("Java_com_sega_f2fextension_f2fextensionInterface_callBackIntroVideo");
 
+  /* input: abrir o 1º gamepad SDL (se houver) */
+  SDL_GameController *pad = NULL;
+  if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0) {
+    for (int i = 0; i < SDL_NumJoysticks(); i++)
+      if (SDL_IsGameController(i)) { pad = SDL_GameControllerOpen(i); if (pad) break; }
+    fprintf(stderr, "=== gamepad: %s ===\n", pad ? "aberto" : "nenhum");
+  }
+  /* fox pad bits (descobertos do disasm): 0x8000=confirm/A. Direções a refinar.
+     Provisório: D-pad/analog -> direções; A/START -> 0x8000 (confirm). */
+  #define FOX_UP     0x0001
+  #define FOX_DOWN   0x0002
+  #define FOX_LEFT   0x0004
+  #define FOX_RIGHT  0x0008
+  #define FOX_A      0x8000
+  #define FOX_B      0x0080
+  #define FOX_START  0x0010
+
+  /* "conectar" o pad: SetPadData(-2) seta o flag de pad conectado (o Java faria
+     isso). Sem isso o amPadExecute pode ignorar o estado de botões injetado. */
+  if (fox.SetPadData) {
+    fox.SetPadData(env, thiz, -2, 0, 0, 0, 0, 0);
+    fox.SetPadData(env, thiz, -5, 0, 0, 0, 0, 0);
+  }
+
   fprintf(stderr, "=== entrando no loop principal (GameProcess/DrawFrame) ===\n");
   unsigned long frame = 0;
   for (;;) {
+    /* --- input: drenar eventos SDL + montar a máscara fox + SetPadData --- */
+    SDL_Event ev; while (SDL_PollEvent(&ev)) { /* drena (quit etc) */ }
+    int mask = 0;
+    const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    if (ks) {
+      if (ks[SDL_SCANCODE_UP])    mask |= FOX_UP;
+      if (ks[SDL_SCANCODE_DOWN])  mask |= FOX_DOWN;
+      if (ks[SDL_SCANCODE_LEFT])  mask |= FOX_LEFT;
+      if (ks[SDL_SCANCODE_RIGHT]) mask |= FOX_RIGHT;
+      if (ks[SDL_SCANCODE_RETURN]||ks[SDL_SCANCODE_SPACE]||ks[SDL_SCANCODE_Z]) mask |= FOX_A;
+      if (ks[SDL_SCANCODE_X])     mask |= FOX_B;
+      if (ks[SDL_SCANCODE_RETURN])mask |= FOX_START;
+    }
+    if (pad) {
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP))    mask |= FOX_UP;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  mask |= FOX_DOWN;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  mask |= FOX_LEFT;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) mask |= FOX_RIGHT;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))     mask |= FOX_A;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B))     mask |= FOX_B;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) mask |= FOX_A|FOX_START;
+      Sint16 ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+      Sint16 ay = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+      if (ax < -12000) mask |= FOX_LEFT; else if (ax > 12000) mask |= FOX_RIGHT;
+      if (ay < -12000) mask |= FOX_UP;   else if (ay > 12000) mask |= FOX_DOWN;
+    }
+    /* auto-press de teste: o trigger é a borda 0->1 (1 frame), então alterna
+       0x8000/0 a cada frame após o título carregar -> trigger frequente p/ vencer
+       a corrida com o poll do CStateWaiting::Next (SONIC_AUTOSTART). */
+    if (getenv("SONIC_AUTOSTART") && frame > 360 && (frame & 1)) mask |= FOX_A;
+    if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
+
     if (fox.GameProcess) fox.GameProcess(env, thiz);
     if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
     if (getenv("SONIC_TESTCLEAR")) {  /* diagnóstico: present/contexto OK? */
