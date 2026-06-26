@@ -428,7 +428,14 @@ int main(int argc, char *argv[]) {
        a corrida com o poll do CStateWaiting::Next (SONIC_AUTOSTART). */
     /* press ÚNICO de teste (não contínuo): aperta confirm uma vez ~frame 420 por
        ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
-    if (getenv("SONIC_AUTOSTART") && frame >= 600 && frame < 606) mask |= FOX_A;
+    if (getenv("SONIC_AUTOSTART")) {
+      if (frame >= 600 && frame < 606) mask |= FOX_A;   /* título -> menu (pad) */
+      /* menu é TOUCH: tap no item "Start" (topo). action 0=down,1=up (estilo Android). */
+      if (fox.SetTPData) {
+        if (frame >= 1700 && frame < 1712) fox.SetTPData(env, thiz, 0, 640, 175, 0);
+        if (frame >= 1712 && frame < 1718) fox.SetTPData(env, thiz, 1, 640, 175, 0);
+      }
+    }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
 
     if (fox.GameProcess) fox.GameProcess(env, thiz);
