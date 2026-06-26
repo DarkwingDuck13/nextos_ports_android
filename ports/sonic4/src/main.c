@@ -319,6 +319,16 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  /* save path: stsSavePathData (buffer global) é o prefixo do save; vazio => o save
+     vira "/foxsave_0.dat" no root (sem permissão) => save falha, e o Story Mode pode
+     gatear nisso. Setar p/ o dir gravável (SONIC_DATADIR). */
+  if (!getenv("SONIC_KEEPSAVEPATH")) {
+    char *sp = (char *)so_find_addr_safe("stsSavePathData");
+    const char *dd = getenv("SONIC_DATADIR"); if (!dd) dd = ".";
+    if (sp) { strncpy(sp, dd, 250); sp[250] = 0;
+              fprintf(stderr, "=== save path = %s ===\n", sp); }
+  }
+
   /* 🔑🔑 init(env, thiz, WIDTH, HEIGHT): a JNI init repassa args 3/4 p/ fox_Init(w,h)
      -> amDrawInitVideo(w,h) que dimensiona _am_draw_video (os FBOs/render targets).
      Passávamos NULL,NULL = 0,0 => FBO 0x0 INCOMPLETE => glDraw* falham => TELA PRETA.
