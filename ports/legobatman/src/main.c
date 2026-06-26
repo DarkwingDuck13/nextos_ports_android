@@ -110,6 +110,13 @@ static struct {
        in our boot path). */
     void (*geControls_Init)(void);
     void (*geControls_Update)(float, int);
+    /* fnaFMV_SetMovieInfo(bool playing, int frameInfo): writes the global movie
+       state byte. The engine WAITS on fnaFMV_Finished() (which is "state byte
+       == 0") before leaving a cutscene. We have no video layer, so the byte
+       stays non-zero forever -> the game hangs after "New Game" on the intro
+       cutscene. Calling SetMovieInfo(0,0) every frame makes every movie report
+       finished immediately -> cutscenes are skipped, flow continues to gameplay. */
+    void (*fnaFMV_SetMovieInfo)(int, int);
 } eng;
 
 static void *resolve_opt(const char *name) {
@@ -146,6 +153,7 @@ static void engine_resolve(void) {
     R(nativeControllerSetData,  "Java_com_wbgames_LEGOgame_Fusion_nativeControllerSetData");
     R(geControls_Init,          "_Z15geControls_Initv");
     R(geControls_Update,        "_Z17geControls_Updatefb");
+    R(fnaFMV_SetMovieInfo,      "_Z19fnaFMV_SetMovieInfobi");
     R(nativeBackButtonPressed,  "Java_com_wbgames_LEGOgame_Fusion_nativeBackButtonPressed");
 #undef R
     debugPrintf("Fusion: symbols resolved\n");
@@ -498,6 +506,16 @@ int main(int argc, char *argv[]) {
                     g_sweep_last = bit;
                 }
             }
+            /* Live bit probe: hold whatever bit number is in /tmp/lbbg_btn (and
+               optionally a left-stick direction via /tmp/lbbg_axis "x y"). Lets us
+               discover the real button-bit layout empirically against the clean
+               render. (LBBG_BTNFILE) Write -1 to clear. */
+            if (getenv("LBBG_BTNFILE")) {
+                FILE *bf = fopen("/tmp/lbbg_btn", "r");
+                if (bf) { int b=-1; if (fscanf(bf,"%d",&b)==1 && b>=0 && b<32) mask |= (1<<b); fclose(bf); }
+                FILE *af = fopen("/tmp/lbbg_axis", "r");
+                if (af) { float ax=0,ay=0; if (fscanf(af,"%f %f",&ax,&ay)==2){lx=ax;ly=ay;} fclose(af); }
+            }
             eng.nativeControllerSetData(env, FUSION_OBJ, 0, mask, lx, ly);
         }
         /* CONTROLLER -> TOUCH shim for the touch-only front-end menu. On NextOS's
@@ -579,6 +597,10 @@ int main(int argc, char *argv[]) {
                 SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_START))
                 running = 0;
         }
+        /* Skip FMV/cutscene videos (we have no video layer): force "movie
+           finished" so the engine never hangs waiting for a video to end. */
+        if (!getenv("LBBG_NOSKIPFMV") && eng.fnaFMV_SetMovieInfo)
+            eng.fnaFMV_SetMovieInfo(0, 0);
         if (eng.nativeRender) eng.nativeRender(env, GLVIEW_OBJ);
         /* Presentation normally happens on this (render) thread via the glClear
            hook. But the front-end doesn't always clear the default framebuffer
