@@ -129,6 +129,15 @@ int main(int argc, char *argv[]) {
   /* destravar trial -> jogo completo: GsTrialIsTrial() -> 0 */
   patch_ret0("_Z14GsTrialIsTrialv");
   patch_ret0("_Z21GsTrialIsTrial_VerTwov");
+  /* sem camada de vídeo: forçar "vídeo não está tocando" p/ o game passar do
+     intro (clMovie poll videoIsPlaying/MediaPlayerisPlaying espera o fim). */
+  if (!getenv("SONIC_KEEPVIDEO")) {
+    patch_ret0("_Z14videoIsPlayingv");
+    patch_ret0("_Z20MediaPlayerisPlayingi");
+    /* clMovie::willPlayMovieBeforeGameStart(int) -> 0: pula o movie de intro
+       (SEGA logo) de vez, sem precisar da camada de vídeo. */
+    patch_ret0("_ZNK2gm5movie7clMovie28willPlayMovieBeforeGameStartEi");
+  }
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -143,6 +152,7 @@ int main(int argc, char *argv[]) {
     else fprintf(stderr, "AVISO: JNI_OnLoad não encontrado\n"); }
 
   egl_shim_create_window();
+  egl_shim_bind_main();  /* GLSurfaceView: contexto current na thread do DrawFrame */
 
   RES(init,               "Java_com_mineloader_fox_foxJniLib_init");
   RES(SetGamePath,        "Java_com_mineloader_fox_foxJniLib_SetGamePath");
@@ -212,6 +222,12 @@ int main(int argc, char *argv[]) {
   for (;;) {
     if (fox.GameProcess) fox.GameProcess(env, thiz);
     if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
+    if (getenv("SONIC_TESTCLEAR")) {  /* diagnóstico: present/contexto OK? */
+      extern void glClearColor(float, float, float, float);
+      extern void glClear(unsigned int);
+      glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+      glClear(0x4000 /* GL_COLOR_BUFFER_BIT */);
+    }
     egl_shim_present();
     /* sinaliza intro-video done nos primeiros segundos */
     if (introCB && frame >= 30 && frame < 120 && (frame % 15) == 0) introCB(env, thiz);

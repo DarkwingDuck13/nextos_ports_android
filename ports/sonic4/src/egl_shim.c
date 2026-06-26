@@ -119,6 +119,17 @@ void egl_shim_create_window(void) {
   debugPrintf("egl_shim: Context released, ready for game\n");
 }
 
+/* Modelo GLSurfaceView (Sonic/fox): a engine NÃO cria contexto EGL próprio —
+   assume o contexto já current (o GLSurfaceView faria isso). Ligar o share-root
+   na thread chamadora (a do DrawFrame) p/ as chamadas GL do engine valerem. */
+void egl_shim_bind_main(void) {
+  if (egl_window && egl_share_root) {
+    gl_makecurrent(egl_window, egl_share_root);
+    has_real_gl = 1;
+    debugPrintf("egl_shim: share-root current na thread principal (GLSurfaceView)\n");
+  }
+}
+
 /* --- Mutex hooks (called from imports.c pthread wrappers) --- */
 
 void egl_shim_on_mutex_post_lock(void *mutex_id) {

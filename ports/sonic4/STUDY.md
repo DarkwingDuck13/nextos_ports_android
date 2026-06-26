@@ -132,3 +132,17 @@ em `/storage/roms/ports/sonic4/` (libfox em lib/armeabi-v7a/, OBB em data/).
 - 🟡 present/Mali fbdev: quando renderizar, aplicar lição LEGO Batman (FBCOPY/pan; fb 1280x1440).
 - 🟡 stubar f2fextension/ads direito (muitos Android_* callbacks); áudio (AudioHelper bridge).
 - Flags: SONIC_DATADIR, SONIC_LPK, SONIC_IOLOG (log de fread).
+
+### s1 update — GL PIPELINE CONFIRMADO (present OK), engine renderiza PRETO
+- 🔑 **egl_shim_bind_main()**: modelo GLSurfaceView = a engine NÃO cria contexto EGL próprio,
+  assume o contexto já current. O Shantae egl_shim soltava o contexto (gl_makecurrent NULL) no
+  fim do create_window → DrawFrame rodava SEM contexto → preto. Fix = ligar o share-root na
+  thread principal após create_window.
+- ✅ **Teste glClear(vermelho) após DrawFrame (SONIC_TESTCLEAR=1) → TELA VERMELHA nas 2 metades**
+  = contexto GL current OK + present OK + fbdev Mali OK (NÃO precisa FBCOPY/pan; SDL double-buffer
+  mostra nas 2 metades). 
+- 🔴 **PRÓXIMO = por que a engine renderiza PRETO** (DrawFrame não desenha o título):
+  suspeito `ShaderProfile Num : -1` (shaders NN não carregam/registram → glDrawElements sem
+  program → nada). Investigar: nnRegistStdShaderProfile / de onde carrega os NNGLES20SHADER
+  (LPK? loose .pb?); confirmar se o game chega no DmTitleInit (title) ou trava antes (FS thread
+  idle = não enfileira o load do título?). Achar o gate que impede o título de renderizar.
