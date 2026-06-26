@@ -5597,17 +5597,22 @@ static long ss_loadasync_hook(void *self, void *name, void *type) {
   return ss_loadasync_orig(self, name, type);
 }
 static void stagespy_install(uintptr_t base) {
-  struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
-    {0x178EB3C, (void *)ss_setsprite_hook, (void **)&ss_setsprite_orig, "SpriteRenderer.set_sprite"},
-    {0x17C893C, (void *)ss_loadasync_hook, (void **)&ss_loadasync_orig, "AssetBundle.LoadAssetAsync"},
+  /* ⚠️ o hook set_sprite (0x178EB3C) tem offset ARRISCADO (regrediu: crash em render~11340
+     com GK_ASSETFIX). Só instalar set_sprite sob CUP_STAGESPY (diagnóstico explícito).
+     GK_ASSETFIX (g_assetfix) instala APENAS o LoadAssetAsync (normalização de backslash). */
+  int full = getenv("CUP_STAGESPY") ? 1 : 0;
+  struct { uintptr_t rva; void *hook; void **orig; const char *nm; int spy_only; } T[] = {
+    {0x178EB3C, (void *)ss_setsprite_hook, (void **)&ss_setsprite_orig, "SpriteRenderer.set_sprite", 1},
+    {0x17C893C, (void *)ss_loadasync_hook, (void **)&ss_loadasync_orig, "AssetBundle.LoadAssetAsync", 0},
   };
   for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    if (T[i].spy_only && !full) continue;   /* set_sprite só em STAGESPY explícito */
     void *tr = mk_tramp(base + T[i].rva, T[i].nm);
     if (!tr) { fprintf(stderr, "[STAGESPY] tramp %s falhou\n", T[i].nm); continue; }
     *T[i].orig = tr;
     hook_arm64(base + T[i].rva, (uintptr_t)T[i].hook);
   }
-  fprintf(stderr, "[STAGESPY] hooks instalados (set_sprite + LoadAssetAsync)\n"); fsync(2);
+  fprintf(stderr, "[STAGESPY] hooks instalados (assetfix=%d full=%d)\n", g_assetfix, full); fsync(2);
 }
 
 /* ===== CUP_TAPINPUT: pulsa AnyPlayerInput.GetAnyButtonDown (il2cpp 0xCC2854) =====
