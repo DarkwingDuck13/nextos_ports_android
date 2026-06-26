@@ -22,6 +22,13 @@ fi
 echo 60 > /proc/sys/vm/swappiness 2>/dev/null
 sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
 
+# 🔻 il2cpp/etc temp -> RAM: o jogo escreve temp (etc_tmp = transcode de textura) em
+# userdata/il2cpp_tmp no SD vfat -> sob I/O pesado CORROMPE a FAT (errors=remount-ro).
+# Symlink p/ tmpfs (RAM) tira essa fonte de corrupção + acelera.
+rm -rf "$GAMEDIR/userdata/il2cpp_tmp" 2>/dev/null
+mkdir -p /dev/shm/gk_il2cpp_tmp
+ln -sfn /dev/shm/gk_il2cpp_tmp "$GAMEDIR/userdata/il2cpp_tmp" 2>/dev/null
+
 # ---- matar instâncias antigas (regra #3) ----
 for p in /proc/[0-9]*/exe; do t=$(readlink "$p" 2>/dev/null)
   case "$t" in *graveyardkeeper*) kill -9 "${p#/proc/}" 2>/dev/null; kill -9 "$(echo "$p"|sed 's#/proc/##;s#/exe##')" 2>/dev/null;; esac; done
