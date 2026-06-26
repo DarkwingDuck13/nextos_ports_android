@@ -430,7 +430,7 @@ int main(int argc, char *argv[]) {
        ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
     if (getenv("SONIC_AUTOSTART")) {
       if (frame >= 600 && frame < 606) mask |= FOX_A;    /* título -> menu */
-      if (frame >= 1300 && (frame & 1)) mask |= FOX_A;  /* menu: decide toggle janela larga */
+      if (frame >= 1300 && frame < 1500 && (frame & 1)) mask |= FOX_A;  /* menu: decide (janela) */
     }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
 
