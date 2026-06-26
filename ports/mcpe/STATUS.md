@@ -1,8 +1,20 @@
-# 🟢🏆 Minecraft Bedrock (MCPE) → Mali-450 — JOGÁVEL (s1 2026-06-26)
+# 🟢🏆 Minecraft Bedrock (MCPE) → Mali-450 — JOGÁVEL + TELA CHEIA (s1 2026-06-26)
 
-**Marco:** Minecraft **Bedrock 1.16.201** RODANDO E JOGÁVEL no **Mali-450 Amlogic** (NextOS, device .79):
-menu "Create New World / Game Settings" renderiza limpo, **mundo criado e jogado** (NextOS confirmou).
-Inédito — Bedrock no Utgard/fbdev.
+**Marco:** Minecraft **Bedrock 1.16.201** RODANDO E JOGÁVEL no **Mali-450 Amlogic** (NextOS, device .79),
+**fullscreen nativo 1280x720**: menu principal (Play/Settings/Change Skin + Steve) e "Create New World"
+renderizam limpos preenchendo a tela, **mundo criado e jogado** (NextOS confirmou). Inédito — Bedrock
+no Utgard/fbdev.
+
+## ✅ RESOLUÇÃO RESOLVIDA (s1): `--width 1280 --height 720`
+Sintoma: renderizava ~640x360 no canto sup-esq. NÃO era o ES nem o driver mali (o driver cria a janela
+e a EGL surface a 1280x720 corretamente). Era o **mcpelauncher** criando a janela num default pequeno
+(o port veio do R36S, painel 640x480) → glViewport(0,0,640,360) num surface 1280x720 = canto.
+🔑 **Fix: o próprio client tem `-ww/--width` e `-wh/--height`** → passamos a resolução real do painel
+(o `mcrun.sh` lê de `/sys/class/graphics/fb0/virtual_size` = "1280,1440" → 1280x720). Tela cheia nativa.
+🔬 LIÇÃO: shim por LD_PRELOAD NÃO alcança o GL do jogo — o mcpelauncher carrega o `libminecraftpe.so`
+com o **linker Android próprio** dele, então `glViewport`/etc do jogo são resolvidos internamente pro
+blob Mali, SEM passar pelo linker do sistema (LD_PRELOAD de glViewport/eglGetProcAddress não pega). Por
+isso a flag do client (que controla o tamanho ANTES, no lado do host) foi o caminho certo.
 
 ## 🔑 A SACADA (rota totalmente diferente do so-loader)
 Este NÃO é um so-loader nosso. É o **mcpelauncher-manifest** (projeto `minecraft-linux`, prebuilt
@@ -43,9 +55,6 @@ Tudo 32-bit (o client e o `libminecraftpe.so` armeabi-v7a vivem no MESMO process
    pra `versions/<nome-do-apk>/`. Depois remover o APK.
 
 ## 🔴 Pendências (s1)
-- **RESOLUÇÃO:** renderiza ~640x360 no canto sup-esq, não preenche 1280x720 (mesmo com ES parado).
-  O mali-fbdev/SDL3 dá um surface menor que o painel 720p. PRÓX: ver como o `SDL_malivideo.c` escolhe
-  o tamanho (lê /sys/class/display/mode=720p60hz e fb0 virtual_size=1280x1440) e forçar 1280x720.
 - **Áudio:** FMOD host não carregou (`libfmod.so.10.20` não achado) → cai pro backend sdl3/opensl
   stub. Validar som (provável mudo). `mcpelauncher-client-settings.txt: audio_backend=sdl3`.
 - **Xbox Live:** falha de SSL CA cert (esperado, offline). README roda em `unshare --net`; nós

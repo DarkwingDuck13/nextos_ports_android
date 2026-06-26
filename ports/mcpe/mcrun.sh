@@ -27,8 +27,13 @@ export HOME="$GAMEDIR/mcpelauncher"
 mkdir -p "$HOME/.local/share"
 ln -sfn "$GAMEDIR/mcpelauncher/mcpelauncher" "$HOME/.local/share/mcpelauncher" 2>/dev/null
 
+# resolução real do painel (fb0 virtual_size = "W,Hx2" double-buffer)
+VS=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+SW=${VS%,*}; VH=${VS#*,}; SH=$((VH/2))
+[ -z "$SW" ] && SW=1280; [ -z "$SH" ] && SH=720
+echo "=== painel ${SW}x${SH} ==="
 BIN="$GAMEDIR/mcpelauncher/mcpelauncher-client"
 chmod +x "$BIN"
 echo "=== launching $MCVER (force-opengles, SDL3=$SDL3_DYNAMIC_API) ===" 
 # --force-opengles: Mali-450 e GLES2-only (sem glcorepatch desktop-GL)
-exec "$BIN" --game-dir "$VDIR" --force-opengles
+exec "$BIN" --game-dir "$VDIR" --force-opengles --width "$SW" --height "$SH"
