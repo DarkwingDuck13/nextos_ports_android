@@ -200,10 +200,11 @@ int main(int argc, char *argv[]) {
      do is-loaded do title-demo = container CManagerState<CTitleViewTask>::Act+0x20
      (0x2522a4): checa o objeto demo global (null)->0. Forçar return 1 deixa o
      demo-gate do título/menu passar SEM o attract-demo (emblema vazio). */
-  if (getenv("SONIC_FAKEDEMO")) {  /* opt-in: sozinho não destrava (há +resTypes) */
-    const char *s = "_ZN2dm10menucommon13CManagerStateINS_5title14CTitleViewTaskENS2_13CTitleControlEE3ActEv";
-    patch_word_at(s, 0x20, 0xe3a00001); /* mov r0,#1 */
-    patch_word_at(s, 0x24, 0xe12fff1e); /* bx lr     */
+  if (!getenv("SONIC_NOFAKESOUND")) {
+    /* o is-loaded que mais falha no demo-gate = dmSoundEffectIsSetUpEnd (o som do
+       demo: container criado pelo setup, mas o is-loaded checa vtable[12]=dados de
+       som carregados). Fingir ->1 (sem som no demo é inofensivo). */
+    patch_retval("_ZN2dm2se23dmSoundEffectIsSetUpEndEv", 1);
   }
 
   /* 🔑 F2F age gate / GDPR consent: ao apertar "Press any button" o jogo chama
@@ -357,7 +358,7 @@ int main(int argc, char *argv[]) {
      dmMenuDrawSetUp() cria o singleton MenuDraw -> o is-loaded passa. A engine não
      o chama no nosso fluxo; chamar aqui pode destravar o gate NATURALMENTE (sem o
      NOP do beq) e deixar o menu renderizar. */
-  if (getenv("SONIC_DEMOSETUPS")) {  /* opt-in: cria os singletons mas NÃO basta —
+  if (!getenv("SONIC_NOSETUPS")) {  /* default-on: cria os singletons do demo set —
        o IsValid quer os DADOS buildados (o build assíncrono do manager não completa;
        type 6=attract-demo precisa de stage). Default = título via bypass do beq. */
     const char *setups[] = {
