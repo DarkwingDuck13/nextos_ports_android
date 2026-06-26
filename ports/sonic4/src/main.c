@@ -38,6 +38,7 @@ extern DynLibFunction revc_pthread_table[];
 extern const int revc_pthread_count;
 
 volatile uintptr_t g_load_base = 0;
+extern int dys_screen_w, dys_screen_h; /* resolução real da tela (egl_shim) */
 
 static DynLibFunction *g_base;
 static int g_base_n;
@@ -84,6 +85,21 @@ static void patch_retval(const char *sym, int val) {
   __builtin___clear_cache((char *)a, (char *)a + 8);
   fprintf(stderr, "patch: %s -> return %d @0x%lx (%s)\n", sym, val,
           (unsigned long)a, thumb ? "Thumb" : "ARM");
+}
+
+/* patch de UMA instrução ARM em offset de byte dentro de um símbolo (ARM mode). */
+static void patch_word_at(const char *sym, unsigned off, uint32_t insn) {
+  uintptr_t raw = so_find_addr_safe(sym);
+  if (!raw) { fprintf(stderr, "patch_word: %s NÃO encontrado\n", sym); return; }
+  uintptr_t a = (raw & ~1u) + off, pg = a & ~0xFFFUL;
+  if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    fprintf(stderr, "patch_word: mprotect %s falhou\n", sym); return;
+  }
+  ((uint32_t *)a)[0] = insn;
+  mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)a, (char *)a + 4);
+  fprintf(stderr, "patch_word: %s+0x%x = 0x%08x @0x%lx\n", sym, off, insn,
+          (unsigned long)a);
 }
 
 static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int n) {
@@ -161,6 +177,22 @@ int main(int argc, char *argv[]) {
      e fox_FrameUpdate pula amTaskExecute (state machine) qdo pausado -> preto. */
   if (!getenv("SONIC_KEEPPAUSE"))
     patch_ret0("_ZN9Sonic4F2F11isGamePauseEv");
+  /* 🔑 SJni_IsUpshellShow -> 0: chama CallBooleanMethod JNI ("a tela de upsell/ads
+     está aberta?"). Nosso jni_shim devolve 1 (true) por default => a engine acha que
+     o upshell está SEMPRE aberto e o título trava em CStateInitialize::Next pra sempre
+     (o gate 1 nunca libera). Forçar 0 (nenhum upsell) destrava a state machine do título. */
+  if (!getenv("SONIC_KEEPUPSHELL"))
+    patch_ret0("_Z18SJni_IsUpshellShowv");
+  /* gate3 do título: CStateInitialize::Next espera CDemoResourceManager IsValid()
+     (recursos do attract-demo do evento 3) que nunca valida (id 2 não carrega).
+     NOP no `beq` (offset +0x5c) faz a state machine avançar pro Opening/LogoMainFadeIn
+     (mostra o título: bg + logo SONIC, que carregam) -> Waiting, SEM o crash que
+     forçar IsValid->1 global causava (over-advance pro save). */
+  if (!getenv("SONIC_KEEPDEMOGATE"))
+    patch_word_at("_ZN2dm5title16CStateInitialize4NextEv", 0x5c, 0xe1a00000);
+  /* fallback opt-in: forçar IsValid->1 global (crasha no save, só p/ depurar). */
+  if (getenv("SONIC_FORCEDEMOGATE"))
+    patch_retval("_ZThn20_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE", 1);
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -221,8 +253,41 @@ int main(int argc, char *argv[]) {
   if (f2f_setApk) { fprintf(stderr, "f2f nativeSetApkPath\n");
                     f2f_setApk(env, thiz, jni_shim_new_string("sonic4ep2.apk")); }
 
-  fprintf(stderr, "=== fox: init ===\n");
-  if (fox.init) fox.init(env, thiz, NULL, NULL);
+  /* 🔑 setScreenSize: a engine (foxShaderInit -> amRenderCreate) lê a resolução de
+     tela de um global (2 floats) p/ dimensionar os FBOs/render targets. O Java
+     chamaria setScreenSize(w,h) no onSurfaceChanged; SEM isso o global fica 0.0/0.0
+     => FBO 0x0 INCOMPLETE => glDraw* falham (GL_INVALID_FRAMEBUFFER_OPERATION) =>
+     TELA PRETA. setScreenSize faz `stm {w,h}` cru => são jfloat em regs CORE (JNI
+     softfp) => passamos os BITS do float em r2/r3 (declarar args como unsigned, NÃO
+     float, senão o ABI hardfp manda em s0/s1). */
+  {
+    extern int dys_screen_w, dys_screen_h;
+    void (*setScreenSize)(void *, void *, unsigned, unsigned) =
+        (void *)so_find_addr_safe(
+            "Java_com_sega_f2fextension_f2fextensionInterface_setScreenSize");
+    void (*setScreenScaleDesity)(void *, void *, unsigned) =
+        (void *)so_find_addr_safe(
+            "Java_com_sega_f2fextension_f2fextensionInterface_setScreenScaleDesity");
+    if (setScreenSize) {
+      union { float f; unsigned u; } w, h;
+      w.f = (float)dys_screen_w; h.f = (float)dys_screen_h;
+      fprintf(stderr, "=== setScreenSize(%d x %d) bits=%08x %08x ===\n",
+              dys_screen_w, dys_screen_h, w.u, h.u);
+      setScreenSize(env, thiz, w.u, h.u);
+    } else fprintf(stderr, "AVISO: setScreenSize não encontrado\n");
+    if (setScreenScaleDesity) {
+      union { float f; unsigned u; } s; s.f = 1.0f;
+      setScreenScaleDesity(env, thiz, s.u);  /* densidade/escala = 1.0 */
+    }
+  }
+
+  /* 🔑🔑 init(env, thiz, WIDTH, HEIGHT): a JNI init repassa args 3/4 p/ fox_Init(w,h)
+     -> amDrawInitVideo(w,h) que dimensiona _am_draw_video (os FBOs/render targets).
+     Passávamos NULL,NULL = 0,0 => FBO 0x0 INCOMPLETE => glDraw* falham => TELA PRETA.
+     Passar a resolução REAL (1280x720) faz os FBOs ficarem completos e renderizar. */
+  fprintf(stderr, "=== fox: init(w=%d h=%d) ===\n", dys_screen_w, dys_screen_h);
+  if (fox.init) fox.init(env, thiz, (void *)(intptr_t)dys_screen_w,
+                         (void *)(intptr_t)dys_screen_h);
 
   fprintf(stderr, "=== fox: DrawEGLCreated ===\n");
   if (fox.DrawEGLCreated) fox.DrawEGLCreated(env, thiz);
@@ -256,6 +321,21 @@ int main(int argc, char *argv[]) {
       extern void glClear(unsigned int);
       glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
       glClear(0x4000 /* GL_COLOR_BUFFER_BIT */);
+    }
+    /* PIXDIAG: localizar onde está o conteúdo (FB0 vs FBO interno). Lê o pixel
+       central do framebuffer default (0) e de alguns FBOs antes do present. */
+    if (getenv("SONIC_PIXDIAG") && (frame % 60) == 0 && frame > 120) {
+      extern void glBindFramebuffer(unsigned, unsigned);
+      extern void glReadPixels(int,int,int,int,unsigned,unsigned,void*);
+      unsigned char px[4]; int fb;
+      for (fb = 0; fb <= 3; fb++) {
+        glBindFramebuffer(0x8D40 /*GL_FRAMEBUFFER*/, (unsigned)fb);
+        px[0]=px[1]=px[2]=px[3]=0;
+        glReadPixels(640, 360, 1, 1, 0x1908 /*GL_RGBA*/, 0x1401 /*UBYTE*/, px);
+        fprintf(stderr, "[PIXDIAG f%lu] FB%d center=%02x %02x %02x %02x\n",
+                frame, fb, px[0], px[1], px[2], px[3]);
+      }
+      glBindFramebuffer(0x8D40, 0);
     }
     egl_shim_present();
     /* sinaliza intro-video done nos primeiros segundos */

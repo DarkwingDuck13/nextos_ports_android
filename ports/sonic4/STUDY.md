@@ -164,3 +164,43 @@ em `/storage/roms/ports/sonic4/` (libfox em lib/armeabi-v7a/, OBB em data/).
   o request queue (amFS); (2) BANCADA: instalar Sonic4 no Moto G100 e logcat o foxLog correto
   pra ver o que vem DEPOIS do nosso ponto (NeConInit) e qual estado/asset destrava o título;
   (3) investigar nnRegistStdShaderProfile (shaders carregam do LPK?).
+
+## 🏆 PROGRESSO s2 (2026-06-26) — TELA DE TÍTULO RENDERIZA (imagem na tela!)
+Boot: **logo SONIC TEAM** (nítido) → **tela de título "SONIC THE HEDGEHOG 4 EPISODE II"**
+(emblema alado, Sonic+Tails 3D, ©SEGA). A tela preta da s1 era 1 BUG TRIVIAL.
+
+🔑🔑 **FIX RAIZ DA TELA PRETA:** a JNI `Java_..._foxJniLib_init(env, thiz, r2=WIDTH, r3=HEIGHT)`
+repassa os args 3/4 → `fox_Init(w,h)` (0x4ac104) → `amDrawInitVideo(w,h)` (0x1f4f54) que dimensiona
+`_am_draw_video` (0x87ba38, struct de display: w@+0, h@+4, formatos FBO @+56=GL_RGB/+60=DEPTH16).
+Chamávamos `fox.init(env,thiz, NULL, NULL)` = **0,0** → `amRenderCreate` cria FBO **0x0** → INCOMPLETE
+(`glCheckFramebufferStatus=0x8cd6` GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) → todo `glDraw*` falha com
+`GL_INVALID_FRAMEBUFFER_OPERATION (0x506)` → **TUDO PRETO**. Fix em main.c:
+`fox.init(env, thiz, (void*)(intptr_t)dys_screen_w, (void*)(intptr_t)dys_screen_h)`. **1 linha.**
+
+🔑 **gate do título (CStateInitialize::Next 0x2525a4):** 3 condições p/ sair do Initialize→Opening:
+(1)`SJni_IsUpshellShow()`==0 — JNI CallBooleanMethod (nosso shim devolvia 1=upsell aberto→trava);
+fix=`patch_ret0("_Z18SJni_IsUpshellShowv")`. (2)`GsTrialCheckIsFinished()`!=0 (já é 1 fixo). (3)
+`CDemoResourceManager::IsValid(evtType=3)` (thunk 0x23514c)!=0 — recurso do attract-demo do evento 3
+(id 2) NUNCA valida (arquivos DEMO/* abrem OK no LPK via LPK_GetFile, mas o recurso do evt 3 não
+completa o build). BYPASS = NOP no `beq` em `CStateInitialize::Next+0x5c` (patch_word_at→0xe1a00000):
+avança Initialize→FadeIn→Opening→LogoMainFadeIn→LogoSubFadeIn→Animation→Waiting (TÍTULO VISÍVEL).
+⚠️Forçar `IsValid->1` GLOBAL (thunk) CRASHA (over-advance pro save load "foxsave.dat failed").
+
+🔬 **DEBUG (método):** binário não-stripped → gdb no device: `break egl_shim_bind_main; run;
+set $b=(unsigned long)text_base; break *($b+OFFSET)`. Capturar tela: `dd if=/dev/fb0` (1280x1440 =
+2 metades de 720, 32bpp BGRA→RGBA) → PNG. Instrumentei glCheckFramebufferStatus/glGetError +
+glRenderbufferStorage/glTexImage2D/glFramebufferTexture2D nos wrappers de imports.c (env SONIC_GLERR)
+→ revelou FBO 0x0. ⚠️rodar sonic4 SEMPRE detached (`nohup ./sonic4 >log 2>&1 &`); foreground over ssh
+trava o canal — ler logs em ssh separado.
+
+🔧 **Flags diag (main.c/imports.c):** SONIC_GLERR (FBO status+glerror+formatos attachment),
+SONIC_PIXDIAG (lê pixel central de FB0..3 por frame), SONIC_KEEPDEMOGATE (desliga bypass gate3),
+SONIC_FORCEDEMOGATE (força IsValid->1, crasha), SONIC_TESTCLEAR (glClear vermelho = testa present).
+
+🔴 **MUROS s3 (próximo):** (a) **attract-demo evt3 não builda** — círculo verde no centro do emblema
+durante o load = render-target do demo de attract; achar pq id 2 do evt 3 não valida (`SyGetEvtInfo()->
+[12]`=3, `CResourceManagerTask::IsValid` 0x235034). (b) **possível swap R/B nas texturas dos chars**
+(Sonic vermelho/Tails azul no t_16, mas o LOGO tem cores certas → não é swap global; checar decode
+DDS/PVR dos personagens). (c) **áudio** (AudioHelper bridge SDL/pulse). (d) **controle** SDL gamepad
++ SELECT+START. (e) **empacotar** launcher PortMaster (sem forçar SDL driver). (f) present Mali: já
+funciona via SDL_GL_SwapWindow nas 2 metades (NÃO precisou FBCOPY).

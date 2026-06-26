@@ -261,15 +261,63 @@ static void my_glClear(unsigned m){
   if (gllog_on()) { static unsigned long n=0; if((n++ % 120)==0)fprintf(stderr,"[GL] Clear mask=0x%x (#%lu)\n",m,n); }
   r(m);
 }
+static int g_glerr = -1;
+static int glerr_on(void){ if(g_glerr<0) g_glerr=getenv("SONIC_GLERR")?1:0; return g_glerr; }
+static unsigned (*p_glGetError)(void);
+static unsigned (*p_glCheckFB)(unsigned);
+static unsigned (*p_glGetIntegerv_fb)(void); /* placeholder */
+static void glerr_check(const char*tag){
+  if(!glerr_on()) return;
+  if(!p_glGetError) p_glGetError=rgl("glGetError");
+  if(!p_glCheckFB) p_glCheckFB=rgl("glCheckFramebufferStatus");
+  unsigned e=p_glGetError?p_glGetError():0;
+  if(e){ static unsigned long n=0; if(n++<40){
+    unsigned st=p_glCheckFB?p_glCheckFB(0x8D40):0;
+    fprintf(stderr,"[GLERR] %s err=0x%x fbStatus=0x%x\n",tag,e,st);} }
+}
 static void my_glDrawElements(unsigned md,int c,unsigned t,const void*i){
   static void(*r)(unsigned,int,unsigned,const void*); if(!r)r=rgl("glDrawElements");
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawElements #%lu count=%d\n",n,c); }
   r(md,c,t,i);
+  glerr_check("DrawElements");
 }
 static void my_glDrawArrays(unsigned md,int f,int c){
   static void(*r)(unsigned,int,int); if(!r)r=rgl("glDrawArrays");
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawArrays #%lu count=%d\n",n,c); }
   r(md,f,c);
+  glerr_check("DrawArrays");
+}
+static unsigned my_glCheckFramebufferStatus(unsigned t){
+  if(!p_glCheckFB) p_glCheckFB=rgl("glCheckFramebufferStatus");
+  unsigned st=p_glCheckFB(t);
+  if(glerr_on() && st!=0x8CD5){ static int z=0; if(z++<40)
+    fprintf(stderr,"[GLERR] CheckFramebufferStatus(0x%x)=0x%x INCOMPLETO!\n",t,st); }
+  return st;
+}
+static void my_glRenderbufferStorage(unsigned t,unsigned ifmt,int w,int h){
+  static void(*r)(unsigned,unsigned,int,int); if(!r)r=rgl("glRenderbufferStorage");
+  if(glerr_on()){static int z=0; if(z++<30)
+    fprintf(stderr,"[FBO] RenderbufferStorage ifmt=0x%x %dx%d\n",ifmt,w,h);}
+  r(t,ifmt,w,h);
+}
+static void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,unsigned ty,const void*p){
+  static void(*r)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+  if(!r)r=rgl("glTexImage2D");
+  if(glerr_on() && p==0){static int z=0; if(z++<40)
+    fprintf(stderr,"[FBO] TexImage2D(rendertarget?) ifmt=0x%x %dx%d fmt=0x%x type=0x%x\n",ifmt,w,h,fmt,ty);}
+  r(t,l,ifmt,w,h,b,fmt,ty,p);
+}
+static void my_glFramebufferTexture2D(unsigned t,unsigned att,unsigned tt,unsigned tex,int l){
+  static void(*r)(unsigned,unsigned,unsigned,unsigned,int); if(!r)r=rgl("glFramebufferTexture2D");
+  if(glerr_on()){static int z=0; if(z++<30)
+    fprintf(stderr,"[FBO] FramebufferTexture2D att=0x%x textarget=0x%x tex=%u\n",att,tt,tex);}
+  r(t,att,tt,tex,l);
+}
+static void my_glFramebufferRenderbuffer(unsigned t,unsigned att,unsigned rt,unsigned rb){
+  static void(*r)(unsigned,unsigned,unsigned,unsigned); if(!r)r=rgl("glFramebufferRenderbuffer");
+  if(glerr_on()){static int z=0; if(z++<30)
+    fprintf(stderr,"[FBO] FramebufferRenderbuffer att=0x%x rb=%u\n",att,rb);}
+  r(t,att,rt,rb);
 }
 
 /* __gnu_Unwind_Find_exidx: o unwinder ESTÁTICO do jogo chama isto p/ achar a
@@ -404,6 +452,11 @@ DynLibFunction shantae_overrides[] = {
     {"glClear", (uintptr_t)my_glClear},
     {"glDrawElements", (uintptr_t)my_glDrawElements},
     {"glDrawArrays", (uintptr_t)my_glDrawArrays},
+    {"glCheckFramebufferStatus", (uintptr_t)my_glCheckFramebufferStatus},
+    {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
+    {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+    {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
+    {"glFramebufferRenderbuffer", (uintptr_t)my_glFramebufferRenderbuffer},
     {"slCreateEngine", (uintptr_t)slCreateEngine_shim},
     {"SL_IID_ENGINE", (uintptr_t)&SL_IID_ENGINE_v},
     {"SL_IID_PLAY", (uintptr_t)&SL_IID_PLAY_v},
