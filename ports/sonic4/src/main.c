@@ -341,6 +341,17 @@ int main(int argc, char *argv[]) {
   #define FOX_B      0x0080
   #define FOX_START  0x0010
 
+  /* 🔑 demo-resource: o gate do título (CDemoResourceManager::IsValid evt3) trava
+     pq o recurso "MenuDraw" (tipo 2) não está setado (dmMenuDrawIsSetUpEnd=0).
+     dmMenuDrawSetUp() cria o singleton MenuDraw -> o is-loaded passa. A engine não
+     o chama no nosso fluxo; chamar aqui pode destravar o gate NATURALMENTE (sem o
+     NOP do beq) e deixar o menu renderizar. */
+  if (!getenv("SONIC_NOMENUDRAW")) {
+    void (*dmMenuDrawSetUp)(void) =
+        (void *)so_find_addr_safe("_ZN2dm8menudraw15dmMenuDrawSetUpEv");
+    if (dmMenuDrawSetUp) { fprintf(stderr, "=== dmMenuDrawSetUp() ===\n"); dmMenuDrawSetUp(); }
+  }
+
   /* "conectar" o pad: SetPadData(-2) seta o flag de pad conectado (o Java faria
      isso). Sem isso o amPadExecute pode ignorar o estado de botões injetado. */
   if (fox.SetPadData) {
