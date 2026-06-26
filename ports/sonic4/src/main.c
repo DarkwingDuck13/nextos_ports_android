@@ -272,6 +272,11 @@ int main(int argc, char *argv[]) {
      Id 1 = US/inglês (id 0 carregava as variantes _JP japonesas). */
   fprintf(stderr, "=== fox: SetLanguageId(1=US/EN) ===\n");
   if (fox.SetLanguageId) fox.SetLanguageId(env, thiz, 1);
+  /* 🔑 SetLanguageId seta o global do SetAndroidLanguage (usado no TÍTULO), mas o
+     MENU lê de OUTRO global via GsEnvGetLanguage() (default 0=JP) -> menu em japonês!
+     Forçar GsEnvGetLanguage()->1 (US) deixa o menu/UI em inglês também. */
+  if (!getenv("SONIC_KEEPJP"))
+    patch_retval("_Z16GsEnvGetLanguagev", 1);
 
   /* f2fextension (camada F2F/ads): precisa do context/JavaVM senão getF2FJavaVM()
      retorna NULL -> crash em Android_getLocalPath. Chamar os setups JNI. */
