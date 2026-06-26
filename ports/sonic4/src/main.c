@@ -72,6 +72,20 @@ static void patch_ret0(const char *sym) {
           (unsigned long)a, thumb ? "Thumb" : "ARM");
 }
 
+/* patch "return val" (val pequeno) detectando ARM/Thumb */
+static void patch_retval(const char *sym, int val) {
+  uintptr_t raw = so_find_addr_safe(sym);
+  if (!raw) { fprintf(stderr, "patch: %s NÃO encontrado\n", sym); return; }
+  int thumb = raw & 1; uintptr_t a = raw & ~1u, pg = a & ~0xFFFUL;
+  if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) return;
+  if (thumb) { ((uint16_t *)a)[0] = 0x2000 | (val & 0xff); ((uint16_t *)a)[1] = 0x4770; }
+  else { ((uint32_t *)a)[0] = 0xe3a00000 | (val & 0xff); ((uint32_t *)a)[1] = 0xe12fff1e; }
+  mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)a, (char *)a + 8);
+  fprintf(stderr, "patch: %s -> return %d @0x%lx (%s)\n", sym, val,
+          (unsigned long)a, thumb ? "Thumb" : "ARM");
+}
+
 static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int n) {
   size_t hs = (size_t)heap_mb * 1024 * 1024;
   void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -137,6 +151,8 @@ int main(int argc, char *argv[]) {
     /* clMovie::willPlayMovieBeforeGameStart(int) -> 0: pula o movie de intro
        (SEGA logo) de vez, sem precisar da camada de vídeo. */
     patch_ret0("_ZNK2gm5movie7clMovie28willPlayMovieBeforeGameStartEi");
+    /* clMovie::isEnd() -> 1: o game espera o movie de intro "terminar". */
+    patch_retval("_ZN2gm5movie7clMovie5isEndEv", 1);
   }
 
   void *env = NULL, *vm = NULL;
