@@ -199,16 +199,25 @@ int main(int argc, char *argv[]) {
      showInterstitial pula o ad se isUserRemoveAds()!=0 OU getInternetState()==0
      → aí chama o callback direto (carrega o world map). Forçar ambos. */
   if (!getenv("SONIC_KEEPADS")) {
-    patch_retval("_ZN12F2FExtension15isUserRemoveAdsEv", 1);
-    patch_ret0("_ZN12F2FExtension16getInternetStateEv");
+    /* showInterstitial GUARDA o callback (cria o jogo) só se getInternetState!=0
+       (path 0x4f1470, com o ad-obj null do nosso stub). getInternetState->1 garante
+       que guarda. isUserRemoveAds->0 (ads não removidos) pra não pular. Depois
+       disparamos o callback no loop via callbackInterstitialAds. */
+    patch_ret0("_ZN12F2FExtension15isUserRemoveAdsEv");      /* ads NÃO removidos */
+    patch_retval("_ZN12F2FExtension16getInternetStateEv", 1); /* internet "ON" */
   }
   /* 🔑 menu Finalize trava: `CMainMenuStateFinalize::Next` espera o demo manager
      terminar o teardown (vtbl[20]/IsClean), mas nosso fake (dmSoundEffectIsSetUpEnd
      ->1) mantém o recurso "carregado" => IsClean nunca true => menu nunca finaliza
      => próxima tela (world map) nunca carrega (laranja). Patch: `bne` (+0x20) -> `b`
      (sempre avança, pula a espera do teardown). */
-  if (!getenv("SONIC_KEEPMENUFINAL"))
+  /* ⚠️ ERRADOS (opt-in agora): estes patches roteavam o menu pro EXIT em vez da
+     transição Decision→onMainMenuToMainGame. Sem eles, onMainMenuToMainGame É
+     chamado (a transição correta "Start"→jogo). */
+  if (getenv("SONIC_FORCEMENUFINAL"))
     patch_word_at("_ZN2dm8mainmenu22CMainMenuStateFinalize4NextEv", 0x20, 0xea000002);
+  if (getenv("SONIC_FORCEEXITEM"))
+    patch_ret0("_ZN9Sonic4F2F11isVisibleExENS_12EX_MENU_ITEME");
   /* gate3 do título: CStateInitialize::Next espera CDemoResourceManager IsValid()
      (recursos do attract-demo do evento 3) que nunca valida (id 2 não carrega).
      NOP no `beq` (offset +0x5c) faz a state machine avançar pro Opening/LogoMainFadeIn
@@ -374,6 +383,12 @@ int main(int argc, char *argv[]) {
      sinalizamos "terminado" cedo p/ a engine seguir pro título/menu. */
   void (*introCB)(JEnv, void *) =
       (void *)so_find_addr_safe("Java_com_sega_f2fextension_f2fextensionInterface_callBackIntroVideo");
+  /* callback do ad intersticial: ao selecionar Start, onMainMenuToMainGame chama
+     showInterstitial que GUARDA um callback (que cria o jogo/world map) e espera o
+     ad fechar (callbackInterstitialAds do Java). Sem ad Java, disparamos nós: chamar
+     callbackInterstitialAds(type=0, callback=0) dispara o callback guardado -> jogo. */
+  void (*interCB)(JEnv, void *, int, int) =
+      (void *)so_find_addr_safe("Java_com_sega_f2fextension_f2fextensionInterface_callbackInterstitialAds");
 
   /* input: abrir o 1º gamepad SDL (se houver) */
   SDL_GameController *pad = NULL;
@@ -486,6 +501,9 @@ int main(int argc, char *argv[]) {
     egl_shim_present();
     /* sinaliza intro-video done nos primeiros segundos */
     if (introCB && frame >= 30 && frame < 120 && (frame % 15) == 0) introCB(env, thiz);
+    /* dispara o callback do ad intersticial (sem ad Java) p/ destravar a transição
+       Start->jogo. callbackInterstitialAds(type=0, callback=0). No-op se nada guardado. */
+    if (interCB && (frame % 10) == 0) interCB(env, thiz, 0, 0);
     if ((frame % 60) == 0) fprintf(stderr, "[frame %lu]\n", frame);
     frame++;
     usleep(16000);
