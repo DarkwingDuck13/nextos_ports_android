@@ -44,6 +44,7 @@ enum {
   MID_LOCAL_PATH,   /* Sonic4 F2F: getLocalPath/getBundlePath -> dir gravável */
   MID_REGION,       /* getRegionCode -> "US" */
   MID_LANG_CODE,    /* getLanguageCode -> "en" */
+  MID_SHOW_INTERSTITIAL, /* Sonic4: Java showInterstitial(I)V -> simular ad fechado */
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_GENERIC,
@@ -140,6 +141,13 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_REGION];
   if (strcmp(name, "getLanguageCode") == 0)
     return &g_method_tags[MID_LANG_CODE];
+  /* 🔑 Sonic4: ao selecionar Start, o engine (Android_showMoPubInterstitial) chama
+     o método Java showInterstitial(I)V LOGO APÓS armazenar o callback de transição
+     (ir pro world map). Sem ad real, simulamos o "ad fechou" disparando
+     callbackInterstitialAds 1x -> invoca o callback armazenado -> world map carrega.
+     Sinalizamos via jni_inter_pending; o disparo real é no main loop (não reentrante). */
+  if (strcmp(name, "showInterstitial") == 0)
+    return &g_method_tags[MID_SHOW_INTERSTITIAL];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -281,11 +289,18 @@ static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
   return 0.0f;
 }
 
+/* 🔑 sinal: engine pediu pra mostrar o interstitial (callback de transição já
+   armazenado). O main loop dispara callbackInterstitialAds 1x e zera. */
+volatile int jni_inter_pending = 0;
+
 /* CallVoidMethod (index 94) */
 static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
   (void)env;
   (void)obj;
-  (void)methodID;
+  if (methodID == &g_method_tags[MID_SHOW_INTERSTITIAL]) {
+    jni_inter_pending = 1;
+    debugPrintf("jni_shim: showInterstitial -> agenda callbackInterstitialAds\n");
+  }
 }
 
 /* CallStaticObjectMethod (index 113) */

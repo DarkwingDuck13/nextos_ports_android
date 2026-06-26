@@ -437,6 +437,9 @@ int main(int argc, char *argv[]) {
 
   fprintf(stderr, "=== entrando no loop principal (GameProcess/DrawFrame) ===\n");
   unsigned long frame = 0;
+  int prev_a = 0;             /* borda de A p/ disparar interCB 1x por seleção */
+  long inter_fire_at = -1;    /* frame agendado p/ 1 disparo de interCB */
+  const char *interat = getenv("SONIC_INTERAT"); /* override: 1 disparo no frame N */
   for (;;) {
     /* --- input: drenar eventos SDL + montar a máscara fox + SetPadData --- */
     SDL_Event ev; while (SDL_PollEvent(&ev)) { /* drena (quit etc) */ }
@@ -470,8 +473,8 @@ int main(int argc, char *argv[]) {
     /* press ÚNICO de teste (não contínuo): aperta confirm uma vez ~frame 420 por
        ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
     if (getenv("SONIC_AUTOSTART")) {
-      if (frame >= 600 && frame < 606) mask |= FOX_A;    /* título -> menu */
-      if (frame >= 1300 && frame < 1500 && (frame & 1)) mask |= FOX_A;  /* menu: decide (janela) */
+      if (frame >= 600 && frame < 606)   mask |= FOX_A;  /* título -> menu (press único) */
+      if (frame >= 1300 && frame < 1306) mask |= FOX_A;  /* menu: Start (press único) */
     }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
 
@@ -501,9 +504,23 @@ int main(int argc, char *argv[]) {
     egl_shim_present();
     /* sinaliza intro-video done nos primeiros segundos */
     if (introCB && frame >= 30 && frame < 120 && (frame % 15) == 0) introCB(env, thiz);
-    /* dispara o callback do ad intersticial (sem ad Java) p/ destravar a transição
-       Start->jogo. callbackInterstitialAds(type=0, callback=0). No-op se nada guardado. */
-    if (interCB && (frame % 10) == 0) interCB(env, thiz, 0, 0);
+    /* 🔑 dispara o callback do ad intersticial (sem ad Java) p/ destravar a transição
+       Start->world map. callbackInterstitialAds(type=0, result=0) invoca o callback que
+       showInterstitial ARMAZENOU. ⚠️ NÃO disparar a cada frame: callBackInterestitial NÃO
+       limpa o callback após invocar -> re-disparo contínuo RE-INVOCA o "ir pro world map"
+       sem parar -> reinicia a criação do world map (createFile/Tex/Mdl/Act) eternamente ->
+       nunca completa -> tela azul. Disparo ÚNICO: o jni_shim seta jni_inter_pending no
+       INSTANTE em que o engine chama o método Java showInterstitial(I)V (callback já
+       armazenado) -> aqui disparamos callbackInterstitialAds 1x (simula ad fechado). */
+    {
+      extern volatile int jni_inter_pending;
+      (void)prev_a; (void)inter_fire_at; (void)interat;
+      if (interCB && jni_inter_pending) {
+        jni_inter_pending = 0;
+        fprintf(stderr, "=== interCB FIRE @frame %lu (showInterstitial->ad closed) ===\n", frame);
+        interCB(env, thiz, 0, 0);
+      }
+    }
     if ((frame % 60) == 0) fprintf(stderr, "[frame %lu]\n", frame);
     frame++;
     usleep(16000);
