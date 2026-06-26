@@ -1031,18 +1031,23 @@ static void glClear_wrap(GLbitfield mask) {
      the GL context, so the swap is valid. */
   if (g_current_fbo == 0) {
     static __thread int first = 1;
-    if (!first) egl_shim_present();
+    if (!first && getenv("LBBG_NOFBCOPY")) egl_shim_present();
+    /* 🔴 The forced full COLOR+DEPTH clear here was WIPING the 3D background:
+       the engine clears DEPTH-only (mask=0x100) between the 3D scene pass and
+       the UI pass, expecting the rendered scene colour to survive. Forcing a
+       COLOR clear erased the scene, leaving only the UI over black. By default
+       now we respect the engine's mask (pass-through). LBBG_FORCECLEAR restores
+       the old behaviour (force full black clear) for debugging garbage. */
+    if (getenv("LBBG_FORCECLEAR") && first) {
+      GLboolean sc = glIsEnabled(0x0C11 /* GL_SCISSOR_TEST */);
+      if (sc) glDisable(0x0C11);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(mask | 0x00004000 /* COLOR */ | 0x00000100 /* DEPTH */);
+      if (sc) glEnable(0x0C11);
+      first = 0;
+      return;
+    }
     first = 0;
-    /* The engine doesn't fully clear the on-screen buffer (it composites a few
-       elements and leaves the rest as uninitialised GPU memory -> random
-       garbage background that differs each launch). Force a full-screen clear
-       of the default framebuffer: drop any scissor, clear colour+depth black. */
-    GLboolean sc = glIsEnabled(0x0C11 /* GL_SCISSOR_TEST */);
-    if (sc) glDisable(0x0C11);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(mask | 0x00004000 /* COLOR */ | 0x00000100 /* DEPTH */);
-    if (sc) glEnable(0x0C11);
-    return;
   }
   glClear(mask);
 }

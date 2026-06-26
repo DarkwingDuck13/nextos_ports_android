@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "egl_shim.h"
@@ -86,8 +87,57 @@ static void egl_shim_pan_to_render_buffer(void) {
   }
 }
 
+/* Software double-buffer: the engine (single-buffer GL) renders into the LOWER
+   half of the 1280x1440 fbdev. If we display that lower half directly the engine
+   redraws it live -> the scanout sees a half-drawn frame -> tearing/flicker
+   ("disclaimer over garbage"). Instead keep the display on the UPPER half (which
+   the engine never touches) and, once a frame is fully drawn, memcpy the lower
+   (back) half over the upper (front) half. The display only ever shows a complete
+   frame. (LBBG_FBCOPY) */
+static unsigned char *g_fbmap = NULL;
+static long g_fbmap_len = 0;
+static void fbcopy_present(void) {
+  if (g_fb_fd < 0) g_fb_fd = open("/dev/fb0", O_RDWR);
+  if (g_fb_fd < 0) return;
+  if (!g_fbmap) {
+    struct fb_var_screeninfo vi;
+    struct fb_fix_screeninfo fi;
+    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vi) != 0) return;
+    if (ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &fi) != 0) return;
+    g_fbmap_len = fi.smem_len;
+    g_fbmap = mmap(NULL, g_fbmap_len, PROT_READ | PROT_WRITE, MAP_SHARED, g_fb_fd, 0);
+    if (g_fbmap == MAP_FAILED) { g_fbmap = NULL; return; }
+    /* show the UPPER half from now on; zero it so first frames aren't garbage */
+    vi.yoffset = 0;
+    ioctl(g_fb_fd, FBIOPAN_DISPLAY, &vi);
+    memset(g_fbmap, 0, (size_t)SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+  }
+  glFinish(); /* ensure the GPU finished writing the lower (back) half */
+  size_t half = (size_t)SCREEN_WIDTH * SCREEN_HEIGHT * 4; /* 1280*720*4 */
+  memcpy(g_fbmap /*upper=front*/, g_fbmap + half /*lower=back*/, half);
+}
+
 void egl_shim_present(void) {
   if (!egl_window) return;
+  /* FBCOPY (software double-buffer) is the DEFAULT now: it's the only present
+     path that shows a complete, tear-free frame on this Mali fbdev. Disable with
+     LBBG_NOFBCOPY to fall back to the old single-buffer/pan paths. */
+  if (!getenv("LBBG_NOFBCOPY")) { fbcopy_present(); return; }
+  if (getenv("LBBG_DBLBUF")) {
+    /* native double-buffer: SDL owns the flip (broken pan on this stack) */
+    SDL_GL_SwapWindow(egl_window);
+    return;
+  }
+  if (getenv("LBBG_NOSWAP")) {
+    /* Single-buffer present without SDL_GL_SwapWindow. SwapWindow pans the
+       fbdev to the TOP half (yoffset 0) which is never rendered -> the display
+       briefly shows that garbage/stale half before pan_keeper/our pan restore
+       720 -> visible flicker. We render straight into the lower (visible) half,
+       so just flush GL and re-assert the pan; no swap/flip needed. */
+    glFinish();
+    egl_shim_pan_to_render_buffer();
+    return;
+  }
   SDL_GL_SwapWindow(egl_window);
   egl_shim_pan_to_render_buffer();
 }
@@ -102,11 +152,14 @@ void egl_shim_create_window(void) {
   SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  /* Single-buffered: this engine never calls eglSwapBuffers and our render
-     thread's SDL_GL_SwapWindow does not pan the fbdev on this Mali stack, so
-     double buffering left the rendered frame in the off-screen half. Rendering
-     straight to the visible buffer makes frames appear. */
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0);
+  /* Single-buffered by default: this engine never calls eglSwapBuffers and our
+     render thread's SDL_GL_SwapWindow does not pan the fbdev on this Mali stack,
+     so double buffering left the rendered frame in the off-screen half. BUT
+     single-buffer means the engine redraws the *visible* buffer every frame, so
+     the display scans out mid-redraw -> tearing/flicker (disclaimer over the
+     loading spinner, etc). LBBG_DBLBUF re-enables real double buffering and lets
+     SDL_GL_SwapWindow own the flip (no manual pan / no pan_keeper). */
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, getenv("LBBG_DBLBUF") ? 1 : 0);
 
   egl_window = SDL_CreateWindow(
       "LEGO Star Wars: TCS", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,

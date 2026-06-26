@@ -100,8 +100,16 @@ static struct {
     fn_v_bool nativeWindowFocusChanged;
     void (*nativeTouchDown)(void *, void *, int, float, float, float);
     void (*nativeTouchUp)(void *, void *, int, float, float, float);
+    void (*nativeTouchGestureStart)(void *, void *, int, float, float, float);
+    void (*nativeTouchGestureEnd)(void *, void *, int, float, float, float);
     void (*nativeControllerSetData)(void *, void *, int, int, float, float);
     fn_v  nativeBackButtonPressed;
+    /* internal engine input symbols (C++ mangled) — used to force-create and
+       poll a JOYPAD input device so the physical controller drives the UI.
+       The front-end is otherwise touch-only (no joypad device is registered
+       in our boot path). */
+    void (*geControls_Init)(void);
+    void (*geControls_Update)(float, int);
 } eng;
 
 static void *resolve_opt(const char *name) {
@@ -133,7 +141,11 @@ static void engine_resolve(void) {
     R(nativeWindowFocusChanged, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeWindowFocusChanged");
     R(nativeTouchDown,          "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventDown");
     R(nativeTouchUp,            "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventUp");
+    R(nativeTouchGestureStart,  "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureStart");
+    R(nativeTouchGestureEnd,    "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureEnd");
     R(nativeControllerSetData,  "Java_com_wbgames_LEGOgame_Fusion_nativeControllerSetData");
+    R(geControls_Init,          "_Z15geControls_Initv");
+    R(geControls_Update,        "_Z17geControls_Updatefb");
     R(nativeBackButtonPressed,  "Java_com_wbgames_LEGOgame_Fusion_nativeBackButtonPressed");
 #undef R
     debugPrintf("Fusion: symbols resolved\n");
@@ -413,11 +425,24 @@ int main(int argc, char *argv[]) {
     if (eng.nativeWindowFocusChanged) eng.nativeWindowFocusChanged(env, GLVIEW_OBJ, 1);
     debugPrintf("nativeStart/Resume/Focus done\n");
 
+    /* Force-create a JOYPAD input device so the physical controller drives the
+       UI. Normally geControls_Init() runs inside geMain_InitGame(); if our boot
+       path skips it the front-end has no joypad device and ignores the pad. */
+    if (getenv("LBBG_GECTRL") && eng.geControls_Init) {
+        debugPrintf("calling geControls_Init() to register joypad device\n");
+        eng.geControls_Init();
+    }
+
     debugPrintf("=== entering render loop ===\n");
     open_controller();
     SDL_GameControllerEventState(SDL_ENABLE);
 
-    { pthread_t pk; pthread_create(&pk, NULL, pan_keeper, NULL); }
+    /* pan_keeper forces yoffset to the lower half for the single-buffer present
+       path. In native double-buffer mode SDL owns the flip, so the keeper would
+       fight it and tear -> skip it. */
+    /* pan_keeper only needed for the legacy single-buffer pan path. FBCOPY (now
+       default) keeps the display on the upper half itself. */
+    if (getenv("LBBG_NOFBCOPY") && !getenv("LBBG_DBLBUF")) { pthread_t pk; pthread_create(&pk, NULL, pan_keeper, NULL); }
 
     int running = 1;
     unsigned long frame = 0;
@@ -455,18 +480,97 @@ int main(int argc, char *argv[]) {
                 if (rlx > 8000 || rlx < -8000) lx = rlx / 32767.0f;
                 if (rly > 8000 || rly < -8000) ly = rly / 32767.0f;
             }
-            /* TEST: single confirm pulse at ~3s and ~6s to probe whether input
-               advances the idle "tap to continue" screen (LBBG_AUTOTAP). */
-            if (getenv("LBBG_AUTOTAP") &&
-                ((frame >= 180 && frame < 188) || (frame >= 360 && frame < 368)))
-                mask |= (1 << 4);
+            /* Button-bit sweep: hold exactly one bit (0..13) for ~8s, cycling,
+               to discover which bit the front-end treats as "select/confirm".
+               Logs the active bit each time it changes. (LBBG_BTNSWEEP) */
+            if (getenv("LBBG_BTNSWEEP") && frame >= 600) {
+                static int g_sweep_last = -1;
+                int phase = (int)((frame - 600) / 480);   /* 480 frames ~= 8s */
+                int bit = phase % 14;
+                int sub = (int)((frame - 600) % 480);
+                if (sub < 420) mask |= (1 << bit);          /* hold 7s, rest 1s */
+                if (bit != g_sweep_last && sub == 0) {
+                    debugPrintf(">>> SWEEP active bit=%d (phase=%d)\n", bit, phase);
+                    fflush(stdout);
+                    /* also drop a one-line marker we can cat anytime */
+                    FILE *m = fopen("/tmp/lbbg_sweep", "w");
+                    if (m) { fprintf(m, "bit=%d phase=%d\n", bit, phase); fclose(m); }
+                    g_sweep_last = bit;
+                }
+            }
             eng.nativeControllerSetData(env, FUSION_OBJ, 0, mask, lx, ly);
         }
-        if (getenv("LBBG_AUTOTAP") && eng.nativeTouchDown && eng.nativeTouchUp) {
-            if (frame == 180 || frame == 360)
-                eng.nativeTouchDown(env, FUSION_OBJ, 0, SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f, 0.0f);
-            if (frame == 186 || frame == 366)
-                eng.nativeTouchUp(env, FUSION_OBJ, 0, SCREEN_WIDTH/2.0f, SCREEN_HEIGHT/2.0f, 0.0f);
+        /* CONTROLLER -> TOUCH shim for the touch-only front-end menu. On NextOS's
+           handheld there is no touchscreen, so map the physical pad to synthetic
+           taps at the menu hotspots: A/Start -> play button (New Game / confirm).
+           Edge-triggered (fire once per press) via a clean GestureStart->TouchUp->
+           GestureEnd sequence spread over a few frames. (LBBG_PADTAP) */
+        if (getenv("LBBG_PADTAP") && g_controller &&
+            eng.nativeTouchGestureStart && eng.nativeTouchGestureEnd) {
+            static int prev_confirm = 0, seq = -1;
+            static float sx = 390, sy = 360;
+            SDL_GameControllerUpdate();
+            int confirm = SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_A) ||
+                          SDL_GameControllerGetButton(g_controller, SDL_CONTROLLER_BUTTON_START);
+            if (confirm && !prev_confirm && seq < 0) { seq = 0; sx = 390; sy = 360; }
+            prev_confirm = confirm;
+            if (seq >= 0) {
+                if (seq == 0)  eng.nativeTouchGestureStart(env, FUSION_OBJ, 0, sx, sy, 1.0f);
+                if (seq == 6 && eng.nativeTouchUp)
+                               eng.nativeTouchUp(env, FUSION_OBJ, 0, sx, sy, 0.0f);
+                if (seq == 8) { eng.nativeTouchGestureEnd(env, FUSION_OBJ, 0, sx, sy, 0.0f); seq = -1; }
+                else seq++;
+            }
+        }
+        /* File-triggered ONE-SHOT tap: when /tmp/lbbg_tap exists, read "x y" from
+           it (or use LBBG_TAPX/Y / play-button default), perform a single gesture
+           tap, and remove the file. Lets us tap with exact timing/coords from the
+           outside without the oscillation of a periodic tap. (LBBG_FILETAP) */
+        if (getenv("LBBG_FILETAP") && eng.nativeTouchGestureStart && eng.nativeTouchGestureEnd) {
+            static int g_tapfr = 0;          /* frame at which a queued tap began */
+            static float g_tx = 380, g_ty = 360;
+            if (g_tapfr == 0) {
+                FILE *tf = fopen("/tmp/lbbg_tap", "r");
+                if (tf) {
+                    float x, y;
+                    if (fscanf(tf, "%f %f", &x, &y) == 2) { g_tx = x; g_ty = y; }
+                    fclose(tf);
+                    remove("/tmp/lbbg_tap");
+                    g_tapfr = (int)frame;
+                    debugPrintf(">>> FILETAP at (%.0f,%.0f) frame=%lu\n", g_tx, g_ty, frame);
+                    fflush(stdout);
+                }
+            } else {
+                int d = (int)frame - g_tapfr;
+                if (d == 0)  eng.nativeTouchGestureStart(env, FUSION_OBJ, 0, g_tx, g_ty, 1.0f);
+                if (d == 8 && eng.nativeTouchUp)
+                             eng.nativeTouchUp(env, FUSION_OBJ, 0, g_tx, g_ty, 0.0f);
+                if (d == 10) eng.nativeTouchGestureEnd(env, FUSION_OBJ, 0, g_tx, g_ty, 0.0f);
+                if (d >= 10) g_tapfr = 0;    /* ready for the next queued tap */
+            }
+        }
+        if (getenv("LBBG_AUTOTAP") && eng.nativeTouchGestureStart && eng.nativeTouchGestureEnd) {
+            /* Periodic synthetic tap, every ~1.5s after frame 180. The engine's
+               own Android glue brackets every touch with GestureStart (which calls
+               ResetData then registers the finger-down) and GestureEnd (ReleaseAll).
+               A bare Down/Up without that bracket is never framed/flushed, so use
+               the gesture pair. Default target is the front-end "play / New Game"
+               button (~380,360 in 1280x720); override with LBBG_TAPX / LBBG_TAPY. */
+            const char *txs = getenv("LBBG_TAPX"), *tys = getenv("LBBG_TAPY");
+            const char *evs = getenv("LBBG_TAPEVERY");
+            float tx = txs ? (float)atoi(txs) : 380.0f;
+            float ty = tys ? (float)atoi(tys) : 360.0f;
+            int every = evs ? atoi(evs) : 90;
+            if (every < 20) every = 20;
+            int ph = frame % every;
+            /* tap = GestureStart (reset+down) -> TouchUp (sets the per-point
+               "released" bit the button-click detection needs) -> GestureEnd. */
+            if (frame >= 180 && ph == 0)
+                eng.nativeTouchGestureStart(env, FUSION_OBJ, 0, tx, ty, 1.0f);
+            if (frame >= 180 && ph == 8 && eng.nativeTouchUp)
+                eng.nativeTouchUp(env, FUSION_OBJ, 0, tx, ty, 0.0f);
+            if (frame >= 180 && ph == 10)
+                eng.nativeTouchGestureEnd(env, FUSION_OBJ, 0, tx, ty, 0.0f);
         }
         /* SELECT+START quits (PortMaster convention) */
         if (g_controller) {
@@ -476,8 +580,12 @@ int main(int argc, char *argv[]) {
                 running = 0;
         }
         if (eng.nativeRender) eng.nativeRender(env, GLVIEW_OBJ);
-        /* Presentation happens on the render thread via the glClear hook
-           (the engine never calls eglSwapBuffers itself). */
+        /* Presentation normally happens on this (render) thread via the glClear
+           hook. But the front-end doesn't always clear the default framebuffer
+           every frame (it relies on the Android video layer behind), so the hook
+           may not fire -> drive the software-double-buffer copy here too. This
+           thread owns the GL context, so glFinish in the copy is valid. */
+        if (!getenv("LBBG_NOFBCOPY")) egl_shim_present();
         opensles_shim_pump_callbacks();
         if (g_request_quit) running = 0;
         SDL_Delay(16); /* ~60 fps so the synthetic-tap cadence is sane */
