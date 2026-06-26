@@ -284,8 +284,13 @@ int sh_sem_post(void *s) {
       fprintf(stderr, "[SEM-LIVELOCK] sem=%p tid=%d caller=%s+0x%lx (log 1x, sem fsync)\n", s, t, lib, off);
       if (!g_sem_storm) { g_sem_storm_ptr = s; g_sem_storm_caller = r; g_sem_storm = 1; }
     }
-    /* fast-path: drena o storm rápido (só count++, sem cond_signal/I/O) */
-    if (streak > 200 && !getenv("CUP_SEMNODRAIN")) {
+    /* 🔑 fast-path: pula só o LOG/fsync do storm, MAS continua sinalizando o cond.
+     * A versão antiga fazia count++ SEM cond_signal: num storm de Semaphore::Signal
+     * (>200 posts da MAIN no scene-init do GK), os workers esperando NUNCA acordavam →
+     * jobs nunca completavam → a main LIVELOCKAVA esperando pra sempre (render congela
+     * pós-OnSceneLoaded, caller=libunity+0x150414). sem_post DEVE sempre acordar 1 waiter.
+     * Só com CUP_SEMNODRAIN=1 volta ao count++ puro (debug). */
+    if (streak > 200 && getenv("CUP_SEMNODRAIN")) {
       pthread_mutex_lock(&m->m); m->count++; pthread_mutex_unlock(&m->m);
       return 0;
     }
