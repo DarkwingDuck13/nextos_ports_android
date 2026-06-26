@@ -357,10 +357,20 @@ int main(int argc, char *argv[]) {
      dmMenuDrawSetUp() cria o singleton MenuDraw -> o is-loaded passa. A engine não
      o chama no nosso fluxo; chamar aqui pode destravar o gate NATURALMENTE (sem o
      NOP do beq) e deixar o menu renderizar. */
-  if (!getenv("SONIC_NOMENUDRAW")) {
-    void (*dmMenuDrawSetUp)(void) =
-        (void *)so_find_addr_safe("_ZN2dm8menudraw15dmMenuDrawSetUpEv");
-    if (dmMenuDrawSetUp) { fprintf(stderr, "=== dmMenuDrawSetUp() ===\n"); dmMenuDrawSetUp(); }
+  if (getenv("SONIC_DEMOSETUPS")) {  /* opt-in: cria os singletons mas NÃO basta —
+       o IsValid quer os DADOS buildados (o build assíncrono do manager não completa;
+       type 6=attract-demo precisa de stage). Default = título via bypass do beq. */
+    const char *setups[] = {
+      "_ZN2dm10menucommon17dmMenuCommonSetUpEv", /* type 1 */
+      "_ZN2dm8menudraw15dmMenuDrawSetUpEv",      /* type 2 */
+      "_ZN2dm2se18dmSoundEffectSetUpEv",         /* type 3 */
+      "_ZN2dm7message11SystemSetUpEv",           /* message */
+    };
+    for (unsigned i = 0; i < sizeof(setups)/sizeof(setups[0]); i++) {
+      void (*fn)(void) = (void *)so_find_addr_safe(setups[i]);
+      if (fn) { fprintf(stderr, "=== setup: %s ===\n", setups[i]); fn(); }
+      else fprintf(stderr, "AVISO: setup %s não encontrado\n", setups[i]);
+    }
   }
 
   /* "conectar" o pad: SetPadData(-2) seta o flag de pad conectado (o Java faria
