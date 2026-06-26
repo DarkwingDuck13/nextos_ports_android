@@ -29,7 +29,8 @@ local function scanVersions()
 end
 
 local function writeSelected(ver)
-    local outdir = "/roms/ports/mcpe_launcher/menu"
+    local base = love.filesystem.getInfo("/storage/roms") and "/storage" or ""
+    local outdir = base.."/roms/ports/mcpe_launcher/menu"
     local f = io.open(outdir.."/selected_version.txt", "w")
     if f then f:write(ver); f:close() end
     love.event.quit(0)
