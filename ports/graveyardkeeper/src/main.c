@@ -5569,7 +5569,19 @@ static long ss_setsprite_hook(void *self, void *sprite) {
 }
 static long (*ss_loadasync_orig)(void *, void *, void *);
 static volatile uint32_t g_ss_async;
+/* GK_ASSETFIX: GK é Windows-origin e pede assets com BACKSLASH ("objects\crafting_skull_3").
+   No Android/Linux o lookup falha ("Error loading asset"). Normaliza \->/  IN-PLACE no
+   il2cpp String (utf16 @+0x14, len @+0x10) antes do load. Mesmo length, seguro. */
+static void gk_fix_backslash(void *name) {
+  if (!name) return;
+  int len = *(int *)((char *)name + 0x10);
+  if (len <= 0 || len > 512) return;
+  unsigned short *u = (unsigned short *)((char *)name + 0x14);
+  for (int i = 0; i < len; i++) if (u[i] == 0x5C) u[i] = 0x2F;  /* '\' -> '/' */
+}
+static int g_assetfix = 0;
 static long ss_loadasync_hook(void *self, void *name, void *type) {
+  if (g_assetfix) gk_fix_backslash(name);   /* GK_ASSETFIX: \ -> / no nome do asset */
   g_ss_async++;
   if (g_ss_async < 60 && name) {
     /* il2cpp String: len@+0x10 (int), chars utf16@+0x14 */
@@ -7091,7 +7103,8 @@ int main(int argc, char **argv) {
       extern void gp_init(uintptr_t);
       gp_init(g_il2cpp_base);
     }
-    if (getenv("CUP_STAGESPY")) stagespy_install(g_il2cpp_base);
+    if (getenv("GK_ASSETFIX")) g_assetfix = 1;
+    if (getenv("CUP_STAGESPY") || g_assetfix) stagespy_install(g_il2cpp_base);
     so_finalize(); so_flush_caches();
     fprintf(stderr, "[F1] libil2cpp init_array...\n");
     so_execute_init_array();
