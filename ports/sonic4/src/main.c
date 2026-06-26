@@ -362,7 +362,7 @@ int main(int argc, char *argv[]) {
   #define FOX_DOWN   0x0002
   #define FOX_LEFT   0x0004
   #define FOX_RIGHT  0x0008
-  #define FOX_A      0x8000
+  #define FOX_A      0x8020  /* 0x8000=confirm título(AoPadSomeoneStand) | 0x20=decide menu(IsPressedDecide) */
   #define FOX_B      0x0080
   #define FOX_START  0x0010
 
@@ -429,12 +429,8 @@ int main(int argc, char *argv[]) {
     /* press ÚNICO de teste (não contínuo): aperta confirm uma vez ~frame 420 por
        ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
     if (getenv("SONIC_AUTOSTART")) {
-      if (frame >= 600 && frame < 606) mask |= FOX_A;   /* título -> menu (pad) */
-      /* menu é TOUCH: tap no item "Start" (topo). action 0=down,1=up (estilo Android). */
-      if (fox.SetTPData) {
-        if (frame >= 1700 && frame < 1712) fox.SetTPData(env, thiz, 0, 640, 175, 0);
-        if (frame >= 1712 && frame < 1718) fox.SetTPData(env, thiz, 1, 640, 175, 0);
-      }
+      if (frame >= 600 && frame < 606) mask |= FOX_A;    /* título -> menu */
+      if (frame >= 1300 && (frame & 1)) mask |= FOX_A;  /* menu: decide toggle janela larga */
     }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
 
