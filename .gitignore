@@ -65,6 +65,7 @@ ports/crazytaxi/package/
 ports/crazytaxi/assets/
 ports/crazytaxi/crazytaxi
 ports/crazytaxi/*.so
+ports/graveyardkeeper/graveyardkeeper
 # build artifacts das ferramentas .NET (Cecil) -- reproduziveis de *.cs, NAO versionar
 ports/sor4/port/tools/*/bin/
 ports/sor4/port/tools/*/obj/
