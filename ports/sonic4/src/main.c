@@ -116,6 +116,8 @@ static struct {
   int  (*HasController)(JEnv, void *);
   void (*SetPadData)(JEnv, void *, int, int, int, int, int, int);
   void (*SetTPData)(JEnv, void *, int, int, int, int);
+  void (*resumeEvent)(JEnv, void *);
+  void (*WindowFocusChanged)(JEnv, void *, int);
 } fox;
 
 #define RES(f, sym) do { fox.f = (void *)so_find_addr_safe(sym); \
@@ -155,6 +157,10 @@ int main(int argc, char *argv[]) {
     /* clMovie::isEnd() -> 1: o game espera o movie de intro "terminar". */
     patch_retval("_ZN2gm5movie7clMovie5isEndEv", 1);
   }
+  /* Sonic4F2F::isGamePause -> 0: o F2F pausa o jogo (ads/consent que não temos)
+     e fox_FrameUpdate pula amTaskExecute (state machine) qdo pausado -> preto. */
+  if (!getenv("SONIC_KEEPPAUSE"))
+    patch_ret0("_ZN9Sonic4F2F11isGamePauseEv");
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -182,6 +188,7 @@ int main(int argc, char *argv[]) {
   RES(HasController,      "Java_com_mineloader_fox_foxJniLib_HasController");
   RES(SetPadData,         "Java_com_mineloader_fox_foxJniLib_SetPadData");
   RES(SetTPData,          "Java_com_mineloader_fox_foxJniLib_SetTPData");
+  RES(resumeEvent,        "Java_com_mineloader_fox_foxJniLib_resumeEvent");
 
   const char *gamedir = getenv("SONIC_DATADIR");
   if (!gamedir) gamedir = ".";
@@ -219,6 +226,11 @@ int main(int argc, char *argv[]) {
 
   fprintf(stderr, "=== fox: DrawEGLCreated ===\n");
   if (fox.DrawEGLCreated) fox.DrawEGLCreated(env, thiz);
+
+  /* resumeEvent: o jogo começa PAUSADO (isGamePause); sem resume, fox_FrameUpdate
+     retorna cedo e PULA amTaskExecute (a state machine) -> nada avança -> preto. */
+  fprintf(stderr, "=== fox: resumeEvent (unpause) ===\n");
+  if (fox.resumeEvent) fox.resumeEvent(env, thiz);
 
   /* FileProcess = amFS_proc = loop da THREAD de file-system (cond_wait quando
      ocioso). Roda na PRÓPRIA thread; o game thread enfileira requests e sinaliza. */

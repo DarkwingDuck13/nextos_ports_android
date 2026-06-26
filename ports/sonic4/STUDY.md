@@ -146,3 +146,21 @@ em `/storage/roms/ports/sonic4/` (libfox em lib/armeabi-v7a/, OBB em data/).
   program → nada). Investigar: nnRegistStdShaderProfile / de onde carrega os NNGLES20SHADER
   (LPK? loose .pb?); confirmar se o game chega no DmTitleInit (title) ou trava antes (FS thread
   idle = não enfileira o load do título?). Achar o gate que impede o título de renderizar.
+
+### s1 update 2 — game logic RODA (amTaskExecute), boot task parado antes do título
+- `GameProcess`→`fox_FrameUpdate` (0x4ac3fc): se `Sonic4F2F::isGamePause()` → return early
+  (pula amTaskExecute). Chamamos `resumeEvent` + patch isGamePause→0 (não era o gate; já era 0).
+- fox_FrameUpdate roda: amAlarmWaitTimer, amDrawCloseDisplayList, amPadGetData, amTpExecute,
+  gsGxPfxTest::Update, **amTaskExecute** (a STATE MACHINE / tasks do jogo). Então a lógica RODA.
+- 🔴 **O boot task NÃO transiciona pro título** (DmTitleInit 0x254340 nunca alcançado via gdb break).
+  Fica num estado preto esperando algo: provável (a) asset async que a FS thread não entrega
+  (reads param após boot; a fonte carregou SÍNCRONO, o caminho async game→amFS_proc não foi
+  exercitado/confirmado), OU (b) render-ready (ShaderProfile -1 → shaders não registram → boot
+  gateia no GL), OU (c) condição F2F/online.
+- pthread_cond bridge (pthread_bridge.c cnd_real) parece OK (bionic→glibc).
+- ✅ Fix do F2F path: getLocalPath/getBundlePath→dir gravável, getRegionCode→"US", getLanguageCode→"en"
+  (cria Sonic4ep2.f2f; antes "/Sonic4ep2.f2f" no root falhava).
+- 🎯 PRÓXIMO: (1) confirmar se a FS thread (amFS_proc) processa requests async — logar/instrumentar
+  o request queue (amFS); (2) BANCADA: instalar Sonic4 no Moto G100 e logcat o foxLog correto
+  pra ver o que vem DEPOIS do nosso ponto (NeConInit) e qual estado/asset destrava o título;
+  (3) investigar nnRegistStdShaderProfile (shaders carregam do LPK?).
