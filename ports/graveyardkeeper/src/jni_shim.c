@@ -506,6 +506,7 @@ int g_fmod_device_obj;   /* sentinela do org.fmod.FMODAudioDevice (NewObject/mé
 static int g_handler_thread_obj;
 static int g_handler_obj;
 static int g_looper_obj;
+static int g_google_games_obj;
 static void *class_for(const char *name) {
   if (!name) name = "?";
   for (int i = 0; i < g_classreg_n; i++)
@@ -1200,6 +1201,15 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
     void *arg0 = va_arg(ap, void *);
     return arg0;
   }
+  /* Class.forName("com.google.games.bridge.TokenFragment") precisa devolver uma
+     classe rastreável; se retornarmos um objeto genérico, NewObject vê classe
+     desconhecida e devolve NULL, quebrando o plugin logo após OnSceneLoaded. */
+  if (nm && !strcmp(nm, "forName")) {
+    void *name_j = va_arg(ap, void *);
+    const char *cn = resolve_jstring(name_j);
+    debugPrintf("jni_shim: Class.forName(%s)\n", cn ? cn : "?");
+    return class_for(cn);
+  }
   if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
     (void)va_arg(ap, void *);          /* Class */
     void *name_j = va_arg(ap, void *);
@@ -1722,6 +1732,11 @@ static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
   if (cn && !strcmp(cn, "android/os/Looper")) {
     debugPrintf("jni_shim: NewObject(Looper) -> Looper fake\n");
     return &g_looper_obj;
+  }
+  if (cn && (strstr(cn, "com.google.games.bridge.") ||
+             strstr(cn, "com/google/games/bridge/"))) {
+    debugPrintf("jni_shim: NewObject(%s) -> Google Play fake\n", cn);
+    return &g_google_games_obj;
   }
   return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressão */
 }

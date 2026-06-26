@@ -4732,6 +4732,13 @@ static int gk_async_is_current_native(void *self) {
 
 static volatile int gk_vt11_depth;
 static volatile long gk_vt11_tid;
+static int gk_asyncvt_verbose;
+static int gk_vt11spy_verbose;
+static int gk_vt11count_enabled;
+static volatile unsigned long long gk_vt11_enters;
+static volatile unsigned long long gk_vt11_exits;
+static volatile int gk_vt11_enter_frame = -1;
+static volatile int gk_vt11_exit_frame = -1;
 
 static int gk_vt11_active(void) {
   long tid = syscall(SYS_gettid);
@@ -4748,20 +4755,24 @@ static long (*gk_async_vt11_orig)(void *, long, long, long, long, long, long, lo
 static long gk_async_vt11_hook(void *self, long a1, long a2, long a3, long a4, long a5, long a6, long a7) {
   int hit = gk_async_is_current_native(self);
   static unsigned n;
-  if (hit && n < 80) {
+  if (hit && gk_asyncvt_verbose && n < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt11 0x619438 before self=%p f=%d\n", self, g_render_frame);
     gk_async_native_fields("vt11.before", self);
   }
   if (hit) {
     gk_vt11_tid = syscall(SYS_gettid);
     gk_vt11_depth++;
+    gk_vt11_enters++;
+    gk_vt11_enter_frame = g_render_frame;
   }
   long r = gk_async_vt11_orig(self, a1, a2, a3, a4, a5, a6, a7);
   if (hit) {
     if (gk_vt11_depth > 0) gk_vt11_depth--;
     if (!gk_vt11_depth) gk_vt11_tid = 0;
+    gk_vt11_exits++;
+    gk_vt11_exit_frame = g_render_frame;
   }
-  if (hit && n++ < 80) {
+  if (hit && gk_asyncvt_verbose && n++ < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt11 0x619438 ret=%ld f=%d\n", r, g_render_frame);
     gk_async_native_fields("vt11.after", self);
     fsync(2);
@@ -4773,12 +4784,12 @@ static long (*gk_async_vt12_orig)(void *, long, long, long, long, long, long, lo
 static long gk_async_vt12_hook(void *self, long a1, long a2, long a3, long a4, long a5, long a6, long a7) {
   int hit = gk_async_is_current_native(self);
   static unsigned n;
-  if (hit && n < 80) {
+  if (hit && gk_asyncvt_verbose && n < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt12 0x619c20 before self=%p a1=%ld f=%d\n", self, a1, g_render_frame);
     gk_async_native_fields("vt12.before", self);
   }
   long r = gk_async_vt12_orig(self, a1, a2, a3, a4, a5, a6, a7);
-  if (hit && n++ < 80) {
+  if (hit && gk_asyncvt_verbose && n++ < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt12 0x619c20 ret=%ld f=%d\n", r, g_render_frame);
     gk_async_native_fields("vt12.after", self);
     fsync(2);
@@ -4790,12 +4801,12 @@ static long (*gk_async_vt13_orig)(void *, long, long, long, long, long, long, lo
 static long gk_async_vt13_hook(void *self, long a1, long a2, long a3, long a4, long a5, long a6, long a7) {
   int hit = gk_async_is_current_native(self);
   static unsigned n;
-  if (hit && n < 80) {
+  if (hit && gk_asyncvt_verbose && n < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt13 0x619cf0 before self=%p f=%d\n", self, g_render_frame);
     gk_async_native_fields("vt13.before", self);
   }
   long r = gk_async_vt13_orig(self, a1, a2, a3, a4, a5, a6, a7);
-  if (hit && n++ < 80) {
+  if (hit && gk_asyncvt_verbose && n++ < 80) {
     fprintf(stderr, "[GK_ASYNCVT] vt13 0x619cf0 ret=%ld f=%d\n", r, g_render_frame);
     gk_async_native_fields("vt13.after", self);
     fsync(2);
@@ -4962,6 +4973,9 @@ static void gk_eventspy_install(uintptr_t base) {
 #define GK_UN_WAITFORJOBGROUP        0x26D1CC
 #define GK_UN_WAITFORJOBGROUP_BRANCH 0x26D20C
 #define GK_UN_WAITFORJOBGROUP_COUNT  0x1044634
+#define GK_UN_SOUNDHANDLE_MAINTHREAD_TBZ 0x17BC04
+#define GK_UN_SOUND_INTEGRATE_FMOD 0x182224
+#define GK_UN_CREATESOUND 0x985058
 
 static int gk_unity_read_u32(uintptr_t rva) {
   if (!g_unity_base || !addr_readable(g_unity_base + rva)) return -1;
@@ -5020,6 +5034,122 @@ static void gk_job_tools_install(uintptr_t base) {
   if (getenv("GK_SKIPJOBWAIT")) {
     /* 0x26d20c = b.lt 0x26d1f8 quando count < target. NOP faz sair sem esperar. */
     gk_patch_unity_insn(GK_UN_WAITFORJOBGROUP_BRANCH, 0xd503201f, "GK_SKIPJOBWAIT");
+  }
+}
+
+static long (*gk_cs_orig)(void *, void *, int, void *, void *);
+static int gk_stream_fallback;
+static int gk_audio_spy;
+
+static int gk_safe_cstr(const void *p, char *out, size_t cap) {
+  if (!p || !out || cap == 0 || !addr_readable((uintptr_t)p)) return 0;
+  const char *s = (const char *)p;
+  size_t n = 0;
+  for (; n + 1 < cap && n < 120; n++) {
+    char c = s[n];
+    if (!c) break;
+    if ((unsigned char)c < 9 || (unsigned char)c > 126) return 0;
+    out[n] = c;
+  }
+  out[n] = 0;
+  return n > 0;
+}
+
+static void gk_log_exinfo(const char *tag, void *exinfo) {
+  if (!exinfo || !addr_readable((uintptr_t)exinfo + 0x40)) return;
+  fprintf(stderr,
+          "[%s]   exinfo: cb=%u len=%u +8=%u +c=%u +10=%u +14=%u +18=%u +1c=0x%x +20=0x%lx +28=0x%lx +30=0x%lx +38=0x%lx\n",
+          tag,
+          *(uint32_t *)((char *)exinfo + 0), *(uint32_t *)((char *)exinfo + 4),
+          *(uint32_t *)((char *)exinfo + 8), *(uint32_t *)((char *)exinfo + 0xc),
+          *(uint32_t *)((char *)exinfo + 0x10), *(uint32_t *)((char *)exinfo + 0x14),
+          *(uint32_t *)((char *)exinfo + 0x18), *(uint32_t *)((char *)exinfo + 0x1c),
+          *(unsigned long *)((char *)exinfo + 0x20), *(unsigned long *)((char *)exinfo + 0x28),
+          *(unsigned long *)((char *)exinfo + 0x30), *(unsigned long *)((char *)exinfo + 0x38));
+}
+
+static long gk_cs_hook(void *sys, void *data, int mode, void *exinfo, void *out) {
+  long r = gk_cs_orig(sys, data, mode, exinfo, out);
+  int openmem = (mode & 0x800) || (mode & 0x10000000);
+  uintptr_t lr = (uintptr_t)__builtin_return_address(0);
+  char nm[128]; nm[0] = 0;
+  if (!openmem) gk_safe_cstr(data, nm, sizeof nm);
+
+  if (r != 0 && gk_stream_fallback && !(mode & 0x80)) {
+    int m2 = mode | 0x80;  /* FMOD_CREATESTREAM: preserve audio by streaming big banks. */
+    long r2 = gk_cs_orig(sys, data, m2, exinfo, out);
+    static int nretry;
+    if (nretry++ < 24) {
+      fprintf(stderr,
+              "[GK_AUDIO] retry stream fail=%ld mode=0x%x -> mode=0x%x result=%ld f=%d",
+              r, (unsigned)mode, (unsigned)m2, r2, g_render_frame);
+      if (g_unity_base && lr >= g_unity_base && lr < g_unity_base + text_size)
+        fprintf(stderr, " caller=libunity+0x%lx", lr - g_unity_base);
+      if (nm[0]) fprintf(stderr, " data=\"%s\"", nm);
+      fprintf(stderr, "\n");
+      gk_log_exinfo("GK_AUDIO", exinfo);
+      fsync(2);
+    }
+    if (r2 == 0) return 0;
+    r = r2;
+  }
+
+  if (gk_audio_spy || r != 0) {
+    static int nfail, nok;
+    int do_log = (r != 0) ? (nfail++ < 96) : (nok++ < 16);
+    if (do_log) {
+      unsigned long d0 = (data && addr_readable((uintptr_t)data)) ? *(unsigned long *)data : 0;
+      void *sound = (out && addr_readable((uintptr_t)out)) ? *(void **)out : NULL;
+      fprintf(stderr,
+              "[GK_AUDIO] %s createSound sys=%p mode=0x%x stream=%d openmem=%d data=%p",
+              r ? "FAIL" : "ok", sys, (unsigned)mode, (mode >> 7) & 1, openmem, data);
+      if (nm[0]) fprintf(stderr, " name=\"%s\"", nm);
+      fprintf(stderr, " d0=0x%lx exinfo=%p out=%p sound=%p -> %ld f=%d",
+              d0, exinfo, out, sound, r, g_render_frame);
+      if (g_unity_base && lr >= g_unity_base && lr < g_unity_base + text_size)
+        fprintf(stderr, " caller=libunity+0x%lx", lr - g_unity_base);
+      fprintf(stderr, "\n");
+      if (r != 0 || nfail < 8) gk_log_exinfo("GK_AUDIO", exinfo);
+      fsync(2);
+    }
+  }
+  return r;
+}
+
+static void gk_audio_tools_install(void) {
+  if (getenv("GK_NOSOUNDASSERT")) {
+    /* SoundHandle::Instance::~Instance aborta com brk #1 quando um worker libera
+       audio fora da main thread. NOPa so o tbz que entra no assert, mantendo o
+       destrutor real e o stack-canary path normais. */
+    gk_patch_unity_insn(GK_UN_SOUNDHANDLE_MAINTHREAD_TBZ, 0xd503201f, "GK_NOSOUNDASSERT");
+  }
+  if (getenv("GK_AUDIOSPY") || getenv("GK_STREAMFALLBACK")) {
+    uintptr_t target = g_unity_base + GK_UN_CREATESOUND;
+    void *tr = mk_tramp(target, "GK.createSound");
+    if (tr) {
+      gk_cs_orig = (long (*)(void *, void *, int, void *, void *))tr;
+      gk_audio_spy = getenv("GK_AUDIOSPY") ? 1 : 0;
+      gk_stream_fallback = getenv("GK_STREAMFALLBACK") ? 1 : 0;
+      long pgsz = sysconf(_SC_PAGESIZE);
+      void *page = (void *)(target & ~((uintptr_t)pgsz - 1));
+      mprotect(page, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      hook_arm64(target, (uintptr_t)gk_cs_hook);
+      mprotect(page, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)page, (char *)page + pgsz * 2);
+      fprintf(stderr, "[GK_AUDIO] hook createSound libunity+0x%x instalado (spy=%d streamfallback=%d)\n",
+              GK_UN_CREATESOUND, gk_audio_spy, gk_stream_fallback);
+      fsync(2);
+    } else {
+      fprintf(stderr, "[GK_AUDIO] mk_tramp createSound falhou\n");
+      fsync(2);
+    }
+  }
+  if (getenv("GK_NOAUDIOLOAD")) {
+    /* Diagnostico apenas: isola o loader pulando IntegrateFMODSound. Nao usar como
+       caminho normal do port, porque inicia o jogo sem os handles reais de audio. */
+    gk_patch_unity_insn(GK_UN_SOUND_INTEGRATE_FMOD + 0, 0xf900001f, "GK_NOAUDIOLOAD");
+    gk_patch_unity_insn(GK_UN_SOUND_INTEGRATE_FMOD + 4, 0x52800000, "GK_NOAUDIOLOAD");
+    gk_patch_unity_insn(GK_UN_SOUND_INTEGRATE_FMOD + 8, 0xd65f03c0, "GK_NOAUDIOLOAD");
   }
 }
 
@@ -5087,20 +5217,140 @@ static void gk_asyncvt_install(uintptr_t base) {
 /* GK_VT11SPY: mapeia onde o metodo background do AsyncOperation (vt11, libunity
  * 0x619438) estaciona. Mantem filtro por thread/depth para nao contaminar outros
  * caminhos do Unity. */
-#define GK_VT11_WRAP(sym, label) \
+enum {
+  GK_VT11C_ROOTPTR,
+  GK_VT11C_VEC_I32,
+  GK_VT11C_PUSH16,
+  GK_VT11C_PUSHPTR,
+  GK_VT11C_BAKE_A,
+  GK_VT11C_UNLINK,
+  GK_VT11C_SCAN,
+  GK_VT11C_SCAN_PREP,
+  GK_VT11C_SCAN_SLOT,
+  GK_VT11C_SCAN_FINISH,
+  GK_VT11C_ENQUEUE,
+  GK_VT11C_STREAM,
+  GK_VT11C_LOCK,
+  GK_VT11C_FIND,
+  GK_VT11C_COMMIT,
+  GK_VT11C_COMMIT_A,
+  GK_VT11C_COMMIT_B,
+  GK_VT11C_RESOLVE_RES,
+  GK_VT11C_BUILD_RES,
+  GK_VT11C_ATTACH_RES,
+  GK_VT11C_COUNT
+};
+
+struct gk_vt11_counter {
+  const char *label;
+  volatile unsigned long long enter;
+  volatile unsigned long long exit;
+  volatile unsigned long long open;
+  volatile int first_frame;
+  volatile int last_enter_frame;
+  volatile int last_exit_frame;
+  volatile uintptr_t last_x0;
+  volatile uintptr_t last_x1;
+  volatile uintptr_t last_x2;
+  volatile uintptr_t last_x3;
+  volatile uintptr_t last_lr;
+  volatile uintptr_t last_ret;
+};
+
+static struct gk_vt11_counter gk_vt11c[GK_VT11C_COUNT] = {
+  [GK_VT11C_ROOTPTR]     = { "6309dc", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_VEC_I32]    = { "61a35c", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_PUSH16]     = { "61bd70", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_PUSHPTR]    = { "61c254", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_BAKE_A]     = { "6310f8", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_UNLINK]     = { "631c2c", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_SCAN]       = { "631e98", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_SCAN_PREP]  = { "631da0", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_SCAN_SLOT]  = { "631fa8", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_SCAN_FINISH]= { "6328c8", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_ENQUEUE]    = { "6336f4", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_STREAM]     = { "633b24", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_LOCK]       = { "63402c", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_FIND]       = { "634d20", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_COMMIT]     = { "619a70", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_COMMIT_A]   = { "634bf4", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_COMMIT_B]   = { "634cc8", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_RESOLVE_RES]= { "6343a0", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_BUILD_RES]  = { "6346cc", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+  [GK_VT11C_ATTACH_RES] = { "634914", .first_frame = -1, .last_enter_frame = -1, .last_exit_frame = -1 },
+};
+
+static void gk_vt11count_enter(int idx, long a0, long a1, long a2, long a3, uintptr_t lr) {
+  if (!gk_vt11count_enabled || idx < 0 || idx >= GK_VT11C_COUNT) return;
+  struct gk_vt11_counter *c = &gk_vt11c[idx];
+  if (c->first_frame < 0) c->first_frame = g_render_frame;
+  c->last_enter_frame = g_render_frame;
+  c->last_x0 = (uintptr_t)a0;
+  c->last_x1 = (uintptr_t)a1;
+  c->last_x2 = (uintptr_t)a2;
+  c->last_x3 = (uintptr_t)a3;
+  c->last_lr = lr;
+  c->enter++;
+  c->open++;
+}
+
+static void gk_vt11count_exit(int idx, long r) {
+  if (!gk_vt11count_enabled || idx < 0 || idx >= GK_VT11C_COUNT) return;
+  struct gk_vt11_counter *c = &gk_vt11c[idx];
+  c->last_exit_frame = g_render_frame;
+  c->last_ret = (uintptr_t)r;
+  c->exit++;
+  if (c->open) c->open--;
+}
+
+static void gk_vt11count_report(const char *tag, int force) {
+  if (!gk_vt11count_enabled) return;
+  static int last_frame = -999999;
+  static unsigned long long last_sum;
+  unsigned long long sum = gk_vt11_enters + gk_vt11_exits;
+  for (int i = 0; i < GK_VT11C_COUNT; i++)
+    sum += gk_vt11c[i].enter + gk_vt11c[i].exit + gk_vt11c[i].open;
+  if (!force && sum == last_sum && g_render_frame - last_frame < 300) return;
+  if (!force && g_render_frame - last_frame < 60) return;
+  last_sum = sum;
+  last_frame = g_render_frame;
+  fprintf(stderr,
+          "[GK_VT11COUNT:%s] f=%d vt11 enter=%llu exit=%llu active_depth=%d tid=%ld enter_f=%d exit_f=%d p=%.3f\n",
+          tag, g_render_frame, gk_vt11_enters, gk_vt11_exits,
+          gk_vt11_depth, gk_vt11_tid, gk_vt11_enter_frame, gk_vt11_exit_frame,
+          gk_async_progress_raw());
+  for (int i = 0; i < GK_VT11C_COUNT; i++) {
+    struct gk_vt11_counter *c = &gk_vt11c[i];
+    char lrbuf[48];
+    if (!c->enter && !force) continue;
+    fprintf(stderr,
+            "[GK_VT11COUNT:%s] %-7s in=%llu out=%llu open=%llu first=%d last_in=%d last_out=%d lr=%s x0=%lx x1=%lx x2=%lx x3=%lx ret=%lx\n",
+            tag, c->label, c->enter, c->exit, c->open, c->first_frame,
+            c->last_enter_frame, c->last_exit_frame,
+            gk_ptr_label(c->last_lr, lrbuf, sizeof lrbuf),
+            (unsigned long)c->last_x0, (unsigned long)c->last_x1,
+            (unsigned long)c->last_x2, (unsigned long)c->last_x3,
+            (unsigned long)c->last_ret);
+  }
+  fsync(2);
+}
+
+#define GK_VT11_WRAP(sym, label, idx) \
   static long (*gk_vt11_##sym##_orig)(long, long, long, long, long, long, long, long); \
   static long gk_vt11_##sym##_hook(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7) { \
     int active = gk_vt11_active(); \
     static unsigned n; \
     unsigned id = active ? ++n : 0; \
-    if (active && id <= 120) { \
+    if (active) gk_vt11count_enter(idx, a0, a1, a2, a3, (uintptr_t)__builtin_return_address(0)); \
+    if (active && gk_vt11spy_verbose && id <= 120) { \
       fprintf(stderr, "[GK_VT11SPY] > %-10s x0=%lx x1=%lx x2=%lx x3=%lx p=%.3f f=%d\n", \
               label, (unsigned long)a0, (unsigned long)a1, (unsigned long)a2, (unsigned long)a3, \
               gk_async_progress_raw(), g_render_frame); \
       fsync(2); \
     } \
     long r = gk_vt11_##sym##_orig(a0, a1, a2, a3, a4, a5, a6, a7); \
-    if (active && id <= 120) { \
+    if (active) gk_vt11count_exit(idx, r); \
+    if (active && gk_vt11spy_verbose && id <= 120) { \
       fprintf(stderr, "[GK_VT11SPY] < %-10s ret=%lx p=%.3f f=%d\n", \
               label, (unsigned long)r, gk_async_progress_raw(), g_render_frame); \
       fsync(2); \
@@ -5108,31 +5358,49 @@ static void gk_asyncvt_install(uintptr_t base) {
     return r; \
   }
 
-GK_VT11_WRAP(vec_i32, "61a35c")
-GK_VT11_WRAP(push16,  "61bd70")
-GK_VT11_WRAP(pushptr, "61c254")
-GK_VT11_WRAP(bake_a,  "6310f8")
-GK_VT11_WRAP(unlink,  "631c2c")
-GK_VT11_WRAP(scan,    "631e98")
-GK_VT11_WRAP(enqueue, "6336f4")
-GK_VT11_WRAP(stream,  "633b24")
-GK_VT11_WRAP(lock,    "63402c")
-GK_VT11_WRAP(find,    "634d20")
-GK_VT11_WRAP(commit,  "619a70")
+GK_VT11_WRAP(rootptr, "6309dc", GK_VT11C_ROOTPTR)
+GK_VT11_WRAP(vec_i32, "61a35c", GK_VT11C_VEC_I32)
+GK_VT11_WRAP(push16,  "61bd70", GK_VT11C_PUSH16)
+GK_VT11_WRAP(pushptr, "61c254", GK_VT11C_PUSHPTR)
+GK_VT11_WRAP(bake_a,  "6310f8", GK_VT11C_BAKE_A)
+GK_VT11_WRAP(unlink,  "631c2c", GK_VT11C_UNLINK)
+GK_VT11_WRAP(scan,    "631e98", GK_VT11C_SCAN)
+GK_VT11_WRAP(scanprep,"631da0", GK_VT11C_SCAN_PREP)
+GK_VT11_WRAP(scanslot,"631fa8", GK_VT11C_SCAN_SLOT)
+GK_VT11_WRAP(scanfin, "6328c8", GK_VT11C_SCAN_FINISH)
+GK_VT11_WRAP(enqueue, "6336f4", GK_VT11C_ENQUEUE)
+GK_VT11_WRAP(stream,  "633b24", GK_VT11C_STREAM)
+GK_VT11_WRAP(lock,    "63402c", GK_VT11C_LOCK)
+GK_VT11_WRAP(find,    "634d20", GK_VT11C_FIND)
+GK_VT11_WRAP(commit,  "619a70", GK_VT11C_COMMIT)
+GK_VT11_WRAP(commita, "634bf4", GK_VT11C_COMMIT_A)
+GK_VT11_WRAP(commitb, "634cc8", GK_VT11C_COMMIT_B)
+GK_VT11_WRAP(resolve, "6343a0", GK_VT11C_RESOLVE_RES)
+GK_VT11_WRAP(buildres,"6346cc", GK_VT11C_BUILD_RES)
+GK_VT11_WRAP(attach,  "634914", GK_VT11C_ATTACH_RES)
 
 static void gk_vt11spy_install(uintptr_t base) {
   struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
+    {0x6309dc, (void *)gk_vt11_rootptr_hook, (void **)&gk_vt11_rootptr_orig, "GK.vt11.6309dc"},
     {0x61a35c, (void *)gk_vt11_vec_i32_hook, (void **)&gk_vt11_vec_i32_orig, "GK.vt11.61a35c"},
     {0x61bd70, (void *)gk_vt11_push16_hook,  (void **)&gk_vt11_push16_orig,  "GK.vt11.61bd70"},
     {0x61c254, (void *)gk_vt11_pushptr_hook, (void **)&gk_vt11_pushptr_orig, "GK.vt11.61c254"},
     {0x6310f8, (void *)gk_vt11_bake_a_hook,  (void **)&gk_vt11_bake_a_orig,  "GK.vt11.6310f8"},
     {0x631c2c, (void *)gk_vt11_unlink_hook,  (void **)&gk_vt11_unlink_orig,  "GK.vt11.631c2c"},
     {0x631e98, (void *)gk_vt11_scan_hook,    (void **)&gk_vt11_scan_orig,    "GK.vt11.631e98"},
+    {0x631da0, (void *)gk_vt11_scanprep_hook,(void **)&gk_vt11_scanprep_orig,"GK.vt11.631da0"},
+    {0x631fa8, (void *)gk_vt11_scanslot_hook,(void **)&gk_vt11_scanslot_orig,"GK.vt11.631fa8"},
+    {0x6328c8, (void *)gk_vt11_scanfin_hook, (void **)&gk_vt11_scanfin_orig, "GK.vt11.6328c8"},
     {0x6336f4, (void *)gk_vt11_enqueue_hook, (void **)&gk_vt11_enqueue_orig, "GK.vt11.6336f4"},
     {0x633b24, (void *)gk_vt11_stream_hook,  (void **)&gk_vt11_stream_orig,  "GK.vt11.633b24"},
     {0x63402c, (void *)gk_vt11_lock_hook,    (void **)&gk_vt11_lock_orig,    "GK.vt11.63402c"},
     {0x634d20, (void *)gk_vt11_find_hook,    (void **)&gk_vt11_find_orig,    "GK.vt11.634d20"},
     {0x619a70, (void *)gk_vt11_commit_hook,  (void **)&gk_vt11_commit_orig,  "GK.vt11.619a70"},
+    {0x634bf4, (void *)gk_vt11_commita_hook, (void **)&gk_vt11_commita_orig, "GK.vt11.634bf4"},
+    {0x634cc8, (void *)gk_vt11_commitb_hook, (void **)&gk_vt11_commitb_orig, "GK.vt11.634cc8"},
+    {0x6343a0, (void *)gk_vt11_resolve_hook, (void **)&gk_vt11_resolve_orig, "GK.vt11.6343a0"},
+    {0x6346cc, (void *)gk_vt11_buildres_hook,(void **)&gk_vt11_buildres_orig,"GK.vt11.6346cc"},
+    {0x634914, (void *)gk_vt11_attach_hook,  (void **)&gk_vt11_attach_orig,  "GK.vt11.634914"},
   };
   unsigned ok = 0;
   for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
@@ -5152,6 +5420,30 @@ static void gk_vt11spy_install(uintptr_t base) {
     ok++;
   }
   fprintf(stderr, "[GK_VT11SPY] %u/%u hooks instalados\n", ok, (unsigned)(sizeof T / sizeof T[0]));
+}
+
+static void gk_vt11res_install(uintptr_t base) {
+  struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
+    {0x6343a0, (void *)gk_vt11_resolve_hook, (void **)&gk_vt11_resolve_orig, "GK.vt11.6343a0"},
+  };
+  unsigned ok = 0;
+  for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    uintptr_t target = base + T[i].rva;
+    void *tr = mk_tramp(target, T[i].nm);
+    if (!tr) {
+      fprintf(stderr, "[GK_RESSPY] tramp %s falhou\n", T[i].nm);
+      continue;
+    }
+    *T[i].orig = tr;
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *page = (void *)(target & ~((uintptr_t)pgsz - 1));
+    mprotect(page, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    hook_arm64(target, (uintptr_t)T[i].hook);
+    mprotect(page, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)page, (char *)page + pgsz * 2);
+    ok++;
+  }
+  fprintf(stderr, "[GK_RESSPY] %u/%u hooks instalados\n", ok, (unsigned)(sizeof T / sizeof T[0]));
 }
 
 static void gk_scene_icall_dump(const char *tag) {
@@ -6363,6 +6655,7 @@ int main(int argc, char **argv) {
   }
   patch_sem_shim();  /* sem_* nos slots GOT do libunity */
   patch_pthread_shim();
+  gk_audio_tools_install();
   /* sensores/looper/profiler google: stub no-op (nao usados no path do gfx) */
   const char *ndk_noop[] = {
     "ALooper_forThread","ALooper_prepare","ASensorManager_getInstance",
@@ -6723,8 +7016,15 @@ int main(int argc, char **argv) {
     if (getenv("GK_EVENTSPY")) gk_eventspy_install(g_il2cpp_base);
     if (getenv("GK_JOBSPY") || getenv("GK_SKIPJOBWAIT")) gk_job_tools_install(g_unity_base);
     if (getenv("GK_NATIVELOADSPY")) gk_nativespy_install(g_unity_base);
-    if (getenv("GK_ASYNCVTSPY") || getenv("GK_VT11SPY")) gk_asyncvt_install(g_unity_base);
-    if (getenv("GK_VT11SPY")) gk_vt11spy_install(g_unity_base);
+    gk_asyncvt_verbose = (getenv("GK_ASYNCVTSPY") || getenv("GK_VT11SPY")) ? 1 : 0;
+    gk_vt11spy_verbose = getenv("GK_VT11SPY") ? 1 : 0;
+    gk_vt11count_enabled = (getenv("GK_VT11COUNT") || getenv("GK_VT11SPY") || getenv("GK_RESSPY")) ? 1 : 0;
+    if (getenv("GK_ASYNCVTSPY") || getenv("GK_VT11SPY") || getenv("GK_VT11COUNT") || getenv("GK_RESSPY"))
+      gk_asyncvt_install(g_unity_base);
+    if (getenv("GK_VT11SPY") || getenv("GK_VT11COUNT"))
+      gk_vt11spy_install(g_unity_base);
+    else if (getenv("GK_RESSPY"))
+      gk_vt11res_install(g_unity_base);
     if (getenv("CUP_MENUSPY")) menuspy_install(g_il2cpp_base);
     /* CUP_FORCESTARTCR: CupheadStartScene.Start (0x9A55CC) faz 3 checks
      * op_Inequality em Application.version/productName/identifier e DÁ EARLY-RETURN
@@ -7247,6 +7547,7 @@ int main(int argc, char **argv) {
     }
     if (f < 200) { fprintf(stderr, "<r%d]\n", f); dbg_sync(); }  /* SAIU do render */
     if ((gk_asyncpoll || gk_force_allow) && g_gk_async_op) gk_async_poll(gk_force_allow);
+    if (gk_vt11count_enabled) gk_vt11count_report("frame", 0);
     {
       static void *gk_asyncdump_last_op;
       if (gk_asyncdump && g_gk_async_op &&

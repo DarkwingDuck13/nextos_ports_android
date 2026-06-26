@@ -126,3 +126,143 @@ GK é Unity 2018.2, classe próxima dos ports Unity antigos que já funcionam. O
 
 ## OBJETIVO (NextOS)
 Jogo com **gameplay + controles + áudio OK + imagem na tela OK**.
+
+---
+
+## HANDOFF 2026-06-26 - PAUSA
+
+Pedido do NextOS: parar agora, salvar tudo e deixar claro onde continuar.
+
+### Commit base antes desta sessão
+- Commit limpo anterior do scaffold: `570f776d3285a2b2e1d26f1418440cdb68368b7b Add Graveyard Keeper port scaffold`.
+- Nesta pausa, salvar somente arquivos de `ports/graveyardkeeper/`. Existem mudanças sujas em outros ports no workspace; não mexer nelas.
+
+### O que mudou nesta sessão
+1. `src/main.c`
+   - Adicionado patch opt-in `GK_NOSOUNDASSERT=1`:
+     - RVA: `libunity+0x17bc04`.
+     - NOP no `tbz` que entra no assert de `SoundHandle::Instance::~Instance()`.
+     - Objetivo: manter o áudio nativo, mas impedir o `brk #1` quando o Unity libera `SoundHandle` fora da main thread.
+   - Adicionado hook GK-specific de `FMOD::System::createSound`:
+     - RVA real do GK: `libunity+0x985058`.
+     - Flags:
+       - `GK_AUDIOSPY=1`: loga `createSound`/falhas.
+       - `GK_STREAMFALLBACK=1`: se `createSound` falhar sem `FMOD_CREATESTREAM`, tenta repetir com bit `0x80` ligado.
+     - Importante: offsets antigos `TER_AUDIOSPY`/`TER_STREAMFALLBACK` de Terraria (`0x806cb4`, `0x805a94`) NÃO servem para GK.
+   - `GK_NOAUDIOLOAD=1` ficou apenas como diagnóstico:
+     - RVA: `libunity+0x182224`.
+     - Não usar como caminho final, porque pula `SoundManager::IntegrateFMODSound` e inicia o jogo sem handles reais de áudio.
+2. `src/jni_shim.c`
+   - `Class.forName("com.google.games.bridge.TokenFragment")` agora devolve classe rastreável via `class_for`.
+   - `NewObject` para classes `com.google.games.bridge.*` devolve objeto fake não nulo.
+   - Motivo: após `Preloader.OnSceneLoaded: scene_main_mobile`, o plugin Google Play Games entrava nesse caminho e não podia receber classe/objeto nulo.
+
+### Testes importantes desta sessão
+1. Build local:
+   ```sh
+   cd /home/nextos/nextos_ports_android/ports/graveyardkeeper
+   ./build.sh
+   ```
+   Resultado: `BUILD OK`. Warnings `_GNU_SOURCE` e warnings de debug do `libSDL2.so` continuam benignos.
+
+2. Teste nativo de áudio com `GK_NOSOUNDASSERT=1` (sem `GK_NOAUDIOLOAD`):
+   - Comando usado no device:
+     ```sh
+     cd /storage/roms/ports/graveyardkeeper
+     env GK_RESTART_ES=0 GK_FRAMES=16000 GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1 GK_RESSPY=1 GK_NOSOUNDASSERT=1 bash ./run.sh
+     ```
+   - Resultado salvo localmente:
+     - `/tmp/gk-nosoundassert-done1-run.out`
+   - Resultado técnico:
+     - `progress` saiu de `0.000` perto de `f=13113`.
+     - Em `f=13410`: `Cannot create FMOD::Sound instance for resource sharedassets1.resource, (Not enough memory or resources. )`.
+     - Sem o patch, isso caía depois no assert `SoundHandle::Instance::~Instance() may only be called from main thread!`.
+     - Com `GK_NOSOUNDASSERT=1`, chegou a:
+       ```text
+       [GK_ASYNCPOLL] f=13469 ... done=1 progress=1.000
+       ```
+     - Ou seja: `scene_main_mobile` completa o async e entra, mantendo o caminho de áudio nativo, mas ainda com erro FMOD em `sharedassets1.resource`.
+   - Problema restante nesse run:
+     - Depois de `Preloader.OnSceneLoaded: scene_main_mobile`, aparece spam:
+       ```text
+       [ALOG:6 CRASH] main thread is trapped; signum = 11
+       [ALOG:6 CRASH] other thread is trapped; signum = 11
+       ```
+     - O processo continuou até `F2 === render loop terminou ===` por limite de frames, então não foi morte imediata. Precisa investigar no próximo retorno.
+
+3. Teste com `CUP_NOSIGINST=1`:
+   - Não usar como padrão.
+   - Com `GK_NOSOUNDASSERT=1 CUP_NOSIGINST=1`, o processo chegou só perto de `progress=0.325/0.334` e morreu `RC=137`.
+   - Hipótese: muda timing/memória e expõe OOM; não é caminho normal.
+
+4. Teste `GK_NOAUDIOLOAD=1`:
+   - Foi diagnóstico apenas.
+   - Ficou mais lento e não deve ser usado como solução: em teste longo ficou perto de `progress=0.103`, sem completar no limite observado.
+   - NextOS pediu explicitamente para não resolver pulando/desativando áudio. Próximo passo deve seguir áudio nativo.
+
+5. Teste `GK_AUDIOSPY=1` em 2026-06-26:
+   - Build e deploy do binário com hook OK.
+   - Comando iniciado:
+     ```sh
+     cd /storage/roms/ports/graveyardkeeper
+     env GK_RESTART_ES=0 GK_FRAMES=18000 GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1 GK_NOSOUNDASSERT=1 GK_AUDIOSPY=1 bash ./run.sh > run-test-audio-spy.out 2>&1
+     ```
+   - O hook instalou:
+     ```text
+     [GK_AUDIO] hook createSound libunity+0x985058 instalado (spy=1 streamfallback=0)
+     ```
+   - Até `f~12540`, ainda estava `progress=0.000`; isso é esperado, porque no run bom a barra só acordou em `f~13113`.
+   - Perto dessa janela o device saturou: ping continuou respondendo, mas novas conexões SSH passaram a falhar com:
+     ```text
+     Connection timed out during banner exchange
+     ```
+   - Estado do device ao pausar:
+     - `192.168.31.89` responde ping.
+     - SSH não abre sessão nova.
+     - A sessão principal remota encerrou pelo lado do cliente, mas não foi possível confirmar se o processo morreu.
+     - ADB TCP em `192.168.31.89:5555` recusou conexão.
+
+### Estado exato para continuar
+1. Primeiro recuperar o `.89`:
+   ```sh
+   ping -c 1 192.168.31.89
+   ssh -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=20 root@192.168.31.89 'ps w | grep graveyardkeeper | grep -v grep'
+   ```
+   Se ainda houver processo:
+   ```sh
+   ssh -F /dev/null -o StrictHostKeyChecking=no root@192.168.31.89 'for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null); case "$e" in /storage/roms/ports/graveyardkeeper/graveyardkeeper*) kill -9 "${p##*/}";; esac; done'
+   ```
+   Se SSH continuar travado mas ping responder, provavelmente precisa reiniciar o device ou esperar o userspace liberar.
+
+2. Assim que SSH voltar, copiar os logs antes de novo teste:
+   ```sh
+   scp -F /dev/null -o StrictHostKeyChecking=no root@192.168.31.89:/storage/roms/ports/graveyardkeeper/run.out /tmp/gk-audiospy-run.out
+   scp -F /dev/null -o StrictHostKeyChecking=no root@192.168.31.89:/storage/roms/ports/graveyardkeeper/run-test-audio-spy.out /tmp/gk-audiospy-wrapper.out
+   ```
+
+3. Próximo teste recomendado, ainda com áudio nativo:
+   ```sh
+   cd /storage/roms/ports/graveyardkeeper
+   env GK_RESTART_ES=0 GK_FRAMES=15000 GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1 GK_NOSOUNDASSERT=1 GK_STREAMFALLBACK=1 bash ./run.sh
+   ```
+   Objetivo: ver se retry com `FMOD_CREATESTREAM` evita `FMOD_ERR_MEMORY` em `sharedassets1.resource`.
+
+4. Se precisar logar argumentos do FMOD, usar `GK_AUDIOSPY=1`, mas evitar runs muito longos/verbosos até entender a saturação do `.89`.
+
+### RE de áudio já confirmado
+- `SoundManager::IntegrateFMODSound`: `libunity+0x182224`.
+- `FMOD::System::createSound` wrapper real do GK: `libunity+0x985058`.
+- Caller que monta `mode`/`resource`:
+  - `libunity+0x156ca4`
+  - `libunity+0x156db0`
+  - `libunity+0x156eec`
+  - `libunity+0x180228`
+  - `libunity+0x182894`
+- No caller `0x156eec`, o `mode` vem de `libunity+0x155790` e os tamanhos/canais parecem vir de campos do objeto de áudio:
+  - `[x19+0x90]`, `[x19+0x88]`, `[x19+0x60]`, `[x19+0x78]`.
+
+### Não esquecer
+- Não usar `GK_NOAUDIOLOAD` como solução final.
+- Não usar Pixel Cup como prova de runtime.
+- Referência principal continua sendo `ports/terraria`, mas com offsets recalculados para GK.
+- Próximo muro depois do áudio: spam/crash handler após `Preloader.OnSceneLoaded: scene_main_mobile`; a correção Google Play em `jni_shim.c` ainda precisa ser validada em run que chegue em `done=1` com o binário novo.
