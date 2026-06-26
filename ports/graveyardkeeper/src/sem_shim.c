@@ -29,8 +29,11 @@ static int stid(void) { return (int)syscall(SYS_gettid); }
 extern void gc_wait_unblock(void *oldp);
 extern void gc_wait_restore(void *oldp);
 
-#define MAX_SEMS 8192   /* 512 estourava no carregamento do título (Unity "Failed to post
-                           to a semaphore"=nosso sh_sem_post retornava -1=sem slot livre) */
+#define MAX_SEMS 65536  /* 8192 estourava no carregamento da cena scene_main_mobile (frame
+                           ~13324): Unity libera o sem_t SEM chamar sem_destroy -> slots vazam
+                           -> tabela enche -> sh_sem_post/wait retornam -1 ("Failed to post/wait
+                           on a semaphore") -> sync GfxDeviceWorker<->main quebra -> double free/
+                           corruption. Capturamos o overflow no sem_lookup (log 1x). */
 struct mysem { void *key; pthread_mutex_t m; pthread_cond_t c; int count; int used;
                int wtid[6]; int nwt; };  /* tids distintos que já esperaram (p/ filtro de tick) */
 static struct mysem g_sems[MAX_SEMS];
@@ -81,6 +84,13 @@ static struct mysem *sem_lookup(void *s, int create, unsigned initval) {
     r->used = 1; r->key = s; r->count = (int)initval;
     pthread_mutex_init(&r->m, NULL);
     init_cond_monotonic(&r->c);
+  }
+  if (!r && create && !freeslot) {  /* TABELA CHEIA — captura o erro (1x) */
+    static int warned;
+    if (!warned) { warned = 1;
+      fprintf(stderr, "[SEM-FULL] tabela de semaforos CHEIA (MAX_SEMS=%d) — sh_sem retornando -1 "
+                      "(Unity vai logar 'Failed to post/wait on a semaphore')\n", MAX_SEMS);
+      fsync(2); }
   }
   pthread_mutex_unlock(&g_sems_lock);
   return r;
