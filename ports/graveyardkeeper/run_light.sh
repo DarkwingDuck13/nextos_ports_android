@@ -9,6 +9,10 @@ for p in /proc/[0-9]*/exe; do t=$(readlink "$p" 2>/dev/null); case "$t" in *grav
 pkill -f gkwd.sh 2>/dev/null; sleep 1
 export GK_FRAMES=120000
 export GK_ASYNCPOLL=1 GK_NOSOUNDASSERT=1 GK_STREAMFALLBACK=1
+# downscale (reduz RSS -> menos thrashing de page-cache -> I/O mais rapido) — NAO e harmful
+export CUP_TEXHALF=512 CUP_CTEXHALF=256
+# ASSETFIX SEGURO (so LoadAssetAsync, sem set_sprite) — normaliza backslash no nome do asset
+export GK_ASSETFIX=1
 nohup bash ./run.sh >/dev/null 2>&1 &
 cp "$GD/gkwd.sh" /tmp/gkwd.sh 2>/dev/null; chmod +x /tmp/gkwd.sh
 nohup bash /tmp/gkwd.sh >/dev/null 2>&1 &
