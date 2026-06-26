@@ -2021,8 +2021,31 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
   }
   ds_r_TexImage2D(tgt, lvl, ifmt, w, h, b, fmt, type, px);
 }
+/* CUP_CTEXHALF: downscale de texturas COMPRIMIDAS (ETC1 — o grosso do GK) via MIP-DROP.
+ * O CUP_TEXHALF original só mexia em texturas não-comprimidas; as ETC1 (atlases grandes)
+ * passavam full-size e estouravam a RAM unificada do Mali-450 (832MB) durante o load ->
+ * device wedge. Aqui: dropa o nível-0 da textura comprimida grande e re-numera os mips
+ * (nível 1->0, 2->1, ...). Metade da dimensão = 1/4 da RAM por textura. Requer que a
+ * textura TENHA mips (Unity mobile com 'Generate Mip Maps' tem); textura sem mip e grande
+ * fica em branco (aceitável p/ TESTE de RAM). Só aplica acima do teto (max(w,h) > N). */
+static unsigned char ds_cdrop[DS_MAXTEXID];  /* 1 = nível-0 dropado p/ este tex id */
+static int g_ctexhalf = 0;                    /* teto N (CUP_CTEXHALF), 0 = off */
 static void my_glCompTexImage2D(unsigned tgt, int lvl, unsigned ifmt, int w, int h, int b, int sz, const void *px) {
   if (lvl == 0 && tgt == 0x0DE1) ds_rectex(w, h, "ctex");
+  if (g_ctexhalf && tgt == 0x0DE1 && px && sz > 0) {
+    int tid = ds_geti(0x8069);                /* GL_TEXTURE_BINDING_2D */
+    if (lvl == 0) {
+      if (w > g_ctexhalf || h > g_ctexhalf) {       /* grande -> dropa o nível-0 */
+        if (tid > 0 && tid < DS_MAXTEXID) ds_cdrop[tid] = 1;
+        static int n; if (n++ < 40) { fprintf(stderr, "[CTEXHALF] tex=%d %dx%d DROP lvl0 (ifmt=0x%X)\n", tid, w, h, ifmt); fsync(2); }
+        return;                                       /* não sobe o nível-0 (o nível-1 vira a base) */
+      }
+      if (tid > 0 && tid < DS_MAXTEXID) ds_cdrop[tid] = 0;  /* pequena: mantém, reset */
+    } else if (tid > 0 && tid < DS_MAXTEXID && ds_cdrop[tid]) {
+      ds_r_CompTexImage2D(tgt, lvl - 1, ifmt, w, h, b, sz, px);  /* mip L -> L-1 (já em half) */
+      return;
+    }
+  }
   ds_r_CompTexImage2D(tgt, lvl, ifmt, w, h, b, sz, px);
 }
 /* ---- renderbuffer/FBO: log + retry de formato de DEPTH não suportado ----
@@ -3986,7 +4009,8 @@ static void *ds_route(const char *nm, void *real) {
 static void ds_init(void) {
   rs_init();   /* CUP_RENDERSCALE: parseia env (o FBO lo-res cria-se lazy no 1º bind) */
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
-  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled()) return;
+  if (getenv("CUP_CTEXHALF")) { g_ctexhalf = atoi(getenv("CUP_CTEXHALF")); if (g_ctexhalf < 2) g_ctexhalf = 256; }
+  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !g_ctexhalf && !rs_enabled()) return;
   g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY e/ou TEXHALF precisam de glTexImage2D) */
   g_drawdiag = getenv("CUP_DRAWSPY") ? 1 : 0;  /* ⚠️ ring + glGetIntegerv/draw — só em diag */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;

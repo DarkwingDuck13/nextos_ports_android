@@ -31,6 +31,14 @@ sleep 1
 LOG=/dev/shm/gk.out
 export GK_FRAMES=20000
 export GK_ASYNCPOLL=1 GK_NOSOUNDASSERT=1 GK_STREAMFALLBACK=1
+# 🔓 lost-wakeup: sem o spam do debugPrintf (que segurava o timing) o sync main<->async
+# deadlocka em futex. CUP_SEMPOLL=20 faz os sem_wait não-main retornarem a cada 20ms ->
+# re-checam a fila -> quebram o lost-wakeup deterministicamente (sem depender de logging).
+export CUP_SEMPOLL=20
+# 🔻 downscale de textura p/ caber na RAM unificada do Mali-450 (832MB):
+#   CUP_CTEXHALF=256 = mip-drop de ETC1 grande (>256) -> metade dim, 1/4 RAM/textura;
+#   CUP_TEXHALF=512  = downscale das não-comprimidas (RGBA/etc) > 512.
+export CUP_CTEXHALF=256 CUP_TEXHALF=512
 # (run.sh já exporta TER_CHOREO=1 GK_SKIP_CHOREO_WAIT=1)
 nohup bash ./run.sh > "$LOG" 2>&1 &
 echo "GK lançado (log em $LOG). Monitorar: grep ASYNCPOLL $LOG | tail"

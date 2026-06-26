@@ -55,7 +55,7 @@ export GK_FRAMES="${GK_FRAMES:-999999999}"
 export TER_CHOREO="${TER_CHOREO:-1}"
 export GK_SKIP_CHOREO_WAIT="${GK_SKIP_CHOREO_WAIT:-1}"
 echo "[run] Graveyard Keeper — fbdev Mali-450 ${TER_SCREEN_W:-?}x${TER_SCREEN_H:-?}"
-./graveyardkeeper > run.out 2>&1
+./graveyardkeeper > /dev/shm/gk.out 2>&1
 RC=$?
 echo "[run] saiu rc=$RC"
 exit "$RC"
