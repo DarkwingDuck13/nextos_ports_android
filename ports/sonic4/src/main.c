@@ -195,6 +195,17 @@ int main(int argc, char *argv[]) {
   /* fallback opt-in: forçar IsValid->1 global (crasha no save, só p/ depurar). */
   if (getenv("SONIC_FORCEDEMOGATE"))
     patch_retval("_ZThn20_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE", 1);
+  /* 🔑 fingir SÓ o attract-demo do título (resType 6) como carregado, mantendo os
+     outros recursos REAIS (evita o crash do force-global IsValid->1). A função local
+     do is-loaded do title-demo = container CManagerState<CTitleViewTask>::Act+0x20
+     (0x2522a4): checa o objeto demo global (null)->0. Forçar return 1 deixa o
+     demo-gate do título/menu passar SEM o attract-demo (emblema vazio). */
+  if (getenv("SONIC_FAKEDEMO")) {  /* opt-in: sozinho não destrava (há +resTypes) */
+    const char *s = "_ZN2dm10menucommon13CManagerStateINS_5title14CTitleViewTaskENS2_13CTitleControlEE3ActEv";
+    patch_word_at(s, 0x20, 0xe3a00001); /* mov r0,#1 */
+    patch_word_at(s, 0x24, 0xe12fff1e); /* bx lr     */
+  }
+
   /* 🔑 F2F age gate / GDPR consent: ao apertar "Press any button" o jogo chama
      showAgeGate (dialog Java de idade/consent que não temos) e espera a resposta.
      Bypass: isEnoughtAge->1 (idade ok => haveRemoveAgeGate=1) + isConsentCountry->0
