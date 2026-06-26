@@ -185,6 +185,14 @@ int main(int argc, char *argv[]) {
      (o gate 1 nunca libera). Forçar 0 (nenhum upsell) destrava a state machine do título. */
   if (!getenv("SONIC_KEEPUPSHELL"))
     patch_ret0("_Z18SJni_IsUpshellShowv");
+  /* 🔑 GATE DO MENU (title -> menu): CStateWaitSignIn::Next só avança pro menu
+     (state 0x43) se GsUserSetupIsCompleted()!=0 E GsUserIsEnable()!=0 (setup de
+     conta Google Play Games / online). Sem login, o título volta pro Waiting (loop).
+     Forçar ambos -> 1 (usuário "configurado/habilitado") destrava título -> menu. */
+  if (!getenv("SONIC_KEEPSIGNIN")) {
+    patch_retval("_Z22GsUserSetupIsCompletedm", 1);
+    patch_retval("_Z14GsUserIsEnablem", 1);
+  }
   /* gate3 do título: CStateInitialize::Next espera CDemoResourceManager IsValid()
      (recursos do attract-demo do evento 3) que nunca valida (id 2 não carrega).
      NOP no `beq` (offset +0x5c) faz a state machine avançar pro Opening/LogoMainFadeIn
@@ -413,7 +421,9 @@ int main(int argc, char *argv[]) {
     /* auto-press de teste: o trigger é a borda 0->1 (1 frame), então alterna
        0x8000/0 a cada frame após o título carregar -> trigger frequente p/ vencer
        a corrida com o poll do CStateWaiting::Next (SONIC_AUTOSTART). */
-    if (getenv("SONIC_AUTOSTART") && frame > 360 && (frame & 1)) mask |= FOX_A;
+    /* press ÚNICO de teste (não contínuo): aperta confirm uma vez ~frame 420 por
+       ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
+    if (getenv("SONIC_AUTOSTART") && frame >= 600 && frame < 606) mask |= FOX_A;
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
 
     if (fox.GameProcess) fox.GameProcess(env, thiz);
