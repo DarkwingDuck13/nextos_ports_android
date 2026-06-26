@@ -4,6 +4,64 @@ Engine **Fusion** (`libLEGO_Black_Mobile.so`, arm64, ES2 native, no DRM).
 Device `192.168.31.79` (sshpass -p '' root@.., EmuELEC, Mali-450 Amlogic).
 Golden ref framework = LEGO Star Wars TCS (`~/lswtcs/`, src `docs/reference/lswtcs-src/`).
 
+# 🦇 LEGO BATMAN 3 — RESUMO DO QUE FALTA (2026-06-26, fim s5)
+**JÁ FUNCIONA:** boot, render LIMPO/estável (FBCOPY), título "Beyond Gotham", menu, **controle Xbox físico navega o front-end** (Touch to start → menu → New Game), New Game INICIA.
+**FALTA (3 coisas):**
+1. 🔴 **GAMEPLAY** — clicar New Game **trava NA HORA**. Causa achada (gdb): **DEADLOCK de 2 threads no GL do Mali** ao compilar o 1º shader COMPLEXO de gameplay (`light=dlit,refl=blinn,refl2=cubemapadd,dirlight=2,vctint=1`): MAIN thread em `futex_wait`, thread worker (compilando o shader) presa em `_mali_osu_lock_wait` (lock interno do driver Mali). Classe RE4 (single-context EGL não suporta 2 threads em GL ao mesmo tempo). Tentativa em curso: serializar GL com mutex global (ver egl_shim_ensure_current) OU forçar compile de shader síncrono numa thread só.
+2. 🔊 **ÁUDIO COMPLETO** — sem som. opensles cria players (CreateAudioPlayer) mas a engine nunca dá Enqueue de PCM (thread de decode/áudio não alimenta). `fnaSound_Update` 0x3ca454.
+3. 🎬 **FUNDO ANIMADO ATRÁS DOS MENUS** — falta o fundo animado do menu principal (NextOS: não sei se é VÍDEO ou fundo 3D animado). O título tem cena 3D (Terra/Gotham, é 3D real-time no original). Cutscenes de nível = 36 .mp4 (vídeo via GameVideoPlayer+MediaPlayer+"video layout" Android, que não temos). NÃO é crítico p/ jogabilidade.
+
+---
+
+## 🎮 s5 (2026-06-26) — CONTROLE NAVEGA O MENU + NEW GAME INICIA; trava no load do 1º nível (DEADLOCK GL Mali)
+
+🔬 **CAUSA DO FREEZE CONFIRMADA (gdb no estado travado):** New Game → compila shaders de
+gameplay → ao compilar um shader COMPLEXO (`albedo=textured,light=dlit,refl=blinn,
+refl2=cubemapadd,dirlight=2,vctint=1`, prog=60) o log corta no meio do dump e **trava**:
+- MAIN thread: `futex_wait` (bloqueada num lock).
+- thread worker "legobatman": `_mali_osu_lock_wait` em libGLESv2 (lock interno do driver Mali).
+- ⇒ **deadlock de 2 threads sobre o contexto/lock GL único do Mali** durante compilação de
+  shader. (single-window EGL: 1 contexto, 1 thread por vez; a engine compila shader numa thread
+  worker enquanto a main também mexe no GL → fight no lock do Mali → trava.)
+- EGL_BAD_ACCESS (2x) é só no BOOT, não é o culpado do freeze.
+🛠️ **FIX a tentar (próxima sessão):** serializar TODO acesso GL com um mutex global recursivo
+(lock em volta de ensure_current + chamadas GL, uma thread por vez), OU achar flag de
+shader-compile síncrono, OU dar contexto próprio às worker threads (mas EGL_BAD_ACCESS atrapalha).
+Mesmo muro do RE4 (job-system + GL multi-thread).
+
+✅ **Render limpo (FBCOPY) deixou a resposta do controle VISÍVEL** → com o flicker fora,
+o **controle Xbox físico NAVEGA o front-end** (Touch to start → menu → New Game) — NextOS
+confirmou "controle funcionou". O front-end **responde ao joypad** via `nativeControllerSetData`
+(o flicker é que escondia a resposta antes; NÃO é touch-only como eu achava na s3). Commits
+fb63579 (FBCOPY) + 059156e (controle/FMV).
+
+✅ **NEW GAME INICIA** (shaders de nível light=prelit/outline compilam).
+🔴 **TRAVA no load do 1º nível** (NextOS: "travou após clicar"). Diagnóstico (gdb):
+- MAIN thread NÃO travada — está em `SDL_Delay`/nanosleep do nosso loop, roda `nativeRender`
+  todo frame (polling). Workers idle em `pthread_cond_wait`. Tela fica no menu (mean 82).
+- `eglCreateContext FAILED: EGL_BAD_ACCESS` aparece só 2x (no BOOT, não no load) → **NÃO é
+  o culpado do load**. (single-window EGL não compartilha contexto enquanto a main segura a
+  surface — investigar depois se virar gargalo.)
+- Muitas `pthread_create_fake(entry=fnaThread_ThreadProc 0x3cfd0c, arg)` → cada uma chama
+  `arg->func(arg->param)` (3cfd58) e "entry returned (nil)" (tarefas one-shot de load paralelo
+  OU workers de job que morrem cedo). `shaderbin.fib` MISS (compila shaders em runtime, lento).
+- ⇒ É a **classe deadlock job-system / load-do-nível** (igual RE4). O game-logic dentro do
+  nativeRender espera um job/recurso que nunca completa.
+- 🎬 **fnaFMV_SetMovieInfo(0,0) por frame (LBBG_NOSKIPFMV desliga)** força "movie finished"
+  (byte estado 0xc3b660; fnaFMV_Finished=byte==0) p/ cutscene-vídeo não travar — **NÃO resolveu**
+  o freeze (logo o hang é o load do nível, não a espera da cutscene). Hipótese do NextOS
+  (vídeo) era boa mas o gargalo é outro.
+
+### 🎯 PRÓXIMOS (freeze do load do nível)
+- [ ] Caracterizar o job-system: identificar qual job o game-logic espera (instrumentar
+      fnaThread/job-post-wait; achar o semáforo/cond que não é postado). Comparar contagem de
+      threads/jobs vs RE4 (sh_sem_init).
+- [ ] Testar: New Game vai pro Batcave/hub ou direto pra cutscene+nível? (logar qual .fib de
+      nível/cena a engine pede no New Game).
+- [ ] shaderbin.fib: servir o prebuiltshaders_android.fib como cache p/ não compilar em runtime
+      (acelera load, pode destravar se for timeout).
+- [ ] Empacotar launcher (LBBG_PADTAP p/ controle) + saves.
+
 ## ✅✅ s4 (2026-06-26) — FLICKER/LIXO RESOLVIDO: FBCOPY (double-buffer por software) + BANCADA NO CELULAR
 
 🏆 **O FLICKER/LIXO (a "briga de buffers" que o NextOS via) ESTÁ RESOLVIDO.** Título agora
