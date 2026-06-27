@@ -20,6 +20,74 @@ Device usado: `192.168.31.79`.
 Diretorio no device: `/storage/roms/ports/sonic4`.
 Binario atualizado no device: `/storage/roms/ports/sonic4/sonic4`.
 
+## Pacote PortMaster v1
+Pacote pronto na area de trabalho:
+
+```sh
+/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip
+```
+
+Conteudo do zip:
+
+- `Sonic4EP2.sh` na raiz de `roms/ports`;
+- `sonic4/sonic4` binario armhf compat;
+- `sonic4/sonic4.gptk`;
+- `sonic4/port.json`;
+- `sonic4/gameinfo.xml`;
+- `sonic4/sfx_map.tsv`;
+- `sonic4/tools/extract-sonic4-data.sh`;
+- `sonic4/README.md`;
+- `sonic4/LICENSE.md`;
+- `sonic4/Sonic4ep2.f2f`.
+
+O zip nao inclui `runtime/`, APK, OBB ou arquivos comerciais do jogo.
+
+Build compat:
+
+```sh
+cd /home/nextos/nextos_ports_android/ports/sonic4
+SR=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain/armv8a-emuelec-linux-gnueabihf/sysroot
+sudo -n docker run --rm --platform linux/amd64 -v "$PWD":/repo -v "$SR":/sysroot:ro debian:buster bash /repo/build_compat_gcc.sh
+cp -f sonic4.compat.gcc package/sonic4/sonic4
+cd package
+zip -r "/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip" Sonic4EP2.sh sonic4
+```
+
+Resultado do build Docker:
+
+- `sonic4.compat.gcc` / `package/sonic4/sonic4`;
+- tamanho: `160964` bytes;
+- md5 validado no pacote/device: `985b1c679873dc9471c7bcc51598fa10`;
+- maior simbolo glibc: `GLIBC_2.27`, abaixo do alvo glibc 2.30;
+- sem dependencia `GLIBCXX`;
+- dependencias dinamicas esperadas no device: `libSDL2-2.0.so.0`, `libmpg123.so.0`,
+  `libvorbisfile.so.3`, `libGLESv2.so`, `libdl.so.2`, `libm.so.6`, `libpthread.so.0`,
+  `libc.so.6`.
+
+Starter limpo:
+
+- mata qualquer `sonic4` antigo pelo alvo real de `/proc/*/exe` antes de iniciar;
+- extrai `lib/armeabi-v7a/libfox.so` do APK na primeira execucao;
+- instala `data/main.22.com.sega.sonic4episode2.obb` a partir do cache ZIP ou OBB direto;
+- usa `SONIC_DATADIR="$GAMEDIR"`;
+- usa `SONIC_AUTOSTART=0`;
+- usa `SONIC_NOFAKESOUND=1`;
+- usa `DYSMANTLE_SWAPINT=1`;
+- nao usa autoplay, `AUTORIGHT`, `AUTOJUMP`, `INPUTLOG` ou flags de teste.
+
+Validacao limpa no device:
+
+- instalacao anterior preservada como `/storage/roms/ports/sonic4.devbackup_20260626_183504`;
+- zip extraido em `/storage/roms/ports`;
+- APK copiado para `/storage/roms/ports/sonic4/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
+- cache ZIP copiado para `/storage/roms/ports/sonic4/cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip`;
+- primeiro launch extraiu `libfox.so` e OBB automaticamente;
+- `libfox.so` extraida com md5 `d77489abf54523046ade35425e537782`;
+- OBB extraida com md5 `3b8ad5c461014bd94cf227982d49c664`;
+- primeiro boot chegou em `[frame 0]`, criou `foxsave_0.dat` e estabilizou em 60 FPS;
+- segundo boot nao reextraiu dados, carregou `foxsave_0.dat` com sucesso e estabilizou em 60 FPS;
+- apos encerrar, varredura de `/proc` retornou `no_sonic_running`.
+
 ## Audio implementado
 O caminho real do Sonic 4 EP2 nao e OpenSL neste port. A `libfox.so` chama a ponte Java
 `com/mineloader/fox/AudioHelper`:
@@ -161,8 +229,7 @@ Depois o NextOS passa uma fase inteira. Em seguida fechar pelo guard (`sh ./stop
 ## Pendencias atuais
 Ordem recomendada:
 
-1. Montar pacote PortMaster/NextOS final com starter limpo e dados extraidos do APK/OBB.
-2. NextOS testar controles reais por mais tempo no run limpo atual.
-3. Validar rotas mais longas de gameplay para item box, inimigo/matar bicho, damage,
+1. NextOS testar controles reais por mais tempo no pacote v1 limpo.
+2. Validar rotas mais longas de gameplay para item box, inimigo/matar bicho, damage,
    spin/dash/homing, gimmicks de zona e coop/Tails. Audio base ja esta aprovado.
-4. Depois do teste manual, revisar qualquer visual/audio restante que aparecer fora da primeira rota.
+3. Depois do teste manual, revisar qualquer visual/audio restante que aparecer fora da primeira rota.
