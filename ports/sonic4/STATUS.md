@@ -17,8 +17,9 @@ O port passa pelo fluxo principal no device `.79`:
 - save real validado: NextOS passou a primeira fase, o jogo foi fechado/reaberto e apareceu `Continue`.
 
 Device usado: `192.168.31.79`.
-Diretorio no device: `/storage/roms/ports/sonic4`.
-Binario atualizado no device: `/storage/roms/ports/sonic4/sonic4`.
+Diretorio de desenvolvimento/testes antigos no device: `/storage/roms/ports/sonic4`.
+Diretorio final do pacote no device: `/storage/roms/ports/sonic4ep2`.
+Launcher final no device: `/storage/roms/ports_scripts/Sonic4EP2.sh`.
 
 ## Pacote PortMaster v1
 Pacote pronto na area de trabalho:
@@ -29,18 +30,25 @@ Pacote pronto na area de trabalho:
 
 Conteudo do zip:
 
-- `Sonic4EP2.sh` na raiz de `roms/ports`;
-- `sonic4/sonic4` binario armhf compat;
-- `sonic4/sonic4.gptk`;
-- `sonic4/port.json`;
-- `sonic4/gameinfo.xml`;
-- `sonic4/sfx_map.tsv`;
-- `sonic4/tools/extract-sonic4-data.sh`;
-- `sonic4/README.md`;
-- `sonic4/LICENSE.md`;
-- `sonic4/Sonic4ep2.f2f`.
+- `ports_scripts/Sonic4EP2.sh`;
+- `ports_scripts/images/Sonic4EP2.png`;
+- `ports/sonic4ep2/sonic4` binario armhf compat;
+- `ports/sonic4ep2/sonic4.gptk`;
+- `ports/sonic4ep2/port.json`;
+- `ports/sonic4ep2/gameinfo.xml`;
+- `ports/sonic4ep2/cover.png`;
+- `ports/sonic4ep2/screenshot.png`;
+- `ports/sonic4ep2/splash.png`;
+- `ports/sonic4ep2/sfx_map.tsv`;
+- `ports/sonic4ep2/tools/extract-sonic4-data.sh`;
+- `ports/sonic4ep2/tools/sonic4ep2_extract.src`;
+- `ports/sonic4ep2/tools/progressor`;
+- `ports/sonic4ep2/README.md`;
+- `ports/sonic4ep2/LICENSE.md`;
+- `ports/sonic4ep2/Sonic4ep2.f2f`.
 
 O zip nao inclui `runtime/`, APK, OBB ou arquivos comerciais do jogo.
+Zip final validado: md5 `895a1c44df53917a03ebcc3a392c465b`, tamanho `2.5M`.
 
 Build compat:
 
@@ -48,14 +56,14 @@ Build compat:
 cd /home/nextos/nextos_ports_android/ports/sonic4
 SR=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain/armv8a-emuelec-linux-gnueabihf/sysroot
 sudo -n docker run --rm --platform linux/amd64 -v "$PWD":/repo -v "$SR":/sysroot:ro debian:buster bash /repo/build_compat_gcc.sh
-cp -f sonic4.compat.gcc package/sonic4/sonic4
+cp -f sonic4.compat.gcc package/ports/sonic4ep2/sonic4
 cd package
-zip -r "/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip" Sonic4EP2.sh sonic4
+zip -r -FS "/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip" ports_scripts ports
 ```
 
 Resultado do build Docker:
 
-- `sonic4.compat.gcc` / `package/sonic4/sonic4`;
+- `sonic4.compat.gcc` / `package/ports/sonic4ep2/sonic4`;
 - tamanho: `160964` bytes;
 - md5 validado no pacote/device: `985b1c679873dc9471c7bcc51598fa10`;
 - maior simbolo glibc: `GLIBC_2.27`, abaixo do alvo glibc 2.30;
@@ -67,8 +75,11 @@ Resultado do build Docker:
 Starter limpo:
 
 - mata qualquer `sonic4` antigo pelo alvo real de `/proc/*/exe` antes de iniciar;
+- fica em `ports_scripts/Sonic4EP2.sh`, padrao EmuELEC/NextOS;
+- usa `GAMEDIR="/$directory/ports/sonic4ep2"`, sem hardcode de `/storage/roms` no launcher;
 - extrai `lib/armeabi-v7a/libfox.so` do APK na primeira execucao;
 - instala `data/main.22.com.sega.sonic4episode2.obb` a partir do cache ZIP ou OBB direto;
+- usa `progressor`/`tools/sonic4ep2_extract.src` para janela de primeira extracao quando disponivel;
 - usa `SONIC_DATADIR="$GAMEDIR"`;
 - usa `SONIC_AUTOSTART=0`;
 - usa `SONIC_NOFAKESOUND=1`;
@@ -78,15 +89,20 @@ Starter limpo:
 Validacao limpa no device:
 
 - instalacao anterior preservada como `/storage/roms/ports/sonic4.devbackup_20260626_183504`;
-- zip extraido em `/storage/roms/ports`;
-- APK copiado para `/storage/roms/ports/sonic4/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
-- cache ZIP copiado para `/storage/roms/ports/sonic4/cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip`;
+- zip final extraido em `/storage/roms`, criando `ports_scripts/Sonic4EP2.sh` e `ports/sonic4ep2/`;
+- APK copiado para `/storage/roms/ports/sonic4ep2/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
+- OBB direto copiado para `/storage/roms/ports/sonic4ep2/main.22.com.sega.sonic4episode2.obb`;
+- backup de inputs preservado em `/storage/roms/ports/sonic4ep2/_backup_input/`;
 - primeiro launch extraiu `libfox.so` e OBB automaticamente;
 - `libfox.so` extraida com md5 `d77489abf54523046ade35425e537782`;
 - OBB extraida com md5 `3b8ad5c461014bd94cf227982d49c664`;
-- primeiro boot chegou em `[frame 0]`, criou `foxsave_0.dat` e estabilizou em 60 FPS;
+- primeiro boot do layout final chegou em `[frame 0]`, criou `foxsave_0.dat` novo e estabilizou em 60 FPS;
 - segundo boot nao reextraiu dados, carregou `foxsave_0.dat` com sucesso e estabilizou em 60 FPS;
 - apos encerrar, varredura de `/proc` retornou `no_sonic_running`.
+- `progressor` corrigido e smoke-testado depois da extracao: saiu `child exited with code 0`, sem apagar APK/OBB restaurados;
+- `ports_scripts/gamelist.xml` atualizado no device com `<path>./Sonic4EP2.sh</path>` e imagem
+  `./images/Sonic4EP2.png`;
+- launcher antigo em `/storage/roms/ports/Sonic4EP2.sh` removido.
 
 Regra operacional do device:
 

@@ -2,8 +2,8 @@
     "version": 2,
     "name": "sonic4ep2.zip",
     "items": [
-        "Sonic4EP2.sh",
-        "sonic4"
+        "ports_scripts/Sonic4EP2.sh",
+        "ports/sonic4ep2"
     ],
     "items_opt": [],
     "attr": {
@@ -12,7 +12,7 @@
             "felc18-blip"
         ],
         "desc": "Sonic The Hedgehog 4: Episode II via Android libfox.so so-loader. BYO-data: requires your legal APK and cache ZIP/OBB. Native gameplay, audio, controller, pause, save/continue and SELECT+START exit.",
-        "inst": "Copy sonic-the-hedgehog-4-episode-ii-2.0.0.apk and cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip or main.22.com.sega.sonic4episode2.obb to the sonic4 folder, then launch once to extract.",
+        "inst": "Copy sonic-the-hedgehog-4-episode-ii-2.0.0.apk and cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip or main.22.com.sega.sonic4episode2.obb to the sonic4ep2 folder, then launch once to extract.",
         "genres": [
             "platformer",
             "action"

@@ -1,0 +1,94 @@
+#!/bin/bash
+# Sonic 4 EP2 first-run extractor, intended to run under PortMaster progressor.
+set -e
+
+SCRIPT="${BASH_SOURCE:-$0}"
+SCRIPT_PATH="$(cd "$(dirname "${SCRIPT}")" && pwd)"
+GAMEDIR="$(cd "${SCRIPT_PATH}/.." && pwd)"
+cd "$GAMEDIR"
+
+pbar() {
+  p="$1"
+  n=$((p / 5))
+  bar=""
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if [ "$i" -lt "$n" ]; then bar="${bar}#"; else bar="${bar}."; fi
+    i=$((i + 1))
+  done
+  echo "    [${bar}] ${p}%"
+}
+
+msgbox() {
+  echo ""
+  echo "$1"
+  echo "$2"
+  sleep 5
+}
+
+DID_EXTRACT=0
+echo "Primeira execucao -- preparando Sonic 4 Episode II."
+echo "Extraindo arquivos da sua copia Android legal."
+echo "Nao desligue o aparelho."
+echo ""
+
+APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null | head -1)
+OBB=$(ls "$GAMEDIR"/main.22.com.sega.sonic4episode2.obb "$GAMEDIR"/*.obb "$GAMEDIR"/*.OBB 2>/dev/null | head -1)
+CACHE=""
+if [ -z "$OBB" ]; then
+  CACHE=$(ls "$GAMEDIR"/*cache*sonic*.zip "$GAMEDIR"/*Sonic*cache*.zip "$GAMEDIR"/*.zip "$GAMEDIR"/*.ZIP 2>/dev/null | head -1)
+fi
+
+if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] && [ -z "$APK" ]; then
+  msgbox "Sonic 4 Episode II" $'APK nao encontrado.\nCopie sonic-the-hedgehog-4-episode-ii-2.0.0.apk para ports/sonic4ep2/ e abra de novo.'
+  exit 1
+fi
+
+if [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ] && [ -z "$OBB" ] && [ -z "$CACHE" ]; then
+  msgbox "Sonic 4 Episode II" $'OBB/cache nao encontrado.\nCopie cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip ou main.22.com.sega.sonic4episode2.obb para ports/sonic4ep2/ e abra de novo.'
+  exit 1
+fi
+
+mkdir -p "$GAMEDIR/lib/armeabi-v7a" "$GAMEDIR/data"
+
+if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ]; then
+  echo ">> Biblioteca do jogo (libfox.so)..."
+  pbar 10
+  unzip -o -j "$APK" "lib/armeabi-v7a/libfox.so" -d "$GAMEDIR/lib/armeabi-v7a" >/dev/null
+  DID_EXTRACT=1
+  pbar 35
+fi
+
+if [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ]; then
+  echo ""
+  echo ">> Dados principais (OBB ~570 MB)..."
+  if [ -n "$OBB" ]; then
+    pbar 45
+    cp -f "$OBB" "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb"
+  else
+    pbar 45
+    unzip -o -j "$CACHE" "com.sega.sonic4episode2/main.22.com.sega.sonic4episode2.obb" -d "$GAMEDIR/data" >/dev/null
+  fi
+  DID_EXTRACT=1
+  pbar 85
+fi
+
+[ -f "$GAMEDIR/Sonic4ep2.f2f" ] || printf '{"MerchandiseTime":1782470230}' > "$GAMEDIR/Sonic4ep2.f2f"
+sync
+
+if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ]; then
+  msgbox "Sonic 4 Episode II" $'Extracao incompleta.\nVerifique o APK/OBB/cache e o espaco livre.'
+  exit 1
+fi
+
+echo ""
+echo ">> Liberando arquivos temporarios..."
+if [ "$DID_EXTRACT" = 1 ]; then
+  rm -f "$APK" "$OBB" "$CACHE" 2>/dev/null || true
+fi
+sync
+pbar 100
+echo ""
+echo "Pronto! Sonic 4 Episode II vai iniciar agora."
+sleep 2
+exit 0

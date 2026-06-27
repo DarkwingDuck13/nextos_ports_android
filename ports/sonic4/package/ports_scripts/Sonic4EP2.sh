@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sonic The Hedgehog 4: Episode II -- Android so-loader -> NextOS / PortMaster.
-# BYO-data: copy the APK and cache ZIP/OBB to roms/ports/sonic4, then launch once.
+# BYO-data: copy the APK and cache ZIP/OBB to roms/ports/sonic4ep2, then launch once.
 
 PORTNAME="Sonic The Hedgehog 4: Episode II"
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
@@ -24,14 +24,13 @@ get_controls
 CUR_TTY=/dev/tty0
 $ESUDO chmod 666 $CUR_TTY 2>/dev/null
 
-GAMEDIR="/$directory/ports/sonic4"
-[ -d "$GAMEDIR" ] || GAMEDIR="/storage/roms/ports/sonic4"
-cd "$GAMEDIR"
+GAMEDIR="/$directory/ports/sonic4ep2"
+cd "$GAMEDIR" || exit 1
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
 kill_existing_sonic4() {
   self="$$"
-  pkill -9 -f gptokeyb 2>/dev/null || true
+  pkill -x gptokeyb 2>/dev/null || true
   for exe in /proc/[0-9]*/exe; do
     pid="${exe#/proc/}"
     pid="${pid%/exe}"
@@ -67,36 +66,23 @@ extract_data_first_run() {
   [ "$need_lib" = 0 ] && [ "$need_obb" = 0 ] && return 0
 
   echo "First run setup: extracting Sonic 4 Episode II data."
-  mkdir -p "$GAMEDIR/lib/armeabi-v7a" "$GAMEDIR/data"
+  $ESUDO chmod +x "$GAMEDIR/tools/sonic4ep2_extract.src" "$GAMEDIR/tools/progressor" 2>/dev/null || true
 
-  if [ "$need_lib" = 1 ]; then
-    APK=$(ls "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null | head -1)
-    if [ -n "$APK" ]; then
-      echo "Extracting libfox.so from $(basename "$APK")"
-      unzip -o -j "$APK" "lib/armeabi-v7a/libfox.so" -d "$GAMEDIR/lib/armeabi-v7a"
-    fi
+  PROGRESSOR="$(command -v progressor 2>/dev/null || true)"
+  [ -z "$PROGRESSOR" ] && [ -x "$GAMEDIR/tools/progressor" ] && PROGRESSOR="$GAMEDIR/tools/progressor"
+
+  if [ -n "$PROGRESSOR" ]; then
+    SONIC4EP2_PROGRESSOR=1 "$PROGRESSOR" \
+      --title "Sonic 4 Episode II" \
+      --log "$GAMEDIR/tools/extract.log" \
+      "$GAMEDIR/tools/sonic4ep2_extract.src" || "$GAMEDIR/tools/sonic4ep2_extract.src"
+  else
+    "$GAMEDIR/tools/sonic4ep2_extract.src"
   fi
-
-  if [ "$need_obb" = 1 ]; then
-    OBB=$(ls "$GAMEDIR"/main.22.com.sega.sonic4episode2.obb "$GAMEDIR"/*.obb "$GAMEDIR"/*.OBB 2>/dev/null | head -1)
-    if [ -n "$OBB" ]; then
-      echo "Installing OBB from $(basename "$OBB")"
-      cp -f "$OBB" "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb"
-    else
-      CACHE=$(ls "$GAMEDIR"/*cache*sonic*.zip "$GAMEDIR"/*Sonic*cache*.zip "$GAMEDIR"/*.zip "$GAMEDIR"/*.ZIP 2>/dev/null | head -1)
-      if [ -n "$CACHE" ]; then
-        echo "Extracting OBB from $(basename "$CACHE")"
-        unzip -o -j "$CACHE" "com.sega.sonic4episode2/main.22.com.sega.sonic4episode2.obb" -d "$GAMEDIR/data"
-      fi
-    fi
-  fi
-
-  [ -f "$GAMEDIR/Sonic4ep2.f2f" ] || printf '{"MerchandiseTime":1782470230}' > "$GAMEDIR/Sonic4ep2.f2f"
-  sync
 }
 
 kill_existing_sonic4
-trap 'kill_existing_sonic4; pkill -9 -f gptokeyb 2>/dev/null || true' EXIT INT TERM
+trap 'kill_existing_sonic4; pkill -x gptokeyb 2>/dev/null || true' EXIT INT TERM
 extract_data_first_run
 
 if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ]; then
@@ -135,7 +121,7 @@ fi
 
 ./sonic4
 
-pkill -9 -f gptokeyb 2>/dev/null || true
+pkill -x gptokeyb 2>/dev/null || true
 $ESUDO chmod 666 "$CUR_TTY" 2>/dev/null || true
 printf "\033c" >> "$CUR_TTY" 2>/dev/null || true
 command -v pm_finish >/dev/null 2>&1 && pm_finish

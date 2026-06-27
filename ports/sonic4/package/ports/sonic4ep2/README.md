@@ -1,11 +1,11 @@
 # Sonic The Hedgehog 4: Episode II - NextOS / PortMaster
 
-This package contains only the Linux so-loader and launcher files. It does not
-include game data.
+This package contains only the Linux so-loader, launcher and PortMaster metadata.
+It does not include game data.
 
 ## Required files
 
-Copy your own Android game files into `roms/ports/sonic4/`:
+Copy your own Android game files into `roms/ports/sonic4ep2/`:
 
 - `sonic-the-hedgehog-4-episode-ii-2.0.0.apk`
 - `cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip`
@@ -18,6 +18,10 @@ On first launch the script extracts:
 
 - `lib/armeabi-v7a/libfox.so` from the APK;
 - `data/main.22.com.sega.sonic4episode2.obb` from the cache ZIP or direct OBB.
+
+The launcher is installed as `roms/ports_scripts/Sonic4EP2.sh`; data lives in
+`roms/ports/sonic4ep2/`. First-run extraction uses a progressor window when
+available and falls back to plain log output otherwise.
 
 ## Controls
 
