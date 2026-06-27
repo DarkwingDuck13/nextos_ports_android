@@ -88,6 +88,11 @@ Validacao limpa no device:
 - segundo boot nao reextraiu dados, carregou `foxsave_0.dat` com sucesso e estabilizou em 60 FPS;
 - apos encerrar, varredura de `/proc` retornou `no_sonic_running`.
 
+Regra operacional do device:
+
+- o frontend correto para devolver a tela ao NextOS e `emustation.service`;
+- nao iniciar, parar, reiniciar ou alterar `es-de.service` neste fluxo.
+
 ## Audio implementado
 O caminho real do Sonic 4 EP2 nao e OpenSL neste port. A `libfox.so` chama a ponte Java
 `com/mineloader/fox/AudioHelper`:
