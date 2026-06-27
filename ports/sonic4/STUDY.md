@@ -6,9 +6,9 @@ arquitetural. Padrão so-loader que já dominamos (Shantae/DuckTales/SOR4/Chrono
 a engine NN/fox não tem decompilação) → seria inédito.
 
 ## Arquivos (temos os 2 pedaços)
-- **APK** `~/Downloads/sonic-the-hedgehog-4-episode-ii-2.0.0.apk` (20MB) — versão F2F/lite
+- **APK** `sonic-the-hedgehog-4-episode-ii-2.0.0.apk` (20MB) — versão F2F/lite
   (`com.sega.sonic4ep2lite`), só engine + ads. Engine: `lib/armeabi-v7a/**libfox.so**` (8.8MB).
-- **DADOS** `~/Downloads/cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip` (433MB) → contém
+- **DADOS** `cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip` (433MB) → contém
   **`com.sega.sonic4episode2/main.22.com.sega.sonic4episode2.obb`** (594MB, formato **LPK**) =
   o jogo COMPLETO (episode2, não lite). Magic `LPK\0`.
 
@@ -27,7 +27,7 @@ Sequência típica (a partir do disasm dos stubs em 0x4bd2xx):
 - `SetGamePath(path)` (0x4bd41c) — diz onde estão os dados (LPK/OBB). Path esperado:
   **`/mnt/sdcard/Sonic4EP2DL/`** (no port: apontar pro nosso dir; redirecionar).
 - `coreGetLPKFileInfo(...)` (0x4bd4b0) — registra/abre o LPK (índice do OBB).
-- `SetLanguageId(id)` (0x4bd544) — **forçar INGLÊS** (NextOS odeia japonês/idioma errado).
+- `SetLanguageId(id)` (0x4bd544) — **forçar INGLÊS** (NextOS prefere evitar idioma errado).
 - `DrawEGLCreated()` (0x4bd2a8) — chamar quando a surface/contexto EGL está pronto (GL init).
 - **Loop por frame:** `FileProcess()` (load streaming) + `GameProcess()` (lógica) + `DrawFrame()`
   (render; a engine desenha — modelo GLSurfaceView, nós damos o present/swap como nos outros).
@@ -207,7 +207,7 @@ funciona via SDL_GL_SwapWindow nas 2 metades (NÃO precisou FBCOPY).
 
 ## PROGRESSO s4 (2026-06-26) - AudioHelper nativo funcionando
 
-Foco desta etapa: audio. Lentidao percebida pelo NextOS ficou para depois.
+Foco desta etapa: audio. Lentidao percebida no teste ficou para depois.
 
 Confirmacao importante: neste jogo o caminho real de audio nao e OpenSL; a `libfox.so` chama a
 classe Java `com/mineloader/fox/AudioHelper`. O shim JNI agora registra e implementa os callbacks
@@ -292,7 +292,7 @@ Pendencias atuais:
 - investigar o fundo que ainda falta no menu Start/Pause real. `SONIC_IOLOG=1` via `fopen` nao
   mostra leituras internas do LPK; para esse caso precisa logar/hookar `tsReadFile`;
 - performance/FPS fica para a proxima etapa, depois do mapa de audio e fundo. O `egl_shim.c` ja
-  possui log `[PERF]` e `DYSMANTLE_SWAPINT`; o `jni_shim.c` ja responde bateria 100%/carregando
+  possui log `[PERF]` e `SONIC_SWAPINT`; o `jni_shim.c` ja responde bateria 100%/carregando
   para evitar cap de power-save.
 
 ## PROGRESSO s6 (2026-06-26) - Audio finalizado e gameplay 60 FPS
@@ -314,7 +314,7 @@ Performance:
 - `egl_shim_present()` agora tambem emite `[PERF]`, porque Sonic usa o present proprio do loop e
   nao o caminho `eglSwapBuffers`;
 - log bom: `/tmp/sonic4-perf-perfect.log`;
-- resultado em gameplay: 60 FPS estavel, `avg=16.7ms`, confirmado pelo NextOS como perfeito.
+- resultado em gameplay: 60 FPS estavel, `avg=16.7ms`, confirmado pela validacao NextOS como perfeito.
 
 Proximo foco daquela etapa:
 
@@ -344,11 +344,11 @@ Resultado:
 - NextOS confirmou que Start/Pause ficou perfeito;
 - estado atual aprovado: audio final, performance final e pause/start funcionando.
 
-Run manual deixado no device para teste do NextOS:
+Run manual deixado no device para teste NextOS:
 
 - device: `192.168.31.79`;
 - processo: `/storage/roms/ports/sonic4/sonic4`;
-- flags ativas: `SONIC_NOFAKESOUND=1 DYSMANTLE_SWAPINT=1`;
+- flags ativas: `SONIC_NOFAKESOUND=1 SONIC_SWAPINT=1`;
 - launcher manteve `SONIC_AUTOSTART=1` apenas para entrar no jogo;
 - sem `SONIC_AUTOPAUSE_AT`, sem `SONIC_AUTORIGHT_AFTER`, sem `SONIC_AUTOJUMP_AT` e sem
   `SONIC_INPUTLOG`, devolvendo o controle real ao jogador;

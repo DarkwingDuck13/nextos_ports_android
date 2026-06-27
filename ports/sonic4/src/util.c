@@ -16,10 +16,10 @@
 /* SILENCIOSO por padrao: cada debugPrintf antes fazia fopen+fclose no "debug.log"
  * (I/O no eMMC/SD por CHAMADA) + vprintf no stdout (-> log.txt via tee). Com
  * centenas de chamadas por frame, isso travava a thread de audio (SFX somem/choppy)
- * e contribuia p/ crashes. Agora so loga com DYSMANTLE_DEBUG=1; senao no-op total. */
+ * e contribuia p/ crashes. Agora so loga com SONIC_DEBUG=1; senao no-op total. */
 int debugPrintf(const char *text, ...) {
   static int dbg = -1;
-  if (dbg < 0) dbg = getenv("DYSMANTLE_DEBUG") ? 1 : 0;
+  if (dbg < 0) dbg = getenv("SONIC_DEBUG") ? 1 : 0;
   if (!dbg) return 0;
 
   va_list list;

@@ -27,10 +27,10 @@
 #include "opensles_shim.h"
 #include "util.h"
 
-/* ---- Screen resolution (Trimui Smart Pro) ---- */
-extern int dys_screen_w, dys_screen_h; /* resolucao real (egl_shim) */
-#define SCREEN_WIDTH dys_screen_w
-#define SCREEN_HEIGHT dys_screen_h
+/* ---- Screen resolution ---- */
+extern int sonic_screen_w, sonic_screen_h; /* resolucao real (egl_shim) */
+#define SCREEN_WIDTH sonic_screen_w
+#define SCREEN_HEIGHT sonic_screen_h
 
 /* ---- Input event queue ---- */
 #define MAX_INPUT_EVENTS 64
@@ -117,14 +117,14 @@ static void push_key_event(int action, int keycode) {
  * keycode. O MOVIMENTO/navegação do jogo lê o keystate do teclado (não o eixo do
  * gamepad, que neste build mobile não move). Mandamos dpad/analógico como
  * AKEYCODE_DPAD_* (19-22) por aqui. */
-#define SHANTAE_KBD_SOURCE 0x301
+#define SONIC_KBD_SOURCE 0x301
 static void push_kbd_event(int action, int keycode) {
   FakeInputEvent ev;
   memset(&ev, 0, sizeof(ev));
   ev.type = AINPUT_EVENT_TYPE_KEY;
   ev.action = action;
   ev.keycode = keycode;
-  ev.source = SHANTAE_KBD_SOURCE;
+  ev.source = SONIC_KBD_SOURCE;
   input_queue_push(&ev);
 }
 
@@ -158,7 +158,7 @@ static void push_motion_event(int action, float x, float y) {
  * os eixos -> stick/dpad/triggers IGNORADOS (era o bug do "menu não navega").
  * O HAT (axes 15/16) vira os 4 bits baixos de [ctrl+48] = MESMA palavra de estado
  * dos botões que JÁ funcionam -> com o source certo, dpad/analógico navegam. */
-#define SHANTAE_MOTION_SOURCE 0x01000010
+#define SONIC_MOTION_SOURCE 0x01000010
 
 /* Envia UM evento de motion com TODOS os eixos que o jogo lê:
  * left stick (0,1), right stick (11,14), dpad HAT (15,16), triggers (GAS22/BRAKE23). */
@@ -168,7 +168,7 @@ static void push_joystick_event(float lx, float ly, float rx, float ry,
   memset(&ev, 0, sizeof(ev));
   ev.type = AINPUT_EVENT_TYPE_MOTION;
   ev.action = AMOTION_EVENT_ACTION_MOVE;
-  ev.source = SHANTAE_MOTION_SOURCE;
+  ev.source = SONIC_MOTION_SOURCE;
   ev.pointer_count = 1;
   ev.axes[AMOTION_EVENT_AXIS_X] = lx;
   ev.axes[AMOTION_EVENT_AXIS_Y] = ly;
@@ -180,9 +180,9 @@ static void push_joystick_event(float lx, float ly, float rx, float ry,
   ev.axes[AMOTION_EVENT_AXIS_GAS]   = rt; /* R2/RT */
   ev.axes[AMOTION_EVENT_AXIS_LTRIGGER] = lt;
   ev.axes[AMOTION_EVENT_AXIS_RTRIGGER] = rt;
-  if (getenv("SHANTAE_INDBG"))
+  if (getenv("SONIC_INDBG"))
     fprintf(stderr,"[SEND-MOTION] L(%.2f,%.2f) R(%.2f,%.2f) hat(%.2f,%.2f) lt=%.2f rt=%.2f src=0x%x\n",
-            lx,ly,rx,ry,hatx,haty,lt,rt,SHANTAE_MOTION_SOURCE);
+            lx,ly,rx,ry,hatx,haty,lt,rt,SONIC_MOTION_SOURCE);
   input_queue_push(&ev);
 }
 
@@ -253,7 +253,7 @@ static void init_gamecontroller(void) {
   }
 }
 
-/* ---- Ponte Paddleboat (input nativo do DYSMANTLE) ----
+/* ---- Ponte Paddleboat (input nativo do Sonic) ----
  * O Paddleboat está ESTÁTICO no libNativeGame com os entry-points exportados.
  * Alimentamos ele direto (sem Java): registra o controle via
  * Java_..._onControllerConnected e injeta eventos via
@@ -403,21 +403,21 @@ static void update_hat_from_dpad(int button, int down) {
   g_motion_dirty = 1;
 }
 
-/* modo gptokeyb (launcher seta DYSMANTLE_INPUT=gptk): botões vêm do TECLADO
- * (uinput do gptokeyb via dysmantle.gptk); botões nativos do pad são ignorados
+/* modo gptokeyb (launcher seta SONIC_INPUT=gptk): botões vêm do TECLADO
+ * (uinput do gptokeyb via sonic4.gptk); botões nativos do pad são ignorados
  * (duplicariam). Eixos analógicos continuam nativos quando o pad é visível. */
 static int gptk_on(void) {
   static int g = -1;
   if (g < 0) {
-    const char *ie = getenv("DYSMANTLE_INPUT");
+    const char *ie = getenv("SONIC_INPUT");
     g = (ie && strcmp(ie, "gptk") == 0) ? 1 : 0;
-    if (g) debugPrintf("android_shim: modo GPTOKEYB (teclado via dysmantle.gptk)\n");
+    if (g) debugPrintf("android_shim: modo GPTOKEYB (teclado via sonic4.gptk)\n");
   }
   return g;
 }
 
 /* Hotkey universal de SAIR (SELECT+START) — igual ao Bully, NO BINARIO. Garantia
- * independente do gptokeyb: o launcher faz `gptokeyb "dysmantle"` mas o processo
+ * independente do gptokeyb: o launcher faz `gptokeyb "sonic4"` mas o processo
  * tem comm="Main" (a engine renomeia a thread), entao o gptokeyb NAO acha o
  * processo p/ matar -> o .sh sozinho nao fecha. Aqui lemos o pad direto (SDL ve
  * o pad mesmo com gptokeyb, que nao faz grab exclusivo) e `_exit` na hora
@@ -441,12 +441,12 @@ static void check_exit_hotkey(void) {
   }
 }
 
-/* Injetor de TOQUE por coordenada (debug/automação): `echo "x y" > /dev/shm/dys_tap`
+/* Injetor de TOQUE por coordenada (debug/automação): `echo "x y" > /dev/shm/sonic_tap`
  * -> toca (down, move, up ~5 frames) na posição ABSOLUTA x,y. A UI do menu é touch,
  * e o toque é caminho separado do controle 0 -> IMUNE ao attract demo que sobrescreve
  * o pad (por isso a navegação por botão era não-determinística). Permite entrar no
  * jogo de forma confiável (tocar no PLAY). Custo zero sem o trigger. */
-void dys_tap_inject(void) {   /* chamado de my_pb_getdata (roda no menu E in-game) */
+void sonic_tap_inject(void) {   /* chamado de my_pb_getdata (roda no menu E in-game) */
   static int chk = 0, hold = 0;
   static float tx = 0, ty = 0;
   if (hold > 0) {
@@ -459,7 +459,7 @@ void dys_tap_inject(void) {   /* chamado de my_pb_getdata (roda no menu E in-gam
     return;
   }
   if (++chk % 6) return;
-  FILE *f = fopen("/dev/shm/dys_tap", "r");
+  FILE *f = fopen("/dev/shm/sonic_tap", "r");
   if (!f) return;
   float x, y;
   if (fscanf(f, "%f %f", &x, &y) == 2) {
@@ -468,7 +468,7 @@ void dys_tap_inject(void) {   /* chamado de my_pb_getdata (roda no menu E in-gam
     debugPrintf("[tap] down %.0f,%.0f\n", x, y);
   }
   fclose(f);
-  unlink("/dev/shm/dys_tap");
+  unlink("/dev/shm/sonic_tap");
 }
 
 static void process_sdl_events(void) {
@@ -477,10 +477,10 @@ static void process_sdl_events(void) {
   pb_try_connect();
   check_exit_hotkey();  /* SELECT+START -> sai (garantia, qualquer device) */
 
-  /* 🤖 SHANTAE_AUTOKEY: self-test autônomo (sem humano) — injeta botões via
-   * push_key_event (caminho clássico onInputEvent do Shantae) p/ avançar
+  /* SONIC_AUTOKEY: self-test autônomo (sem humano) — injeta botões via
+   * push_key_event (caminho clássico onInputEvent) p/ avançar
    * título -> menu -> jogo e validar controles + gameplay. */
-  if (getenv("SHANTAE_AUTOKEY")) {
+  if (getenv("SONIC_AUTOKEY")) {
     static int af = 0; af++;
     /* a partir do frame 240 (~4s, pós-intro), alterna A/START a cada ~90 frames
      * (down no fundo do ciclo, up 12 frames depois) p/ atravessar
@@ -495,18 +495,18 @@ static void process_sdl_events(void) {
     }
     /* TESTE TECLADO: injeta DPAD-baixo via teclado (source 0x301) p/ validar que
      * o Keyboard_impl move o menu/cursor. */
-    if (getenv("SHANTAE_KBDTEST") && af >= 700) {
+    if (getenv("SONIC_KBDTEST") && af >= 700) {
       int c = (af - 700) % 120;
       if (c == 0)  { fprintf(stderr,"[KBDTEST] DPAD_DOWN(kbd)\n"); push_kbd_event(AKEY_EVENT_ACTION_DOWN, AKEYCODE_DPAD_DOWN); }
       if (c == 16) { push_kbd_event(AKEY_EVENT_ACTION_UP, AKEYCODE_DPAD_DOWN); }
     }
-    /* SHANTAE_AUTODPAD: depois do frame N, segura dpad-DIREITA (HAT) pra validar
-     * que a Shantae anda (fix do dpad/drift). Envia motion direto (source 0x10). */
-    if (getenv("SHANTAE_AUTODPAD") && af >= 2700) {
+    /* SONIC_AUTODPAD: depois do frame N, segura dpad-DIREITA (HAT) para validar
+     * motion direto. */
+    if (getenv("SONIC_AUTODPAD") && af >= 2700) {
       if ((af % 6) == 0) push_joystick_event(0,0,0,0, 1.0f /*hatx=dir*/, 0, 0, 0);
     }
   }
-  /* dys_tap_inject e' chamado de my_pb_getdata (main.c) -> roda no menu tambem */
+  /* sonic_tap_inject e' chamado de my_pb_getdata (main.c) -> roda no menu tambem */
 
   /* diag: loga status Paddleboat do pad 0 periodicamente */
   if (g_pb_connected) {
@@ -536,10 +536,10 @@ static void process_sdl_events(void) {
       impl[64] = 1;
     }
     /* self-test autônomo: sequência de botões cronometrada (sem humano).
-     * DYSMANTLE_PB_SCRIPT="frame:action:keycode,..." (action 0=down 1=up).
+     * SONIC_PB_SCRIPT="frame:action:keycode,..." (action 0=down 1=up).
      * Ex default: aperta A no frame 300 (confirma menu inicial), depois
      * DOWN/A pra navegar. Cada frame ~ pump do pollAll. */
-    if (getenv("DYSMANTLE_PB_SELFTEST")) {
+    if (getenv("SONIC_PB_SELFTEST")) {
       /* Sequência de navegação: no menu inicial = 1× pra BAIXO,
        * depois A/X pra entrar no jogo. Frames ~ pumps (poll_n).
        * Cada press = down no frame f, up em f+10. */
@@ -565,7 +565,7 @@ static void process_sdl_events(void) {
 
   SDL_Event e;
   while (SDL_PollEvent(&e)) {
-    if (getenv("SHANTAE_INDBG")) {
+    if (getenv("SONIC_INDBG")) {
       switch (e.type) {
         case SDL_CONTROLLERBUTTONDOWN: fprintf(stderr,"[SDL] CBTN_DOWN btn=%d\n", e.cbutton.button); break;
         case SDL_CONTROLLERBUTTONUP:   fprintf(stderr,"[SDL] CBTN_UP   btn=%d\n", e.cbutton.button); break;
@@ -582,9 +582,9 @@ static void process_sdl_events(void) {
       g_app.destroyRequested = 1;
       break;
 
-    /* 🎮 modo GPTOKEYB (DYSMANTLE_INPUT=gptk, padrão PortMaster): o gptokeyb
+    /* modo GPTOKEYB (SONIC_INPUT=gptk, padrão PortMaster): o gptokeyb
      * do CFW lê o controle físico e emite TECLADO via uinput conforme o
-     * dysmantle.gptk. Traduzimos as teclas pros MESMOS eventos Paddleboat:
+     * sonic4.gptk. Traduzimos as teclas pros MESMOS eventos Paddleboat:
      *   x=A c=B q=X t=Y enter=START esc=SELECT h=L1 j=R1 k=L2 l=R2
      *   n=L3 m=R3 setas=dpad wasd=stick esq (digital)
      * Sair: SELECT+START (esc+enter). */
@@ -891,7 +891,7 @@ int AKeyEvent_getKeyCode(void *event) {
   if (!event)
     return 0;
   FakeInputEvent *ev = (FakeInputEvent *)event;
-  { static int z=0; if (getenv("SHANTAE_INLOG") && z<40){fprintf(stderr,"[Q] getKeyCode->%d\n",ev->keycode);z++;} }
+  { static int z=0; if (getenv("SONIC_INLOG") && z<40){fprintf(stderr,"[Q] getKeyCode->%d\n",ev->keycode);z++;} }
   return ev->keycode;
 }
 
@@ -952,7 +952,7 @@ int AInputEvent_getSource(void *event) {
   if (!event)
     return 0;
   FakeInputEvent *ev = (FakeInputEvent *)event;
-  { static int z=0; if (getenv("SHANTAE_INLOG") && z<40){fprintf(stderr,"[Q] getSource->0x%x\n",ev->source);z++;} }
+  { static int z=0; if (getenv("SONIC_INLOG") && z<40){fprintf(stderr,"[Q] getSource->0x%x\n",ev->source);z++;} }
   return ev->source;
 }
 

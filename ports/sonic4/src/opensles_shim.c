@@ -417,9 +417,8 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   }
 
   /* Soft-clip using tanh-style limiter - smooth, no discontinuities.
-   * Ganho master: 0.30 era tuning do Bully (muitos SFX somando). DYSMANTLE
-   * manda UM stream Oboe pré-mixado -> default 1.0; ajustável sem rebuild
-   * via env SLSHIM_GAIN (ex: SLSHIM_GAIN=1.5). */
+   * Sonic 4 EP2 manda UM stream Oboe pré-mixado -> default 1.0; ajustável
+   * sem rebuild via env SLSHIM_GAIN (ex: SLSHIM_GAIN=1.5). */
   static float master_gain = -1.0f;
   if (master_gain < 0.0f) {
     const char *g = getenv("SLSHIM_GAIN");
@@ -511,9 +510,9 @@ static void ensure_audio_initialized(void) {
   want.channels = 2;
   /* 1024 frames = ~23ms (4096 dava 93ms de latência + 4 enqueues por callback
    * = áudio atrasado e engasgado). SEM ALLOW_SAMPLES_CHANGE: o SDL emula 1024
-   * mesmo se o ALSA pedir mais. DYSMANTLE_AUDIO_SAMPLES ajusta sem rebuild. */
+   * mesmo se o ALSA pedir mais. SONIC_AUDIO_SAMPLES ajusta sem rebuild. */
   {
-    const char *e = getenv("DYSMANTLE_AUDIO_SAMPLES");
+    const char *e = getenv("SONIC_AUDIO_SAMPLES");
     int s = e ? atoi(e) : 1024;
     if (s < 256 || s > SDL_AUDIO_SAMPLES) s = 1024;
     want.samples = (Uint16)s;
@@ -535,8 +534,8 @@ static void ensure_audio_initialized(void) {
   /* 🔊 PUMP THREAD: no Android real o OpenSLES chama os bq callbacks de uma
    * thread PRÓPRIA. Bombear só do event-loop (1x/frame) deixa o ring secar
    * entre frames -> underrun constante (causa do áudio engasgado). Thread
-   * dedicada a ~4ms mantém o ring cheio. DYSMANTLE_NO_AUDIOPUMP=1 desliga. */
-  if (!getenv("DYSMANTLE_NO_AUDIOPUMP")) {
+   * dedicada a ~4ms mantém o ring cheio. SONIC_NO_AUDIOPUMP=1 desliga. */
+  if (!getenv("SONIC_NO_AUDIOPUMP")) {
     static int started = 0;
     if (!started) {
       started = 1;
@@ -702,7 +701,7 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
        * finalize) -> slot preso, nunca recicla. v1 (corte seco) não tem esse risco.
        * Opt-in p/ debug do anti-click. */
       static int nofadestop = -1;
-      if (nofadestop < 0) nofadestop = getenv("DYSMANTLE_FADEOUT_STOP") ? 0 : 1;
+      if (nofadestop < 0) nofadestop = getenv("SONIC_FADEOUT_STOP") ? 0 : 1;
       if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
       if (state == SL_PLAYSTATE_STOPPED && p->play_state == SL_PLAYSTATE_PLAYING
           && !nofadestop && ring_readable(p) > 0) {
@@ -724,7 +723,7 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
           p->fadeout_count = 0;
           p->stopping = 0;
           /* reuse do pool: o slot vai tocar um SOM NOVO -> des-envenena o callback
-           * (se DYSMANTLE_AUDIO_CBGUARD estiver ligado, sem isso o slot ficava morto
+           * (se SONIC_AUDIO_CBGUARD estiver ligado, sem isso o slot ficava morto
            * p/ sempre). Garante que cb_dead nunca persista entre sons no mesmo player. */
           p->cb_dead = 0;
           p->cb_noenq = 0;
@@ -1200,7 +1199,7 @@ static void opensles_pump_locked(void) {
    * callback deles sempre tem dado). O storm de log do Oboe já é contido pela supressão
    * (commit dfef774), então o guard não é mais necessário. Opt-in p/ debug. */
   static int cbguard = -1;
-  if (cbguard < 0) cbguard = getenv("DYSMANTLE_AUDIO_CBGUARD") ? 1 : 0;
+  if (cbguard < 0) cbguard = getenv("SONIC_AUDIO_CBGUARD") ? 1 : 0;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;

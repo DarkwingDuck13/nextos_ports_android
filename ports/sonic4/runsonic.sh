@@ -42,16 +42,16 @@ kill_existing_sonic4
 export SONIC_DATADIR="${SONIC_DATADIR:-$PORT_DIR}"
 export SONIC_AUTOSTART="${SONIC_AUTOSTART:-1}"
 export SONIC_NOFAKESOUND="${SONIC_NOFAKESOUND:-1}"
-export DYSMANTLE_SWAPINT="${DYSMANTLE_SWAPINT:-1}"
+export SONIC_SWAPINT="${SONIC_SWAPINT:-1}"
 
 env ${SONIC_EXTRA:-} ./sonic4 > play.log 2>&1 &
 GPID="$!"
 echo "launched sonic4 pid $GPID, waiting ${SECONDS_TO_RUN}s..."
 sleep "$SECONDS_TO_RUN"
 
-rm -f /dev/shm/dys_shot.raw /dev/shm/dys_shot.txt
-touch /dev/shm/dys_shot
+rm -f /dev/shm/sonic_shot.raw /dev/shm/sonic_shot.txt
+touch /dev/shm/sonic_shot
 sleep 2
-ls -la /dev/shm/dys_shot.raw 2>/dev/null || true
+ls -la /dev/shm/sonic_shot.raw 2>/dev/null || true
 echo "=== last frame in log ==="
 grep -o '\[frame [0-9]*\]' play.log | tail -1 || true

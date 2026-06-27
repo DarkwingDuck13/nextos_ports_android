@@ -3,7 +3,7 @@
 ## Fonte
 Fonte principal: tabela Java oficial dentro do APK.
 
-- APK: `/home/nextos/Downloads/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`
+- APK: `sonic-the-hedgehog-4-episode-ii-2.0.0.apk`
 - DEX extraido: `/tmp/sonic4-classes2.dex`
 - Classe: `com/mineloader/fox/AudioDataTbl`
 - Dump local: `/tmp/sonic4-dex-sfx-map.tsv`

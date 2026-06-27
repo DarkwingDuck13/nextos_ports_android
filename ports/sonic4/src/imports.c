@@ -105,14 +105,14 @@ static int *b_errno(void) {
 static void my_stack_chk_fail(void) { /* no-op; ver nota canary no main */ }
 
 /* ---------------- ANativeWindow ---------------- */
-extern int dys_screen_w, dys_screen_h; /* resolucao real do egl_shim */
+extern int sonic_screen_w, sonic_screen_h; /* resolucao real do egl_shim */
 static ANativeWindow *aw_fromSurface(void *env, void *surface) {
   (void)env; (void)surface; return android_shim_get_window();
 }
 static void aw_acquire(void *w) { (void)w; }
 static void aw_release(void *w) { (void)w; }
-static int  aw_getWidth(void *w)  { (void)w; return dys_screen_w; }
-static int  aw_getHeight(void *w) { (void)w; return dys_screen_h; }
+static int  aw_getWidth(void *w)  { (void)w; return sonic_screen_w; }
+static int  aw_getHeight(void *w) { (void)w; return sonic_screen_h; }
 static int  aw_getFormat(void *w) { (void)w; return 1; /* WINDOW_FORMAT_RGBA_8888 */ }
 static int  aw_setBuffersGeometry(void *w, int x, int y, int f) {
   (void)w; (void)x; (void)y; (void)f; return 0;
@@ -120,12 +120,12 @@ static int  aw_setBuffersGeometry(void *w, int x, int y, int f) {
 
 /* ---------------- AAsset / AAssetManager / AAssetDir ----------------
  * O jogo lê assets/*.vol via AAssetManager. Servimos de um diretório real no
- * device (extraído do APK). Base por env SHANTAE_ASSETS, default "assets". */
+ * device (extraído do APK). Base por env SONIC_ASSETS, default "assets". */
 typedef struct { FILE *fp; long len; char path[640]; } ShAsset;
 typedef struct { DIR *d; char base[640]; struct dirent *cur; } ShAssetDir;
 
 static const char *assets_base(void) {
-  const char *b = getenv("SHANTAE_ASSETS");
+  const char *b = getenv("SONIC_ASSETS");
   return (b && *b) ? b : "assets";
 }
 static void *aam_fromJava(void *env, void *obj) { (void)env; (void)obj; return (void *)1; }
@@ -228,7 +228,6 @@ extern int b_fclose(void *);
 /* memcpy/memmove com guarda de diagnóstico: loga e protege dest/src nulos.
  * (O jogo crasha cedo em memcpy(dest=0,...,11) numa op de std::string na init de
  * idioma; queremos ver a origem e sobreviver p/ avaliar.) */
-extern int dysmantle_record_vbsize_dummy; /* nada */
 static void *my_memcpy(void *d, const void *s, size_t n) {
   if ((uintptr_t)d < 0x1000 || (uintptr_t)s < 0x1000) {
     static int z = 0;
@@ -259,9 +258,9 @@ static void my_aeabi_memset(void *d, size_t n, int c) {
 
 static unsigned egl_releasethread_stub(void) { return 1u; }
 
-/* ---- GL logging (diagnóstico tela preta) — gated por SHANTAE_GLLOG ---- */
+/* ---- GL logging (diagnóstico tela preta) — gated por SONIC_GLLOG ---- */
 static int g_gllog = -1;
-static int gllog_on(void) { if (g_gllog<0) g_gllog = getenv("SHANTAE_GLLOG")?1:0; return g_gllog; }
+static int gllog_on(void) { if (g_gllog<0) g_gllog = getenv("SONIC_GLLOG")?1:0; return g_gllog; }
 static void *rgl(const char *n) { return dlsym(RTLD_DEFAULT, n); }
 extern volatile unsigned long sonic_frame_for_imports;
 static int g_drawlog = -1, g_force3d = -1, g_force_cull = -1, g_force_depth = -1,
@@ -527,7 +526,7 @@ extern volatile uintptr_t g_load_base;
 #define SH_TEXT_SIZE   0x340c58u
 static void *my_find_exidx(uintptr_t pc, int *pcount) {
   uintptr_t lb = g_load_base;
-  if (getenv("SHANTAE_EXIDXLOG") && lb && pc >= lb && pc < lb + SH_TEXT_SIZE)
+  if (getenv("SONIC_EXIDXLOG") && lb && pc >= lb && pc < lb + SH_TEXT_SIZE)
     fprintf(stderr, "[EXIDX] frame off=0x%lx\n", (unsigned long)(pc - lb));
   if (lb && pc >= lb && pc < lb + SH_TEXT_SIZE) {
     if (pcount) *pcount = (int)(SH_EXIDX_SIZE / 8);
@@ -542,8 +541,8 @@ static void *my_find_exidx(uintptr_t pc, int *pcount) {
 }
 
 /* egl_shim chama isto p/ permitir override de glGetProcAddress; sem override
- * (Shantae usa GLES2 do device direto) -> NULL = usa a função real. */
-void *dysmantle_gl_proc_override(const char *name) { (void)name; return NULL; }
+ * Sonic usa GLES2 do device direto -> NULL = usa a função real. */
+void *sonic_gl_proc_override(const char *name) { (void)name; return NULL; }
 
 /* ---------------- tabela de overrides ---------------- */
 DynLibFunction shantae_overrides[] = {

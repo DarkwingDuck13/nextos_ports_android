@@ -1,4 +1,4 @@
-# Sonic 4 EP2 - STATUS (audio/performance/pause, 2026-06-26)
+# Sonic 4 EP2 - STATUS (PortMaster/R36S/Mali-450, 2026-06-27)
 
 ## Estado atual
 O port passa pelo fluxo principal no device `.79`:
@@ -8,64 +8,66 @@ O port passa pelo fluxo principal no device `.79`:
 - gameplay renderiza com fundo, HUD, Sonic/Tails e cenario;
 - BGM funciona no titulo, menu e primeira fase;
 - SFX comuns funcionam pelo caminho nativo `AudioHelper` -> SDL audio;
-- audio aprovado pelo NextOS: menu, gameplay, pulo, mola e sons comuns fluem sem engasgo;
+- audio aprovado pela validacao NextOS: menu, gameplay, pulo, mola e sons comuns fluem sem engasgo;
 - performance do gameplay corrigida: depois de remover o sleep fixo do loop, gameplay fica em 60 FPS estavel;
-- Start/Pause dentro do gameplay abre corretamente e foi aprovado pelo NextOS;
-- `SELECT+START` foi corrigido no `main.c`, testado no device e aprovado pelo NextOS;
+- Start/Pause dentro do gameplay abre corretamente e foi aprovado pela validacao NextOS;
+- `SELECT+START` foi corrigido no `main.c`, testado no device e aprovado pela validacao NextOS;
 - save/continue voltou para o caminho nativo: com save bom, Start nao reinicia Act 1 direto e segue para o
   fluxo de mapa/continue esperado;
-- save real validado: NextOS passou a primeira fase, o jogo foi fechado/reaberto e apareceu `Continue`.
+- save real validado: foi concluida a primeira fase, o jogo foi fechado/reaberto e apareceu `Continue`.
 
-Device usado: `192.168.31.79`.
+Device principal Mali-450 usado: `192.168.31.79`.
+Device R36S usado: `169.254.170.2`.
 Diretorio de desenvolvimento/testes antigos no device: `/storage/roms/ports/sonic4`.
 Diretorio final do pacote no device: `/storage/roms/ports/sonic4ep2`.
-Launcher final no device: `/storage/roms/ports_scripts/Sonic4EP2.sh`.
+Launcher final do pacote: `Sonic4EP2.sh` na raiz do zip, para extrair direto em `roms/ports`.
 
 ## Pacote PortMaster v1
-Pacote pronto na area de trabalho:
+Pacote pronto no desktop local:
 
 ```sh
-/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip
+Sonic4EP2 PortMaster v1.zip
 ```
 
 Conteudo do zip:
 
-- `ports_scripts/Sonic4EP2.sh`;
-- `ports_scripts/images/Sonic4EP2.png`;
-- `ports/sonic4ep2/sonic4` binario armhf compat;
-- `ports/sonic4ep2/sonic4.gptk`;
-- `ports/sonic4ep2/port.json`;
-- `ports/sonic4ep2/gameinfo.xml`;
-- `ports/sonic4ep2/cover.png`;
-- `ports/sonic4ep2/screenshot.png`;
-- `ports/sonic4ep2/splash.png`;
-- `ports/sonic4ep2/sfx_map.tsv`;
-- `ports/sonic4ep2/tools/extract-sonic4-data.sh`;
-- `ports/sonic4ep2/tools/sonic4ep2_extract.src`;
-- `ports/sonic4ep2/tools/progressor`;
-- `ports/sonic4ep2/README.md`;
-- `ports/sonic4ep2/LICENSE.md`;
-- `ports/sonic4ep2/Sonic4ep2.f2f`.
+- `Sonic4EP2.sh`;
+- `sonic4ep2/sonic4` binario armhf compat;
+- `sonic4ep2/sonic4.gptk`;
+- `sonic4ep2/port.json`;
+- `sonic4ep2/gameinfo.xml`;
+- `sonic4ep2/cover.png` (cover nova do Sonic/Tails);
+- `sonic4ep2/screenshot.png`;
+- `sonic4ep2/splash.png`;
+- `sonic4ep2/sfx_map.tsv`;
+- `sonic4ep2/tools/extract-sonic4-data.sh`;
+- `sonic4ep2/tools/sonic4ep2_extract.src`;
+- `sonic4ep2/tools/progressor`;
+- `sonic4ep2/README.md`;
+- `sonic4ep2/LICENSE.md`;
+- `sonic4ep2/Sonic4ep2.f2f`.
 
 O zip nao inclui `runtime/`, APK, OBB ou arquivos comerciais do jogo.
-Zip final validado: md5 `895a1c44df53917a03ebcc3a392c465b`, tamanho `2.5M`.
+Zip final validado: md5 `29081438be1b3d3896ee9498c4af7407`, sha256
+`68e5ecabb44ab1104a5d25a56c82fb2eabb2e6374d8ee8cc3ff46d5772bcf982`, tamanho `2.4M`.
+O zip foi validado sem entradas `ports/` ou `ports_scripts/`.
 
 Build compat:
 
 ```sh
-cd /home/nextos/nextos_ports_android/ports/sonic4
-SR=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain/armv8a-emuelec-linux-gnueabihf/sysroot
+cd ports/sonic4
+SR=<toolchain-sysroot>
 sudo -n docker run --rm --platform linux/amd64 -v "$PWD":/repo -v "$SR":/sysroot:ro debian:buster bash /repo/build_compat_gcc.sh
 cp -f sonic4.compat.gcc package/ports/sonic4ep2/sonic4
-cd package
-zip -r -FS "/home/nextos/Área de trabalho/Sonic4EP2 PortMaster v1.zip" ports_scripts ports
+cd package/ports
+zip -r "<output-dir>/Sonic4EP2 PortMaster v1.zip" Sonic4EP2.sh sonic4ep2
 ```
 
 Resultado do build Docker:
 
 - `sonic4.compat.gcc` / `package/ports/sonic4ep2/sonic4`;
-- tamanho: `160964` bytes;
-- md5 validado no pacote/device: `985b1c679873dc9471c7bcc51598fa10`;
+- tamanho: `160960` bytes;
+- sha256 validado no pacote/device: `2d1a8d164c44989b82971357855d7a5c1a46ec9bb529f848a5d41efa8fe5adc5`;
 - maior simbolo glibc: `GLIBC_2.27`, abaixo do alvo glibc 2.30;
 - sem dependencia `GLIBCXX`;
 - dependencias dinamicas esperadas no device: `libSDL2-2.0.so.0`, `libmpg123.so.0`,
@@ -75,7 +77,7 @@ Resultado do build Docker:
 Starter limpo:
 
 - mata qualquer `sonic4` antigo pelo alvo real de `/proc/*/exe` antes de iniciar;
-- fica em `ports_scripts/Sonic4EP2.sh`, padrao EmuELEC/NextOS;
+- fica como `Sonic4EP2.sh` na raiz do zip, padrao PortMaster classico igual Bully;
 - usa `GAMEDIR="/$directory/ports/sonic4ep2"`, sem hardcode de `/storage/roms` no launcher;
 - extrai `lib/armeabi-v7a/libfox.so` do APK na primeira execucao;
 - instala `data/main.22.com.sega.sonic4episode2.obb` a partir do cache ZIP ou OBB direto;
@@ -83,13 +85,39 @@ Starter limpo:
 - usa `SONIC_DATADIR="$GAMEDIR"`;
 - usa `SONIC_AUTOSTART=0`;
 - usa `SONIC_NOFAKESOUND=1`;
-- usa `DYSMANTLE_SWAPINT=1`;
+- usa `SONIC_SWAPINT=1`;
+- no R36S/Wayland detecta resolucao real via `wlr-randr` ou `/sys/class/drm` e exporta `SONIC_RES`;
+- no Mali-450/fbdev nao exporta `SONIC_RES`, mantendo o caminho SDL/fbdev ja validado;
 - nao usa autoplay, `AUTORIGHT`, `AUTOJUMP`, `INPUTLOG` ou flags de teste.
 
-Validacao limpa no device:
+Validacao R36S (`169.254.170.2`):
+
+- device usa `essway.service` ativo, `es-de.service` inativo;
+- painel real confirmado: `/sys/class/drm/card0-DSI-1/modes = 640x480`;
+- launcher novo detectou `SONIC_RES=640x480`;
+- log confirmou `setScreenSize(640 x 480)` e `fox: init(w=640 h=480)`;
+- teste pelo ES confirmou tela correta e audio OK;
+- pacote final copiado para `/storage/roms/ports/Sonic4EP2_PortMaster_v1.zip`;
+- zip final extraido em `/storage/roms/ports`, criando `/storage/roms/ports/Sonic4EP2.sh`
+  e `/storage/roms/ports/sonic4ep2/`;
+- estado deixado para primeira execucao: `lib/` e `data/` removidos, `foxsave_0.dat`
+  removido, APK e OBB na raiz de `sonic4ep2/`;
+- backup preservado em `/storage/roms/ports/sonic4ep2/_backup_input/`;
+- nenhum processo `sonic4` rodando ao final.
+
+Validacao Mali-450 (`192.168.31.79`):
 
 - instalacao anterior preservada como `/storage/roms/ports/sonic4.devbackup_20260626_183504`;
-- zip final extraido em `/storage/roms`, criando `ports_scripts/Sonic4EP2.sh` e `ports/sonic4ep2/`;
+- zip final copiado para `/storage/roms/Sonic4EP2_PortMaster_v1.zip`;
+- teste fbdev com `emustation.service` parado temporariamente e religado ao final;
+- log confirmou que no Mali-450 nao houve override R36S: `setScreenSize(1280 x 720)` e
+  `fox: init(w=1280 h=720)`;
+- jogo entrou no loop principal, renderizou frames e ficou em torno de 60 FPS;
+- `emustation.service` voltou `active`; `es-de.service` permaneceu `inactive`;
+- nenhum processo `sonic4` rodando ao final.
+
+Validacao limpa anterior no `.79`:
+
 - APK copiado para `/storage/roms/ports/sonic4ep2/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
 - OBB direto copiado para `/storage/roms/ports/sonic4ep2/main.22.com.sega.sonic4episode2.obb`;
 - backup de inputs preservado em `/storage/roms/ports/sonic4ep2/_backup_input/`;
@@ -100,13 +128,10 @@ Validacao limpa no device:
 - segundo boot nao reextraiu dados, carregou `foxsave_0.dat` com sucesso e estabilizou em 60 FPS;
 - apos encerrar, varredura de `/proc` retornou `no_sonic_running`.
 - `progressor` corrigido e smoke-testado depois da extracao: saiu `child exited with code 0`, sem apagar APK/OBB restaurados;
-- `ports_scripts/gamelist.xml` atualizado no device com `<path>./Sonic4EP2.sh</path>` e imagem
-  `./images/Sonic4EP2.png`;
-- launcher antigo em `/storage/roms/ports/Sonic4EP2.sh` removido.
 
 Regra operacional do device:
 
-- o frontend correto para devolver a tela ao NextOS e `emustation.service`;
+- o frontend correto para devolver a tela ao usuario e `emustation.service`;
 - nao iniciar, parar, reiniciar ou alterar `es-de.service` neste fluxo.
 
 ## Audio implementado
@@ -141,7 +166,7 @@ O shim JNI encaminha essas chamadas para `src/sonic_audio.c`.
 ## Fonte oficial do mapa SFX
 O mapa certo veio do DEX do APK, nao de chute pelo nome dos arquivos:
 
-- APK: `/home/nextos/Downloads/sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
+- APK: `sonic-the-hedgehog-4-episode-ii-2.0.0.apk`;
 - DEX extraido: `/tmp/sonic4-classes2.dex`;
 - classe: `com/mineloader/fox/AudioDataTbl`;
 - dump local: `/tmp/sonic4-dex-sfx-map.tsv`;
@@ -164,7 +189,7 @@ Detalhe maior em `SFX_MAP.md`.
 Build local:
 
 ```sh
-cd /home/nextos/nextos_ports_android/ports/sonic4
+cd ports/sonic4
 bash build.sh
 ```
 
@@ -197,7 +222,7 @@ Artefatos desse teste:
 - nenhum `unmapped sfx` no trecho validado;
 - contagem observada: `Spring` 70, `Ring1L` 5, `Ring1R` 4, `Ok` 2, `Jump` 2, `LockedOn` 1.
 
-Teste aprovado pelo NextOS:
+Teste aprovado pela validacao NextOS:
 
 - log: `/tmp/sonic4-audio-final-ok.log`;
 - audio sem engasgos;
@@ -244,13 +269,13 @@ rm -f foxsave_0.dat
 sh ./run.sh
 ```
 
-Depois o NextOS passa uma fase inteira. Em seguida fechar pelo guard (`sh ./stop.sh`) e reabrir com
+Depois passar uma fase inteira. Em seguida fechar pelo guard (`sh ./stop.sh`) e reabrir com
 `sh ./run.sh`: Start deve entrar no mapa/continue, nao reiniciar a primeira fase do zero.
 
 ## Pendencias atuais
 Ordem recomendada:
 
-1. NextOS testar controles reais por mais tempo no pacote v1 limpo.
+1. Testar controles reais por mais tempo no pacote v1 limpo.
 2. Validar rotas mais longas de gameplay para item box, inimigo/matar bicho, damage,
    spin/dash/homing, gimmicks de zona e coop/Tails. Audio base ja esta aprovado.
 3. Depois do teste manual, revisar qualquer visual/audio restante que aparecer fora da primeira rota.

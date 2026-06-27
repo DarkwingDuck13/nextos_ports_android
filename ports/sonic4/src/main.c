@@ -43,7 +43,7 @@ volatile uintptr_t g_load_base = 0;
 volatile unsigned long sonic_frame_for_imports = 0;
 volatile int sonic_game_started = 0;
 static volatile int sonic_in_draw_frame = 0;
-extern int dys_screen_w, dys_screen_h; /* resolução real da tela (egl_shim) */
+extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim) */
 
 static struct {
   int pending;
@@ -564,7 +564,7 @@ int main(int argc, char *argv[]) {
      softfp) => passamos os BITS do float em r2/r3 (declarar args como unsigned, NÃO
      float, senão o ABI hardfp manda em s0/s1). */
   {
-    extern int dys_screen_w, dys_screen_h;
+    extern int sonic_screen_w, sonic_screen_h;
     void (*setScreenSize)(void *, void *, unsigned, unsigned) =
         (void *)so_find_addr_safe(
             "Java_com_sega_f2fextension_f2fextensionInterface_setScreenSize");
@@ -573,9 +573,9 @@ int main(int argc, char *argv[]) {
             "Java_com_sega_f2fextension_f2fextensionInterface_setScreenScaleDesity");
     if (setScreenSize) {
       union { float f; unsigned u; } w, h;
-      w.f = (float)dys_screen_w; h.f = (float)dys_screen_h;
+      w.f = (float)sonic_screen_w; h.f = (float)sonic_screen_h;
       fprintf(stderr, "=== setScreenSize(%d x %d) bits=%08x %08x ===\n",
-              dys_screen_w, dys_screen_h, w.u, h.u);
+              sonic_screen_w, sonic_screen_h, w.u, h.u);
       setScreenSize(env, thiz, w.u, h.u);
     } else fprintf(stderr, "AVISO: setScreenSize não encontrado\n");
     if (setScreenScaleDesity) {
@@ -601,9 +601,9 @@ int main(int argc, char *argv[]) {
      -> amDrawInitVideo(w,h) que dimensiona _am_draw_video (os FBOs/render targets).
      Passávamos NULL,NULL = 0,0 => FBO 0x0 INCOMPLETE => glDraw* falham => TELA PRETA.
      Passar a resolução REAL (1280x720) faz os FBOs ficarem completos e renderizar. */
-  fprintf(stderr, "=== fox: init(w=%d h=%d) ===\n", dys_screen_w, dys_screen_h);
-  if (fox.init) fox.init(env, thiz, (void *)(intptr_t)dys_screen_w,
-                         (void *)(intptr_t)dys_screen_h);
+  fprintf(stderr, "=== fox: init(w=%d h=%d) ===\n", sonic_screen_w, sonic_screen_h);
+  if (fox.init) fox.init(env, thiz, (void *)(intptr_t)sonic_screen_w,
+                         (void *)(intptr_t)sonic_screen_h);
 
   fprintf(stderr, "=== fox: DrawEGLCreated ===\n");
   if (fox.DrawEGLCreated) fox.DrawEGLCreated(env, thiz);

@@ -42,7 +42,7 @@ kill_existing_sonic4
 export SONIC_DATADIR="${SONIC_DATADIR:-$PORT_DIR}"
 export SONIC_AUTOSTART="${SONIC_AUTOSTART:-0}"
 export SONIC_NOFAKESOUND="${SONIC_NOFAKESOUND:-1}"
-export DYSMANTLE_SWAPINT="${DYSMANTLE_SWAPINT:-1}"
+export SONIC_SWAPINT="${SONIC_SWAPINT:-1}"
 
 nohup env ${SONIC_EXTRA:-} ./sonic4 > "$LOG_FILE" 2>&1 < /dev/null &
 echo "launched sonic4 pid $! log=$PORT_DIR/$LOG_FILE"

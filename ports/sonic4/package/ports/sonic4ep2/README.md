@@ -19,9 +19,10 @@ On first launch the script extracts:
 - `lib/armeabi-v7a/libfox.so` from the APK;
 - `data/main.22.com.sega.sonic4episode2.obb` from the cache ZIP or direct OBB.
 
-The launcher is installed as `roms/ports_scripts/Sonic4EP2.sh`; data lives in
-`roms/ports/sonic4ep2/`. First-run extraction uses a progressor window when
-available and falls back to plain log output otherwise.
+The zip uses the classic PortMaster layout: `Sonic4EP2.sh` at the zip root and
+the `sonic4ep2/` data folder beside it. Install/extract it into `roms/ports`.
+First-run extraction uses a progressor window when available and falls back to
+plain log output otherwise.
 
 ## Controls
 
@@ -38,4 +39,4 @@ devices that route controls through gptokeyb.
 The included `sonic4` binary is armhf and built in Docker against old Debian
 glibc symbols. The package intentionally does not bundle a `runtime/` directory.
 
-Expected compatibility target: glibc 2.30+ devices.
+Expected compatibility target: glibc 2.27+ armhf-capable devices.

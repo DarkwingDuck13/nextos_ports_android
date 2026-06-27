@@ -19,12 +19,17 @@
 #include "egl_shim.h"
 #include "util.h"
 
+static const char *sonic_env(const char *name) {
+  const char *v = getenv(name);
+  return (v && *v) ? v : NULL;
+}
+
 /* Resolucao DINAMICA (qualquer device): desktop mode do SDL com fallback
  * 1280x720. Exportada p/ imports.c (ANativeWindow_getWidth/Height — o que o
  * JOGO le) e android_shim.c (clamp do cursor). */
-int dys_screen_w = 1280, dys_screen_h = 720;
-#define SCREEN_WIDTH dys_screen_w
-#define SCREEN_HEIGHT dys_screen_h
+int sonic_screen_w = 1280, sonic_screen_h = 720;
+#define SCREEN_WIDTH sonic_screen_w
+#define SCREEN_HEIGHT sonic_screen_h
 
 /* A engine (bionic) lê a stack-canary de tpidr_el0+0x28 (TLS_SLOT_STACK_GUARD).
  * Sob glibc esse offset colide com uma TLS var que o Mali/SDL escreve no
@@ -65,18 +70,18 @@ void egl_shim_create_window(void) {
   /* resolucao nativa do device (TV 1080p, handheld 480p...) c/ fallback 720p */
   SDL_DisplayMode dm;
   if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
-    dys_screen_w = dm.w; dys_screen_h = dm.h;
+    sonic_screen_w = dm.w; sonic_screen_h = dm.h;
     debugPrintf("egl_shim: desktop mode %dx%d\n", dm.w, dm.h);
   }
-  { const char *e = getenv("DYSMANTLE_RES"); int w, h; /* override opcional */
+  { const char *e = sonic_env("SONIC_RES"); int w, h; /* override opcional */
     if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
-      dys_screen_w = w; dys_screen_h = h;
-      debugPrintf("egl_shim: DYSMANTLE_RES override %dx%d\n", w, h);
+      sonic_screen_w = w; sonic_screen_h = h;
+      debugPrintf("egl_shim: SONIC_RES override %dx%d\n", w, h);
     } }
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  /* contexto ES casa com o DYSMANTLE_GLVER passado pro engine (default 2.0);
+  /* contexto ES casa com o SONIC_GLVER passado pro engine (default 2.0);
    * em GPU ES3 real (Mali-G310) GLVER=3.0 -> contexto ES 3.0 de verdade */
-  { const char *gv = getenv("DYSMANTLE_GLVER");
+  { const char *gv = sonic_env("SONIC_GLVER");
     int major = (gv && gv[0] == '3') ? 3 : 2;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
@@ -105,10 +110,10 @@ void egl_shim_create_window(void) {
     return;
   }
   debugPrintf("egl_shim: GL share-root context created\n");
-  /* DYSMANTLE_SWAPINT no contexto novo (a engine pode nunca chamar
+  /* SONIC_SWAPINT no contexto novo (a engine pode nunca chamar
    * eglSwapInterval; default SDL=vsync 1 + limiter da engine = 30fps). */
   {
-    const char *f = getenv("DYSMANTLE_SWAPINT");
+    const char *f = sonic_env("SONIC_SWAPINT");
     if (f) {
       SDL_GL_SetSwapInterval(atoi(f));
       debugPrintf("egl_shim: swap interval forçado=%d\n", atoi(f));
@@ -281,10 +286,10 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
   int ret = gl_makecurrent(egl_window, context->sdl_context);
   if (ret == 0) {
     has_real_gl = 1;
-    /* DYSMANTLE_SWAPINT: intervalo é estado por-contexto; aplica 1x em cada */
+    /* SONIC_SWAPINT: intervalo é estado por-contexto; aplica 1x em cada */
     {
       static const char *si = (const char *)-1;
-      if (si == (const char *)-1) si = getenv("DYSMANTLE_SWAPINT");
+      if (si == (const char *)-1) si = sonic_env("SONIC_SWAPINT");
       if (si && !context->swapint_applied) {
         context->swapint_applied = 1;
         SDL_GL_SetSwapInterval(atoi(si));
@@ -307,14 +312,14 @@ EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
   return EGL_TRUE;
 }
 
-/* screenshot sob demanda (receita Bully): `touch /dev/shm/dys_shot` ->
- * RGBA cru do backbuffer em /dev/shm/dys_shot.raw + .txt WxH (flip vertical
+/* screenshot sob demanda: `touch /dev/shm/sonic_shot` ->
+ * RGBA cru do backbuffer em /dev/shm/sonic_shot.raw + .txt WxH (flip vertical
  * na conversao). Roda na thread de render, custo zero sem o trigger. */
-static void dys_maybe_screenshot(void) {
+static void sonic_maybe_screenshot(void) {
   static int chk = 0;
   if (++chk % 15) return;
-  if (access("/dev/shm/dys_shot", F_OK) != 0) return;
-  unlink("/dev/shm/dys_shot");
+  if (access("/dev/shm/sonic_shot", F_OK) != 0) return;
+  unlink("/dev/shm/sonic_shot");
   GLint vp[4] = {0,0,0,0};
   glGetIntegerv(GL_VIEWPORT, vp);
   int w = vp[2], h = vp[3];
@@ -322,9 +327,9 @@ static void dys_maybe_screenshot(void) {
   unsigned char *buf = malloc((size_t)w * h * 4);
   if (!buf) return;
   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-  FILE *o = fopen("/dev/shm/dys_shot.raw", "wb");
+  FILE *o = fopen("/dev/shm/sonic_shot.raw", "wb");
   if (o) { fwrite(buf, 1, (size_t)w * h * 4, o); fclose(o); }
-  FILE *t = fopen("/dev/shm/dys_shot.txt", "w");
+  FILE *t = fopen("/dev/shm/sonic_shot.txt", "w");
   if (t) { fprintf(t, "%d %d\n", w, h); fclose(t); }
   free(buf);
   debugPrintf("[shot] %dx%d salvo\n", w, h);
@@ -361,7 +366,7 @@ static void perf_note_present(void) {
    damos o swap, como o GLSurfaceView faz após onDrawFrame). */
 void egl_shim_present(void) {
   if (egl_window) {
-    if (has_real_gl) dys_maybe_screenshot();
+    if (has_real_gl) sonic_maybe_screenshot();
     SDL_GL_SwapWindow(egl_window);
     perf_note_present();
   }
@@ -372,7 +377,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (!egl_window) return EGL_TRUE;
 
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
-    dys_maybe_screenshot();
+    sonic_maybe_screenshot();
     SDL_GL_SwapWindow(egl_window);
     perf_note_present();
     int fc = ++frame_count;
@@ -438,8 +443,8 @@ EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
 void *egl_shim_GetProcAddress(const char *procname) {
   /* Override GL: a engine resolve glGetString via procaddress; devolvemos NOSSA
    * versão (strings curtas) p/ evitar stack-smash com a lista de extensões do Mali. */
-  extern void *dysmantle_gl_proc_override(const char *name);
-  void *ov = dysmantle_gl_proc_override(procname);
+  extern void *sonic_gl_proc_override(const char *name);
+  void *ov = sonic_gl_proc_override(procname);
   if (ov) { debugPrintf("egl_shim: proc override %s\n", procname); return ov; }
 
   void *ptr = SDL_GL_GetProcAddress(procname);
@@ -478,9 +483,9 @@ const char *egl_shim_QueryString(EGLDisplay dpy, EGLint name) {
 
 EGLBoolean egl_shim_SwapInterval(EGLDisplay dpy, EGLint interval) {
   (void)dpy;
-  /* DYSMANTLE_SWAPINT força o intervalo (teste do double-pacing: engine dorme
+  /* SONIC_SWAPINT força o intervalo (teste do double-pacing: engine dorme
    * ~16ms + vsync = 2 períodos = trava em 30fps; =0 deixa a engine ditar). */
-  const char *f = getenv("DYSMANTLE_SWAPINT");
+  const char *f = sonic_env("SONIC_SWAPINT");
   if (f) interval = atoi(f);
   debugPrintf("egl_shim: SwapInterval(%d)%s\n", (int)interval, f ? " [forçado]" : "");
   SDL_GL_SetSwapInterval(interval);
