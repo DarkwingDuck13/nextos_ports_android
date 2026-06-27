@@ -330,10 +330,41 @@ static void dys_maybe_screenshot(void) {
   debugPrintf("[shot] %dx%d salvo\n", w, h);
 }
 
+static void perf_note_present(void) {
+  static struct timespec last = {0, 0};
+  static double sum = 0, mx = 0;
+  static unsigned n = 0, s20 = 0, s40 = 0;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  if (last.tv_sec) {
+    double ms = (now.tv_sec - last.tv_sec) * 1e3 +
+                (now.tv_nsec - last.tv_nsec) / 1e6;
+    sum += ms;
+    n++;
+    if (ms > mx) mx = ms;
+    if (ms > 20) s20++;
+    if (ms > 40) s40++;
+    if (sum >= 5000) {
+      fprintf(stderr, "[PERF] fps=%.1f avg=%.1fms max=%.0fms >20ms=%u >40ms=%u\n",
+              n * 1000.0 / sum, sum / n, mx, s20, s40);
+      sum = 0;
+      n = 0;
+      mx = 0;
+      s20 = 0;
+      s40 = 0;
+    }
+  }
+  last = now;
+}
+
 /* Present do nosso loop (modelo GLSurfaceView: engine desenha em DrawFrame, NÓS
    damos o swap, como o GLSurfaceView faz após onDrawFrame). */
 void egl_shim_present(void) {
-  if (egl_window) SDL_GL_SwapWindow(egl_window);
+  if (egl_window) {
+    if (has_real_gl) dys_maybe_screenshot();
+    SDL_GL_SwapWindow(egl_window);
+    perf_note_present();
+  }
 }
 
 EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
@@ -343,29 +374,7 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
     dys_maybe_screenshot();
     SDL_GL_SwapWindow(egl_window);
-    /* [PERF] frame-time entre swaps; relatório a cada ~5s (diagnóstico do lag;
-     * custo: 1 clock_gettime/frame + 1 fprintf/5s). */
-    {
-      static struct timespec last = {0, 0};
-      static double sum = 0, mx = 0;
-      static unsigned n = 0, s20 = 0, s40 = 0;
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      if (last.tv_sec) {
-        double ms = (now.tv_sec - last.tv_sec) * 1e3 +
-                    (now.tv_nsec - last.tv_nsec) / 1e6;
-        sum += ms; n++;
-        if (ms > mx) mx = ms;
-        if (ms > 20) s20++;
-        if (ms > 40) s40++;
-        if (sum >= 5000) {
-          fprintf(stderr, "[PERF] fps=%.1f avg=%.1fms max=%.0fms >20ms=%u >40ms=%u\n",
-                  n * 1000.0 / sum, sum / n, mx, s20, s40);
-          sum = 0; n = 0; mx = 0; s20 = 0; s40 = 0;
-        }
-      }
-      last = now;
-    }
+    perf_note_present();
     int fc = ++frame_count;
     if (fc <= 10 || fc % 60 == 0) {
       //debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",

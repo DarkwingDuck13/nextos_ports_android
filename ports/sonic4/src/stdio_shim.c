@@ -34,6 +34,13 @@ static FILE *map_file(void *f) {
   return (FILE *)f; /* FILE* real do glibc (fdopen etc.) */
 }
 
+void *b_fopen(const char *path, const char *mode) {
+  FILE *fp = fopen(path, mode);
+  if (getenv("SONIC_IOLOG"))
+    fprintf(stderr, "[b_fopen] %s mode=%s -> %p\n",
+            path ? path : "(null)", mode ? mode : "(null)", (void *)fp);
+  return fp;
+}
 size_t b_fwrite(const void *ptr, size_t sz, size_t n, void *f) {
   return fwrite(ptr, sz, n, map_file(f));
 }

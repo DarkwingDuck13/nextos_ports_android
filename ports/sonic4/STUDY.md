@@ -204,3 +204,152 @@ durante o load = render-target do demo de attract; achar pq id 2 do evt 3 não v
 DDS/PVR dos personagens). (c) **áudio** (AudioHelper bridge SDL/pulse). (d) **controle** SDL gamepad
 + SELECT+START. (e) **empacotar** launcher PortMaster (sem forçar SDL driver). (f) present Mali: já
 funciona via SDL_GL_SwapWindow nas 2 metades (NÃO precisou FBCOPY).
+
+## PROGRESSO s4 (2026-06-26) - AudioHelper nativo funcionando
+
+Foco desta etapa: audio. Lentidao percebida pelo NextOS ficou para depois.
+
+Confirmacao importante: neste jogo o caminho real de audio nao e OpenSL; a `libfox.so` chama a
+classe Java `com/mineloader/fox/AudioHelper`. O shim JNI agora registra e implementa os callbacks
+`PlaySound`, `MusicSetDataSource`, `MusicStart`, `MusicStop`, `MusicVolume`, `SetVolume`,
+`StopSound`, `spReset/mpReset`, `asyncBuildSpData`, `asyncBuildBgmData` e `GetMusicState`.
+
+Implementacao nova:
+
+- `src/sonic_audio.c` / `src/sonic_audio.h`;
+- build linka `libmpg123`, `libvorbisfile`, `libvorbis`, `libogg`;
+- audio SDL2 44100 Hz stereo S16;
+- leitura de assets pelo proprio `tsReadFile` da engine, entao nao precisa extrair OBB;
+- MP3 via mpg123, OGG via vorbisfile;
+- mixer simples para BGM + SFX;
+- cache de buffers decodificados;
+- SFX observados tratados como one-shot (o 3o argumento de `PlaySound` nao e loop confiavel: `Ok`,
+  ring e spring chegaram como `2/3/-1`).
+
+Validado no device `.79`:
+
+- `SONIC_NOFAKESOUND=1 SONIC_AUDIOLOG=1` passa por titulo/menu/gameplay;
+- SDL audio abriu (`44100Hz 2ch samples=1024 driver=pulseaudio`);
+- BGM titulo: `SOUND/MUSIC/MIXED00_EP2_TITLE.MP3`;
+- BGM menu: `SOUND/MUSIC/SNG01_EP2_SNG_MENU_V00_EP1.MP3`;
+- BGM fase: `SOUND/MUSIC/MIXED03_EP2_Z1A1.MP3`;
+- SFX `Ok`, `Ring1L`, `Ring1R`, `LockedOn`, `Spring` carregam e decodificam como OGG.
+
+Tabela de BGM foi expandida para zonas, speedups existentes, bosses, special/endroll/act-clear,
+jingles e faixas EP1 usadas pelo conteudo extra.
+
+## PROGRESSO s5 (2026-06-26) - SFX oficial via DEX + input de gameplay corrigido
+
+O mapa correto dos SFX veio do DEX do APK, nao do nome bruto dos arquivos e nao de CSB/CPK. A classe
+`com/mineloader/fox/AudioDataTbl` em `/tmp/sonic4-classes2.dex` foi parseada e gerou
+`/tmp/sonic4-dex-sfx-map.tsv`: 772 linhas, 288 cues unicos e 10 cues conflitantes por banco/zona.
+
+Correcoes importantes aplicadas em `src/sonic_audio.c`:
+
+- `Ok` agora e `S4EP2FX_001_SHSY08_22.OGG` (antes estava confundido com `Damage1`);
+- `Pause` agora e `S4EP2FX_004_SHSY10_22.OGG`;
+- `Jump` agora e `S4EP2FX_009_SK62_44.OGG`;
+- `Enemy` agora e `S4EP2FX_017a_S2_3441_44.OGG`;
+- `Spring` agora e `S4EP2FX_067_SKB1_44.OGG` (antes estava confundido com som curto de resultado);
+- `Ring1L/R`, `LockedOn`, `Spin`, `Dash*`, `Damage*`, `Homing`, `Barrier`, `Coop*`, `ItemBox_Dbl`
+  e outros cues comuns entraram no mapa base.
+
+Tambem foi adicionado `SONIC_SFX_OVERRIDE` para testar `Cue=Arquivo.OGG` sem recompilar. O cache de
+audio usa `cue+arquivo`, entao override troca o som de verdade.
+
+Input: o bit A foi separado em menu e gameplay:
+
+- `FOX_A_MENU = 0x8020` para confirmar titulo/menu;
+- `FOX_A_GAME = 0x0020` para pulo/acao em gameplay.
+
+Isso removeu o efeito antigo onde o auto-clique de A em gameplay abria uma tela azul de Pause/menu.
+`sonic_game_started` e detectado pelos logs Android da engine com "game start"; depois disso
+`SONIC_AUTOJUMP_AT` usa somente `FOX_A_GAME`.
+
+Validacao boa no device `.79`:
+
+```sh
+SONIC_EXTRA='SONIC_NOFAKESOUND=1 SONIC_AUDIOLOG=1 SONIC_AUTORIGHT_AFTER=1150 SONIC_AUTOJUMP_AT=1240 SONIC_INPUTLOG=1' sh ./runsonic.sh 150
+```
+
+Artefatos:
+
+- `/tmp/sonic4-input-a-game1.log`
+- `/tmp/sonic4-input-a-game1.png`
+
+Resultado:
+
+- gameplay visivel com fundo/HUD/Sonic/Tails;
+- nenhum `unmapped sfx` no trecho testado;
+- `Spring` disparou 70 vezes usando `S4EP2FX_067_SKB1_44.OGG`;
+- `Ring1L/R`, `Ok`, `Jump` e `LockedOn` tambem decodificaram dos arquivos oficiais.
+
+Pendencias atuais:
+
+- validar por rota sons que ainda nao foram acionados: item box, matar inimigo, damage,
+  spin/dash/homing, gimmicks de zona e coop/Tails;
+- implementar resolucao por banco/zona se algum dos 10 cues conflitantes aparecer;
+- investigar o fundo que ainda falta no menu Start/Pause real. `SONIC_IOLOG=1` via `fopen` nao
+  mostra leituras internas do LPK; para esse caso precisa logar/hookar `tsReadFile`;
+- performance/FPS fica para a proxima etapa, depois do mapa de audio e fundo. O `egl_shim.c` ja
+  possui log `[PERF]` e `DYSMANTLE_SWAPINT`; o `jni_shim.c` ja responde bateria 100%/carregando
+  para evitar cap de power-save.
+
+## PROGRESSO s6 (2026-06-26) - Audio finalizado e gameplay 60 FPS
+
+Audio:
+
+- NextOS aprovou o som como finalizado: menu, gameplay, pulo, mola e sons comuns sem engasgo;
+- `sfx_map.tsv` foi gerado a partir do DEX + manifesto do OBB e enviado para o device;
+- `sonic_audio.c` agora carrega esse mapa externo e usa o banco atual de `asyncBuildSpData`
+  (`ep2zone1`, `ep2zone2`, etc.) antes de cair no fallback hardcoded;
+- `SONIC_SFX_OVERRIDE` continua disponivel para teste rapido.
+
+Performance:
+
+- causa principal da lentidao: `main.c` fazia `usleep(16000)` no fim de todo frame;
+- como o present via SDL/GL ja fica em vsync, isso criava double pacing e deixava menu 3D/gameplay
+  com movimento lento;
+- fix: sleep default virou `0`; `SONIC_FRAME_SLEEP_US=N` existe apenas como override de teste;
+- `egl_shim_present()` agora tambem emite `[PERF]`, porque Sonic usa o present proprio do loop e
+  nao o caminho `eglSwapBuffers`;
+- log bom: `/tmp/sonic4-perf-perfect.log`;
+- resultado em gameplay: 60 FPS estavel, `avg=16.7ms`, confirmado pelo NextOS como perfeito.
+
+Proximo foco daquela etapa:
+
+- Start/Pause dentro do gameplay.
+
+## PROGRESSO s7 (2026-06-26) - Start/Pause resolvido e run manual limpo
+
+O input bruto nao era o melhor caminho para reproduzir o pause:
+
+- `SONIC_AUTOPAUSE_AT=1500` mandando apenas `FOX_START` nao abriu o menu;
+- tentativa visual anterior ficou em gameplay normal, entao a automacao nao estava acionando o fluxo real.
+
+Fix aplicado em `src/main.c`:
+
+- resolver os entry points nativos:
+  - `_Z20GmPauseMenuLoadStartv`;
+  - `_Z25GmPauseMenuLoadIsFinishedv`;
+  - `_Z21GmPauseMenuBuildStartv`;
+  - `_Z26GmPauseMenuBuildIsFinishedv`;
+  - `_Z16GmPauseMenuStartm`;
+- quando `SONIC_AUTOPAUSE_AT=N` e o gameplay ja iniciou, rodar a sequencia
+  `LoadStart` -> espera `LoadIsFinished` -> `BuildStart` -> espera `BuildIsFinished` ->
+  `GmPauseMenuStart(0)`.
+
+Resultado:
+
+- NextOS confirmou que Start/Pause ficou perfeito;
+- estado atual aprovado: audio final, performance final e pause/start funcionando.
+
+Run manual deixado no device para teste do NextOS:
+
+- device: `192.168.31.79`;
+- processo: `/storage/roms/ports/sonic4/sonic4`;
+- flags ativas: `SONIC_NOFAKESOUND=1 DYSMANTLE_SWAPINT=1`;
+- launcher manteve `SONIC_AUTOSTART=1` apenas para entrar no jogo;
+- sem `SONIC_AUTOPAUSE_AT`, sem `SONIC_AUTORIGHT_AFTER`, sem `SONIC_AUTOJUMP_AT` e sem
+  `SONIC_INPUTLOG`, devolvendo o controle real ao jogador;
+- log confirmou `--- game start` e gameplay em ~60 FPS.

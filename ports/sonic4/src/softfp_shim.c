@@ -46,6 +46,81 @@ SF void sf_glClearColor(float r,float g,float b,float a){
   if(!real) real=(void(*)(float,float,float,float))dlsym(RTLD_DEFAULT,"glClearColor");
   if(real) real(r,g,b,a);
 }
+SF void sf_glClearDepthf(float d){
+  static void(*real)(float)=0;
+  if(!real) real=(void(*)(float))dlsym(RTLD_DEFAULT,"glClearDepthf");
+  if(real) real(d);
+}
+SF void sf_glDepthRangef(float n,float f){
+  static void(*real)(float,float)=0;
+  if(!real) real=(void(*)(float,float))dlsym(RTLD_DEFAULT,"glDepthRangef");
+  if(real) real(n,f);
+}
+SF void sf_glLineWidth(float w){
+  static void(*real)(float)=0;
+  if(!real) real=(void(*)(float))dlsym(RTLD_DEFAULT,"glLineWidth");
+  if(real) real(w);
+}
+SF void sf_glPolygonOffset(float factor,float units){
+  static void(*real)(float,float)=0;
+  if(!real) real=(void(*)(float,float))dlsym(RTLD_DEFAULT,"glPolygonOffset");
+  if(real) real(factor,units);
+}
+SF void sf_glSampleCoverage(float value,unsigned char invert){
+  static void(*real)(float,unsigned char)=0;
+  if(!real) real=(void(*)(float,unsigned char))dlsym(RTLD_DEFAULT,"glSampleCoverage");
+  if(real) real(value,invert);
+}
+SF void sf_glBlendColor(float r,float g,float b,float a){
+  static void(*real)(float,float,float,float)=0;
+  if(!real) real=(void(*)(float,float,float,float))dlsym(RTLD_DEFAULT,"glBlendColor");
+  if(real) real(r,g,b,a);
+}
+SF void sf_glTexParameterf(unsigned target,unsigned pname,float param){
+  static void(*real)(unsigned,unsigned,float)=0;
+  if(!real) real=(void(*)(unsigned,unsigned,float))dlsym(RTLD_DEFAULT,"glTexParameterf");
+  if(real) real(target,pname,param);
+}
+SF void sf_glUniform1f(int loc,float v0){
+  static void(*real)(int,float)=0;
+  if(!real) real=(void(*)(int,float))dlsym(RTLD_DEFAULT,"glUniform1f");
+  if(real) real(loc,v0);
+}
+SF void sf_glUniform2f(int loc,float v0,float v1){
+  static void(*real)(int,float,float)=0;
+  if(!real) real=(void(*)(int,float,float))dlsym(RTLD_DEFAULT,"glUniform2f");
+  if(real) real(loc,v0,v1);
+}
+SF void sf_glUniform3f(int loc,float v0,float v1,float v2){
+  static void(*real)(int,float,float,float)=0;
+  if(!real) real=(void(*)(int,float,float,float))dlsym(RTLD_DEFAULT,"glUniform3f");
+  if(real) real(loc,v0,v1,v2);
+}
+SF void sf_glUniform4f(int loc,float v0,float v1,float v2,float v3){
+  static void(*real)(int,float,float,float,float)=0;
+  if(!real) real=(void(*)(int,float,float,float,float))dlsym(RTLD_DEFAULT,"glUniform4f");
+  if(real) real(loc,v0,v1,v2,v3);
+}
+SF void sf_glVertexAttrib1f(unsigned idx,float x){
+  static void(*real)(unsigned,float)=0;
+  if(!real) real=(void(*)(unsigned,float))dlsym(RTLD_DEFAULT,"glVertexAttrib1f");
+  if(real) real(idx,x);
+}
+SF void sf_glVertexAttrib2f(unsigned idx,float x,float y){
+  static void(*real)(unsigned,float,float)=0;
+  if(!real) real=(void(*)(unsigned,float,float))dlsym(RTLD_DEFAULT,"glVertexAttrib2f");
+  if(real) real(idx,x,y);
+}
+SF void sf_glVertexAttrib3f(unsigned idx,float x,float y,float z){
+  static void(*real)(unsigned,float,float,float)=0;
+  if(!real) real=(void(*)(unsigned,float,float,float))dlsym(RTLD_DEFAULT,"glVertexAttrib3f");
+  if(real) real(idx,x,y,z);
+}
+SF void sf_glVertexAttrib4f(unsigned idx,float x,float y,float z,float w){
+  static void(*real)(unsigned,float,float,float,float)=0;
+  if(!real) real=(void(*)(unsigned,float,float,float,float))dlsym(RTLD_DEFAULT,"glVertexAttrib4f");
+  if(real) real(idx,x,y,z,w);
+}
 
 struct sfent { const char *nm; void *fn; };
 static const struct sfent SFTAB[] = {
@@ -60,6 +135,21 @@ static const struct sfent SFTAB[] = {
   {"atan2f",sf_atan2f},{"fmodf",sf_fmodf},{"powf",sf_powf},
   {"modf",sf_modf},{"modff",sf_modff},{"frexp",sf_frexp},{"ldexp",sf_ldexp},{"strtod",sf_strtod},
   {"glClearColor",sf_glClearColor},
+  {"glClearDepthf",sf_glClearDepthf},
+  {"glDepthRangef",sf_glDepthRangef},
+  {"glLineWidth",sf_glLineWidth},
+  {"glPolygonOffset",sf_glPolygonOffset},
+  {"glSampleCoverage",sf_glSampleCoverage},
+  {"glBlendColor",sf_glBlendColor},
+  {"glTexParameterf",sf_glTexParameterf},
+  {"glUniform1f",sf_glUniform1f},
+  {"glUniform2f",sf_glUniform2f},
+  {"glUniform3f",sf_glUniform3f},
+  {"glUniform4f",sf_glUniform4f},
+  {"glVertexAttrib1f",sf_glVertexAttrib1f},
+  {"glVertexAttrib2f",sf_glVertexAttrib2f},
+  {"glVertexAttrib3f",sf_glVertexAttrib3f},
+  {"glVertexAttrib4f",sf_glVertexAttrib4f},
 };
 
 void *softfp_resolve(const char *nm){

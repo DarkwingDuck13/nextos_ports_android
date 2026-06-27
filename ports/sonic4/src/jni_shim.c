@@ -11,9 +11,13 @@
  */
 
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "jni_shim.h"
+#include "sonic_audio.h"
 #include "util.h"
 
 #define JNI_VTABLE_SIZE 512
@@ -45,12 +49,37 @@ enum {
   MID_REGION,       /* getRegionCode -> "US" */
   MID_LANG_CODE,    /* getLanguageCode -> "en" */
   MID_SHOW_INTERSTITIAL, /* Sonic4: Java showInterstitial(I)V -> simular ad fechado */
+  MID_AUDIO_PAUSE_SOUND,
+  MID_AUDIO_RESUME_SOUND,
+  MID_AUDIO_STOP_SOUND,
+  MID_AUDIO_PLAY_SOUND,
+  MID_AUDIO_SET_VOLUME,
+  MID_AUDIO_MUSIC_SET_DATA_SOURCE,
+  MID_AUDIO_MUSIC_START,
+  MID_AUDIO_MUSIC_VOLUME,
+  MID_AUDIO_MUSIC_STOP,
+  MID_AUDIO_MUSIC_PAUSE,
+  MID_AUDIO_MUSIC_SET_LOOP,
+  MID_AUDIO_SET_MAX_VOLUME,
+  MID_AUDIO_SP_RESET,
+  MID_AUDIO_MP_RESET,
+  MID_AUDIO_MP_RESET_ID,
+  MID_AUDIO_ASYNC_BUILD_SP_DATA,
+  MID_AUDIO_ASYNC_BUILD_BGM_DATA,
+  MID_AUDIO_IS_DONE_BUILD_SP,
+  MID_AUDIO_IS_DONE_BUILD_BGM,
+  MID_AUDIO_GET_MUSIC_STATE,
+  MID_AUDIO_VIDEO_SET_DATA_SOURCE,
+  MID_AUDIO_VIDEO_IS_PLAYING,
+  MID_AUDIO_OPEN_UNLOCK_WEB,
+  MID_AUDIO_OPEN_UNLOCK_WEB_EP1,
+  MID_AUDIO_SET_ADS_SHOW,
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_GENERIC,
 };
 
-static int g_method_tags[24]; /* unique addresses used as method IDs */
+static int g_method_tags[64]; /* unique addresses used as method IDs */
 /* Sonic4: caminho local gravável p/ o F2F (Sonic4ep2.f2f). Default = CWD. */
 char jni_local_path[512] = ".";
 void jni_shim_set_local_path(const char *p) {
@@ -75,6 +104,8 @@ static struct {
   const char *value;
 } g_jstrings[MAX_JSTRINGS];
 static int g_jstring_count = 0;
+static int g_audio_sp_built = 0;
+static int g_audio_bgm_built = 0;
 
 static void *make_jstring(const char *value) {
   static char jstring_storage[MAX_JSTRINGS];
@@ -92,6 +123,18 @@ static const char *resolve_jstring(void *jstr) {
       return g_jstrings[i].value;
   }
   return "";
+}
+
+static int audio_log_enabled(void) {
+  return getenv("SONIC_AUDIOLOG") != NULL;
+}
+
+static void audioPrintf(const char *text, ...) {
+  if (!audio_log_enabled()) return;
+  va_list ap;
+  va_start(ap, text);
+  vfprintf(stderr, text, ap);
+  va_end(ap);
 }
 
 /* ---- Generic stub ---- */
@@ -148,6 +191,58 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
      Sinalizamos via jni_inter_pending; o disparo real é no main loop (não reentrante). */
   if (strcmp(name, "showInterstitial") == 0)
     return &g_method_tags[MID_SHOW_INTERSTITIAL];
+  /* Sonic4 AudioHelper: a libfox usa uma classe Java como ponte para
+     SoundPool/MediaPlayer. No port, estes IDs viram callbacks locais. */
+  if (strcmp(name, "PauseSound") == 0)
+    return &g_method_tags[MID_AUDIO_PAUSE_SOUND];
+  if (strcmp(name, "ResumeSound") == 0)
+    return &g_method_tags[MID_AUDIO_RESUME_SOUND];
+  if (strcmp(name, "StopSound") == 0)
+    return &g_method_tags[MID_AUDIO_STOP_SOUND];
+  if (strcmp(name, "PlaySound") == 0)
+    return &g_method_tags[MID_AUDIO_PLAY_SOUND];
+  if (strcmp(name, "SetVolume") == 0)
+    return &g_method_tags[MID_AUDIO_SET_VOLUME];
+  if (strcmp(name, "MusicSetDataSource") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_SET_DATA_SOURCE];
+  if (strcmp(name, "MusicStart") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_START];
+  if (strcmp(name, "MusicVolume") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_VOLUME];
+  if (strcmp(name, "MusicStop") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_STOP];
+  if (strcmp(name, "MusicPause") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_PAUSE];
+  if (strcmp(name, "MusicSetLoopFlag") == 0)
+    return &g_method_tags[MID_AUDIO_MUSIC_SET_LOOP];
+  if (strcmp(name, "SetMaxVolume") == 0)
+    return &g_method_tags[MID_AUDIO_SET_MAX_VOLUME];
+  if (strcmp(name, "spReset") == 0)
+    return &g_method_tags[MID_AUDIO_SP_RESET];
+  if (strcmp(name, "mpReset") == 0)
+    return &g_method_tags[MID_AUDIO_MP_RESET];
+  if (strcmp(name, "mpResetID") == 0)
+    return &g_method_tags[MID_AUDIO_MP_RESET_ID];
+  if (strcmp(name, "asyncBuildSpData") == 0)
+    return &g_method_tags[MID_AUDIO_ASYNC_BUILD_SP_DATA];
+  if (strcmp(name, "asyncBuildBgmData") == 0)
+    return &g_method_tags[MID_AUDIO_ASYNC_BUILD_BGM_DATA];
+  if (strcmp(name, "isDoneBuildSp") == 0)
+    return &g_method_tags[MID_AUDIO_IS_DONE_BUILD_SP];
+  if (strcmp(name, "isDoneBuildBgm") == 0)
+    return &g_method_tags[MID_AUDIO_IS_DONE_BUILD_BGM];
+  if (strcmp(name, "GetMusicState") == 0)
+    return &g_method_tags[MID_AUDIO_GET_MUSIC_STATE];
+  if (strcmp(name, "VideoSetDataSource") == 0)
+    return &g_method_tags[MID_AUDIO_VIDEO_SET_DATA_SOURCE];
+  if (strcmp(name, "VideoIsPlaying") == 0)
+    return &g_method_tags[MID_AUDIO_VIDEO_IS_PLAYING];
+  if (strcmp(name, "openUnlockWeb") == 0)
+    return &g_method_tags[MID_AUDIO_OPEN_UNLOCK_WEB];
+  if (strcmp(name, "openUnlockWebEp1") == 0)
+    return &g_method_tags[MID_AUDIO_OPEN_UNLOCK_WEB_EP1];
+  if (strcmp(name, "SetAdsShow") == 0)
+    return &g_method_tags[MID_AUDIO_SET_ADS_SHOW];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -270,13 +365,56 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj,
   return getenv("SONIC_BOOL_FALSE") ? 0 : 1;
 }
 
-/* CallIntMethod (index 61) */
-static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
+static jint jni_CallIntMethod_args(void *env, void *obj, void *methodID,
+                                   va_list ap) {
   (void)env;
   (void)obj;
   if (methodID == &g_method_tags[MID_BATTERY_STATUS])
     return 2; /* BATTERY_STATUS_CHARGING — sem power-save/cap de fps */
+  if (methodID == &g_method_tags[MID_AUDIO_PLAY_SOUND]) {
+    void *path_j = va_arg(ap, void *);
+    double volume = va_arg(ap, double);
+    int loop = va_arg(ap, int);
+    const char *path = resolve_jstring(path_j);
+    int h = sonic_audio_play_sfx(path, (float)volume, loop);
+    if (audio_log_enabled())
+      audioPrintf("jni_shim: AudioHelper.PlaySound path=\"%s\" volume=%.3f loop=%d -> handle %d\n",
+                  path, volume, loop, h);
+    else
+      debugPrintf("jni_shim: AudioHelper.PlaySound -> handle %d\n", h);
+    return h;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_IS_DONE_BUILD_SP]) {
+    debugPrintf("jni_shim: AudioHelper.isDoneBuildSp -> %d\n", g_audio_sp_built);
+    return g_audio_sp_built;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_IS_DONE_BUILD_BGM]) {
+    debugPrintf("jni_shim: AudioHelper.isDoneBuildBgm -> %d\n", g_audio_bgm_built);
+    return g_audio_bgm_built;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_GET_MUSIC_STATE]) {
+    int id = va_arg(ap, int);
+    return sonic_audio_music_state(id); /* 0 = tocando/ok no wrapper da libfox */
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_VIDEO_SET_DATA_SOURCE])
+    return 0;
+  if (methodID == &g_method_tags[MID_AUDIO_VIDEO_IS_PLAYING])
+    return 0;
   return 0;
+}
+
+/* CallIntMethod / CallIntMethodV */
+static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap;
+  va_start(ap, methodID);
+  jint ret = jni_CallIntMethod_args(env, obj, methodID, ap);
+  va_end(ap);
+  return ret;
+}
+
+static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
+                               va_list ap) {
+  return jni_CallIntMethod_args(env, obj, methodID, ap);
 }
 
 /* CallFloatMethod (index 55-57) — sem isto o retorno float era LIXO em s0
@@ -293,14 +431,155 @@ static float jni_CallFloatMethod(void *env, void *obj, void *methodID, ...) {
    armazenado). O main loop dispara callbackInterstitialAds 1x e zera. */
 volatile int jni_inter_pending = 0;
 
-/* CallVoidMethod (index 94) */
-static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
+static void jni_CallVoidMethod_args(void *env, void *obj, void *methodID,
+                                    va_list ap) {
   (void)env;
   (void)obj;
   if (methodID == &g_method_tags[MID_SHOW_INTERSTITIAL]) {
     jni_inter_pending = 1;
     debugPrintf("jni_shim: showInterstitial -> agenda callbackInterstitialAds\n");
+    return;
   }
+  if (methodID == &g_method_tags[MID_AUDIO_SP_RESET]) {
+    g_audio_sp_built = 0;
+    sonic_audio_reset_sfx();
+    debugPrintf("jni_shim: AudioHelper.spReset\n");
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MP_RESET]) {
+    g_audio_bgm_built = 0;
+    sonic_audio_reset_music(-1);
+    debugPrintf("jni_shim: AudioHelper.mpReset\n");
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MP_RESET_ID]) {
+    int id = va_arg(ap, int);
+    g_audio_bgm_built = 0;
+    sonic_audio_reset_music(id);
+    if (audio_log_enabled())
+      audioPrintf("jni_shim: AudioHelper.mpResetID id=%d\n", id);
+    else
+      debugPrintf("jni_shim: AudioHelper.mpReset\n");
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_ASYNC_BUILD_SP_DATA]) {
+    void *path_j = va_arg(ap, void *);
+    const char *path = resolve_jstring(path_j);
+    sonic_audio_set_sfx_bank(path);
+    g_audio_sp_built = 1;
+    if (audio_log_enabled())
+      audioPrintf("jni_shim: AudioHelper.asyncBuildSpData path=\"%s\" -> ready\n",
+                  path);
+    else
+      debugPrintf("jni_shim: AudioHelper.asyncBuildSpData -> ready\n");
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_ASYNC_BUILD_BGM_DATA]) {
+    void *path_j = va_arg(ap, void *);
+    g_audio_bgm_built = 1;
+    if (audio_log_enabled())
+      audioPrintf("jni_shim: AudioHelper.asyncBuildBgmData path=\"%s\" -> ready\n",
+                  resolve_jstring(path_j));
+    else
+      debugPrintf("jni_shim: AudioHelper.asyncBuildBgmData -> ready\n");
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_PAUSE_SOUND] ||
+      methodID == &g_method_tags[MID_AUDIO_RESUME_SOUND] ||
+      methodID == &g_method_tags[MID_AUDIO_STOP_SOUND]) {
+    int handle = va_arg(ap, int);
+    if (methodID == &g_method_tags[MID_AUDIO_PAUSE_SOUND])
+      sonic_audio_pause_sfx(handle, 1);
+    else if (methodID == &g_method_tags[MID_AUDIO_RESUME_SOUND])
+      sonic_audio_pause_sfx(handle, 0);
+    else
+      sonic_audio_stop_sfx(handle);
+    if (audio_log_enabled()) {
+      const char *name =
+          methodID == &g_method_tags[MID_AUDIO_PAUSE_SOUND] ? "PauseSound" :
+          methodID == &g_method_tags[MID_AUDIO_RESUME_SOUND] ? "ResumeSound" :
+                                                               "StopSound";
+      audioPrintf("jni_shim: AudioHelper.%s handle=%d\n", name, handle);
+    }
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_SET_VOLUME]) {
+    int handle = va_arg(ap, int);
+    double volume = va_arg(ap, double);
+    sonic_audio_set_sfx_volume(handle, (float)volume);
+    if (audio_log_enabled()) {
+      audioPrintf("jni_shim: AudioHelper.SetVolume handle=%d volume=%.3f\n",
+                  handle, volume);
+    }
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MUSIC_SET_DATA_SOURCE]) {
+    int id = va_arg(ap, int);
+    void *path_j = va_arg(ap, void *);
+    const char *path = resolve_jstring(path_j);
+    sonic_audio_music_set_source(id, path);
+    if (audio_log_enabled())
+      audioPrintf("jni_shim: AudioHelper.MusicSetDataSource id=%d path=\"%s\"\n",
+                  id, path);
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MUSIC_START] ||
+      methodID == &g_method_tags[MID_AUDIO_MUSIC_STOP] ||
+      methodID == &g_method_tags[MID_AUDIO_MUSIC_PAUSE]) {
+    int id = va_arg(ap, int);
+    if (methodID == &g_method_tags[MID_AUDIO_MUSIC_START])
+      sonic_audio_music_start(id);
+    else if (methodID == &g_method_tags[MID_AUDIO_MUSIC_STOP])
+      sonic_audio_music_stop(id);
+    else
+      sonic_audio_music_pause(id, 1);
+    if (audio_log_enabled()) {
+      const char *name =
+          methodID == &g_method_tags[MID_AUDIO_MUSIC_START] ? "MusicStart" :
+          methodID == &g_method_tags[MID_AUDIO_MUSIC_STOP] ? "MusicStop" :
+                                                             "MusicPause";
+      audioPrintf("jni_shim: AudioHelper.%s id=%d\n", name, id);
+    }
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MUSIC_VOLUME]) {
+    int id = va_arg(ap, int);
+    double volume = va_arg(ap, double);
+    sonic_audio_music_set_volume(id, (float)volume);
+    if (audio_log_enabled()) {
+      audioPrintf("jni_shim: AudioHelper.MusicVolume id=%d volume=%.3f\n",
+                  id, volume);
+    }
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_MUSIC_SET_LOOP]) {
+    int id = va_arg(ap, int);
+    int loop = va_arg(ap, int);
+    sonic_audio_music_set_loop(id, loop);
+    if (audio_log_enabled()) {
+      audioPrintf("jni_shim: AudioHelper.MusicSetLoopFlag id=%d loop=%d\n",
+                  id, loop);
+    }
+    return;
+  }
+  if (methodID == &g_method_tags[MID_AUDIO_SET_MAX_VOLUME] ||
+      methodID == &g_method_tags[MID_AUDIO_OPEN_UNLOCK_WEB] ||
+      methodID == &g_method_tags[MID_AUDIO_OPEN_UNLOCK_WEB_EP1] ||
+      methodID == &g_method_tags[MID_AUDIO_SET_ADS_SHOW])
+    return;
+}
+
+/* CallVoidMethod / CallVoidMethodV */
+static void jni_CallVoidMethod(void *env, void *obj, void *methodID, ...) {
+  va_list ap;
+  va_start(ap, methodID);
+  jni_CallVoidMethod_args(env, obj, methodID, ap);
+  va_end(ap);
+}
+
+static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
+                                va_list ap) {
+  jni_CallVoidMethod_args(env, obj, methodID, ap);
 }
 
 /* CallStaticObjectMethod (index 113) */
@@ -590,12 +869,12 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[37] = (uintptr_t)jni_CallBooleanMethod;
   jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethod;   /* V */
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
-  jni_env_vtable[50] = (uintptr_t)jni_CallIntMethod;       /* V */
+  jni_env_vtable[50] = (uintptr_t)jni_CallIntMethodV;      /* V */
   jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;
   jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethod;     /* V */
   jni_env_vtable[57] = (uintptr_t)jni_CallFloatMethod;     /* A */
   jni_env_vtable[61] = (uintptr_t)jni_CallVoidMethod;
-  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethod;      /* V */
+  jni_env_vtable[62] = (uintptr_t)jni_CallVoidMethodV;     /* V */
   jni_env_vtable[94] = (uintptr_t)jni_GetFieldID;
   jni_env_vtable[113] = (uintptr_t)jni_GetStaticMethodID;
   jni_env_vtable[114] = (uintptr_t)jni_CallStaticObjectMethod;

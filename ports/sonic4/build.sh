@@ -11,6 +11,7 @@ cd "$(dirname "$0")"
 
 SRCS="src/main.c src/so_util.c src/util.c src/error.c \
       src/imports.c src/pthread_bridge.c src/jni_shim.c \
+      src/sonic_audio.c \
       src/egl_shim.c src/android_shim.c \
       src/opensles_shim.c src/stdio_shim.c src/softfp_shim.c"
 
@@ -20,5 +21,6 @@ $CC -O2 -fPIC -fno-omit-frame-pointer -rdynamic -D_GNU_SOURCE \
     -o sonic4 $SRCS \
     -Isrc -I"$SR/usr/include" -I"$SR/usr/include/SDL2" \
     --sysroot="$SR" \
-    -lSDL2 -lGLESv2 -lEGL -ldl -lm -lpthread -lstdc++
+    -lSDL2 -lmpg123 -lvorbisfile -lvorbis -logg \
+    -lGLESv2 -lEGL -ldl -lm -lpthread -lstdc++
 echo "BUILD OK -> $(file sonic4 | cut -d, -f1-3)"

@@ -40,10 +40,65 @@ extern DynLibFunction revc_pthread_table[];
 extern const int revc_pthread_count;
 
 volatile uintptr_t g_load_base = 0;
+volatile unsigned long sonic_frame_for_imports = 0;
+volatile int sonic_game_started = 0;
+static volatile int sonic_in_draw_frame = 0;
 extern int dys_screen_w, dys_screen_h; /* resolução real da tela (egl_shim) */
+
+static struct {
+  int pending;
+  int done;
+  unsigned long uid;
+  int (*AoStorageLoadIsFinished)(void);
+  int (*AoStorageLoadIsSuccessed)(void);
+  int (*AoStorageGetError)(void);
+  void (*CopyBackupComp)(unsigned long);
+  void (*SetSaveEnable)(unsigned long, long);
+  void (*DmBuildSysDataFromBackup)(void);
+} g_native_save_load;
+
+static struct {
+  int ready;
+  int built;
+  int missing_logged;
+  int (*AoStorageLoadIsFinished)(void);
+  int (*AoStorageLoadIsSuccessed)(void);
+  int (*AoStorageGetError)(void);
+  void (*DmBuildSysDataFromBackup)(void);
+  void (*UpdateStageUnlockState)(void);
+  int (*IsStageUnlocked)(unsigned long, int);
+  int (*IsStageClear)(unsigned long, int);
+  void *(*SProgressCreateInstance)(unsigned long);
+  int (*GetStageUnlockState)(void *);
+  int (*GetSsUnlockState)(void *);
+  int (*GetEpMetalUnlockState)(void *);
+} g_save_bootstrap;
 
 static DynLibFunction *g_base;
 static int g_base_n;
+static int env_flag_enabled(const char *name) {
+  const char *v = getenv(name);
+  return v && *v && strcmp(v, "0") != 0 && strcasecmp(v, "false") != 0 &&
+         strcasecmp(v, "no") != 0 && strcasecmp(v, "off") != 0;
+}
+
+static void sonic_check_exit_hotkey(SDL_GameController *pad, const Uint8 *ks) {
+  int keyboard_combo = ks && ks[SDL_SCANCODE_ESCAPE] &&
+                       ks[SDL_SCANCODE_RETURN];
+  int pad_combo = 0;
+  if (pad) {
+    SDL_GameControllerUpdate();
+    pad_combo = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK) &&
+                SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START);
+  }
+  if (keyboard_combo || pad_combo) {
+    fprintf(stderr, "=== SELECT+START -> exit ===\n");
+    fflush(NULL);
+    sync();
+    _exit(0);
+  }
+}
+
 static void build_base_table(void) {
   g_base_n = shantae_overrides_count + revc_pthread_count;
   g_base = malloc(sizeof(DynLibFunction) * g_base_n);
@@ -104,6 +159,186 @@ static void patch_word_at(const char *sym, unsigned off, uint32_t insn) {
           (unsigned long)a);
 }
 
+static void patch_arm_jump(const char *sym, void *target) {
+  uintptr_t raw = so_find_addr_safe(sym);
+  if (!raw) { fprintf(stderr, "patch_jump: %s NÃO encontrado\n", sym); return; }
+  uintptr_t a = raw & ~1u, pg = a & ~0xFFFUL;
+  if (raw & 1) { fprintf(stderr, "patch_jump: %s é Thumb, ignorado\n", sym); return; }
+  if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    fprintf(stderr, "patch_jump: mprotect %s falhou\n", sym); return;
+  }
+  ((uint32_t *)a)[0] = 0xe51ff004;          /* ldr pc, [pc, #-4] */
+  ((uint32_t *)a)[1] = (uint32_t)(uintptr_t)target;
+  mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)a, (char *)a + 8);
+  fprintf(stderr, "patch_jump: %s -> %p @0x%lx\n", sym, target,
+          (unsigned long)a);
+}
+
+static int sonic_amThreadCheckDraw(long unused) {
+  (void)unused;
+  return sonic_in_draw_frame ? 1 : 0;
+}
+
+static void sonic_native_save_load_poll(const char *where) {
+  if (!g_native_save_load.pending) return;
+  if (g_native_save_load.AoStorageLoadIsFinished &&
+      !g_native_save_load.AoStorageLoadIsFinished())
+    return;
+
+  int ok = g_native_save_load.AoStorageLoadIsSuccessed ?
+      g_native_save_load.AoStorageLoadIsSuccessed() : 0;
+  if (ok) {
+    fprintf(stderr, "=== native save load OK (%s) ===\n", where);
+    if (g_native_save_load.CopyBackupComp)
+      g_native_save_load.CopyBackupComp(g_native_save_load.uid);
+    if (g_native_save_load.SetSaveEnable)
+      g_native_save_load.SetSaveEnable(g_native_save_load.uid, 1);
+    if (g_native_save_load.DmBuildSysDataFromBackup)
+      g_native_save_load.DmBuildSysDataFromBackup();
+  } else {
+    int err = g_native_save_load.AoStorageGetError ?
+        g_native_save_load.AoStorageGetError() : -1;
+    fprintf(stderr, "=== native save load FAIL err=%d (%s) ===\n", err, where);
+    if (g_native_save_load.SetSaveEnable)
+      g_native_save_load.SetSaveEnable(g_native_save_load.uid, 0);
+    if (g_native_save_load.DmBuildSysDataFromBackup)
+      g_native_save_load.DmBuildSysDataFromBackup();
+  }
+  g_native_save_load.pending = 0;
+  g_native_save_load.done = 1;
+}
+
+static void sonic_save_bootstrap_init(void) {
+  memset(&g_save_bootstrap, 0, sizeof(g_save_bootstrap));
+  g_save_bootstrap.AoStorageLoadIsFinished =
+      (void *)so_find_addr_safe("_Z23AoStorageLoadIsFinishedv");
+  g_save_bootstrap.AoStorageLoadIsSuccessed =
+      (void *)so_find_addr_safe("_Z24AoStorageLoadIsSuccessedv");
+  g_save_bootstrap.AoStorageGetError =
+      (void *)so_find_addr_safe("_Z17AoStorageGetErrorv");
+  g_save_bootstrap.DmBuildSysDataFromBackup =
+      (void *)so_find_addr_safe("_Z24DmBuildSysDataFromBackupv");
+  g_save_bootstrap.UpdateStageUnlockState =
+      (void *)so_find_addr_safe("_ZN2gs6backup7utility22UpdateStageUnlockStateEv");
+  g_save_bootstrap.IsStageUnlocked =
+      (void *)so_find_addr_safe("_ZN2gs6backup7utility15IsStageUnlockedEm21tag_GSE_MAIN_STAGE_ID");
+  g_save_bootstrap.IsStageClear =
+      (void *)so_find_addr_safe("_ZN2gs6backup7utility12IsStageClearEm21tag_GSE_MAIN_STAGE_ID");
+  g_save_bootstrap.SProgressCreateInstance =
+      (void *)so_find_addr_safe("_ZN2gs6backup9SProgress14CreateInstanceEm");
+  g_save_bootstrap.GetStageUnlockState =
+      (void *)so_find_addr_safe("_ZN2gs6backup9SProgress19GetStageUnlockStateEv");
+  g_save_bootstrap.GetSsUnlockState =
+      (void *)so_find_addr_safe("_ZNK2gs6backup9SProgress16GetSsUnlockStateEv");
+  g_save_bootstrap.GetEpMetalUnlockState =
+      (void *)so_find_addr_safe("_ZN2gs6backup9SProgress21GetEpMetalUnlockStateEv");
+
+  g_save_bootstrap.ready =
+      g_save_bootstrap.AoStorageLoadIsFinished &&
+      g_save_bootstrap.AoStorageLoadIsSuccessed &&
+      g_save_bootstrap.DmBuildSysDataFromBackup;
+  if (!g_save_bootstrap.ready)
+    fprintf(stderr, "AVISO: save bootstrap incompleto\n");
+}
+
+static void sonic_save_bootstrap_log_progress(const char *where) {
+  if (!g_save_bootstrap.IsStageUnlocked || !g_save_bootstrap.IsStageClear)
+    return;
+  void *progress = g_save_bootstrap.SProgressCreateInstance ?
+      g_save_bootstrap.SProgressCreateInstance(0) : NULL;
+  int unlock_state = progress && g_save_bootstrap.GetStageUnlockState ?
+      g_save_bootstrap.GetStageUnlockState(progress) : -1;
+  int ss_state = progress && g_save_bootstrap.GetSsUnlockState ?
+      g_save_bootstrap.GetSsUnlockState(progress) : -1;
+  int epm_state = progress && g_save_bootstrap.GetEpMetalUnlockState ?
+      g_save_bootstrap.GetEpMetalUnlockState(progress) : -1;
+  fprintf(stderr, "=== save progress %s: unlock_state=%d ss=%d epm=%d ===\n",
+          where, unlock_state, ss_state, epm_state);
+  for (int sid = 0; sid <= 4; sid++) {
+    fprintf(stderr, "=== save progress stage %d: unlocked=%d clear=%d ===\n",
+            sid, g_save_bootstrap.IsStageUnlocked(0, sid),
+            g_save_bootstrap.IsStageClear(0, sid));
+  }
+}
+
+static void sonic_save_bootstrap_poll(unsigned long frame) {
+  if (!g_save_bootstrap.ready || g_save_bootstrap.built)
+    return;
+  if (!g_save_bootstrap.AoStorageLoadIsFinished())
+    return;
+
+  if (!g_save_bootstrap.AoStorageLoadIsSuccessed()) {
+    if (!g_save_bootstrap.missing_logged && frame > 120) {
+      int err = g_save_bootstrap.AoStorageGetError ?
+          g_save_bootstrap.AoStorageGetError() : -1;
+      fprintf(stderr, "=== save bootstrap: load finished without success err=%d ===\n", err);
+      g_save_bootstrap.missing_logged = 1;
+    }
+    return;
+  }
+
+  fprintf(stderr, "=== save bootstrap: DmBuildSysDataFromBackup @frame %lu ===\n", frame);
+  g_save_bootstrap.DmBuildSysDataFromBackup();
+  if (g_save_bootstrap.UpdateStageUnlockState)
+    g_save_bootstrap.UpdateStageUnlockState();
+  g_save_bootstrap.built = 1;
+  sonic_save_bootstrap_log_progress("after-build");
+}
+
+static void sonic_native_save_load_start(void) {
+  unsigned long uid = 0, account = 0;
+  void (*AoAccountSetCurrentIdStart)(unsigned long) =
+      (void *)so_find_addr_safe("_Z26AoAccountSetCurrentIdStartm");
+  void (*AoStorageClearError)(void) =
+      (void *)so_find_addr_safe("_Z19AoStorageClearErrorv");
+  void (*AoStorageLoadStart)(unsigned long, void *, unsigned long,
+                             unsigned long, unsigned long) =
+      (void *)so_find_addr_safe("_Z18AoStorageLoadStartmPvmmm");
+  void *(*GetBackup)(unsigned long) =
+      (void *)so_find_addr_safe("_ZN2gs4user5CUtil9GetBackupEm");
+
+  memset(&g_native_save_load, 0, sizeof(g_native_save_load));
+  g_native_save_load.uid = uid;
+  g_native_save_load.AoStorageLoadIsFinished =
+      (void *)so_find_addr_safe("_Z23AoStorageLoadIsFinishedv");
+  g_native_save_load.AoStorageLoadIsSuccessed =
+      (void *)so_find_addr_safe("_Z24AoStorageLoadIsSuccessedv");
+  g_native_save_load.AoStorageGetError =
+      (void *)so_find_addr_safe("_Z17AoStorageGetErrorv");
+  g_native_save_load.CopyBackupComp =
+      (void *)so_find_addr_safe("_ZN2gs4user5CUtil14CopyBackupCompEm");
+  g_native_save_load.SetSaveEnable =
+      (void *)so_find_addr_safe("_ZN2gs4user5CUtil13SetSaveEnableEml");
+  g_native_save_load.DmBuildSysDataFromBackup =
+      (void *)so_find_addr_safe("_Z24DmBuildSysDataFromBackupv");
+
+  if (!AoStorageClearError || !AoStorageLoadStart || !GetBackup ||
+      !g_native_save_load.AoStorageLoadIsFinished ||
+      !g_native_save_load.AoStorageLoadIsSuccessed ||
+      !g_native_save_load.CopyBackupComp ||
+      !g_native_save_load.SetSaveEnable ||
+      !g_native_save_load.DmBuildSysDataFromBackup) {
+    fprintf(stderr, "AVISO: native save load incompleto, mantendo fluxo normal\n");
+    return;
+  }
+
+  if (AoAccountSetCurrentIdStart)
+    AoAccountSetCurrentIdStart(account);
+  void *backup = GetBackup(uid);
+  if (!backup) {
+    fprintf(stderr, "AVISO: native save load sem buffer de backup\n");
+    return;
+  }
+
+  fprintf(stderr, "=== native save load start uid=%lu account=%lu backup=%p ===\n",
+          uid, account, backup);
+  AoStorageClearError();
+  AoStorageLoadStart(account, backup, 1536, 0x594, 0x5bc);
+  g_native_save_load.pending = 1;
+  sonic_native_save_load_poll("start");
+}
+
 static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int n) {
   size_t hs = (size_t)heap_mb * 1024 * 1024;
   void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC,
@@ -131,7 +366,7 @@ static struct {
   void (*DrawFrame)(JEnv, void *);
   void (*GameProcess)(JEnv, void *);
   void (*FileProcess)(JEnv, void *);
-  int  (*HasController)(JEnv, void *);
+  void (*HasController)(JEnv, void *, int);
   void (*SetPadData)(JEnv, void *, int, int, int, int, int, int);
   void (*SetTPData)(JEnv, void *, int, int, int, int);
   void (*resumeEvent)(JEnv, void *);
@@ -185,13 +420,15 @@ int main(int argc, char *argv[]) {
      (o gate 1 nunca libera). Forçar 0 (nenhum upsell) destrava a state machine do título. */
   if (!getenv("SONIC_KEEPUPSHELL"))
     patch_ret0("_Z18SJni_IsUpshellShowv");
-  /* 🔑 GATE DO MENU (title -> menu): CStateWaitSignIn::Next só avança pro menu
-     (state 0x43) se GsUserSetupIsCompleted()!=0 E GsUserIsEnable()!=0 (setup de
-     conta Google Play Games / online). Sem login, o título volta pro Waiting (loop).
-     Forçar ambos -> 1 (usuário "configurado/habilitado") destrava título -> menu. */
+  /* 🔑 GATE DO MENU (title -> menu): CStateWaitSignIn::Next só avança se o usuário
+     estiver habilitado e o setup tiver terminado. Não forçamos
+     GsUserSetupIsCompleted: a task nativa de setup precisa rodar porque ela carrega
+     foxsave_0.dat e popula o backup global antes do menu/continue. */
   if (!getenv("SONIC_KEEPSIGNIN")) {
-    patch_retval("_Z22GsUserSetupIsCompletedm", 1);
     patch_retval("_Z14GsUserIsEnablem", 1);
+    /* GsUserIsSaveEnable precisa ficar real: o native save load abaixo carrega
+       foxsave_0.dat e seta o flag via CUtil::SetSaveEnable. Forçar return 1
+       mascarava falha de load e fazia o menu seguir com backup vazio. */
   }
   /* 🔑 AD INTERSTICIAL: ao selecionar Start, onMainMenuToWorldMap chama
      showInterstitial (ad fullscreen entre telas). Sem a camada de ad Java, o
@@ -249,6 +486,9 @@ int main(int argc, char *argv[]) {
     patch_ret0("_ZN12F2FExtension16isConsentCountryEv");
     patch_ret0("_ZN12F2FExtension19getIsConsentCountryEv");
   }
+
+  if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
+    patch_arm_jump("_Z17amThreadCheckDrawl", (void *)sonic_amThreadCheckDraw);
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -350,8 +590,11 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_KEEPSAVEPATH")) {
     char *sp = (char *)so_find_addr_safe("stsSavePathData");
     const char *dd = getenv("SONIC_DATADIR"); if (!dd) dd = ".";
-    if (sp) { strncpy(sp, dd, 250); sp[250] = 0;
-              fprintf(stderr, "=== save path = %s ===\n", sp); }
+    if (sp) {
+      size_t n = strlen(dd);
+      snprintf(sp, 196, "%s%s", dd, (n > 0 && dd[n - 1] == '/') ? "" : "/");
+      fprintf(stderr, "=== save path = %s ===\n", sp);
+    }
   }
 
   /* 🔑🔑 init(env, thiz, WIDTH, HEIGHT): a JNI init repassa args 3/4 p/ fox_Init(w,h)
@@ -369,6 +612,7 @@ int main(int argc, char *argv[]) {
      retorna cedo e PULA amTaskExecute (a state machine) -> nada avança -> preto. */
   fprintf(stderr, "=== fox: resumeEvent (unpause) ===\n");
   if (fox.resumeEvent) fox.resumeEvent(env, thiz);
+  sonic_save_bootstrap_init();
 
   /* FileProcess = amFS_proc = loop da THREAD de file-system (cond_wait quando
      ocioso). Roda na PRÓPRIA thread; o game thread enfileira requests e sinaliza. */
@@ -376,6 +620,20 @@ int main(int argc, char *argv[]) {
     pthread_t fs;
     pthread_create(&fs, NULL, fs_thread_fn, NULL);
     fprintf(stderr, "=== FS thread iniciada (FileProcess) ===\n");
+  }
+
+  if (env_flag_enabled("SONIC_FORCE_NATIVE_SAVE_LOAD"))
+    sonic_native_save_load_start();
+
+  if (getenv("SONIC_USEUSERSETUP")) {
+    void (*GsUserSetupStart)(unsigned long, unsigned long) =
+        (void *)so_find_addr_safe("_Z16GsUserSetupStartmm");
+    if (GsUserSetupStart) {
+      fprintf(stderr, "=== GsUserSetupStart(uid=0, account=0) ===\n");
+      GsUserSetupStart(0, 0);
+    } else {
+      fprintf(stderr, "AVISO: GsUserSetupStart nao encontrado\n");
+    }
   }
 
   /* intro video: a engine chama Android_playIntroVideo e espera o callback
@@ -403,8 +661,18 @@ int main(int argc, char *argv[]) {
   #define FOX_DOWN   0x0002
   #define FOX_LEFT   0x0004
   #define FOX_RIGHT  0x0008
-  #define FOX_A      0x8020  /* 0x8000=confirm título(AoPadSomeoneStand) | 0x20=decide menu(IsPressedDecide) */
+  #define FOX_A_GAME 0x0020
+  #define FOX_A_MENU 0x8020  /* 0x8000=confirm título(AoPadSomeoneStand) | 0x20=decide menu(IsPressedDecide) */
+  #define FOX_X      0x0040
   #define FOX_B      0x0080
+  #define FOX_Y      0x0100
+  #define FOX_L1     0x0200
+  #define FOX_R1     0x0400
+  #define FOX_L2     0x0800
+  #define FOX_R2     0x1000
+  #define FOX_BACK   0x2000
+  #define FOX_L3     0x4000
+  #define FOX_R3     0x8000
   #define FOX_START  0x0010
 
   /* 🔑 demo-resource: o gate do título (CDemoResourceManager::IsValid evt3) trava
@@ -428,8 +696,9 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  /* "conectar" o pad: SetPadData(-2) seta o flag de pad conectado (o Java faria
-     isso). Sem isso o amPadExecute pode ignorar o estado de botões injetado. */
+  /* "conectar" o pad: HasController(env, thiz, 1) chama Sonic4F2F::setController(true);
+     SetPadData(-2/-5) replica os toggles que o Java fazia para o wrapper fox. */
+  if (fox.HasController) fox.HasController(env, thiz, 1);
   if (fox.SetPadData) {
     fox.SetPadData(env, thiz, -2, 0, 0, 0, 0, 0);
     fox.SetPadData(env, thiz, -5, 0, 0, 0, 0, 0);
@@ -440,46 +709,217 @@ int main(int argc, char *argv[]) {
   int prev_a = 0;             /* borda de A p/ disparar interCB 1x por seleção */
   long inter_fire_at = -1;    /* frame agendado p/ 1 disparo de interCB */
   const char *interat = getenv("SONIC_INTERAT"); /* override: 1 disparo no frame N */
+  const char *ar = getenv("SONIC_AUTORIGHT_AFTER");
+  long autoright_after = ar ? atol(ar) : -1;
+  const char *aj = getenv("SONIC_AUTOJUMP_AT");
+  long autojump_at = aj ? atol(aj) : -1;
+  const char *ap = getenv("SONIC_AUTOPAUSE_AT");
+  long autopause_at = ap ? atol(ap) : -1;
+  int autopause_state = 0;
+  int start_was_down = 0;
+  void (*GmPauseMenuLoadStart)(void) =
+      (void *)so_find_addr_safe("_Z20GmPauseMenuLoadStartv");
+  int (*GmPauseMenuLoadIsFinished)(void) =
+      (void *)so_find_addr_safe("_Z25GmPauseMenuLoadIsFinishedv");
+  void (*GmPauseMenuBuildStart)(void) =
+      (void *)so_find_addr_safe("_Z21GmPauseMenuBuildStartv");
+  int (*GmPauseMenuBuildIsFinished)(void) =
+      (void *)so_find_addr_safe("_Z26GmPauseMenuBuildIsFinishedv");
+  void (*GmPauseMenuStart)(unsigned long) =
+      (void *)so_find_addr_safe("_Z16GmPauseMenuStartm");
+  void (*GmPauseMenuCancel)(void) =
+      (void *)so_find_addr_safe("_Z17GmPauseMenuCancelv");
+  int (*GmPauseMenuIsFinished)(void) =
+      (void *)so_find_addr_safe("_Z21GmPauseMenuIsFinishedv");
+  int (*GmPauseMenuGetResult)(void) =
+      (void *)so_find_addr_safe("_Z20GmPauseMenuGetResultv");
+  void (*GmMainExit)(void) =
+      (void *)so_find_addr_safe("GmMainExit");
+  void (*GmMainRestartExit)(void) =
+      (void *)so_find_addr_safe("GmMainRestartExit");
+  void (*InterruptClear)(void) =
+      (void *)so_find_addr_safe("_Z14InterruptClearv");
+  void (*SyDecideEvtCase)(int) =
+      (void *)so_find_addr_safe("SyDecideEvtCase");
+  const char *fs = getenv("SONIC_FRAME_SLEEP_US");
+  long frame_sleep_us = fs ? atol(fs) : 0;
+  fprintf(stderr, "=== frame sleep us: %ld ===\n", frame_sleep_us);
+  int gameplay_start_delay_done = 0;
+  short *gm_direct = (short *)so_find_addr_safe("gmPaddirectFromPlayer0");
+  short *gm_lx = (short *)so_find_addr_safe("gmPadAnalogLXFromPlayer0");
+  short *gm_ly = (short *)so_find_addr_safe("gmPadAnalogLYFromPlayer0");
+  if (getenv("SONIC_INPUTLOG"))
+    fprintf(stderr, "=== gmPad globals direct=%p lx=%p ly=%p ===\n",
+            (void *)gm_direct, (void *)gm_lx, (void *)gm_ly);
   for (;;) {
+    sonic_frame_for_imports = frame;
     /* --- input: drenar eventos SDL + montar a máscara fox + SetPadData --- */
     SDL_Event ev; while (SDL_PollEvent(&ev)) { /* drena (quit etc) */ }
     int mask = 0;
+    int lx = 0, ly = 0;
+    int rx = 0, ry = 0;
+    int lt = 0, rt = 0;
+    int start_down = 0;
     const Uint8 *ks = SDL_GetKeyboardState(NULL);
+    sonic_check_exit_hotkey(pad, ks);
     if (ks) {
-      if (ks[SDL_SCANCODE_UP])    mask |= FOX_UP;
-      if (ks[SDL_SCANCODE_DOWN])  mask |= FOX_DOWN;
-      if (ks[SDL_SCANCODE_LEFT])  mask |= FOX_LEFT;
-      if (ks[SDL_SCANCODE_RIGHT]) mask |= FOX_RIGHT;
-      if (ks[SDL_SCANCODE_RETURN]||ks[SDL_SCANCODE_SPACE]||ks[SDL_SCANCODE_Z]) mask |= FOX_A;
-      if (ks[SDL_SCANCODE_X])     mask |= FOX_B;
-      if (ks[SDL_SCANCODE_RETURN])mask |= FOX_START;
+      if (ks[SDL_SCANCODE_UP])    { mask |= FOX_UP;    ly = -32768; }
+      if (ks[SDL_SCANCODE_DOWN])  { mask |= FOX_DOWN;  ly =  32767; }
+      if (ks[SDL_SCANCODE_LEFT])  { mask |= FOX_LEFT;  lx = -32768; }
+      if (ks[SDL_SCANCODE_RIGHT]) { mask |= FOX_RIGHT; lx =  32767; }
+      if (ks[SDL_SCANCODE_W])     { mask |= FOX_UP;    ly = -32768; }
+      if (ks[SDL_SCANCODE_S])     { mask |= FOX_DOWN;  ly =  32767; }
+      if (ks[SDL_SCANCODE_A])     { mask |= FOX_LEFT;  lx = -32768; }
+      if (ks[SDL_SCANCODE_D])     { mask |= FOX_RIGHT; lx =  32767; }
+      if (ks[SDL_SCANCODE_SPACE]||ks[SDL_SCANCODE_Z])
+        mask |= sonic_game_started ? FOX_A_GAME : FOX_A_MENU;
+      if (ks[SDL_SCANCODE_C])     mask |= FOX_B;
+      if (ks[SDL_SCANCODE_X])     mask |= FOX_X;
+      if (ks[SDL_SCANCODE_V] || ks[SDL_SCANCODE_Y]) mask |= FOX_Y;
+      if (ks[SDL_SCANCODE_Q])     mask |= FOX_L1;
+      if (ks[SDL_SCANCODE_E])     mask |= FOX_R1;
+      if (ks[SDL_SCANCODE_1])     { mask |= FOX_L2; lt = 32767; }
+      if (ks[SDL_SCANCODE_3])     { mask |= FOX_R2; rt = 32767; }
+      if (ks[SDL_SCANCODE_N])     mask |= FOX_L3;
+      if (ks[SDL_SCANCODE_M])     mask |= FOX_R3;
+      if (ks[SDL_SCANCODE_ESCAPE]) mask |= FOX_BACK;
+      if (ks[SDL_SCANCODE_RETURN]) {
+        start_down = 1;
+        if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+      }
     }
     if (pad) {
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP))    mask |= FOX_UP;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  mask |= FOX_DOWN;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  mask |= FOX_LEFT;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) mask |= FOX_RIGHT;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))     mask |= FOX_A;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B))     mask |= FOX_B;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) mask |= FOX_A|FOX_START;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP))    { mask |= FOX_UP;    ly = -32768; }
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  { mask |= FOX_DOWN;  ly =  32767; }
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  { mask |= FOX_LEFT;  lx = -32768; }
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) { mask |= FOX_RIGHT; lx =  32767; }
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))
+        mask |= sonic_game_started ? FOX_A_GAME : FOX_A_MENU;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B)) mask |= FOX_B;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_X)) mask |= FOX_X;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y)) mask |= FOX_Y;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) mask |= FOX_L1;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= FOX_R1;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSTICK)) mask |= FOX_L3;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSTICK)) mask |= FOX_R3;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK)) mask |= FOX_BACK;
+      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
+        start_down = 1;
+        if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+      }
       Sint16 ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
       Sint16 ay = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
-      if (ax < -12000) mask |= FOX_LEFT; else if (ax > 12000) mask |= FOX_RIGHT;
-      if (ay < -12000) mask |= FOX_UP;   else if (ay > 12000) mask |= FOX_DOWN;
+      Sint16 arx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX);
+      Sint16 ary = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTY);
+      Sint16 alt = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+      Sint16 art = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+      if (ax < -12000) { mask |= FOX_LEFT;  lx = ax; }
+      else if (ax > 12000) { mask |= FOX_RIGHT; lx = ax; }
+      if (ay < -12000) { mask |= FOX_UP;    ly = ay; }
+      else if (ay > 12000) { mask |= FOX_DOWN; ly = ay; }
+      if (arx < -12000 || arx > 12000) rx = arx;
+      if (ary < -12000 || ary > 12000) ry = ary;
+      if (alt > 12000) { mask |= FOX_L2; lt = alt; }
+      if (art > 12000) { mask |= FOX_R2; rt = art; }
     }
     /* auto-press de teste: o trigger é a borda 0->1 (1 frame), então alterna
        0x8000/0 a cada frame após o título carregar -> trigger frequente p/ vencer
        a corrida com o poll do CStateWaiting::Next (SONIC_AUTOSTART). */
     /* press ÚNICO de teste (não contínuo): aperta confirm uma vez ~frame 420 por
        ~5 frames e SOLTA (pressionar contínuo reseta a sequência de saída do título). */
-    if (getenv("SONIC_AUTOSTART")) {
-      if (frame >= 600 && frame < 606)   mask |= FOX_A;  /* título -> menu (press único) */
-      if (frame >= 1300 && frame < 1306) mask |= FOX_A;  /* menu: Start (press único) */
+    if (env_flag_enabled("SONIC_AUTOSTART")) {
+      /* Pulsos curtos e espaçados: o primeiro sai do título; o segundo confirma
+         Start/New Game. Pulsos extras ficam opt-in, porque depois que a fase
+         carrega eles podem acionar flows de ad/menu e bagunçar o gameplay. */
+      int extra = getenv("SONIC_AUTOSTART_EXTRA") != NULL;
+      int autopulse =
+          (frame >= 600 && frame < 606) ||
+          (frame >= 900 && frame < 906) ||
+          (extra && frame >= 1300 && frame < 1306) ||
+          (extra && frame >= 1700 && frame < 1706);
+      if (autopulse) {
+        if (frame == 600 || frame == 900 || frame == 1300 || frame == 1700)
+          fprintf(stderr, "=== AUTOSTART A pulse @frame %lu ===\n", frame);
+        mask |= FOX_A_MENU;
+      }
+    }
+    if (sonic_game_started && autoright_after >= 0 && (long)frame >= autoright_after) {
+      mask |= FOX_RIGHT;
+      lx = 32767;
+    }
+    if (sonic_game_started && autojump_at >= 0 &&
+        (long)frame >= autojump_at && (long)frame < autojump_at + 8)
+      mask |= FOX_A_GAME;
+    if (sonic_game_started && start_down && !start_was_down) {
+      if (autopause_state == 0) {
+        fprintf(stderr, "=== START native pause @frame %lu ===\n", frame);
+        if (GmPauseMenuLoadStart) GmPauseMenuLoadStart();
+        autopause_state = 1;
+      } else if (autopause_state == 3 && GmPauseMenuCancel) {
+        fprintf(stderr, "=== START native pause cancel @frame %lu ===\n", frame);
+        GmPauseMenuCancel();
+        autopause_state = 4;
+      }
+    }
+    start_was_down = start_down;
+    if (sonic_game_started && autopause_at >= 0 &&
+        (long)frame >= autopause_at && autopause_state == 0) {
+      fprintf(stderr, "=== AUTOPAUSE native load @frame %lu ===\n", frame);
+      if (GmPauseMenuLoadStart) GmPauseMenuLoadStart();
+      autopause_state = 1;
+    }
+    if (autopause_state == 1 && GmPauseMenuLoadIsFinished &&
+        GmPauseMenuLoadIsFinished()) {
+      fprintf(stderr, "=== AUTOPAUSE native build @frame %lu ===\n", frame);
+      if (GmPauseMenuBuildStart) GmPauseMenuBuildStart();
+      autopause_state = 2;
+    }
+    if (autopause_state == 2 &&
+        (!GmPauseMenuBuildIsFinished || GmPauseMenuBuildIsFinished())) {
+      fprintf(stderr, "=== AUTOPAUSE native start @frame %lu ===\n", frame);
+      if (GmPauseMenuStart) GmPauseMenuStart(0);
+      autopause_state = 3;
+    }
+    if ((autopause_state == 3 || autopause_state == 4) &&
+        GmPauseMenuIsFinished && GmPauseMenuIsFinished()) {
+      int pause_result = GmPauseMenuGetResult ? GmPauseMenuGetResult() : -1;
+      fprintf(stderr, "=== START native pause finished result=%d @frame %lu ===\n",
+              pause_result, frame);
+      if (pause_result == 0) {
+        if (InterruptClear) InterruptClear();
+        if (SyDecideEvtCase) SyDecideEvtCase(1);
+        if (GmMainRestartExit) GmMainRestartExit();
+      } else if (pause_result == 2 || pause_result == 3) {
+        if (InterruptClear) InterruptClear();
+        if (SyDecideEvtCase) SyDecideEvtCase(pause_result == 2 ? 0 : 3);
+        if (GmMainExit) GmMainExit();
+      }
+      autopause_state = 0;
     }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
+    if (gm_direct) *gm_direct = (short)mask;
+    if (gm_lx) *gm_lx = (short)lx;
+    if (gm_ly) *gm_ly = (short)ly;
+    if (getenv("SONIC_INPUTLOG") && sonic_game_started && (frame % 60) == 0)
+      fprintf(stderr, "[input f%lu] mask=%04x lx=%d ly=%d rx=%d ry=%d lt=%d rt=%d\n",
+              frame, mask & 0xffff, lx, ly, rx, ry, lt, rt);
 
+    sonic_native_save_load_poll("frame");
+    sonic_save_bootstrap_poll(frame);
+    sonic_in_draw_frame = 0;
     if (fox.GameProcess) fox.GameProcess(env, thiz);
+    if (sonic_game_started && !gameplay_start_delay_done) {
+      const char *d = getenv("SONIC_GAMEPLAY_START_DELAY_MS");
+      int ms = d ? atoi(d) : 0;
+      gameplay_start_delay_done = 1;
+      if (ms > 0) {
+        fprintf(stderr, "=== gameplay start delay %d ms @frame %lu ===\n", ms, frame);
+        usleep((useconds_t)ms * 1000);
+      }
+    }
+    sonic_in_draw_frame = 1;
     if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
+    sonic_in_draw_frame = 0;
     if (getenv("SONIC_TESTCLEAR")) {  /* diagnóstico: present/contexto OK? */
       extern void glClearColor(float, float, float, float);
       extern void glClear(unsigned int);
@@ -523,7 +963,7 @@ int main(int argc, char *argv[]) {
     }
     if ((frame % 60) == 0) fprintf(stderr, "[frame %lu]\n", frame);
     frame++;
-    usleep(16000);
+    if (frame_sleep_us > 0) usleep((useconds_t)frame_sleep_us);
   }
   return 0;
 }

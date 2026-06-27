@@ -33,14 +33,23 @@
 #include "android_shim.h"
 
 /* ---------------- liblog ---------------- */
+extern volatile int sonic_game_started;
 static int b_log_print(int prio, const char *tag, const char *fmt, ...) {
   fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
+  char msg[1024];
   va_list ap; va_start(ap, fmt);
+  va_list cp; va_copy(cp, ap);
   vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap);
+  if (fmt) {
+    vsnprintf(msg, sizeof(msg), fmt, cp);
+    if (strstr(msg, "game start")) sonic_game_started = 1;
+  }
+  va_end(cp);
   return 0;
 }
 static int b_log_write(int prio, const char *tag, const char *text) {
   fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", text ? text : "");
+  if (text && strstr(text, "game start")) sonic_game_started = 1;
   return 0;
 }
 static void b_log_assert(const char *cond, const char *tag, const char *fmt, ...) {
@@ -50,7 +59,14 @@ static void b_log_assert(const char *cond, const char *tag, const char *fmt, ...
 }
 static int b_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
   fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
+  char msg[1024];
+  va_list cp; va_copy(cp, ap);
   vfprintf(stderr, fmt, ap); fprintf(stderr, "\n");
+  if (fmt) {
+    vsnprintf(msg, sizeof(msg), fmt, cp);
+    if (strstr(msg, "game start")) sonic_game_started = 1;
+  }
+  va_end(cp);
   return 0;
 }
 
@@ -199,6 +215,7 @@ __attribute__((constructor)) static void sl_iid_init(void) {
 
 /* ponte stdio (stdio_shim.c) */
 extern size_t b_fwrite(const void *, size_t, size_t, void *);
+extern void *b_fopen(const char *, const char *);
 extern size_t b_fread(void *, size_t, size_t, void *);
 extern int b_fputs(const char *, void *);
 extern int b_fputc(int, void *);
@@ -246,8 +263,88 @@ static unsigned egl_releasethread_stub(void) { return 1u; }
 static int g_gllog = -1;
 static int gllog_on(void) { if (g_gllog<0) g_gllog = getenv("SHANTAE_GLLOG")?1:0; return g_gllog; }
 static void *rgl(const char *n) { return dlsym(RTLD_DEFAULT, n); }
+extern volatile unsigned long sonic_frame_for_imports;
+static int g_drawlog = -1, g_force3d = -1, g_force_cull = -1, g_force_depth = -1,
+           g_force_scissor = -1, g_force_mask = -1;
+static int drawlog_on(void) {
+  if (g_drawlog < 0) g_drawlog = getenv("SONIC_DRAWLOG") ? 1 : 0;
+  return g_drawlog;
+}
+static int force3d_on(void) {
+  if (g_force3d < 0) g_force3d = getenv("SONIC_FORCE3D_STATE") ? 1 : 0;
+  return g_force3d;
+}
+static int force_cull_on(void) {
+  if (g_force_cull < 0) g_force_cull = getenv("SONIC_FORCE3D_CULL") ? 1 : 0;
+  return force3d_on() || g_force_cull;
+}
+static int force_depth_on(void) {
+  if (g_force_depth < 0) g_force_depth = getenv("SONIC_FORCE3D_DEPTH") ? 1 : 0;
+  return force3d_on() || g_force_depth;
+}
+static int force_scissor_on(void) {
+  if (g_force_scissor < 0) g_force_scissor = getenv("SONIC_FORCE3D_SCISSOR") ? 1 : 0;
+  return force3d_on() || g_force_scissor;
+}
+static int force_mask_on(void) {
+  if (g_force_mask < 0) g_force_mask = getenv("SONIC_FORCE3D_MASK") ? 1 : 0;
+  return force3d_on() || g_force_mask;
+}
+static unsigned g_cur_fbo, g_cur_prog, g_cur_active_unit, g_cur_tex2d[8];
+static int g_depth_test = -1, g_cull_face = -1, g_blend = -1, g_scissor = -1;
+static int g_depth_mask = 1, g_color_mask[4] = {1, 1, 1, 1};
+static unsigned g_depth_func, g_cull_mode, g_blend_src, g_blend_dst, g_blend_src_a, g_blend_dst_a;
+static int g_viewport[4];
+
+static int post_game_draw_window(void) {
+  return sonic_frame_for_imports >= 1100;
+}
+
+static void force_visible_3d_state(int count) {
+  if (!post_game_draw_window() || count < 16) return;
+  if (!force3d_on() && !force_cull_on() && !force_depth_on() &&
+      !force_scissor_on() && !force_mask_on()) return;
+  static void (*p_color_mask)(unsigned char, unsigned char, unsigned char, unsigned char);
+  static void (*p_depth_mask)(unsigned char);
+  static void (*p_disable)(unsigned);
+  static void (*p_blend_func)(unsigned, unsigned);
+  if (!p_color_mask) p_color_mask = rgl("glColorMask");
+  if (!p_depth_mask) p_depth_mask = rgl("glDepthMask");
+  if (!p_disable) p_disable = rgl("glDisable");
+  if (!p_blend_func) p_blend_func = rgl("glBlendFunc");
+  if (force_mask_on() && p_color_mask) p_color_mask(1, 1, 1, 1);
+  if (force_depth_on() && p_depth_mask) p_depth_mask(1);
+  if (p_disable) {
+    if (force_cull_on()) p_disable(0x0B44);    /* GL_CULL_FACE */
+    if (force_depth_on()) p_disable(0x0B71);   /* GL_DEPTH_TEST */
+    if (force_scissor_on()) p_disable(0x0C11); /* GL_SCISSOR_TEST */
+  }
+  if (p_blend_func) p_blend_func(0x0302, 0x0303); /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
+}
+
+static void log_draw_call(const char *kind, unsigned mode, int first, int count,
+                          unsigned type, const void *indices) {
+  if (!drawlog_on() || !post_game_draw_window()) return;
+  static unsigned long n = 0;
+  n++;
+  if (n <= 260 || (n % 500) == 0) {
+    fprintf(stderr,
+            "[DRAW f=%lu #%lu] %s mode=0x%x first=%d count=%d type=0x%x idx=%p "
+            "fbo=%u prog=%u tex0=%u tex1=%u tex2=%u depth=%d dfunc=0x%x "
+            "cull=%d cmode=0x%x blend=%d bfunc=0x%x/0x%x/0x%x/0x%x "
+            "scissor=%d cmask=%d%d%d%d dmask=%d vp=%d,%d %dx%d\n",
+            sonic_frame_for_imports, n, kind, mode, first, count, type, indices,
+            g_cur_fbo, g_cur_prog, g_cur_tex2d[0], g_cur_tex2d[1], g_cur_tex2d[2],
+            g_depth_test, g_depth_func, g_cull_face, g_cull_mode, g_blend,
+            g_blend_src, g_blend_dst, g_blend_src_a, g_blend_dst_a, g_scissor,
+            g_color_mask[0], g_color_mask[1], g_color_mask[2], g_color_mask[3],
+            g_depth_mask, g_viewport[0], g_viewport[1], g_viewport[2], g_viewport[3]);
+  }
+}
+
 static void my_glBindFramebuffer(unsigned t, unsigned fb) {
   static void(*r)(unsigned,unsigned); if(!r)r=rgl("glBindFramebuffer");
+  if (t == 0x8D40) g_cur_fbo = fb;
   if (gllog_on()) { static int z=0; if(z<60){fprintf(stderr,"[GL] BindFramebuffer(0x%x, fbo=%u)\n",t,fb);z++;} }
   r(t,fb);
 }
@@ -278,12 +375,16 @@ static void glerr_check(const char*tag){
 static void my_glDrawElements(unsigned md,int c,unsigned t,const void*i){
   static void(*r)(unsigned,int,unsigned,const void*); if(!r)r=rgl("glDrawElements");
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawElements #%lu count=%d\n",n,c); }
+  force_visible_3d_state(c);
+  log_draw_call("elements", md, -1, c, t, i);
   r(md,c,t,i);
   glerr_check("DrawElements");
 }
 static void my_glDrawArrays(unsigned md,int f,int c){
   static void(*r)(unsigned,int,int); if(!r)r=rgl("glDrawArrays");
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawArrays #%lu count=%d\n",n,c); }
+  force_visible_3d_state(c);
+  log_draw_call("arrays", md, f, c, 0, NULL);
   r(md,f,c);
   glerr_check("DrawArrays");
 }
@@ -303,9 +404,104 @@ static void my_glRenderbufferStorage(unsigned t,unsigned ifmt,int w,int h){
 static void my_glTexImage2D(unsigned t,int l,int ifmt,int w,int h,int b,unsigned fmt,unsigned ty,const void*p){
   static void(*r)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
   if(!r)r=rgl("glTexImage2D");
-  if(glerr_on() && p==0){static int z=0; if(z++<40)
-    fprintf(stderr,"[FBO] TexImage2D(rendertarget?) ifmt=0x%x %dx%d fmt=0x%x type=0x%x\n",ifmt,w,h,fmt,ty);}
+  if(glerr_on()){static int z=0; if(z++<80)
+    fprintf(stderr,"%s TexImage2D ifmt=0x%x %dx%d fmt=0x%x type=0x%x data=%p\n",
+            p ? "[TEX]" : "[FBO]", ifmt,w,h,fmt,ty,p);}
   r(t,l,ifmt,w,h,b,fmt,ty,p);
+  glerr_check("TexImage2D");
+}
+static void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,
+                                      int b,int imageSize,const void*p){
+  static void(*r)(unsigned,int,unsigned,int,int,int,int,const void*);
+  if(!r)r=rgl("glCompressedTexImage2D");
+  if(glerr_on()){static int z=0; if(z++<120)
+    fprintf(stderr,"[CTEX] CompressedTexImage2D ifmt=0x%x %dx%d size=%d data=%p\n",
+            ifmt,w,h,imageSize,p);}
+  r(t,l,ifmt,w,h,b,imageSize,p);
+  glerr_check("CompressedTexImage2D");
+}
+static void my_glUseProgram(unsigned p){
+  static void(*r)(unsigned); if(!r)r=rgl("glUseProgram");
+  g_cur_prog = p;
+  if(glerr_on()){static int z=0; if(z++<120)
+    fprintf(stderr,"[GL] UseProgram(%u)\n",p);}
+  r(p);
+  glerr_check("UseProgram");
+}
+static void my_glBindTexture(unsigned t,unsigned tex){
+  static void(*r)(unsigned,unsigned); if(!r)r=rgl("glBindTexture");
+  if (t == 0x0DE1 && g_cur_active_unit < 8) g_cur_tex2d[g_cur_active_unit] = tex;
+  if(glerr_on()){static int z=0; if(z++<160)
+    fprintf(stderr,"[GL] BindTexture(target=0x%x, tex=%u)\n",t,tex);}
+  r(t,tex);
+}
+static void my_glActiveTexture(unsigned tex){
+  static void(*r)(unsigned); if(!r)r=rgl("glActiveTexture");
+  if (tex >= 0x84C0 && tex < 0x84C8) g_cur_active_unit = tex - 0x84C0;
+  r(tex);
+}
+static void my_glEnable(unsigned cap){
+  static void(*r)(unsigned); if(!r)r=rgl("glEnable");
+  if (cap == 0x0B71) g_depth_test = 1;
+  else if (cap == 0x0B44) g_cull_face = 1;
+  else if (cap == 0x0BE2) g_blend = 1;
+  else if (cap == 0x0C11) g_scissor = 1;
+  if (drawlog_on() && post_game_draw_window()) {
+    static int z=0; if(z++<120) fprintf(stderr,"[STATE f=%lu] Enable 0x%x\n", sonic_frame_for_imports, cap);
+  }
+  r(cap);
+}
+static void my_glDisable(unsigned cap){
+  static void(*r)(unsigned); if(!r)r=rgl("glDisable");
+  if (cap == 0x0B71) g_depth_test = 0;
+  else if (cap == 0x0B44) g_cull_face = 0;
+  else if (cap == 0x0BE2) g_blend = 0;
+  else if (cap == 0x0C11) g_scissor = 0;
+  if (drawlog_on() && post_game_draw_window()) {
+    static int z=0; if(z++<120) fprintf(stderr,"[STATE f=%lu] Disable 0x%x\n", sonic_frame_for_imports, cap);
+  }
+  r(cap);
+}
+static void my_glColorMask(unsigned char r0,unsigned char g,unsigned char b,unsigned char a){
+  static void(*r)(unsigned char,unsigned char,unsigned char,unsigned char); if(!r)r=rgl("glColorMask");
+  g_color_mask[0] = !!r0; g_color_mask[1] = !!g; g_color_mask[2] = !!b; g_color_mask[3] = !!a;
+  if (drawlog_on() && post_game_draw_window()) {
+    static int z=0; if(z++<80) fprintf(stderr,"[STATE f=%lu] ColorMask %d%d%d%d\n", sonic_frame_for_imports, g_color_mask[0], g_color_mask[1], g_color_mask[2], g_color_mask[3]);
+  }
+  r(r0,g,b,a);
+}
+static void my_glDepthMask(unsigned char v){
+  static void(*r)(unsigned char); if(!r)r=rgl("glDepthMask");
+  g_depth_mask = !!v;
+  if (drawlog_on() && post_game_draw_window()) {
+    static int z=0; if(z++<80) fprintf(stderr,"[STATE f=%lu] DepthMask %d\n", sonic_frame_for_imports, g_depth_mask);
+  }
+  r(v);
+}
+static void my_glDepthFunc(unsigned f){
+  static void(*r)(unsigned); if(!r)r=rgl("glDepthFunc");
+  g_depth_func = f;
+  r(f);
+}
+static void my_glCullFace(unsigned m){
+  static void(*r)(unsigned); if(!r)r=rgl("glCullFace");
+  g_cull_mode = m;
+  r(m);
+}
+static void my_glBlendFunc(unsigned s,unsigned d){
+  static void(*r)(unsigned,unsigned); if(!r)r=rgl("glBlendFunc");
+  g_blend_src = s; g_blend_dst = d; g_blend_src_a = s; g_blend_dst_a = d;
+  r(s,d);
+}
+static void my_glBlendFuncSeparate(unsigned sr,unsigned dr,unsigned sa,unsigned da){
+  static void(*r)(unsigned,unsigned,unsigned,unsigned); if(!r)r=rgl("glBlendFuncSeparate");
+  g_blend_src = sr; g_blend_dst = dr; g_blend_src_a = sa; g_blend_dst_a = da;
+  r(sr,dr,sa,da);
+}
+static void my_glViewport(int x,int y,int w,int h){
+  static void(*r)(int,int,int,int); if(!r)r=rgl("glViewport");
+  g_viewport[0]=x; g_viewport[1]=y; g_viewport[2]=w; g_viewport[3]=h;
+  r(x,y,w,h);
 }
 static void my_glFramebufferTexture2D(unsigned t,unsigned att,unsigned tt,unsigned tex,int l){
   static void(*r)(unsigned,unsigned,unsigned,unsigned,int); if(!r)r=rgl("glFramebufferTexture2D");
@@ -369,6 +565,7 @@ DynLibFunction shantae_overrides[] = {
      * resolvem por dlsym (símbolos exportados); funções abaixo precisam OVERRIDE
      * (a glibc nativa crasharia com FILE* do array __sF). */
     {"fwrite", (uintptr_t)b_fwrite},
+    {"fopen", (uintptr_t)b_fopen},
     {"fread", (uintptr_t)b_fread},
     {"fputs", (uintptr_t)b_fputs},
     {"fputc", (uintptr_t)b_fputc},
@@ -455,6 +652,19 @@ DynLibFunction shantae_overrides[] = {
     {"glCheckFramebufferStatus", (uintptr_t)my_glCheckFramebufferStatus},
     {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
     {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+    {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},
+    {"glUseProgram", (uintptr_t)my_glUseProgram},
+    {"glBindTexture", (uintptr_t)my_glBindTexture},
+    {"glActiveTexture", (uintptr_t)my_glActiveTexture},
+    {"glEnable", (uintptr_t)my_glEnable},
+    {"glDisable", (uintptr_t)my_glDisable},
+    {"glColorMask", (uintptr_t)my_glColorMask},
+    {"glDepthMask", (uintptr_t)my_glDepthMask},
+    {"glDepthFunc", (uintptr_t)my_glDepthFunc},
+    {"glCullFace", (uintptr_t)my_glCullFace},
+    {"glBlendFunc", (uintptr_t)my_glBlendFunc},
+    {"glBlendFuncSeparate", (uintptr_t)my_glBlendFuncSeparate},
+    {"glViewport", (uintptr_t)my_glViewport},
     {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
     {"glFramebufferRenderbuffer", (uintptr_t)my_glFramebufferRenderbuffer},
     {"slCreateEngine", (uintptr_t)slCreateEngine_shim},
