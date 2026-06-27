@@ -5,22 +5,24 @@
 PORTNAME="Sonic The Hedgehog 4: Episode II"
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 
-controlfolder="/roms/ports/PortMaster"
-for d in /opt/system/Tools/PortMaster /opt/tools/PortMaster "$XDG_DATA_HOME/PortMaster" /roms/ports/PortMaster /storage/.config/PortMaster; do
-  [ -f "$d/control.txt" ] && controlfolder="$d" && break
-done
-
-if [ -f "$controlfolder/control.txt" ]; then
-  source "$controlfolder/control.txt"
-  [ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
-  get_controls
+if [ -d "/opt/system/Tools/PortMaster/" ]; then
+  controlfolder="/opt/system/Tools/PortMaster"
+elif [ -d "/opt/tools/PortMaster/" ]; then
+  controlfolder="/opt/tools/PortMaster"
+elif [ -d "$XDG_DATA_HOME/PortMaster/" ]; then
+  controlfolder="$XDG_DATA_HOME/PortMaster"
+elif [ -d "/roms/ports/PortMaster" ]; then
+  controlfolder="/roms/ports/PortMaster"
 else
-  directory=${directory:-storage/roms}
-  ESUDO=${ESUDO:-}
+  controlfolder="/storage/.config/PortMaster"
 fi
 
+source $controlfolder/control.txt
+[ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
+get_controls
+
 CUR_TTY=/dev/tty0
-$ESUDO chmod 666 "$CUR_TTY" 2>/dev/null || true
+$ESUDO chmod 666 $CUR_TTY 2>/dev/null
 
 GAMEDIR="/$directory/ports/sonic4"
 [ -d "$GAMEDIR" ] || GAMEDIR="/storage/roms/ports/sonic4"
