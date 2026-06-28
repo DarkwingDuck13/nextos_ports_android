@@ -943,15 +943,20 @@ static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
   }
 }
 
+static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
+  g_dev = SDL_OpenAudioDevice(NULL, 0, want, have, 0);
+  return g_dev != 0;
+}
+
+/* Áudio ADAPTATIVO, sem caminho fixo (regra #6: nunca hardcodar SDL_AUDIODRIVER).
+   1) tenta o driver que o SDL do device escolhe sozinho — onde já funciona
+      (alsa/pulse/pipewire vivo) abre de primeira, idêntico ao comportamento antigo;
+   2) se falhar (ex.: SDL escolhe pipewire mas o daemon não existe -> "pw_loop_new
+      can't make support.system handle" no muOS, ou pulse sem runtime-dir), VARRE
+      todos os drivers que aquele SDL expõe e usa o 1º que ABRE de verdade (pula
+      "dummy" e o que já falhou). Cobre ALSA/Pulse/PipeWire automaticamente. */
 static int ensure_audio(void) {
   if (g_audio_init) return g_dev != 0;
-  if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO)) {
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-      alog("sonic_audio: SDL_InitSubSystem(AUDIO) failed: %s\n", SDL_GetError());
-      g_audio_init = 1;
-      return 0;
-    }
-  }
 
   SDL_AudioSpec want, have;
   memset(&want, 0, sizeof(want));
@@ -960,15 +965,59 @@ static int ensure_audio(void) {
   want.channels = OUT_CH;
   want.samples = 1024;
   want.callback = sdl_audio_cb;
-  g_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-  if (!g_dev) {
-    alog("sonic_audio: SDL_OpenAudioDevice failed: %s driver=%s\n",
-         SDL_GetError(), SDL_GetCurrentAudioDriver());
-    g_audio_init = 1;
-    return 0;
+
+  int ndrv = SDL_GetNumAudioDrivers();
+  { char list[256]; size_t L = 0; list[0] = 0;
+    for (int i = 0; i < ndrv; i++) {
+      const char *n = SDL_GetAudioDriver(i);
+      if (n && L + strlen(n) + 2 < sizeof(list))
+        L += (size_t)snprintf(list + L, sizeof(list) - L, "%s ", n);
+    }
+    alog("sonic_audio: drivers disponiveis: %s\n", list);
   }
-  alog("sonic_audio: SDL audio opened %dHz %dch samples=%d driver=%s\n",
-       have.freq, have.channels, have.samples, SDL_GetCurrentAudioDriver());
+
+  /* (1) tentativa automática (escolha do SDL do device) */
+  char failed_drv[32]; failed_drv[0] = 0;
+  if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO))
+    SDL_InitSubSystem(SDL_INIT_AUDIO);
+  if (SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) {
+    const char *drv = SDL_GetCurrentAudioDriver();
+    if (drv && strcmp(drv, "dummy") != 0 && sa_try_open(&want, &have)) {
+      alog("sonic_audio: SDL audio aberto (auto) %dHz %dch samples=%d driver=%s\n",
+           have.freq, have.channels, have.samples, drv);
+      goto opened;
+    }
+    if (drv) { strncpy(failed_drv, drv, sizeof(failed_drv) - 1); failed_drv[sizeof(failed_drv) - 1] = 0; }
+    alog("sonic_audio: open automatico falhou (driver=%s: %s) -> varrendo drivers\n",
+         drv ? drv : "?", SDL_GetError());
+  }
+
+  /* (2) fallback adaptativo: 1º driver que realmente abre */
+  for (int i = 0; i < ndrv; i++) {
+    const char *name = SDL_GetAudioDriver(i);
+    if (!name || strcmp(name, "dummy") == 0) continue;
+    if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    setenv("SDL_AUDIODRIVER", name, 1); /* seleciona ESTE pro próximo init — adaptativo, não fixo */
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+      alog("sonic_audio: init driver=%s falhou: %s\n", name, SDL_GetError());
+      continue;
+    }
+    const char *cur = SDL_GetCurrentAudioDriver();
+    if (!cur || strcmp(cur, name) != 0) continue;
+    if (sa_try_open(&want, &have)) {
+      alog("sonic_audio: SDL audio aberto (fallback) %dHz %dch samples=%d driver=%s\n",
+           have.freq, have.channels, have.samples, name);
+      goto opened;
+    }
+    alog("sonic_audio: driver=%s nao abriu device: %s\n", name, SDL_GetError());
+  }
+  unsetenv("SDL_AUDIODRIVER");
+  alog("sonic_audio: NENHUM driver de audio funcional (jogo segue, mas mudo)\n");
+  g_audio_init = 1;
+  return 0;
+
+opened:
   SDL_PauseAudioDevice(g_dev, 0);
   g_audio_init = 1;
   return 1;
