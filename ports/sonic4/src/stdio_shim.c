@@ -15,7 +15,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "so_util.h"
 
@@ -34,11 +36,18 @@ static FILE *map_file(void *f) {
   return (FILE *)f; /* FILE* real do glibc (fdopen etc.) */
 }
 
+/* 💾 durabilidade do save: rastreia o FILE* do foxsave aberto p/ escrita e dá
+   fsync no fclose -> save chega ao SD antes de um power-off (handheld). Só esse
+   arquivo, sem pesar o I/O dos demais. */
+static FILE *g_save_fp;
 void *b_fopen(const char *path, const char *mode) {
   FILE *fp = fopen(path, mode);
+  if (fp && path && strstr(path, "foxsave") && mode && (strchr(mode, 'w') || strchr(mode, 'a')))
+    g_save_fp = fp;
   if (getenv("SONIC_IOLOG"))
-    fprintf(stderr, "[b_fopen] %s mode=%s -> %p\n",
-            path ? path : "(null)", mode ? mode : "(null)", (void *)fp);
+    fprintf(stderr, "[b_fopen] %s mode=%s -> %p%s\n",
+            path ? path : "(null)", mode ? mode : "(null)", (void *)fp,
+            (fp == g_save_fp && fp) ? " [SAVE]" : "");
   return fp;
 }
 size_t b_fwrite(const void *ptr, size_t sz, size_t n, void *f) {
@@ -61,6 +70,13 @@ int b_fflush(void *f) { return fflush(f ? map_file(f) : NULL); }
 int b_fclose(void *f) {
   FILE *r = map_file(f);
   if (r == stdin || r == stdout || r == stderr) return 0; /* nunca fechar std */
+  if (r == g_save_fp && r) { /* save durável: força pro SD antes de fechar */
+    fflush(r);
+    int fd = fileno(r);
+    if (fd >= 0) fsync(fd);
+    g_save_fp = NULL;
+    if (getenv("SONIC_IOLOG")) fprintf(stderr, "[b_fclose] SAVE fsync ok\n");
+  }
   return fclose(r);
 }
 

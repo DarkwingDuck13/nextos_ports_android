@@ -540,6 +540,16 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z20SsConstBloomIsEnablev"); /* bloom off */
     fprintf(stderr, "=== SONIC_LOWFX: bloom desligado (perf) ===\n");
   }
+  /* 🌑 SONIC_NOSHADOW (ou LOWFX agressivo): no-op nos draws de sombra de objeto/motion.
+     Pula o passe de sombra (shadow-map / blob) — ganho de fillrate+drawcall no Mali.
+     NAO toca em GmShadowBuildCheck (gate de loading -> travaria). */
+  if (env_flag_enabled("SONIC_LOWFX") || env_flag_enabled("SONIC_NOSHADOW")) {
+    patch_ret0("_Z18SsDrawObjectShadowmP10NNS_OBJECTP12_NNS_TEXLISTy");
+    patch_ret0("_Z18SsDrawObjectShadowP10NNS_OBJECTP12_NNS_TEXLISTy");
+    patch_ret0("_Z24SsDrawMotionObjectShadowmP10AMS_MOTIONP12_NNS_TEXLISTy");
+    patch_ret0("_Z24SsDrawMotionObjectShadowP10AMS_MOTIONP12_NNS_TEXLISTy");
+    fprintf(stderr, "=== SONIC_NOSHADOW: sombras de objeto desligadas (perf) ===\n");
+  }
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
