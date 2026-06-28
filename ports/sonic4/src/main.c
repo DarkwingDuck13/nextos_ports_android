@@ -531,6 +531,16 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
     patch_arm_jump("_Z17amThreadCheckDrawl", (void *)sonic_amThreadCheckDraw);
 
+  /* 🪶 SONIC_LOWFX: performance no Mali sem mexer em resolução/cores. Desliga os
+     passes full-screen mais caros e quase imperceptíveis em tela pequena:
+     - bloom (SsConstBloomIsEnable->0): pula extract hi-luminance + blur gaussiano
+       + merge (3 passes full-screen por frame).
+     SONIC_NOBLOOM faz só o bloom. Mantém água/efeitos de cena (o "bonito"). */
+  if (env_flag_enabled("SONIC_LOWFX") || env_flag_enabled("SONIC_NOBLOOM")) {
+    patch_ret0("_Z20SsConstBloomIsEnablev"); /* bloom off */
+    fprintf(stderr, "=== SONIC_LOWFX: bloom desligado (perf) ===\n");
+  }
+
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
   void *thiz = (void *)0x53000001; /* fake jobject/jclass */
