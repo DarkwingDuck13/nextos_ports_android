@@ -425,6 +425,7 @@ int main(int argc, char *argv[]) {
 
   build_base_table();
   load_module(GAME_SO, GAME_HEAP_MB, g_base, g_base_n);
+  if (getenv("SONIC_DEBUG")) { fprintf(stderr, "== load_module OK, aplicando patches ==\n"); fflush(stderr); }
 
   /* destravar trial -> jogo completo: GsTrialIsTrial() -> 0 */
   patch_ret0("_Z14GsTrialIsTrialv");
