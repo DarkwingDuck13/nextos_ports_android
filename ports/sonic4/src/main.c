@@ -28,7 +28,11 @@
 #include "egl_shim.h"
 #include "jni_shim.h"
 
+#ifdef __aarch64__
+#define GAME_SO "lib/arm64-v8a/libfox.so"
+#else
 #define GAME_SO "lib/armeabi-v7a/libfox.so"
+#endif
 #define GAME_HEAP_MB 256
 
 /* resolução vem 100% automática do egl_shim (SDL_GL_GetDrawableSize do device);
@@ -107,16 +111,21 @@ static void build_base_table(void) {
          sizeof(DynLibFunction) * revc_pthread_count);
 }
 
-/* ---- patch "return 0" detectando ARM vs Thumb pelo bit baixo do símbolo ---- */
+/* ---- patch "return 0": ARM/Thumb (32-bit) ou A64 (aarch64) ---- */
 static void patch_ret0(const char *sym) {
   uintptr_t raw = so_find_addr_safe(sym);
   if (!raw) { fprintf(stderr, "patch: símbolo %s NÃO encontrado\n", sym); return; }
-  int thumb = raw & 1;
-  uintptr_t a = raw & ~1u;
+  uintptr_t a = raw & ~(uintptr_t)1;
   uintptr_t pg = a & ~0xFFFUL;
   if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
     fprintf(stderr, "patch: mprotect %s falhou\n", sym); return;
   }
+#ifdef __aarch64__
+  ((uint32_t *)a)[0] = 0x52800000; /* mov w0, #0 */
+  ((uint32_t *)a)[1] = 0xd65f03c0; /* ret        */
+  const char *mode = "A64";
+#else
+  int thumb = raw & 1;
   if (thumb) {
     ((uint16_t *)a)[0] = 0x2000; /* movs r0,#0 */
     ((uint16_t *)a)[1] = 0x4770; /* bx lr      */
@@ -124,31 +133,42 @@ static void patch_ret0(const char *sym) {
     ((uint32_t *)a)[0] = 0xe3a00000; /* mov r0,#0 (ARM) */
     ((uint32_t *)a)[1] = 0xe12fff1e; /* bx lr     (ARM) */
   }
+  const char *mode = thumb ? "Thumb" : "ARM";
+#endif
   mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
   __builtin___clear_cache((char *)a, (char *)a + 8);
   fprintf(stderr, "patch: %s -> return 0 @0x%lx (%s)\n", sym,
-          (unsigned long)a, thumb ? "Thumb" : "ARM");
+          (unsigned long)a, mode);
 }
 
-/* patch "return val" (val pequeno) detectando ARM/Thumb */
+/* patch "return val" (val pequeno) */
 static void patch_retval(const char *sym, int val) {
   uintptr_t raw = so_find_addr_safe(sym);
   if (!raw) { fprintf(stderr, "patch: %s NÃO encontrado\n", sym); return; }
-  int thumb = raw & 1; uintptr_t a = raw & ~1u, pg = a & ~0xFFFUL;
+  uintptr_t a = raw & ~(uintptr_t)1, pg = a & ~0xFFFUL;
   if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) return;
+#ifdef __aarch64__
+  ((uint32_t *)a)[0] = 0x52800000 | ((uint32_t)(val & 0xffff) << 5); /* movz w0,#val */
+  ((uint32_t *)a)[1] = 0xd65f03c0; /* ret */
+  const char *mode = "A64";
+#else
+  int thumb = raw & 1;
   if (thumb) { ((uint16_t *)a)[0] = 0x2000 | (val & 0xff); ((uint16_t *)a)[1] = 0x4770; }
   else { ((uint32_t *)a)[0] = 0xe3a00000 | (val & 0xff); ((uint32_t *)a)[1] = 0xe12fff1e; }
+  const char *mode = thumb ? "Thumb" : "ARM";
+#endif
   mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
   __builtin___clear_cache((char *)a, (char *)a + 8);
   fprintf(stderr, "patch: %s -> return %d @0x%lx (%s)\n", sym, val,
-          (unsigned long)a, thumb ? "Thumb" : "ARM");
+          (unsigned long)a, mode);
 }
 
-/* patch de UMA instrução ARM em offset de byte dentro de um símbolo (ARM mode). */
+/* patch de UMA instrução (32-bit) em offset de byte dentro de um símbolo.
+   `insn` deve ser do ISA do build (ARM ou A64) — quem chama escolhe via #ifdef. */
 static void patch_word_at(const char *sym, unsigned off, uint32_t insn) {
   uintptr_t raw = so_find_addr_safe(sym);
   if (!raw) { fprintf(stderr, "patch_word: %s NÃO encontrado\n", sym); return; }
-  uintptr_t a = (raw & ~1u) + off, pg = a & ~0xFFFUL;
+  uintptr_t a = (raw & ~(uintptr_t)1) + off, pg = a & ~0xFFFUL;
   if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
     fprintf(stderr, "patch_word: mprotect %s falhou\n", sym); return;
   }
@@ -159,18 +179,28 @@ static void patch_word_at(const char *sym, unsigned off, uint32_t insn) {
           (unsigned long)a);
 }
 
+/* desvio absoluto pra `target`: ARM (8B) ou A64 (16B: ldr x16,#8; br x16; .quad) */
 static void patch_arm_jump(const char *sym, void *target) {
   uintptr_t raw = so_find_addr_safe(sym);
   if (!raw) { fprintf(stderr, "patch_jump: %s NÃO encontrado\n", sym); return; }
-  uintptr_t a = raw & ~1u, pg = a & ~0xFFFUL;
+  uintptr_t a = raw & ~(uintptr_t)1, pg = a & ~0xFFFUL;
+#ifndef __aarch64__
   if (raw & 1) { fprintf(stderr, "patch_jump: %s é Thumb, ignorado\n", sym); return; }
+#endif
   if (mprotect((void *)pg, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
     fprintf(stderr, "patch_jump: mprotect %s falhou\n", sym); return;
   }
+#ifdef __aarch64__
+  ((uint32_t *)a)[0] = 0x58000050;          /* ldr x16, #8 (pc+8) */
+  ((uint32_t *)a)[1] = 0xd61f0200;          /* br  x16            */
+  *(uint64_t *)(a + 8) = (uint64_t)(uintptr_t)target;
+  __builtin___clear_cache((char *)a, (char *)a + 16);
+#else
   ((uint32_t *)a)[0] = 0xe51ff004;          /* ldr pc, [pc, #-4] */
   ((uint32_t *)a)[1] = (uint32_t)(uintptr_t)target;
-  mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
   __builtin___clear_cache((char *)a, (char *)a + 8);
+#endif
+  mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
   fprintf(stderr, "patch_jump: %s -> %p @0x%lx\n", sym, target,
           (unsigned long)a);
 }
@@ -451,8 +481,13 @@ int main(int argc, char *argv[]) {
   /* ⚠️ ERRADOS (opt-in agora): estes patches roteavam o menu pro EXIT em vez da
      transição Decision→onMainMenuToMainGame. Sem eles, onMainMenuToMainGame É
      chamado (a transição correta "Start"→jogo). */
-  if (getenv("SONIC_FORCEMENUFINAL"))
+  if (getenv("SONIC_FORCEMENUFINAL")) {
+#ifndef __aarch64__
     patch_word_at("_ZN2dm8mainmenu22CMainMenuStateFinalize4NextEv", 0x20, 0xea000002);
+#else
+    fprintf(stderr, "AVISO: SONIC_FORCEMENUFINAL nao re-derivado p/ arm64, ignorado\n");
+#endif
+  }
   if (getenv("SONIC_FORCEEXITEM"))
     patch_ret0("_ZN9Sonic4F2F11isVisibleExENS_12EX_MENU_ITEME");
   /* gate3 do título: CStateInitialize::Next espera CDemoResourceManager IsValid()
@@ -461,7 +496,12 @@ int main(int argc, char *argv[]) {
      (mostra o título: bg + logo SONIC, que carregam) -> Waiting, SEM o crash que
      forçar IsValid->1 global causava (over-advance pro save). */
   if (!getenv("SONIC_KEEPDEMOGATE"))
+#ifdef __aarch64__
+    /* arm64 v3: o gate é `cbz w0,<skip>` após IsValid() em +0x54 -> NOP A64. */
+    patch_word_at("_ZN2dm5title16CStateInitialize4NextEv", 0x54, 0xd503201f);
+#else
     patch_word_at("_ZN2dm5title16CStateInitialize4NextEv", 0x5c, 0xe1a00000);
+#endif
   /* fallback opt-in: forçar IsValid->1 global (crasha no save, só p/ depurar). */
   if (getenv("SONIC_FORCEDEMOGATE"))
     patch_retval("_ZThn20_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE", 1);
@@ -565,6 +605,22 @@ int main(int argc, char *argv[]) {
      float, senão o ABI hardfp manda em s0/s1). */
   {
     extern int sonic_screen_w, sonic_screen_h;
+#ifdef __aarch64__
+    /* AArch64 (AAPCS64): jfloat vai em registrador FP (s0/s1) — passar float REAL. */
+    void (*setScreenSize)(void *, void *, float, float) =
+        (void *)so_find_addr_safe(
+            "Java_com_sega_f2fextension_f2fextensionInterface_setScreenSize");
+    void (*setScreenScaleDesity)(void *, void *, float) =
+        (void *)so_find_addr_safe(
+            "Java_com_sega_f2fextension_f2fextensionInterface_setScreenScaleDesity");
+    if (setScreenSize) {
+      fprintf(stderr, "=== setScreenSize(%d x %d) [A64 fp] ===\n",
+              sonic_screen_w, sonic_screen_h);
+      setScreenSize(env, thiz, (float)sonic_screen_w, (float)sonic_screen_h);
+    } else fprintf(stderr, "AVISO: setScreenSize não encontrado\n");
+    if (setScreenScaleDesity) setScreenScaleDesity(env, thiz, 1.0f);
+#else
+    /* armhf softfp: jfloat vem em regs CORE — passar os BITS do float. */
     void (*setScreenSize)(void *, void *, unsigned, unsigned) =
         (void *)so_find_addr_safe(
             "Java_com_sega_f2fextension_f2fextensionInterface_setScreenSize");
@@ -582,6 +638,7 @@ int main(int argc, char *argv[]) {
       union { float f; unsigned u; } s; s.f = 1.0f;
       setScreenScaleDesity(env, thiz, s.u);  /* densidade/escala = 1.0 */
     }
+#endif
   }
 
   /* save path: stsSavePathData (buffer global) é o prefixo do save; vazio => o save

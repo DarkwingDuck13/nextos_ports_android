@@ -24,7 +24,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include <sys/mman.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -585,8 +587,39 @@ static void *my_find_exidx(uintptr_t pc, int *pcount) {
  * Sonic usa GLES2 do device direto -> NULL = usa a função real. */
 void *sonic_gl_proc_override(const char *name) { (void)name; return NULL; }
 
+/* ---- bionic-compat extra: a libfox v3 (NDK r21d) importa fortify _chk + helpers
+   bionic que a glibc não tem (ou tem com ABI diferente). Wrappers -> libc real. ---- */
+static size_t b_strlen_chk(const char *s, size_t n) { (void)n; return strlen(s); }
+static char  *b_strchr_chk(const char *s, int c, size_t n) { (void)n; return strchr(s, c); }
+static char  *b_strrchr_chk(const char *s, int c, size_t n) { (void)n; return strrchr(s, c); }
+static char  *b_strncpy_chk2(char *d, const char *s, size_t n, size_t dn) { (void)dn; return strncpy(d, s, n); }
+static void   b_FD_SET_chk(int fd, fd_set *set, size_t n) { (void)n; if (fd >= 0) FD_SET(fd, set); }
+static void   b_FD_CLR_chk(int fd, fd_set *set, size_t n) { (void)n; if (fd >= 0) FD_CLR(fd, set); }
+static int    b_FD_ISSET_chk(int fd, fd_set *set, size_t n) { (void)n; return (fd >= 0) ? FD_ISSET(fd, set) : 0; }
+static void   b_android_set_abort_message(const char *m) { if (m) fprintf(stderr, "[android_abort] %s\n", m); }
+static int b_sigsetjmp(sigjmp_buf e, int save) { return sigsetjmp(e, save); }
+/* funopen: a libfox v3 importa. Resolvido em RUNTIME via dlsym (a glibc do device
+   tem; evita dependência de link, que falha em alguns sysroots). */
+static FILE *b_funopen(const void *c, void *r, void *w, void *s, void *cl) {
+  static FILE *(*real)(const void *, void *, void *, void *, void *) = NULL;
+  if (!real) real = (FILE *(*)(const void *, void *, void *, void *, void *))
+                    dlsym(RTLD_DEFAULT, "funopen");
+  return real ? real(c, r, w, s, cl) : NULL;
+}
+
 /* ---------------- tabela de overrides ---------------- */
 DynLibFunction shantae_overrides[] = {
+    /* bionic-compat extra (libfox v3 fortify/_chk + helpers) */
+    {"__strlen_chk", (uintptr_t)b_strlen_chk},
+    {"__strchr_chk", (uintptr_t)b_strchr_chk},
+    {"__strrchr_chk", (uintptr_t)b_strrchr_chk},
+    {"__strncpy_chk2", (uintptr_t)b_strncpy_chk2},
+    {"__FD_SET_chk", (uintptr_t)b_FD_SET_chk},
+    {"__FD_CLR_chk", (uintptr_t)b_FD_CLR_chk},
+    {"__FD_ISSET_chk", (uintptr_t)b_FD_ISSET_chk},
+    {"android_set_abort_message", (uintptr_t)b_android_set_abort_message},
+    {"funopen", (uintptr_t)b_funopen},
+    {"sigsetjmp", (uintptr_t)b_sigsetjmp},
     /* liblog */
     {"__android_log_print", (uintptr_t)b_log_print},
     {"__android_log_write", (uintptr_t)b_log_write},
