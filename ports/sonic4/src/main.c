@@ -550,6 +550,16 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z24SsDrawMotionObjectShadowP10AMS_MOTIONP12_NNS_TEXLISTy");
     fprintf(stderr, "=== SONIC_NOSHADOW: sombras de objeto desligadas (perf) ===\n");
   }
+  /* 💧 SONIC_NOWATERFX (opt-in, NÃO no LOWFX por default — mexe mais no visual):
+     no-op nos EFEITOS extras de água (ripple/waterfall-split), mantendo a SUPERFÍCIE
+     (a água não some). Reduz overdraw de alpha das cenas de água. */
+  if (env_flag_enabled("SONIC_NOWATERFX")) {
+    patch_ret0("GmEffectWaterRippleBuild");
+    patch_ret0("GmEffectWaterRippleFlush");
+    patch_ret0("GmGmkWaterfallSplitBuild");
+    patch_ret0("GmGmkWaterfallSplitFlush");
+    fprintf(stderr, "=== SONIC_NOWATERFX: ripple/waterfall desligados (perf) ===\n");
+  }
 
   void *env = NULL, *vm = NULL;
   jni_shim_init(&vm, &env);
@@ -617,6 +627,19 @@ int main(int argc, char *argv[]) {
   if (f2f_setApk) { fprintf(stderr, "f2f nativeSetApkPath\n");
                     f2f_setApk(env, thiz, jni_shim_new_string("sonic4ep2.apk")); }
 
+  /* 🪶 SONIC_RENDERSCALE=N (50..99, default 100=off): downscale interno. O engine
+     renderiza em N% e o present faz upscale p/ a janela cheia. Maior lever de GPU
+     (fillrate ~ pixel²), custo = nitidez. OPT-IN. ⚠️ se sair no canto (não upscale),
+     precisa do override de viewport no present. */
+  int render_w = sonic_screen_w, render_h = sonic_screen_h;
+  { const char *rs = getenv("SONIC_RENDERSCALE"); int pct = rs ? atoi(rs) : 100;
+    if (pct >= 50 && pct < 100) {
+      render_w = (sonic_screen_w * pct / 100) & ~1;
+      render_h = (sonic_screen_h * pct / 100) & ~1;
+      fprintf(stderr, "=== SONIC_RENDERSCALE %d%%: render %dx%d (janela %dx%d) ===\n",
+              pct, render_w, render_h, sonic_screen_w, sonic_screen_h);
+    } }
+
   /* 🔑 setScreenSize: a engine (foxShaderInit -> amRenderCreate) lê a resolução de
      tela de um global (2 floats) p/ dimensionar os FBOs/render targets. O Java
      chamaria setScreenSize(w,h) no onSurfaceChanged; SEM isso o global fica 0.0/0.0
@@ -636,8 +659,8 @@ int main(int argc, char *argv[]) {
             "Java_com_sega_f2fextension_f2fextensionInterface_setScreenScaleDesity");
     if (setScreenSize) {
       fprintf(stderr, "=== setScreenSize(%d x %d) [A64 fp] ===\n",
-              sonic_screen_w, sonic_screen_h);
-      setScreenSize(env, thiz, (float)sonic_screen_w, (float)sonic_screen_h);
+              render_w, render_h);
+      setScreenSize(env, thiz, (float)render_w, (float)render_h);
     } else fprintf(stderr, "AVISO: setScreenSize não encontrado\n");
     if (setScreenScaleDesity) setScreenScaleDesity(env, thiz, 1.0f);
 #else
@@ -650,9 +673,9 @@ int main(int argc, char *argv[]) {
             "Java_com_sega_f2fextension_f2fextensionInterface_setScreenScaleDesity");
     if (setScreenSize) {
       union { float f; unsigned u; } w, h;
-      w.f = (float)sonic_screen_w; h.f = (float)sonic_screen_h;
+      w.f = (float)render_w; h.f = (float)render_h;
       fprintf(stderr, "=== setScreenSize(%d x %d) bits=%08x %08x ===\n",
-              sonic_screen_w, sonic_screen_h, w.u, h.u);
+              render_w, render_h, w.u, h.u);
       setScreenSize(env, thiz, w.u, h.u);
     } else fprintf(stderr, "AVISO: setScreenSize não encontrado\n");
     if (setScreenScaleDesity) {
@@ -679,9 +702,9 @@ int main(int argc, char *argv[]) {
      -> amDrawInitVideo(w,h) que dimensiona _am_draw_video (os FBOs/render targets).
      Passávamos NULL,NULL = 0,0 => FBO 0x0 INCOMPLETE => glDraw* falham => TELA PRETA.
      Passar a resolução REAL (1280x720) faz os FBOs ficarem completos e renderizar. */
-  fprintf(stderr, "=== fox: init(w=%d h=%d) ===\n", sonic_screen_w, sonic_screen_h);
-  if (fox.init) fox.init(env, thiz, (void *)(intptr_t)sonic_screen_w,
-                         (void *)(intptr_t)sonic_screen_h);
+  fprintf(stderr, "=== fox: init(w=%d h=%d) ===\n", render_w, render_h);
+  if (fox.init) fox.init(env, thiz, (void *)(intptr_t)render_w,
+                         (void *)(intptr_t)render_h);
 
   fprintf(stderr, "=== fox: DrawEGLCreated ===\n");
   if (fox.DrawEGLCreated) fox.DrawEGLCreated(env, thiz);

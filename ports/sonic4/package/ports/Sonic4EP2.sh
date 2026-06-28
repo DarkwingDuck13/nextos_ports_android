@@ -194,6 +194,7 @@ if command -v blockdev >/dev/null 2>&1; then
     [ -b "$_d" ] && $ESUDO blockdev --setra 4096 "$_d" 2>/dev/null || true
   done
 fi
+# NOTA: NÃO mexer em CPU/GPU governor (performance é proibido pelo PortMaster).
 
 if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   export SONIC_INPUT=gptk
