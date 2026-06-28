@@ -185,10 +185,23 @@ export SONIC_SWAPINT=1
 $ESUDO chmod +x "$GAMEDIR/sonic4" 2>/dev/null || chmod +x "$GAMEDIR/sonic4"
 $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
 
-if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
-  $GPTOKEYB "sonic4" -c "$GAMEDIR/sonic4.gptk" &
-elif command -v gptokeyb >/dev/null 2>&1; then
-  gptokeyb -1 "sonic4" -c "$GAMEDIR/sonic4.gptk" &
+# PERF (best-effort, sem efeito visual): aumenta o readahead do storage p/ suavizar
+# o streaming de nivel (a OBB e lida em pedacos durante o gameplay). So leitura;
+# nao toca em save nem em driver. Falha silenciosa se nao tiver permissao.
+if command -v blockdev >/dev/null 2>&1; then
+  _sdev=$(df "$GAMEDIR" 2>/dev/null | awk 'NR==2{print $1}' | sed 's/p[0-9]*$//; s/[0-9]*$//')
+  for _d in "$_sdev" /dev/mmcblk0 /dev/mmcblk1; do
+    [ -b "$_d" ] && $ESUDO blockdev --setra 4096 "$_d" 2>/dev/null || true
+  done
+fi
+
+if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
+  export SONIC_INPUT=gptk
+  if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
+    $GPTOKEYB "sonic4" -c "$GAMEDIR/sonic4.gptk" &
+  elif command -v gptokeyb >/dev/null 2>&1; then
+    gptokeyb -1 "sonic4" -c "$GAMEDIR/sonic4.gptk" &
+  fi
 fi
 
 ./sonic4
