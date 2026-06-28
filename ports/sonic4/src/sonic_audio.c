@@ -40,6 +40,7 @@ typedef struct {
 } ExtSfxMap;
 
 typedef struct {
+  char key[80];
   int handle;
   AudioBuffer *buf;
   uint32_t pos;
@@ -53,8 +54,11 @@ typedef struct {
   char key[96];
   AudioBuffer *buf;
   uint32_t pos;
+  uint32_t loop_start;
+  uint32_t loop_end;
   float volume;
   int loop;
+  int loop_explicit;
   int paused;
   int active;
   int jingle;
@@ -106,6 +110,38 @@ static float clamp_volume(float v) {
 static int music_key_is_jingle(const char *key) {
   if (!key) return 0;
   return strstr(key, "_jin_") != NULL;
+}
+
+static uint32_t frames_from_ms(int ms) {
+  if (ms <= 0) return 0;
+  return (uint32_t)(((uint64_t)ms * OUT_RATE + 500) / 1000);
+}
+
+static int sfx_key_is_mechanical(const char *key) {
+  if (!key) return 0;
+  return strcasestr(key, "Rotary") || strcasestr(key, "Piller") ||
+         strcasestr(key, "D_wall") || strcasestr(key, "Bl_land") ||
+         strcasestr(key, "Pstand") || strcasestr(key, "Jetwall") ||
+         strcasestr(key, "Shutter") || strcasestr(key, "MetalUnit") ||
+         strcasestr(key, "Tomado") || strcasestr(key, "Propeller") ||
+         strcasestr(key, "SandBranch") || strcasestr(key, "SandTrank") ||
+         strcasestr(key, "Sandstorm") || strcasestr(key, "Oil") ||
+         strcasestr(key, "Pipe") || strcasestr(key, "Piston") ||
+         strcasestr(key, "Steam") || strcasestr(key, "Waterdash");
+}
+
+static int soft_limit_s16(int v) {
+  const int limit = 28672; /* ~-1.2 dBFS: deixa folga antes do clamp real. */
+  const int room = 32767 - limit;
+  if (v > limit) {
+    int over = v - limit;
+    return limit + (int)(((int64_t)over * room) / (over + room));
+  }
+  if (v < -limit) {
+    int over = -limit - v;
+    return -limit - (int)(((int64_t)over * room) / (over + room));
+  }
+  return v;
 }
 
 static int any_active_jingle_locked(void) {
@@ -436,62 +472,67 @@ static AudioBuffer *decode_ogg(const unsigned char *data, size_t size,
 static const struct {
   const char *key;
   const char *file;
+  int loop;
+  int loop_start_ms;
+  int loop_end_ms;
 } g_music_map[] = {
-  {"ep2_sng_title", "MIXED00_EP2_TITLE.MP3"},
-  {"ep2_sng_menu", "SNG01_EP2_SNG_MENU_V00_EP1.MP3"},
-  {"ep2_sng_worldmap", "MIXED02_EP2_WORLDMaP.MP3"},
-  {"ep2_sng_z1a1", "MIXED03_EP2_Z1A1.MP3"},
-  {"ep2_sng_z1a2", "MIXED04_EP2_Z1A2.MP3"},
-  {"ep2_sng_z1a3", "MIXED05_EP2_Z1A3.MP3"},
-  {"ep2_sng_z2a1", "MIXED06_EP2_Z2A1.MP3"},
-  {"ep2_sng_z2a2", "MIXED07_EP2_Z2A2.MP3"},
-  {"ep2_sng_z2a3", "MIXED08_EP2_Z2A3.MP3"},
-  {"ep2_sng_z3a1", "MIXED09_EP2_Z3A1.MP3"},
-  {"ep2_sng_z3a2", "MIXED10_EP2_Z3A2.MP3"},
-  {"ep2_sng_z3a3", "MIXED11_EP2_Z3A3.MP3"},
-  {"ep2_sng_z4a1", "MIXED12_EP2_Z4A1.MP3"},
-  {"ep2_sng_z4a2", "MIXED13_EP2_Z4A2.MP3"},
-  {"ep2_sng_z4a3", "MIXED14_EP2_Z4A3.MP3"},
-  {"ep2_sng_z1a1_speedup", "MIXED15_EP2_Z1A1_SPDUP.MP3"},
-  {"ep2_sng_z1a2_speedup", "MIXED16_EP2_Z1A2_SPDUP.MP3"},
-  {"ep2_sng_z1a3_speedup", "MIXED17_EP2_Z1A3_SPDUP.MP3"},
-  {"ep2_sng_z2a1_speedup", "MIXED06_EP2_Z2A1.MP3"},
-  {"ep2_sng_z2a2_speedup", "MIXED07_EP2_Z2A2.MP3"},
-  {"ep2_sng_z2a3_speedup", "MIXED08_EP2_Z2A3.MP3"},
-  {"ep2_sng_z3a1_speedup", "MIXED21_EP2_Z3A1_SPDUP.MP3"},
-  {"ep2_sng_z3a2_speedup", "MIXED22_EP2_Z3A2_SPDUP.MP3"},
-  {"ep2_sng_z3a3_speedup", "MIXED11_EP2_Z3A3.MP3"},
-  {"ep2_sng_z4a1_speedup", "MIXED12_EP2_Z4A1.MP3"},
-  {"ep2_sng_z4a2_speedup", "MIXED25_EP2_Z4A2_SPDUP.MP3"},
-  {"ep2_sng_z4a3_speedup", "MIXED14_EP2_Z4A3.MP3"},
-  {"ep2_sng_zfa1_speedup", "MIXED66_EP2_FINaL_SPDUP.MP3"},
-  {"ep2_sng_boss1", "MIXED27_EP2_EGGMaN.MP3"},
-  {"ep2_sng_boss2", "MIXED29_EP2_METaLSONIC.MP3"},
-  {"ep2_sng_boss3", "MIXED32_EP2_DEMK2.MP3"},
-  {"ep2_sng_boss5", "MIXED28_EP2_FINaLA1.MP3"},
-  {"ep2_sng_boss6", "MIXED28_EP2_FINaLA1.MP3"},
-  {"ep2_sng_special", "MIXED33_EP2_SPECIaLSTaGE.MP3"},
-  {"ep2_sng_endroll", "MIXED34_EP2_ENDROLL.MP3"},
-  {"ep2_sng_actclear", "MIXED35_EP2_ACTCLEaR.MP3"},
-  {"snd_sng_boss2", "MIXED29_EP2_METaLSONIC.MP3"},
-  {"snd_sng_final", "MIXED28_EP2_FINaLA1.MP3"},
-  {"ep2_jin_clear", "MIXED35_EP2_ACTCLEaR.MP3"},
-  {"ep2_jin_clear_final", "MIXED35_EP2_ACTCLEaR.MP3"},
-  {"ep2_jin_emerald", "SNG37_EP2_JIN_EMERaLD_V00_EP1.MP3"},
-  {"ep2_jin_timer", "SNG38_EP2_JIN_TIMER_V00_EP1.MP3"},
-  {"ep2_jin_invincible", "SNG39_EP2_JIN_INVINCIBLE_V00_EP1.MP3"},
-  {"ep2_jin_supersonic", "SNG40_EP2_JIN_SUPERSONIC_V00_EP1.MP3"},
-  {"ep2_jin_1up", "SNG41_EP2_JIN_1UP_V00_EP1.MP3"},
-  {"ep2_jin_new_record", "SNG42_EP2_JIN_NEW_RECORD_V00_EP1.MP3"},
-  {"ep2_jin_gameover", "SNG43_EP2_JIN_GaMEOVER_V00_EP1.MP3"},
-  {"ep1_sng_z1a1", "SNG47_EP1_SNG_z1a1_V00_EP1.MP3"},
-  {"ep1_sng_z1a1_speedup", "SNG48_EP1_SNG_z1a1_SPEEDUP_V00_EP1.MP3"},
-  {"ep1_sng_z2a1", "SNG49_EP1_SNG_z2a1_V00_EP1.MP3"},
-  {"ep1_sng_z2a1_speedup", "SNG50_EP1_SNG_z2a1_SPEEDUP_V00_EP1.MP3"},
-  {"ep1_sng_z3a1", "SNG51_EP1_SNG_z3a1_V00_EP1.MP3"},
-  {"ep1_sng_z3a1_speedup", "SNG52_EP1_SNG_z3a1_SPEEDUP_V00_EP1.MP3"},
-  {"ep1_sng_z4a1", "SNG53_EP1_SNG_z4a1_V00_EP1.MP3"},
-  {"ep1_sng_z4a1_speedup", "SNG54_EP1_SNG_z4a1_SPEEDUP_V00_EP1.MP3"},
+  {"ep2_sng_title", "MIXED00_EP2_TITLE.MP3", 0, 0, 0},
+  {"ep2_sng_menu", "SNG01_EP2_SNG_MENU_V00_EP1.MP3", 1, 3310, 29793},
+  {"ep2_sng_worldmap", "MIXED02_EP2_WORLDMaP.MP3", 1, 5818, 23272},
+  {"ep2_sng_z1a1", "MIXED03_EP2_Z1A1.MP3", 1, 6400, 59200},
+  {"ep2_sng_z1a2", "MIXED04_EP2_Z1A2.MP3", 1, 6857, 62571},
+  {"ep2_sng_z1a3", "MIXED05_EP2_Z1A3.MP3", 1, 3636, 32727},
+  {"ep2_sng_z2a1", "MIXED06_EP2_Z2A1.MP3", 1, 3777, 48222},
+  {"ep2_sng_z2a2", "MIXED07_EP2_Z2A2.MP3", 1, 6000, 54000},
+  {"ep2_sng_z2a3", "MIXED08_EP2_Z2A3.MP3", 1, 3840, 28800},
+  {"ep2_sng_z3a1", "MIXED09_EP2_Z3A1.MP3", 1, 6956, 45217},
+  {"ep2_sng_z3a2", "MIXED10_EP2_Z3A2.MP3", 1, 8307, 53538},
+  {"ep2_sng_z3a3", "MIXED11_EP2_Z3A3.MP3", 1, 3478, 46086},
+  {"ep2_sng_z4a1", "MIXED12_EP2_Z4A1.MP3", 1, 6901, 34507},
+  {"ep2_sng_z4a2", "MIXED13_EP2_Z4A2.MP3", 1, 6000, 67500},
+  {"ep2_sng_z4a3", "MIXED14_EP2_Z4A3.MP3", 1, 6800, 72400},
+  {"ep2_sng_z1a1_speedup", "MIXED15_EP2_Z1A1_SPDUP.MP3", 1, 16118, 68918},
+  {"ep2_sng_z1a2_speedup", "MIXED16_EP2_Z1A2_SPDUP.MP3", 1, 17243, 72957},
+  {"ep2_sng_z1a3_speedup", "MIXED17_EP2_Z1A3_SPDUP.MP3", 1, 18287, 47378},
+  {"ep2_sng_z2a1_speedup", "MIXED06_EP2_Z2A1.MP3", 1, 3777, 48222},
+  {"ep2_sng_z2a2_speedup", "MIXED07_EP2_Z2A2.MP3", 1, 6000, 54000},
+  {"ep2_sng_z2a3_speedup", "MIXED08_EP2_Z2A3.MP3", 1, 3840, 28800},
+  {"ep2_sng_z3a1_speedup", "MIXED21_EP2_Z3A1_SPDUP.MP3", 1, 17957, 56218},
+  {"ep2_sng_z3a2_speedup", "MIXED22_EP2_Z3A2_SPDUP.MP3", 1, 17118, 62349},
+  {"ep2_sng_z3a3_speedup", "MIXED11_EP2_Z3A3.MP3", 1, 3478, 46086},
+  {"ep2_sng_z4a1_speedup", "MIXED12_EP2_Z4A1.MP3", 1, 6901, 34507},
+  {"ep2_sng_z4a2_speedup", "MIXED25_EP2_Z4A2_SPDUP.MP3", 1, 17067, 78567},
+  {"ep2_sng_z4a3_speedup", "MIXED14_EP2_Z4A3.MP3", 1, 6800, 72400},
+  {"ep2_sng_zfa1_speedup", "MIXED66_EP2_FINaL_SPDUP.MP3", 1, 16083, 52083},
+  {"ep2_sng_boss1", "MIXED27_EP2_EGGMaN.MP3", 1, 8269, 26097},
+  {"ep2_sng_boss2", "MIXED28_EP2_FINaLA1.MP3", 1, 18000, 54000},
+  {"ep2_sng_boss3", "MIXED29_EP2_METaLSONIC.MP3", 1, 6171, 39085},
+  {"ep2_sng_boss5", "MIXED31_EP2_STaRDUSTSPDWY.MP3", 1, 7196, 71962},
+  {"ep2_sng_boss6", "MIXED32_EP2_DEMK2.MP3", 1, 6315, 58421},
+  {"ep2_sng_special", "MIXED33_EP2_SPECIaLSTaGE.MP3", 1, 4114, 56228},
+  {"ep2_sng_special2", "MIXED33_EP2_SPECIaLSTaGE.MP3", 1, 4114, 56228},
+  {"ep2_sng_special3", "MIXED33_EP2_SPECIaLSTaGE.MP3", 1, 4114, 56228},
+  {"ep2_sng_endroll", "MIXED34_EP2_ENDROLL.MP3", 0, 0, 0},
+  {"ep2_sng_actclear", "MIXED35_EP2_ACTCLEaR.MP3", 0, 0, 0},
+  {"snd_sng_boss2", "MIXED29_EP2_METaLSONIC.MP3", 1, 6171, 39085},
+  {"snd_sng_final", "MIXED28_EP2_FINaLA1.MP3", 1, 18000, 54000},
+  {"ep2_jin_clear", "MIXED35_EP2_ACTCLEaR.MP3", 0, 0, 0},
+  {"ep2_jin_clear_final", "MIXED35_EP2_ACTCLEaR.MP3", 0, 0, 0},
+  {"ep2_jin_emerald", "SNG37_EP2_JIN_EMERaLD_V00_EP1.MP3", 0, 0, 0},
+  {"ep2_jin_timer", "SNG38_EP2_JIN_TIMER_V00_EP1.MP3", 0, 0, 0},
+  {"ep2_jin_invincible", "SNG39_EP2_JIN_INVINCIBLE_V00_EP1.MP3", 1, 6552, 22935},
+  {"ep2_jin_supersonic", "SNG40_EP2_JIN_SUPERSONIC_V00_EP1.MP3", 1, 2571, 12857},
+  {"ep2_jin_1up", "SNG41_EP2_JIN_1UP_V00_EP1.MP3", 0, 0, 0},
+  {"ep2_jin_new_record", "SNG42_EP2_JIN_NEW_RECORD_V00_EP1.MP3", 0, 0, 0},
+  {"ep2_jin_gameover", "SNG43_EP2_JIN_GaMEOVER_V00_EP1.MP3", 0, 0, 0},
+  {"ep1_sng_z1a1", "SNG47_EP1_SNG_z1a1_V00_EP1.MP3", 1, 6075, 41007},
+  {"ep1_sng_z1a1_speedup", "SNG48_EP1_SNG_z1a1_SPEEDUP_V00_EP1.MP3", 1, 16875, 51815},
+  {"ep1_sng_z2a1", "SNG49_EP1_SNG_z2a1_V00_EP1.MP3", 1, 4664, 55754},
+  {"ep1_sng_z2a1_speedup", "SNG50_EP1_SNG_z2a1_SPEEDUP_V00_EP1.MP3", 1, 16976, 68073},
+  {"ep1_sng_z3a1", "SNG51_EP1_SNG_z3a1_V00_EP1.MP3", 1, 2799, 50799},
+  {"ep1_sng_z3a1_speedup", "SNG52_EP1_SNG_z3a1_SPEEDUP_V00_EP1.MP3", 1, 16227, 64231},
+  {"ep1_sng_z4a1", "SNG53_EP1_SNG_z4a1_V00_EP1.MP3", 1, 3465, 41927},
+  {"ep1_sng_z4a1_speedup", "SNG54_EP1_SNG_z4a1_SPEEDUP_V00_EP1.MP3", 1, 21685, 60151},
 };
 
 static const struct {
@@ -701,10 +742,34 @@ static const char *map_override_file(const char *env_name, const char *key) {
   return NULL;
 }
 
-static const char *map_music_file(const char *key) {
+static const typeof(g_music_map[0]) *find_music_info(const char *key) {
   for (size_t i = 0; i < sizeof(g_music_map) / sizeof(g_music_map[0]); i++)
-    if (strcmp(key, g_music_map[i].key) == 0) return g_music_map[i].file;
+    if (strcmp(key, g_music_map[i].key) == 0) return &g_music_map[i];
   return NULL;
+}
+
+static const char *map_music_file(const char *key) {
+  const typeof(g_music_map[0]) *info = find_music_info(key);
+  return info ? info->file : NULL;
+}
+
+static int music_key_default_loop(const char *key) {
+  const typeof(g_music_map[0]) *info = find_music_info(key);
+  if (info) return info->loop != 0;
+  return !music_key_is_jingle(key);
+}
+
+static int music_key_allows_loop(const char *key) {
+  const typeof(g_music_map[0]) *info = find_music_info(key);
+  if (info) return info->loop != 0;
+  return !music_key_is_jingle(key);
+}
+
+static void music_key_loop_points(const char *key, uint32_t *start,
+                                  uint32_t *end) {
+  const typeof(g_music_map[0]) *info = find_music_info(key);
+  *start = info ? frames_from_ms(info->loop_start_ms) : 0;
+  *end = info ? frames_from_ms(info->loop_end_ms) : 0;
 }
 
 static const char *map_sfx_file(const char *key) {
@@ -800,12 +865,21 @@ static AudioBuffer *load_sfx(const char *key) {
 }
 
 static void mix_buffer(int32_t *mix, int frames, AudioBuffer *buf,
-                       uint32_t *pos, float volume, int loop, int *active) {
+                       uint32_t *pos, float volume, int loop,
+                       uint32_t loop_start, uint32_t loop_end, int *active) {
   if (!buf || !buf->pcm || !active || !*active || volume <= 0.0f) return;
   uint32_t p = *pos;
+  uint32_t ls = loop_start;
+  uint32_t le = loop_end;
+  if (le == 0 || le > buf->frames) le = buf->frames;
+  if (ls >= le) ls = 0;
   for (int f = 0; f < frames; f++) {
+    if (loop && p >= le) {
+      uint32_t span = le - ls;
+      p = span ? ls + ((p - ls) % span) : 0;
+    }
     if (p >= buf->frames) {
-      if (loop) p = 0;
+      if (loop) p = ls;
       else {
         *active = 0;
         break;
@@ -831,29 +905,40 @@ static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
   memset(mix, 0, (size_t)frames * OUT_CH * sizeof(mix[0]));
 
   pthread_mutex_lock(&g_lock);
+  int ended_jingle = 0;
   for (int i = 0; i < MUSIC_SLOTS; i++) {
     MusicSlot *m = &g_music[i];
     if (m->active && !m->paused) {
-      mix_buffer(mix, frames, m->buf, &m->pos, m->volume, m->loop, &m->active);
+      int was_jingle = m->jingle;
+      mix_buffer(mix, frames, m->buf, &m->pos, m->volume, m->loop,
+                 m->loop_start, m->loop_end, &m->active);
+      if (was_jingle && !m->active) {
+        m->pos = 0;
+        m->jingle = 0;
+        m->paused_by_jingle = 0;
+        ended_jingle = 1;
+      }
     }
   }
+  if (ended_jingle) resume_music_after_jingle_locked();
   for (int i = 0; i < MAX_VOICES; i++) {
     Voice *v = &g_voices[i];
     if (v->active && !v->paused) {
-      mix_buffer(mix, frames, v->buf, &v->pos, v->volume, v->loop, &v->active);
+      mix_buffer(mix, frames, v->buf, &v->pos, v->volume, v->loop,
+                 0, 0, &v->active);
     }
   }
   pthread_mutex_unlock(&g_lock);
 
   int16_t *out = (int16_t *)stream;
-  float gain = 1.0f;
+  float gain = 0.80f;
   const char *eg = getenv("SONIC_AUDIO_GAIN");
   if (eg) {
     gain = (float)atof(eg);
     if (gain <= 0.0f || gain > 4.0f) gain = 1.0f;
   }
   for (int s = 0; s < frames * OUT_CH; s++) {
-    int v = (int)(mix[s] * gain);
+    int v = soft_limit_s16((int)(mix[s] * gain));
     out[s] = clamp_s16(v);
   }
 }
@@ -896,6 +981,21 @@ int sonic_audio_play_sfx(const char *key, float volume, int loop) {
   if (!buf) return 0;
 
   pthread_mutex_lock(&g_lock);
+  if (sfx_key_is_mechanical(key)) {
+    for (int i = 0; i < MAX_VOICES; i++) {
+      Voice *old = &g_voices[i];
+      if (old->active && !old->paused && strcmp(old->key, key) == 0) {
+        float vol = clamp_volume(volume);
+        if (vol > old->volume) old->volume = vol;
+        int handle = old->handle;
+        pthread_mutex_unlock(&g_lock);
+        alog("sonic_audio: reuse mechanical sfx key=\"%s\" handle=%d\n",
+             key, handle);
+        return handle;
+      }
+    }
+  }
+
   int slot = -1;
   for (int i = 0; i < MAX_VOICES; i++) {
     if (!g_voices[i].active) {
@@ -907,6 +1007,8 @@ int sonic_audio_play_sfx(const char *key, float volume, int loop) {
   int handle = g_next_handle++;
   if (g_next_handle <= 0) g_next_handle = 1;
   Voice *v = &g_voices[slot];
+  strncpy(v->key, key, sizeof(v->key) - 1);
+  v->key[sizeof(v->key) - 1] = 0;
   v->handle = handle;
   v->buf = buf;
   v->pos = 0;
@@ -954,11 +1056,27 @@ void sonic_audio_music_set_source(int id, const char *key) {
   if (id < 0 || id >= MUSIC_SLOTS || !key) return;
   pthread_mutex_lock(&g_lock);
   MusicSlot *m = &g_music[id];
+  int same_active = m->active && strcmp(m->key, key) == 0;
+  if (same_active) {
+    m->jingle = music_key_is_jingle(key);
+    uint32_t pos = m->pos;
+    pthread_mutex_unlock(&g_lock);
+    alog("sonic_audio: music source unchanged id=%d key=\"%s\" pos=%u\n",
+         id, key, pos);
+    return;
+  }
+  int was_jingle = m->jingle;
   strncpy(m->key, key, sizeof(m->key) - 1);
   m->key[sizeof(m->key) - 1] = 0;
   m->pos = 0;
+  m->loop = music_key_default_loop(key);
+  m->loop_explicit = 0;
+  music_key_loop_points(key, &m->loop_start, &m->loop_end);
   m->active = 0;
+  m->paused = 0;
   m->jingle = music_key_is_jingle(key);
+  m->paused_by_jingle = 0;
+  if (was_jingle) resume_music_after_jingle_locked();
   pthread_mutex_unlock(&g_lock);
 }
 
@@ -970,6 +1088,24 @@ void sonic_audio_music_start(int id) {
   pthread_mutex_lock(&g_lock);
   strncpy(key, g_music[id].key, sizeof(key) - 1);
   key[sizeof(key) - 1] = 0;
+  int same_active = g_music[id].active && strcmp(g_music[id].key, key) == 0;
+  if (same_active) {
+    MusicSlot *m = &g_music[id];
+    int is_jingle = music_key_is_jingle(key);
+    if (is_jingle) {
+      pause_music_for_jingle_locked(id);
+    } else if (!m->paused_by_jingle) {
+      m->paused = 0;
+    }
+    if (m->volume <= 0.0f) m->volume = 1.0f;
+    m->jingle = is_jingle;
+    uint32_t pos = m->pos;
+    int loop = m->loop;
+    pthread_mutex_unlock(&g_lock);
+    alog("sonic_audio: music start keep id=%d key=\"%s\" pos=%u jingle=%d loop=%d\n",
+         id, key, pos, is_jingle, loop);
+    return;
+  }
   pthread_mutex_unlock(&g_lock);
   if (!key[0]) return;
 
@@ -984,14 +1120,18 @@ void sonic_audio_music_start(int id) {
   m->buf = buf;
   m->pos = 0;
   if (m->volume <= 0.0f) m->volume = 1.0f;
-  m->loop = 1;
+  if (!m->loop_explicit) m->loop = music_key_default_loop(key);
+  music_key_loop_points(key, &m->loop_start, &m->loop_end);
   m->paused = pause_behind_jingle;
   m->active = 1;
   m->jingle = is_jingle;
   m->paused_by_jingle = pause_behind_jingle;
+  int loop = m->loop;
+  uint32_t loop_start = m->loop_start;
+  uint32_t loop_end = m->loop_end;
   pthread_mutex_unlock(&g_lock);
-  alog("sonic_audio: music start id=%d key=\"%s\" frames=%u\n",
-       id, key, buf->frames);
+  alog("sonic_audio: music start id=%d key=\"%s\" frames=%u jingle=%d loop=%d loop=%u-%u\n",
+       id, key, buf->frames, is_jingle, loop, loop_start, loop_end);
 }
 
 void sonic_audio_music_stop(int id) {
@@ -1025,7 +1165,8 @@ void sonic_audio_music_set_volume(int id, float volume) {
 void sonic_audio_music_set_loop(int id, int loop) {
   if (id < 0 || id >= MUSIC_SLOTS) return;
   pthread_mutex_lock(&g_lock);
-  g_music[id].loop = loop != 0;
+  g_music[id].loop = (loop != 0) && music_key_allows_loop(g_music[id].key);
+  g_music[id].loop_explicit = 1;
   pthread_mutex_unlock(&g_lock);
 }
 

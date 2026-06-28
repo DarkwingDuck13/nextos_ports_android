@@ -674,6 +674,7 @@ int main(int argc, char *argv[]) {
   #define FOX_L3     0x4000
   #define FOX_R3     0x8000
   #define FOX_START  0x0010
+  #define FOX_PAUSE  0x4000  /* GmMainStartDemoEndCheck testa OUYAGetPauseKey()|0x4000. */
 
   /* 🔑 demo-resource: o gate do título (CDemoResourceManager::IsValid evt3) trava
      pq o recurso "MenuDraw" (tipo 2) não está setado (dmMenuDrawIsSetUpEnd=0).
@@ -717,34 +718,30 @@ int main(int argc, char *argv[]) {
   long autopause_at = ap ? atol(ap) : -1;
   int autopause_state = 0;
   int start_was_down = 0;
-  void (*GmPauseMenuLoadStart)(void) =
-      (void *)so_find_addr_safe("_Z20GmPauseMenuLoadStartv");
-  int (*GmPauseMenuLoadIsFinished)(void) =
-      (void *)so_find_addr_safe("_Z25GmPauseMenuLoadIsFinishedv");
-  void (*GmPauseMenuBuildStart)(void) =
-      (void *)so_find_addr_safe("_Z21GmPauseMenuBuildStartv");
-  int (*GmPauseMenuBuildIsFinished)(void) =
-      (void *)so_find_addr_safe("_Z26GmPauseMenuBuildIsFinishedv");
-  void (*GmPauseMenuStart)(unsigned long) =
-      (void *)so_find_addr_safe("_Z16GmPauseMenuStartm");
-  void (*GmPauseMenuCancel)(void) =
-      (void *)so_find_addr_safe("_Z17GmPauseMenuCancelv");
-  int (*GmPauseMenuIsFinished)(void) =
-      (void *)so_find_addr_safe("_Z21GmPauseMenuIsFinishedv");
-  int (*GmPauseMenuGetResult)(void) =
-      (void *)so_find_addr_safe("_Z20GmPauseMenuGetResultv");
-  void (*GmMainExit)(void) =
-      (void *)so_find_addr_safe("GmMainExit");
-  void (*GmMainRestartExit)(void) =
-      (void *)so_find_addr_safe("GmMainRestartExit");
-  void (*InterruptClear)(void) =
-      (void *)so_find_addr_safe("_Z14InterruptClearv");
-  void (*SyDecideEvtCase)(int) =
-      (void *)so_find_addr_safe("SyDecideEvtCase");
+  long inter_last_fire_frame = -1000000;
+  int inter_gameplay_ignored = 0;
+  int prev_mask = 0;
   const char *fs = getenv("SONIC_FRAME_SLEEP_US");
   long frame_sleep_us = fs ? atol(fs) : 0;
   fprintf(stderr, "=== frame sleep us: %ld ===\n", frame_sleep_us);
   int gameplay_start_delay_done = 0;
+  /* 🔑 CONTINUE/SAVE-COM-PROGRESSO: ao reabrir com save que tem fase interrompida
+     (qualquer mundo/mapa já jogado), o título entra em CStateWaitViewPausing:
+     OnEnter chama SetContinueShow() + SetContinueStart(0) e Next() fica polando
+     isContinueStart() esperando 1 (continuar a fase) ou 2 (ir pro world map).
+     Esse 1/2 só viria do diálogo Java SetContinueFlag (que não temos) -> trava
+     eterna no título, menu nunca aparece. A flag de continue (global lida SÓ dentro
+     de CStateWaitViewPausing::Next) é dirigida aqui: default 2 = caminho nativo
+     ClearInterruptionData -> world map/menu (progresso de fases preservado em
+     SProgress). SONIC_CONTINUE_MODE=1 resume direto na fase interrompida. */
+  int (*sonic_isContinueStart)(void) =
+      (void *)so_find_addr_safe("_Z15isContinueStartv");
+  void (*sonic_SetContinueStart)(int) =
+      (void *)so_find_addr_safe("_Z16SetContinueStarti");
+  int sonic_continue_mode = 2;
+  { const char *cm = getenv("SONIC_CONTINUE_MODE"); if (cm && *cm) sonic_continue_mode = atoi(cm); }
+  int sonic_continue_disabled = getenv("SONIC_NO_CONTINUE_DRIVE") != NULL;
+  long sonic_continue_log_n = 0;
   short *gm_direct = (short *)so_find_addr_safe("gmPaddirectFromPlayer0");
   short *gm_lx = (short *)so_find_addr_safe("gmPadAnalogLXFromPlayer0");
   short *gm_ly = (short *)so_find_addr_safe("gmPadAnalogLYFromPlayer0");
@@ -786,6 +783,7 @@ int main(int argc, char *argv[]) {
       if (ks[SDL_SCANCODE_RETURN]) {
         start_down = 1;
         if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+        else mask |= FOX_PAUSE;
       }
     }
     if (pad) {
@@ -806,6 +804,7 @@ int main(int argc, char *argv[]) {
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
         start_down = 1;
         if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+        else mask |= FOX_PAUSE;
       }
       Sint16 ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
       Sint16 ay = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
@@ -851,61 +850,43 @@ int main(int argc, char *argv[]) {
         (long)frame >= autojump_at && (long)frame < autojump_at + 8)
       mask |= FOX_A_GAME;
     if (sonic_game_started && start_down && !start_was_down) {
-      if (autopause_state == 0) {
-        fprintf(stderr, "=== START native pause @frame %lu ===\n", frame);
-        if (GmPauseMenuLoadStart) GmPauseMenuLoadStart();
-        autopause_state = 1;
-      } else if (autopause_state == 3 && GmPauseMenuCancel) {
-        fprintf(stderr, "=== START native pause cancel @frame %lu ===\n", frame);
-        GmPauseMenuCancel();
-        autopause_state = 4;
-      }
+      fprintf(stderr, "=== START native pause key @frame %lu ===\n", frame);
     }
     start_was_down = start_down;
     if (sonic_game_started && autopause_at >= 0 &&
-        (long)frame >= autopause_at && autopause_state == 0) {
-      fprintf(stderr, "=== AUTOPAUSE native load @frame %lu ===\n", frame);
-      if (GmPauseMenuLoadStart) GmPauseMenuLoadStart();
+        (long)frame >= autopause_at && (long)frame < autopause_at + 6) {
+      if (autopause_state == 0)
+        fprintf(stderr, "=== AUTOPAUSE native pause key @frame %lu ===\n", frame);
+      mask |= FOX_PAUSE;
       autopause_state = 1;
-    }
-    if (autopause_state == 1 && GmPauseMenuLoadIsFinished &&
-        GmPauseMenuLoadIsFinished()) {
-      fprintf(stderr, "=== AUTOPAUSE native build @frame %lu ===\n", frame);
-      if (GmPauseMenuBuildStart) GmPauseMenuBuildStart();
-      autopause_state = 2;
-    }
-    if (autopause_state == 2 &&
-        (!GmPauseMenuBuildIsFinished || GmPauseMenuBuildIsFinished())) {
-      fprintf(stderr, "=== AUTOPAUSE native start @frame %lu ===\n", frame);
-      if (GmPauseMenuStart) GmPauseMenuStart(0);
-      autopause_state = 3;
-    }
-    if ((autopause_state == 3 || autopause_state == 4) &&
-        GmPauseMenuIsFinished && GmPauseMenuIsFinished()) {
-      int pause_result = GmPauseMenuGetResult ? GmPauseMenuGetResult() : -1;
-      fprintf(stderr, "=== START native pause finished result=%d @frame %lu ===\n",
-              pause_result, frame);
-      if (pause_result == 0) {
-        if (InterruptClear) InterruptClear();
-        if (SyDecideEvtCase) SyDecideEvtCase(1);
-        if (GmMainRestartExit) GmMainRestartExit();
-      } else if (pause_result == 2 || pause_result == 3) {
-        if (InterruptClear) InterruptClear();
-        if (SyDecideEvtCase) SyDecideEvtCase(pause_result == 2 ? 0 : 3);
-        if (GmMainExit) GmMainExit();
-      }
-      autopause_state = 0;
     }
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
     if (gm_direct) *gm_direct = (short)mask;
     if (gm_lx) *gm_lx = (short)lx;
     if (gm_ly) *gm_ly = (short)ly;
+    if (getenv("SONIC_INPUTLOG") && mask != prev_mask)
+      fprintf(stderr, "[input-change f%lu] started=%d mask=%04x prev=%04x\n",
+              frame, sonic_game_started, mask & 0xffff, prev_mask & 0xffff);
+    prev_mask = mask;
     if (getenv("SONIC_INPUTLOG") && sonic_game_started && (frame % 60) == 0)
       fprintf(stderr, "[input f%lu] mask=%04x lx=%d ly=%d rx=%d ry=%d lt=%d rt=%d\n",
               frame, mask & 0xffff, lx, ly, rx, ry, lt, rt);
 
     sonic_native_save_load_poll("frame");
     sonic_save_bootstrap_poll(frame);
+    /* dirige o continue do título (save com fase interrompida) — só fora do gameplay;
+       a flag é lida exclusivamente por CStateWaitViewPausing::Next, então forçar
+       o valor quando está 0 é seguro e usa o fluxo nativo. */
+    if (!sonic_continue_disabled && !sonic_game_started &&
+        sonic_isContinueStart && sonic_SetContinueStart &&
+        sonic_isContinueStart() == 0) {
+      sonic_SetContinueStart(sonic_continue_mode);
+      if (sonic_continue_log_n < 3) {
+        fprintf(stderr, "=== continue-drive: SetContinueStart(%d) @frame %lu ===\n",
+                sonic_continue_mode, frame);
+        sonic_continue_log_n++;
+      }
+    }
     sonic_in_draw_frame = 0;
     if (fox.GameProcess) fox.GameProcess(env, thiz);
     if (sonic_game_started && !gameplay_start_delay_done) {
@@ -957,11 +938,22 @@ int main(int argc, char *argv[]) {
       (void)prev_a; (void)inter_fire_at; (void)interat;
       if (interCB && jni_inter_pending) {
         jni_inter_pending = 0;
-        fprintf(stderr, "=== interCB FIRE @frame %lu (showInterstitial->ad closed) ===\n", frame);
-        interCB(env, thiz, 0, 0);
+        if (sonic_game_started && !env_flag_enabled("SONIC_ALLOW_GAMEPLAY_INTERCB")) {
+          if (inter_gameplay_ignored < 8) {
+            fprintf(stderr, "=== interCB IGNORE @frame %lu (gameplay showInterstitial) ===\n", frame);
+            inter_gameplay_ignored++;
+          }
+        } else if ((long)frame - inter_last_fire_frame < 30) {
+          fprintf(stderr, "=== interCB IGNORE @frame %lu (debounce) ===\n", frame);
+        } else {
+          inter_last_fire_frame = (long)frame;
+          fprintf(stderr, "=== interCB FIRE @frame %lu (showInterstitial->ad closed) ===\n", frame);
+          interCB(env, thiz, 0, 0);
+        }
       }
     }
-    if ((frame % 60) == 0) fprintf(stderr, "[frame %lu]\n", frame);
+    if ((frame % 60) == 0 && env_flag_enabled("SONIC_FRAMELOG"))
+      fprintf(stderr, "[frame %lu]\n", frame);
     frame++;
     if (frame_sleep_us > 0) usleep((useconds_t)frame_sleep_us);
   }

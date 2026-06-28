@@ -34,22 +34,63 @@
 
 /* ---------------- liblog ---------------- */
 extern volatile int sonic_game_started;
-static int b_log_print(int prio, const char *tag, const char *fmt, ...) {
-  fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
-  char msg[1024];
-  va_list ap; va_start(ap, fmt);
-  va_list cp; va_copy(cp, ap);
-  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap);
-  if (fmt) {
-    vsnprintf(msg, sizeof(msg), fmt, cp);
-    if (strstr(msg, "game start")) sonic_game_started = 1;
+static int sonic_env_on(const char *name) {
+  const char *v = getenv(name);
+  return v && *v && strcmp(v, "0") != 0 && strcasecmp(v, "false") != 0 &&
+         strcasecmp(v, "no") != 0 && strcasecmp(v, "off") != 0;
+}
+
+static int sonic_verbose_log(void) {
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = sonic_env_on("SONIC_VERBOSE_LOG") || sonic_env_on("SONIC_ALOG");
+  return enabled;
+}
+
+static int sonic_memcpy_log(void) {
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = sonic_env_on("SONIC_VERBOSE_LOG") || sonic_env_on("SONIC_MEMCPYLOG");
+  return enabled;
+}
+
+static void sonic_update_gameplay_state_from_log(const char *msg) {
+  if (!msg) return;
+
+  if (strstr(msg, "Create World Map")) {
+    if (sonic_game_started)
+      fprintf(stderr, "=== gameplay state: world map/menu ===\n");
+    sonic_game_started = 0;
+    return;
   }
-  va_end(cp);
+
+  if (strstr(msg, "game start") ||
+      strstr(msg, "GmGameDatLoadExit") ||
+      strstr(msg, "Gimmick set camera scale") ||
+      strstr(msg, "GmPlySeq")) {
+    if (!sonic_game_started)
+      fprintf(stderr, "=== gameplay state: started (%s) ===\n", msg);
+    sonic_game_started = 1;
+  }
+}
+
+static int b_log_print(int prio, const char *tag, const char *fmt, ...) {
+  char msg[1024] = {0};
+  va_list ap; va_start(ap, fmt);
+  if (fmt)
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+  va_end(ap);
+  if (fmt)
+    sonic_update_gameplay_state_from_log(msg);
+  if (sonic_verbose_log()) {
+    fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", msg);
+  }
   return 0;
 }
 static int b_log_write(int prio, const char *tag, const char *text) {
-  fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", text ? text : "");
-  if (text && strstr(text, "game start")) sonic_game_started = 1;
+  sonic_update_gameplay_state_from_log(text);
+  if (sonic_verbose_log())
+    fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", text ? text : "");
   return 0;
 }
 static void b_log_assert(const char *cond, const char *tag, const char *fmt, ...) {
@@ -58,15 +99,15 @@ static void b_log_assert(const char *cond, const char *tag, const char *fmt, ...
   fprintf(stderr, "\n");
 }
 static int b_log_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
-  fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
-  char msg[1024];
+  char msg[1024] = {0};
   va_list cp; va_copy(cp, ap);
-  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n");
-  if (fmt) {
+  if (fmt)
     vsnprintf(msg, sizeof(msg), fmt, cp);
-    if (strstr(msg, "game start")) sonic_game_started = 1;
-  }
   va_end(cp);
+  if (fmt)
+    sonic_update_gameplay_state_from_log(msg);
+  if (sonic_verbose_log())
+    fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", msg);
   return 0;
 }
 
@@ -231,7 +272,7 @@ extern int b_fclose(void *);
 static void *my_memcpy(void *d, const void *s, size_t n) {
   if ((uintptr_t)d < 0x1000 || (uintptr_t)s < 0x1000) {
     static int z = 0;
-    if (z < 40) {
+    if (sonic_memcpy_log() && z < 40) {
       fprintf(stderr, "[MEMCPY-NULL] dest=%p src=%p n=%zu ret=%p\n",
               d, s, n, __builtin_return_address(0));
       z++;

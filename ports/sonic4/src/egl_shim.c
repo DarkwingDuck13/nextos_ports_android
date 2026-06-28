@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -22,6 +23,12 @@
 static const char *sonic_env(const char *name) {
   const char *v = getenv(name);
   return (v && *v) ? v : NULL;
+}
+
+static int sonic_env_on(const char *name) {
+  const char *v = getenv(name);
+  return v && *v && strcmp(v, "0") != 0 && strcasecmp(v, "false") != 0 &&
+         strcasecmp(v, "no") != 0 && strcasecmp(v, "off") != 0;
 }
 
 /* Resolucao DINAMICA (qualquer device): desktop mode do SDL com fallback
@@ -350,6 +357,9 @@ static void perf_note_present(void) {
     if (ms > 20) s20++;
     if (ms > 40) s40++;
     if (sum >= 5000) {
+      int log_perf = sonic_env_on("SONIC_PERFLOG") ||
+                     sonic_env_on("SONIC_VERBOSE_LOG");
+      if (log_perf)
       fprintf(stderr, "[PERF] fps=%.1f avg=%.1fms max=%.0fms >20ms=%u >40ms=%u\n",
               n * 1000.0 / sum, sum / n, mx, s20, s40);
       sum = 0;
