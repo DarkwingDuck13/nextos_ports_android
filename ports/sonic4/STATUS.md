@@ -1,3 +1,19 @@
+# Sonic 4 EP2 - STATUS
+
+## Sessao 2026-06-28 (R36S/ROCKNIX + perf + special-stage audio)
+- **Special stage audio FIX (confirmado pelo NextOS):** cues SpStage01-08 (speed/spike/entrada)
+  estavam unmapped (so SpStage04 existia) -> mudos; anel/BGM tocavam. Mapeados via AudioDataTbl
+  do DEX (dexlib2) com a CAIXA correta do OBB (V maiusculo). +Env01. sfx_map.tsv (runtime). Commit 9ba8f16.
+- **Performance:** GPU nao era o gargalo (titulo/gameplay carregado = 60fps); lag real = stalls de
+  I/O (streaming do SD, multi-seg) + memoria. Levers aplicados: SONIC_LOWFX (bloom off, ~+15% GPU,
+  sem perda visivel; commit 0e5260c) + swap 512MB + SD readahead 4096 (servico systemd persistente
+  no ROCKNIX). Bench zone1: avg 27->35 fps (~+30%). Downscale interno NAO feito (mexe na nitidez).
+- **R36S agora roda ROCKNIX** (Arch-R panfrost travava o boot; ROCKNIX painel4 via overlay mipi-panel.dtbo
+  = tela ok com libmali; panfrost descartado nesse painel). Acesso: root@169.254.170.2 senha rocknix
+  (regenera no boot). Build aarch64 (X5M 64-bit puro) = WIP (crash pos-init_array).
+- Release: Sonic4EP2 PortMaster v3.2.zip (port.json v5, bin LOWFX e59671d6, audio fix). BYO-data.
+- ⚠️ NUNCA rodar harness com `rm foxsave` (apaguei save do NextOS em bench; scripts removidos).
+
 # Sonic 4 EP2 - STATUS (PortMaster/R36S/Mali-450, 2026-06-27)
 
 ## Estado atual
@@ -15,6 +31,12 @@ O port passa pelo fluxo principal no device `.79`:
 - save/continue voltou para o caminho nativo: com save bom, Start nao reinicia Act 1 direto e segue para o
   fluxo de mapa/continue esperado;
 - save real validado: foi concluida a primeira fase, o jogo foi fechado/reaberto e apareceu `Continue`.
+- fix aplicado para transicoes longas/boss: `sonic_game_started` agora tambem reconhece
+  `GmGameDatLoadExit`, `Gimmick set camera scale` e `GmPlySeq`, evitando que A/B sejam tratados
+  como entrada de menu depois de carregar fase por continue/boss;
+- log normal foi reduzido: `ALOG`, `[frame]`, `[PERF]` e `[MEMCPY-NULL]` ficam desativados por
+  padrao e voltam apenas com flags de diagnostico (`SONIC_VERBOSE_LOG`, `SONIC_ALOG`,
+  `SONIC_FRAMELOG`, `SONIC_PERFLOG`, `SONIC_MEMCPYLOG`).
 
 Device principal Mali-450 usado: `192.168.31.79`.
 Device R36S usado: `169.254.170.2`.
@@ -66,8 +88,8 @@ zip -r "<output-dir>/Sonic4EP2 PortMaster v1.zip" Sonic4EP2.sh sonic4ep2
 Resultado do build Docker:
 
 - `sonic4.compat.gcc` / `package/ports/sonic4ep2/sonic4`;
-- tamanho: `160960` bytes;
-- sha256 validado no pacote/device: `2d1a8d164c44989b82971357855d7a5c1a46ec9bb529f848a5d41efa8fe5adc5`;
+- tamanho: `165196` bytes;
+- sha256 validado no pacote: `02d137428af9c63f2941ae0b94a97a3e8b14d5bdea4bb351ba0b6a94cf41f3ea`;
 - maior simbolo glibc: `GLIBC_2.27`, abaixo do alvo glibc 2.30;
 - sem dependencia `GLIBCXX`;
 - dependencias dinamicas esperadas no device: `libSDL2-2.0.so.0`, `libmpg123.so.0`,
@@ -158,6 +180,15 @@ O shim JNI encaminha essas chamadas para `src/sonic_audio.c`.
 - cacheia ate 256 buffers decodificados;
 - trata SFX observados como one-shot, porque o terceiro argumento de `PlaySound` veio como `2/3/-1`
   mesmo para sons que nao podem loopar;
+- replica o comportamento nativo do `AudioHelper`: `MusicSetDataSource`/`MusicStart` da mesma faixa
+  ativa nao reiniciam a posicao, e o loop vem da tabela nativa `AudioDataTbl` (`loopflag`,
+  `loopStart`, `loopEnd`) em vez de tratar toda musica como loop total;
+- trata jingles de evento como camada sobre o BGM, mas preserva os loops nativos de invencibilidade
+  e Super Sonic; jingles curtos (`emerald`, `1up`, `clear`, etc.) ficam one-shot;
+- corrige o mapa nativo de bosses: `boss2=FinalA1`, `boss3=MetalSonic`, `boss5=StardustSPDWY`,
+  `boss6=DEmk2`;
+- aplica headroom/soft limiter no mixer e reaproveita SFX mecanicos ja ativos para ficar mais proximo
+  do comportamento do `SoundPool` Android e evitar clipping em mecanismos repetitivos;
 - aceita `SONIC_SFX_OVERRIDE`, por exemplo `Jump=S4EP2FX_024_S1C2_44.OGG`, para testar trocas sem
   recompilar;
 - carrega `sfx_map.tsv` em runtime, com 644 entradas normalizadas pelo manifesto real do OBB, e usa
