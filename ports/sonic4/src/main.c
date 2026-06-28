@@ -31,8 +31,8 @@
 #define GAME_SO "lib/armeabi-v7a/libfox.so"
 #define GAME_HEAP_MB 256
 
-#define SCREEN_W 1280
-#define SCREEN_H 720
+/* resolução vem 100% automática do egl_shim (SDL_GL_GetDrawableSize do device);
+   sem números fixos aqui — qualquer tela é pega na hora. */
 
 extern DynLibFunction shantae_overrides[];
 extern const int shantae_overrides_count;

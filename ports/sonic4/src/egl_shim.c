@@ -127,6 +127,23 @@ void egl_shim_create_window(void) {
     }
   }
 
+  /* 🔑 RESOLUÇÃO AUTOMÁTICA (autoridade final): o tamanho REAL da superfície que
+     a GPU vai renderizar pode diferir do que pedimos (fullscreen-desktop usa o
+     painel real; compositor pode dar outra coisa). Pegamos o drawable de verdade
+     e é ELE que o jogo recebe em setScreenSize/fox.init -> zoom certo em QUALQUER
+     tela, sem número fixo. (R36S 640x480 e Mali 1280x720 batem com o que já usavam,
+     então não há regressão.) */
+  {
+    int dw = 0, dh = 0;
+    SDL_GL_GetDrawableSize(egl_window, &dw, &dh);
+    if (dw <= 0 || dh <= 0) { SDL_GetWindowSize(egl_window, &dw, &dh); }
+    if (dw > 0 && dh > 0 && (dw != sonic_screen_w || dh != sonic_screen_h)) {
+      debugPrintf("egl_shim: drawable real %dx%d (ajustado de %dx%d)\n",
+                  dw, dh, sonic_screen_w, sonic_screen_h);
+      sonic_screen_w = dw; sonic_screen_h = dh;
+    }
+  }
+
   gl_makecurrent(egl_window, NULL);
   debugPrintf("egl_shim: Context released, ready for game\n");
 }
