@@ -236,6 +236,14 @@ static void bully_etc2_key(char *out, size_t n, const char *path, int w, int h) 
 static int bully_to_rgba8888(const unsigned char *s, int w, int h, unsigned fmt, unsigned type, unsigned char *out) {
   int n = w * h;
   if (type == 0x1401 && fmt == 0x1908) { memcpy(out, s, (size_t)n * 4); return 1; }          /* RGBA8888 */
+  if (type == 0x1401 && fmt == 0x1907) { for (int i = 0; i < n; i++) {                          /* RGB888 (opaca) */
+      out[4*i]=s[3*i]; out[4*i+1]=s[3*i+1]; out[4*i+2]=s[3*i+2]; out[4*i+3]=255; } return 1; }
+  if (type == 0x1401 && fmt == 0x1909) { for (int i = 0; i < n; i++) {                          /* LUMINANCE */
+      out[4*i]=out[4*i+1]=out[4*i+2]=s[i]; out[4*i+3]=255; } return 1; }
+  if (type == 0x1401 && fmt == 0x190A) { for (int i = 0; i < n; i++) {                          /* LUMINANCE_ALPHA */
+      out[4*i]=out[4*i+1]=out[4*i+2]=s[2*i]; out[4*i+3]=s[2*i+1]; } return 1; }
+  if (type == 0x1401 && fmt == 0x1906) { for (int i = 0; i < n; i++) {                          /* ALPHA */
+      out[4*i]=out[4*i+1]=out[4*i+2]=255; out[4*i+3]=s[i]; } return 1; }
   if (type == 0x8363) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8);  /* 565 RGB (alpha=255) */
       out[4*i]=(((v>>11)&31)*255+15)/31; out[4*i+1]=(((v>>5)&63)*255+31)/63; out[4*i+2]=((v&31)*255+15)/31; out[4*i+3]=255; } return 1; }
   if (type == 0x8033 && fmt == 0x1908) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8); /* 4444 */
@@ -249,8 +257,14 @@ static int bully_try_etc2(unsigned tgt, int lvl, int w, int h, unsigned fmt, uns
   if (!bully_etc2_dir()) return 0;                     /* encode roda em qualquer GLES (CPU); upload exige ES3 */
   if (lvl > 0) return cur_cached;                      /* pula mips da textura cacheada */
   cur_cached = 0;
-  if (w < 8 || h < 8 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
-  if (!bully_cur_tex_path[0]) return 0;
+  if (w < 8 || h < 8 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) {
+    if (bully_etc1_bake() && getenv("BULLY_BAKEDIAG")) { static int sr=0; if(sr<40){ fprintf(stderr, "[bakediag] '%s' %dx%d REJEITADO tamanho\n", bully_cur_tex_path[0]?bully_cur_tex_path:"(nopath)", w, h); sr++; } }
+    return 0;
+  }
+  if (!bully_cur_tex_path[0]) {
+    if (bully_etc1_bake() && getenv("BULLY_BAKEDIAG")) { static int np=0; if(np<40){ fprintf(stderr, "[bakediag] %dx%d SEM path (cur_tex_path vazio)\n", w, h); np++; } }
+    return 0;
+  }
   char key[300]; bully_etc2_key(key, sizeof key, bully_cur_tex_path, w, h);
   size_t sz = (size_t)(w / 4) * (h / 4) * 16;
   static unsigned (*rCompr)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
@@ -279,8 +293,12 @@ static int bully_try_etc2(unsigned tgt, int lvl, int w, int h, unsigned fmt, uns
       eac_encode_image_rgba(rgba, w, h, 4, etc);
       FILE *wf = fopen(key, "wb");
       if (wf) { fwrite(etc, 1, sz, wf); fclose(wf); static int bk = 0; if (bk < 12) { fprintf(stderr, "[etc2-bake] '%s' %dx%d -> %zuB\n", bully_cur_tex_path, w, h, sz); bk++; } }
+    } else if (getenv("BULLY_BAKEDIAG")) {              /* DIAG: por que NAO encodou (formato nao-tratado?) */
+      static int bd = 0; if (bd < 60) { fprintf(stderr, "[bakediag] '%s' %dx%d fmt=0x%x type=0x%x -> conv FALHOU\n", bully_cur_tex_path, w, h, fmt, type); bd++; }
     }
     free(rgba); free(etc);
+  } else if (bully_etc1_bake() && !px && getenv("BULLY_BAKEDIAG")) {
+    static int bn = 0; if (bn < 30) { fprintf(stderr, "[bakediag] '%s' %dx%d px=NULL (RT/deferido?)\n", bully_cur_tex_path, w, h); bn++; }
   }
   return 0;
 }
@@ -1024,7 +1042,10 @@ static void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsign
   if (t == 0x0DE1 && g_cur_tex2d < RESMAP && g_tex_etc2[g_cur_tex2d]) return; /* ja e ETC2 (subido no storage) -> ignora os pixels RGBA */
   /* textura EMULADA (mutavel) + nivel 0 + imagem inteira -> ROTA PELO PIPELINE (ETC2 + streaming) */
   if (t == 0x0DE1 && l == 0 && xo == 0 && yo == 0 && g_cur_tex2d < RESMAP && g_tex_emul[g_cur_tex2d] && px) {
-    if (pf && bully_try_etc2(t, 0, w, h, fmt, type, px)) {       /* runtime: re-spec p/ ETC2 (mutavel) e pula; pf=0 RT -> nao ETC2 */
+    /* BAKE: o glTexStorage2D ja consumiu o pf -> aqui pf=0 SEMPRE no ES3 -> o encode ETC2
+     * nunca disparava (yield ~2% no R36S). No bake o bully_try_etc2 so GRAVA o cache e
+     * retorna 0 (nao sobe ETC2 -> nao corrompe RT), entao contornar o pf e seguro. [fix R36S] */
+    if ((pf || bully_etc1_bake()) && bully_try_etc2(t, 0, w, h, fmt, type, px)) {  /* runtime: re-spec ETC2; bake: grava cache */
       g_tex_etc2[g_cur_tex2d] = 1;
       bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*16));
       if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
@@ -1246,8 +1267,13 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
   /* ETC2 (GLES3): cobre o JOGO INTEIRO (opaco+alpha), 4x menos VRAM, full-res. ANTES do ETC1.
    * Runtime: sobe ETC2 e PULA o resto. Bake: encoda+grava e segue normal (renderiza p/ force-render). */
   int hw2 = w, hh2 = h;
-  if (lvl == 0 && pf && bully_tex_halfall()) bully_halfdim(w, h, &hw2, &hh2);  /* 1GB: meia-res */
-  if ((lvl > 0 || pf) && bully_try_etc2(tgt, lvl, hw2, hh2, fmt, type, px)) {  /* lvl>0 = skip-mip normal; lvl0 so com path fresco (RT nao) */
+  /* BAKE: contorna o gate pf (path-fresh). O gate existe p/ o RUNTIME nao virar RT em ETC2
+   * (bug das sombras); mas no BAKE o bully_try_etc2 SO grava o cache e retorna 0 (nao sobe
+   * ETC2 -> nao corrompe RT), e ainda guarda RT por bully_cur_tex_path vazio. Sem isto a
+   * maioria dos uploads (pf=0) NAO encodava (yield ~1% no R36S). */
+  int bake_mode = bully_etc1_bake();
+  if (lvl == 0 && (pf || bake_mode) && bully_tex_halfall()) bully_halfdim(w, h, &hw2, &hh2);  /* 1GB: meia-res */
+  if ((lvl > 0 || pf || bake_mode) && bully_try_etc2(tgt, lvl, hw2, hh2, fmt, type, px)) {  /* lvl>0=skip-mip; lvl0=path fresco OU bake */
     if (lvl == 0 && g_cur_tex2d < RESMAP) {
       bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, hw2, hh2, (unsigned)((size_t)(hw2/4)*(hh2/4)*16));
       if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(tgt, g_cur_tex2d);

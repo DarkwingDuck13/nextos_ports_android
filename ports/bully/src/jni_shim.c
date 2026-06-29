@@ -710,6 +710,10 @@ static void bakeall_step(void *scene) {
         if (!g_sprite) g_sprite = CreateSprite(scene, t, 1.0f, 0xFFFFFFFFu); /* cria 1 sprite */
         else Setup(g_sprite, t, 1.0f, 0xFFFFFFFFu);                          /* REUSA: troca a textura */
       }
+      if (getenv("BULLY_BAKEDIAG")) {
+        static int tok = 0, tnull = 0; if (t) tok++; else tnull++;
+        if ((tok + tnull) % 200 == 0) fprintf(stderr, "[bakediag] TexRead ok=%d null=%d (de %d)\n", tok, tnull, tok + tnull);
+      }
       if (bi % 250 == 0) fprintf(stderr, "[bakeall] %d/%d\n", bi, total);
       if (chunk > 0 && ++runc >= chunk) {   /* FRAÇÃO concluída -> SAI limpo (libera GPU/RAM); o loop resume @bi */
         fprintf(stderr, "[bakeall] fracao %d texturas (bi=%d/%d) -> SAINDO p/ resume\n", runc, bi, total);
