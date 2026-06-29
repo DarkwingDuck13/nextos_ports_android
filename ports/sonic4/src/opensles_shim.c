@@ -541,9 +541,11 @@ static void ensure_audio_initialized(void) {
     fprintf(stderr, "opensles_shim: audio drivers=[ %s] default=%s\n",
             list, cur0 ? cur0 : "?");
 
-    /* (1) default escolhido pelo SDL do device */
+    /* (1) default escolhido pelo SDL do device. Rejeita "dummy" e "disk":
+       ambos ABREM mas nao tocam ("disk" grava sdlaudio.raw num arquivo -> foi a
+       causa do "sem som" num device que caiu de pipewire p/ disk). */
     char failed_drv[32]; failed_drv[0] = 0;
-    if (cur0 && strcmp(cur0, "dummy") != 0) {
+    if (cur0 && strcmp(cur0, "dummy") != 0 && strcmp(cur0, "disk") != 0) {
       g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
       if (g_audio_dev)
         fprintf(stderr, "opensles_shim: audio aberto (auto) %dHz %dch samples=%d driver=%s\n",
@@ -559,7 +561,7 @@ static void ensure_audio_initialized(void) {
     /* (2) fallback: 1º driver que realmente abre o device */
     for (int i = 0; !g_audio_dev && i < ndrv; i++) {
       const char *name = SDL_GetAudioDriver(i);
-      if (!name || strcmp(name, "dummy") == 0) continue;
+      if (!name || strcmp(name, "dummy") == 0 || strcmp(name, "disk") == 0) continue;
       if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
       SDL_QuitSubSystem(SDL_INIT_AUDIO);
       setenv("SDL_AUDIODRIVER", name, 1); /* seleciona ESTE pro próximo init */

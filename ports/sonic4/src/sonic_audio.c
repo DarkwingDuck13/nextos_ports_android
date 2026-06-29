@@ -948,6 +948,16 @@ static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
   return g_dev != 0;
 }
 
+/* Drivers que ABREM com sucesso mas NAO produzem som audivel -> nunca aceitar
+   como "funcional": "dummy" (silencio) e "disk" (escreve o audio num ARQUIVO
+   sdlaudio.raw). Foi a causa REAL do "sem som" num device de teste: o SDL caiu
+   de pipewire (sem daemon) direto p/ "disk". Pulando-os, a varredura encontra o
+   driver real (alsa) que a maioria dos devices usa. ("dsp"/OSS NAO e bloqueado:
+   pode ser audivel; fica como candidato normal.) */
+static int sa_driver_silent(const char *n) {
+  return !n || strcmp(n, "dummy") == 0 || strcmp(n, "disk") == 0;
+}
+
 /* Áudio ADAPTATIVO, sem caminho fixo (regra #6: nunca hardcodar SDL_AUDIODRIVER).
    1) tenta o driver que o SDL do device escolhe sozinho — onde já funciona
       (alsa/pulse/pipewire vivo) abre de primeira, idêntico ao comportamento antigo;
@@ -1008,7 +1018,7 @@ static int ensure_audio(void) {
     SDL_InitSubSystem(SDL_INIT_AUDIO);
   if (SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) {
     const char *drv = SDL_GetCurrentAudioDriver();
-    if (drv && strcmp(drv, "dummy") != 0 && sa_try_open(&want, &have)) {
+    if (drv && !sa_driver_silent(drv) && sa_try_open(&want, &have)) {
       fprintf(stderr, "sonic_audio: SDL audio aberto (auto) %dHz %dch samples=%d driver=%s\n",
               have.freq, have.channels, have.samples, drv);
       goto opened;
@@ -1021,7 +1031,7 @@ static int ensure_audio(void) {
   /* (2) fallback adaptativo: 1º driver que realmente abre */
   for (int i = 0; i < ndrv; i++) {
     const char *name = SDL_GetAudioDriver(i);
-    if (!name || strcmp(name, "dummy") == 0) continue;
+    if (sa_driver_silent(name)) continue;
     if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
     setenv("SDL_AUDIODRIVER", name, 1); /* seleciona ESTE pro próximo init — adaptativo, não fixo */
