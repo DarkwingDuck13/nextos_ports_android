@@ -1126,7 +1126,9 @@ static int ensure_audio(void) {
 
 opened:
   /* card cru (sem softvol do sistema) -> sobe a thread que segue o volume dos
-     botoes via batocera.conf (Plano C). SONIC_NO_SYSVOL=1 desliga. */
+     botoes via batocera.conf (Plano C). SONIC_NO_SYSVOL=1 desliga.
+     SONIC_FORCE_SYSVOL=1 forca o Plano C mesmo em device normal (TESTE). */
+  if (getenv("SONIC_FORCE_SYSVOL")) g_opened_raw = 1;
   if (g_opened_raw && !getenv("SONIC_NO_SYSVOL")) {
     float v0;
     if (sa_read_sys_volume(&v0)) g_sys_vol = v0;
