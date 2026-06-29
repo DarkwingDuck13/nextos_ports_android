@@ -1,5 +1,28 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-06-29 (FIX: pulo PAUSA no Special Stage)
+- **Bug (reportado pelo luis, v3.3 nao corrigia):** no Special Stage o PULO (A) tambem pausa.
+  Nos atos normais o pulo funciona. Causa-raiz por disasm do libfox.so:
+  - `OUYAGetPauseKey()` (0x3bd904) = `mov r0,#0x8000; bx lr` -> retorna a mascara **0x8000**.
+  - TODO checador de pausa (`gmMainStartDemoEndCheck`, `SsUserInputIsPause`, `CPauseMenu::play`,
+    `GmPauseMenuGetResult`) faz: `OUYAGetPauseKey()|0x4000` -> testa `pad & 0xC000`.
+  - 0x8000 e o MESMO bit do confirm de menu (`FOX_A_MENU=0x8020`, AoPadSomeoneStand). Logo,
+    confirm-de-menu e pausa sao indistinguiveis: A com 0x8000 SEMPRE pausa um estado pausavel.
+  - Por que so no special stage: `sonic_game_started` e heuristica de log. Atos normais carregam
+    por `mapfar` e logam `--- GmGameDatLoadExit ---` -> started=1 -> A=FOX_A_GAME(0x20), sem pausa.
+    Special stage carrega por **CSSLoadingTask/GmSpStage_Start** (player GmPlayerSpStage_*, dados
+    SpStage01..08), caminho SEPARADO que NAO loga GmGameDatLoadExit -> started fica 0 (vindo de
+    "Create World Map") -> A=FOX_A_MENU(0x8020) -> 0x8000 -> pad&0xC000 -> PAUSA no pulo.
+- **Fix (imports.c, `sonic_update_gameplay_state_from_log`):** `strcasestr(msg,"spstage")` ->
+  sonic_game_started=1. Casa os loads `--- Load Start <...SpStage0X...> ---` (mesmo logger foxLog
+  ja confirmado em runtime) + "SPSTAGE BRANCH"/"SpStage Loading"; NAO casa a UI "Special Stage"
+  (tem espaco). Acesso ao special stage em EP2 = Red Star Ring (hasRedStarRing/getEmeraldIndex).
+- **Estado:** build native (208804, md5 1d8dab51) deployado em .79 dev (`/storage/roms/ports/sonic4`)
+  E package (`/storage/roms/ports/sonic4ep2`). Regressao OK: boota 1280x720, chega no gameplay,
+  60fps, 0 crash, ZERO falso-positivo "special stage:" no boot/menu/ato normal. Backups na .79:
+  sonic4.bak_prespstage. **FALTA: confirmacao on-screen (entrar num special stage via RSR e pular)
+  — nao automatizei (RSR + navegacao no world map). Compat glibc2.27 p/ release: rebuildar apos OK.**
+
 ## Sessao 2026-06-28 (R36S/ROCKNIX + perf + special-stage audio)
 - **Special stage audio FIX (confirmado pelo NextOS):** cues SpStage01-08 (speed/spike/entrada)
   estavam unmapped (so SpStage04 existia) -> mudos; anel/BGM tocavam. Mapeados via AudioDataTbl

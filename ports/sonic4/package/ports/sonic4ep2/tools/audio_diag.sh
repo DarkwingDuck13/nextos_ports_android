@@ -20,6 +20,9 @@ OUT="$GAMEDIR/audio_diag.txt"
     echo "---- DRIVERS de audio + qual ABRIU ----"
     grep -nE "sonic_audio: drivers|sonic_audio: SDL audio aberto|sonic_audio: open automatico|sonic_audio: override|sonic_audio: driver=|sonic_audio: NENHUM|opensles_shim: audio drivers|opensles_shim: audio aberto|opensles_shim: open auto|opensles_shim: driver=|opensles_shim: NENHUM" "$LOG" 2>/dev/null
     echo
+    echo "---- VIDEO: contexto GL escolhido + identidade da GPU ----"
+    grep -nE "egl_shim: GL context OK|egl_shim: try ES|egl_shim: NENHUMA|egl_shim: GL_VENDOR|egl_shim: GL_RENDERER|egl_shim: GL_VERSION|egl_shim: GL_GLSL|egl_shim: depth.*SDL_CreateWindow|EGL_BAD|Could not create EGL|SEM VIDEO" "$LOG" 2>/dev/null
+    echo
     echo "---- ERROS / pistas (SDL/EGL/pulse/alsa/pipewire/runtime) ----"
     grep -niE "SDL_OpenAudio|InitSubSystem|EGL_BAD|Could not|failed|cannot|can.t make|pipewire|pulse|alsa|XDG_RUNTIME|PULSE_SERVER|no such|permission" "$LOG" 2>/dev/null | head -40
     echo
