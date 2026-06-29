@@ -73,6 +73,13 @@ typedef void (*ts_unload_t)(void *);
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static SDL_AudioDeviceID g_dev;
+/* Plano C (volume): quando abrimos o card CRU (default/softvol falhou), os botoes
+   de volume do device NAO chegam no nosso stream. No batocera/Knulli os botoes
+   atualizam audio.volume (0-100) em /userdata/system/batocera.conf em tempo real
+   -> uma thread le esse valor e aplica como ganho de software no callback. So
+   engata com card cru (se o softvol abrir, fica OFF = sem dupla atenuacao). */
+static int g_opened_raw = 0;
+static volatile float g_sys_vol = 1.0f;
 static int g_audio_init;
 static int g_mpg_init;
 static int g_next_handle = 1;
@@ -938,6 +945,8 @@ static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
     gain = (float)atof(eg);
     if (gain <= 0.0f || gain > 4.0f) gain = 1.0f;
   }
+  /* Plano C: card cru -> aplica o volume do sistema (botoes) por software. */
+  if (g_opened_raw) gain *= g_sys_vol;
   for (int s = 0; s < frames * OUT_CH; s++) {
     int v = soft_limit_s16((int)(mix[s] * gain));
     out[s] = clamp_s16(v);
@@ -972,9 +981,42 @@ static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
     g_dev = SDL_OpenAudioDevice(dn, 0, want, have, 0);
     fprintf(stderr, "sonic_audio:   [%d] \"%s\" -> %s\n", i, dn,
             g_dev ? "ABRIU" : SDL_GetError());
-    if (g_dev) return 1;
+    if (g_dev) { g_opened_raw = 1; /* card cru: liga o volume por software (Plano C) */
+                 return 1; }
   }
   return 0;
+}
+
+/* Le audio.volume (0-100) do batocera.conf (atualizado pelos botoes de volume)
+   -> ganho 0..1. SONIC_VOLUME_FILE/SONIC_VOLUME_KEY overridam (outros CFW). */
+static int sa_read_sys_volume(float *out) {
+  const char *f = getenv("SONIC_VOLUME_FILE");
+  if (!f || !*f) f = "/userdata/system/batocera.conf";
+  const char *key = getenv("SONIC_VOLUME_KEY");
+  if (!key || !*key) key = "audio.volume";
+  FILE *fp = fopen(f, "r");
+  if (!fp) return 0;
+  char line[256]; size_t kl = strlen(key); int got = 0;
+  while (fgets(line, sizeof line, fp)) {
+    char *p = line; while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == ';') continue;
+    if (strncmp(p, key, kl) == 0) {
+      char *eq = strchr(p, '=');
+      if (eq) { int v = atoi(eq + 1);
+                if (v >= 0 && v <= 100) { *out = (float)v / 100.0f; got = 1; } }
+    }
+  }
+  fclose(fp);
+  return got;
+}
+static void *sa_sysvol_thread(void *a) {
+  (void)a;
+  for (;;) {
+    float v;
+    if (sa_read_sys_volume(&v)) g_sys_vol = v;
+    usleep(400000); /* ~0.4s: responde aos botoes sem custo */
+  }
+  return NULL;
 }
 
 /* Drivers que ABREM com sucesso mas NAO produzem som audivel -> nunca aceitar
@@ -1083,6 +1125,17 @@ static int ensure_audio(void) {
   return 0;
 
 opened:
+  /* card cru (sem softvol do sistema) -> sobe a thread que segue o volume dos
+     botoes via batocera.conf (Plano C). SONIC_NO_SYSVOL=1 desliga. */
+  if (g_opened_raw && !getenv("SONIC_NO_SYSVOL")) {
+    float v0;
+    if (sa_read_sys_volume(&v0)) g_sys_vol = v0;
+    pthread_t th;
+    if (pthread_create(&th, NULL, sa_sysvol_thread, NULL) == 0) {
+      pthread_detach(th);
+      fprintf(stderr, "sonic_audio: volume por software ON (card cru) vol=%.2f\n", g_sys_vol);
+    }
+  }
   SDL_PauseAudioDevice(g_dev, 0);
   g_audio_init = 1;
   return 1;
