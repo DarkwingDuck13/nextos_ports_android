@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <SDL2/SDL.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
 #include <mpg123.h>
@@ -944,8 +945,36 @@ static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
 }
 
 static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
+  /* 1) tenta o device "default" (NULL) — funciona na maioria. */
   g_dev = SDL_OpenAudioDevice(NULL, 0, want, have, 0);
-  return g_dev != 0;
+  if (g_dev) return 1;
+  /* 2) "default" falhou. Em varios batocera/knulli o ALSA NAO tem PCM "default"
+     definido -> "Couldn't open audio device: No such file or directory", e o som
+     fica num card especifico (hw:0...). Enumera os devices de SAIDA que o driver
+     atual expoe e tenta cada um pelo NOME -> acha o card real sem hardcode. */
+  /* SDL_GetNumAudioDevices/SDL_GetAudioDeviceName NAO estao na libSDL2 stub do
+     sysroot (link falha) -> resolve em runtime na libSDL2 REAL do device. */
+  static int (*p_num)(int) = NULL;
+  static const char *(*p_name)(int, int) = NULL;
+  static int resolved = 0;
+  if (!resolved) {
+    p_num  = (int (*)(int))dlsym(RTLD_DEFAULT, "SDL_GetNumAudioDevices");
+    p_name = (const char *(*)(int, int))dlsym(RTLD_DEFAULT, "SDL_GetAudioDeviceName");
+    resolved = 1;
+  }
+  if (!p_num || !p_name) return 0;
+  int nd = p_num(0);
+  fprintf(stderr, "sonic_audio: default falhou (%s); %d device(s) de saida nomeados\n",
+          SDL_GetError(), nd);
+  for (int i = 0; i < nd; i++) {
+    const char *dn = p_name(i, 0);
+    if (!dn || !*dn) continue;
+    g_dev = SDL_OpenAudioDevice(dn, 0, want, have, 0);
+    fprintf(stderr, "sonic_audio:   [%d] \"%s\" -> %s\n", i, dn,
+            g_dev ? "ABRIU" : SDL_GetError());
+    if (g_dev) return 1;
+  }
+  return 0;
 }
 
 /* Drivers que ABREM com sucesso mas NAO produzem som audivel -> nunca aceitar
