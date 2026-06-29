@@ -109,6 +109,27 @@ AUDIO_DRIVER="${AUDIO_DRIVER:-}"
 [ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
 # ================================================================
 
+# 🔊 VOLUME (batocera/Knulli e afins): o PCM "default" do ALSA -- que tem o
+# SOFTVOL que os BOTOES DE VOLUME do device controlam -- so existe via o asoundrc
+# do usuario, que o ALSA le a partir do HOME. Sem ele, o jogo abre o card CRU
+# (toca, mas o volume fica FIXO no maximo, sem como baixar). Apontando o HOME pro
+# asoundrc do sistema, o "default" abre pelo softvol -> os botoes de volume voltam
+# a funcionar. So afeta devices que TEM esse arquivo (os nossos nem entram aqui).
+# SONIC_KEEP_HOME=1 desliga.
+if [ -z "$SONIC_KEEP_HOME" ]; then
+  _found=""
+  for _adir in /userdata/system /storage/.config /root "$HOME" /etc; do
+    if [ -f "$_adir/.asoundrc" ] || [ -f "$_adir/asound.conf" ]; then _found="$_adir"; break; fi
+  done
+  if [ -n "$_found" ]; then
+    [ -f "$_found/.asoundrc" ] && export HOME="$_found"
+    echo "sonic: ALSA config achado em $_found -> HOME=$HOME (tenta default+softvol p/ volume)"
+  else
+    echo "sonic: NENHUM asoundrc/asound.conf do sistema achado -> se faltar volume, e por isso (card cru sem softvol)"
+  fi
+  echo "sonic: asoundrc candidatos: $(ls -1 /userdata/system/.asoundrc /storage/.config/.asoundrc /root/.asoundrc /etc/asound.conf 2>/dev/null | tr '\n' ' ')"
+fi
+
 ./sonic4
 
 pkill -x gptokeyb 2>/dev/null || true
