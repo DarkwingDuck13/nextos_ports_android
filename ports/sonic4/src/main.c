@@ -12,6 +12,7 @@
  * Estudo: ports/sonic4/STUDY.md.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -84,6 +85,78 @@ static int env_flag_enabled(const char *name) {
   const char *v = getenv(name);
   return v && *v && strcmp(v, "0") != 0 && strcasecmp(v, "false") != 0 &&
          strcasecmp(v, "no") != 0 && strcasecmp(v, "off") != 0;
+}
+
+/* single-instance: mata qualquer outra instância do MESMO binário ANTES de
+   inicializar fb/EGL — 2 jogos juntos travam o device. Mesmo método /proc/PID/exe
+   do launcher antigo (readlink casa o caminho real; pkill -x/-f não casa pois o
+   exe vira ./sonic4), agora no binário p/ deixar o launcher enxuto/padrão. */
+static void sonic_kill_other_instances(void) {
+  char self_exe[4096];
+  ssize_t n = readlink("/proc/self/exe", self_exe, sizeof(self_exe) - 1);
+  if (n <= 0) return;
+  self_exe[n] = '\0';
+  pid_t me = getpid();
+  for (int pass = 0; pass < 2; pass++) {
+    DIR *d = opendir("/proc");
+    if (!d) return;
+    struct dirent *e;
+    int killed = 0;
+    while ((e = readdir(d))) {
+      if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+      pid_t pid = (pid_t)atoi(e->d_name);
+      if (pid <= 0 || pid == me) continue;
+      char path[64], tgt[4096];
+      snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+      ssize_t tn = readlink(path, tgt, sizeof(tgt) - 1);
+      if (tn <= 0) continue;
+      tgt[tn] = '\0';
+      if (strcmp(tgt, self_exe) != 0) continue;
+      fprintf(stderr, "=== matando instância anterior pid %d (%s) [%s] ===\n",
+              pid, tgt, pass == 0 ? "TERM" : "KILL");
+      kill(pid, pass == 0 ? SIGTERM : SIGKILL);
+      killed++;
+    }
+    closedir(d);
+    if (!killed) break;       /* 0 outras instâncias -> confirmado, sai */
+    usleep(700 * 1000);       /* dá tempo do TERM antes do KILL */
+  }
+}
+
+/* 🔑 Sessão/runtime FALLBACK: se o frontend (ES) NÃO exportou XDG_RUNTIME_DIR /
+   WAYLAND_DISPLAY — acontece em muOS e alguns ROCKNIX — os backends de ÁUDIO
+   (pulse/pipewire PRECISAM do runtime-dir; sem ele -> "pw_loop_new can't make
+   support.system handle" = MUDO) e de VÍDEO (wayland precisa do socket; sem ele
+   -> tela preta) FALHAM. Aqui só APONTAMOS pro que o sistema JÁ criou (não força
+   driver nenhum; só preenche se estiver vazio). Em kmsdrm puro (muOS sem wayland)
+   não há socket wayland -> WAYLAND_DISPLAY fica vazio -> SDL usa kmsdrm (correto). */
+static void sonic_detect_session_runtime(void) {
+  if (!getenv("XDG_RUNTIME_DIR")) {
+    char ubuf[64];
+    snprintf(ubuf, sizeof(ubuf), "/run/user/%u", (unsigned)getuid());
+    const char *cands[] = { "/run/0-runtime-dir", "/var/run/0-runtime-dir",
+                            "/run/user/0", "/var/run/user/0", ubuf, NULL };
+    for (int i = 0; cands[i]; i++) {
+      DIR *d = opendir(cands[i]);
+      if (d) { closedir(d); setenv("XDG_RUNTIME_DIR", cands[i], 1);
+               fprintf(stderr, "=== XDG_RUNTIME_DIR fallback = %s ===\n", cands[i]); break; }
+    }
+  }
+  if (!getenv("WAYLAND_DISPLAY")) {
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    DIR *d = rt ? opendir(rt) : NULL;
+    if (d) {
+      struct dirent *e;
+      while ((e = readdir(d))) {
+        if (strncmp(e->d_name, "wayland-", 8) == 0 && !strstr(e->d_name, ".lock")) {
+          setenv("WAYLAND_DISPLAY", e->d_name, 1);
+          fprintf(stderr, "=== WAYLAND_DISPLAY fallback = %s ===\n", e->d_name);
+          break;
+        }
+      }
+      closedir(d);
+    }
+  }
 }
 
 static void sonic_check_exit_hotkey(SDL_GameController *pad, const Uint8 *ks) {
@@ -420,6 +493,19 @@ int main(int argc, char *argv[]) {
   setvbuf(stderr, NULL, _IONBF, 0);
   fprintf(stderr, "=== SONIC 4 EPISODE II (NN/fox) so-loader / NextOS armv7 Mali-450 ===\n");
 
+  /* mata instância anterior + confirma 0 antes de tocar no fb/EGL (regra do device). */
+  sonic_kill_other_instances();
+
+  /* Config que ANTES vinha do launcher — agora no binário (launcher enxuto/padrão
+     PortMaster). overwrite=0: se o ambiente já definiu, respeitamos.
+     ⚠️ NUNCA forçamos SDL_VIDEODRIVER/SDL_AUDIODRIVER nem driver de GPU: o
+     sistema/SDL escolhem wayland/kmsdrm/fbdev e pulse/alsa/pipewire sozinhos. */
+  setenv("SDL_NO_SIGNAL_HANDLERS", "1", 0);            /* SDL não pisa nos sinais */
+  setenv("SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP", "1", 0);
+  setenv("SDL_VIDEO_FULLSCREEN_DESKTOP", "1", 0);
+  setenv("SONIC_DATADIR", ".", 0);  /* cwd = GAMEDIR (launcher faz cd); save/dados aqui */
+  sonic_detect_session_runtime();   /* acha XDG_RUNTIME_DIR/WAYLAND_DISPLAY se a sessão não exportou (muOS sem som / ROCKNIX sem vídeo) */
+
   jni_shim_set_package("com.sega.sonic4episode2", 22);
   { const char *d = getenv("SONIC_DATADIR"); jni_shim_set_local_path(d ? d : "."); }
 
@@ -511,10 +597,11 @@ int main(int argc, char *argv[]) {
      do is-loaded do title-demo = container CManagerState<CTitleViewTask>::Act+0x20
      (0x2522a4): checa o objeto demo global (null)->0. Forçar return 1 deixa o
      demo-gate do título/menu passar SEM o attract-demo (emblema vazio). */
-  if (!getenv("SONIC_NOFAKESOUND")) {
-    /* o is-loaded que mais falha no demo-gate = dmSoundEffectIsSetUpEnd (o som do
-       demo: container criado pelo setup, mas o is-loaded checa vtable[12]=dados de
-       som carregados). Fingir ->1 (sem som no demo é inofensivo). */
+  /* fake-sound do demo: por padrão NÃO aplicado (o launcher antigo setava sempre
+     SONIC_NOFAKESOUND=1). Opt-in via SONIC_FAKESOUND p/ depurar o demo-gate:
+     dmSoundEffectIsSetUpEnd->1 (o is-loaded que mais falha; sem som no demo é
+     inofensivo). */
+  if (getenv("SONIC_FAKESOUND")) {
     patch_retval("_ZN2dm2se23dmSoundEffectIsSetUpEndEv", 1);
   }
 
@@ -531,24 +618,27 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
     patch_arm_jump("_Z17amThreadCheckDrawl", (void *)sonic_amThreadCheckDraw);
 
-  /* 🪶 SONIC_LOWFX: performance no Mali sem mexer em resolução/cores. Desliga os
-     passes full-screen mais caros e quase imperceptíveis em tela pequena:
-     - bloom (SsConstBloomIsEnable->0): pula extract hi-luminance + blur gaussiano
-       + merge (3 passes full-screen por frame).
-     SONIC_NOBLOOM faz só o bloom. Mantém água/efeitos de cena (o "bonito"). */
-  if (env_flag_enabled("SONIC_LOWFX") || env_flag_enabled("SONIC_NOBLOOM")) {
+  /* 🪶 LOWFX agora é DEFAULT (estado aprovado pelo NextOS; antes vinha do launcher
+     SONIC_LOWFX=1 — agora no binário p/ deixar o launcher enxuto). Desliga os passes
+     full-screen mais caros e quase imperceptíveis em tela pequena, SEM mexer em
+     resolução/cores. Opt-out total: SONIC_FULLFX=1 restaura tudo (bloom+sombra).
+     SONIC_NOBLOOM/SONIC_NOSHADOW seguem como overrides finos (forçam mesmo c/ FULLFX). */
+  int sonic_lowfx = !env_flag_enabled("SONIC_FULLFX");
+  /* - bloom (SsConstBloomIsEnable->0): pula extract hi-luminance + blur gaussiano
+       + merge (3 passes full-screen por frame). Mantém água/efeitos de cena. */
+  if (sonic_lowfx || env_flag_enabled("SONIC_NOBLOOM")) {
     patch_ret0("_Z20SsConstBloomIsEnablev"); /* bloom off */
-    fprintf(stderr, "=== SONIC_LOWFX: bloom desligado (perf) ===\n");
+    fprintf(stderr, "=== LOWFX: bloom desligado (perf) ===\n");
   }
-  /* 🌑 SONIC_NOSHADOW (ou LOWFX agressivo): no-op nos draws de sombra de objeto/motion.
-     Pula o passe de sombra (shadow-map / blob) — ganho de fillrate+drawcall no Mali.
+  /* 🌑 no-op nos draws de sombra de objeto/motion: pula o passe de sombra
+     (shadow-map / blob) — ganho de fillrate+drawcall no Mali.
      NAO toca em GmShadowBuildCheck (gate de loading -> travaria). */
-  if (env_flag_enabled("SONIC_LOWFX") || env_flag_enabled("SONIC_NOSHADOW")) {
+  if (sonic_lowfx || env_flag_enabled("SONIC_NOSHADOW")) {
     patch_ret0("_Z18SsDrawObjectShadowmP10NNS_OBJECTP12_NNS_TEXLISTy");
     patch_ret0("_Z18SsDrawObjectShadowP10NNS_OBJECTP12_NNS_TEXLISTy");
     patch_ret0("_Z24SsDrawMotionObjectShadowmP10AMS_MOTIONP12_NNS_TEXLISTy");
     patch_ret0("_Z24SsDrawMotionObjectShadowP10AMS_MOTIONP12_NNS_TEXLISTy");
-    fprintf(stderr, "=== SONIC_NOSHADOW: sombras de objeto desligadas (perf) ===\n");
+    fprintf(stderr, "=== LOWFX: sombras de objeto desligadas (perf) ===\n");
   }
   /* 💧 SONIC_NOWATERFX (opt-in, NÃO no LOWFX por default — mexe mais no visual):
      no-op nos EFEITOS extras de água (ripple/waterfall-split), mantendo a SUPERFÍCIE
@@ -849,6 +939,24 @@ int main(int argc, char *argv[]) {
   if (getenv("SONIC_INPUTLOG"))
     fprintf(stderr, "=== gmPad globals direct=%p lx=%p ly=%p ===\n",
             (void *)gm_direct, (void *)gm_lx, (void *)gm_ly);
+  /* Special/bonus stage (moedas): sinal por-frame determinístico.
+     g_SsMain = ss::CMain::s_main (singleton da special stage) @vaddr 0x99e480.
+     Não é símbolo exportado, então resolvo via o vizinho exportado
+     ss::CNet::s_instance (0x99e4a4) e subtraio 0x24. *pp != NULL => estamos na
+     special stage. Necessário porque a special stage carrega por
+     EvSpecialStageStart/CSSLoadingTask, caminho que NÃO loga marcador de
+     "game start" -> sonic_game_started fica preso em 0 -> o A vira FOX_A_MENU
+     (bit 0x8000) e o check de pausa da special stage (pad & 0xC000) faz o pulo
+     PAUSAR. Em fases normais o log já seta started=1 (por isso só a bônus falha).
+     FOX_A_GAME (0x20) mantém o bit "decide menu" (0x20), só dropa o 0x8000 do
+     pause: confirma o resultado da bônus normalmente E acaba com a pausa. */
+  void **sonic_ss_main_pp = NULL;
+  {
+    uintptr_t cnet = so_find_addr_safe("_ZN2ss4CNet10s_instanceE");
+    if (cnet) sonic_ss_main_pp = (void **)(cnet - 0x99e4a4 + 0x99e480);
+    if (getenv("SONIC_INPUTLOG"))
+      fprintf(stderr, "=== g_SsMain pp=%p ===\n", (void *)sonic_ss_main_pp);
+  }
   for (;;) {
     sonic_frame_for_imports = frame;
     /* --- input: drenar eventos SDL + montar a máscara fox + SetPadData --- */
@@ -858,6 +966,9 @@ int main(int argc, char *argv[]) {
     int rx = 0, ry = 0;
     int lt = 0, rt = 0;
     int start_down = 0;
+    /* gameplay = fase normal (started por log) OU special/bonus stage ativa. */
+    int sonic_in_gameplay = sonic_game_started ||
+        (sonic_ss_main_pp && *sonic_ss_main_pp);
     const Uint8 *ks = SDL_GetKeyboardState(NULL);
     sonic_check_exit_hotkey(pad, ks);
     if (ks) {
@@ -870,7 +981,7 @@ int main(int argc, char *argv[]) {
       if (ks[SDL_SCANCODE_A])     { mask |= FOX_LEFT;  lx = -32768; }
       if (ks[SDL_SCANCODE_D])     { mask |= FOX_RIGHT; lx =  32767; }
       if (ks[SDL_SCANCODE_SPACE]||ks[SDL_SCANCODE_Z])
-        mask |= sonic_game_started ? FOX_A_GAME : FOX_A_MENU;
+        mask |= sonic_in_gameplay ? FOX_A_GAME : FOX_A_MENU;
       if (ks[SDL_SCANCODE_C])     mask |= FOX_B;
       if (ks[SDL_SCANCODE_X])     mask |= FOX_X;
       if (ks[SDL_SCANCODE_V] || ks[SDL_SCANCODE_Y]) mask |= FOX_Y;
@@ -883,7 +994,7 @@ int main(int argc, char *argv[]) {
       if (ks[SDL_SCANCODE_ESCAPE]) mask |= FOX_BACK;
       if (ks[SDL_SCANCODE_RETURN]) {
         start_down = 1;
-        if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+        if (!sonic_in_gameplay) mask |= FOX_A_MENU | FOX_START;
         else mask |= FOX_PAUSE;
       }
     }
@@ -893,7 +1004,7 @@ int main(int argc, char *argv[]) {
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  { mask |= FOX_LEFT;  lx = -32768; }
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) { mask |= FOX_RIGHT; lx =  32767; }
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A))
-        mask |= sonic_game_started ? FOX_A_GAME : FOX_A_MENU;
+        mask |= sonic_in_gameplay ? FOX_A_GAME : FOX_A_MENU;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B)) mask |= FOX_B;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_X)) mask |= FOX_X;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y)) mask |= FOX_Y;
@@ -904,7 +1015,7 @@ int main(int argc, char *argv[]) {
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK)) mask |= FOX_BACK;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
         start_down = 1;
-        if (!sonic_game_started) mask |= FOX_A_MENU | FOX_START;
+        if (!sonic_in_gameplay) mask |= FOX_A_MENU | FOX_START;
         else mask |= FOX_PAUSE;
       }
       Sint16 ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);

@@ -66,6 +66,22 @@ static void sonic_update_gameplay_state_from_log(const char *msg) {
     return;
   }
 
+  /* Special Stage: carrega por CSSLoadingTask/GmSpStage_Start (player GmPlayerSpStage_*),
+     caminho SEPARADO do mapfar/GmGameDatLoadExit dos atos normais -> a heuristica abaixo
+     nunca dispara e sonic_game_started fica preso em 0 (vindo de "Create World Map").
+     Resultado: A vira FOX_A_MENU(0x8020); o bit 0x8000 == OUYAGetPauseKey(), e TODO check
+     de pausa faz (pad & 0xC000) -> PULO PAUSA so no special stage.
+     Os assets do sp-stage logam "--- Load Start <...SpStage0X...> ---" pelo MESMO logger
+     foxLog ja confirmado em runtime; "SPSTAGE BRANCH"/"SpStage Loading" sao o state/loader.
+     strcasestr "spstage" casa SpStage01..08 / SPSTAGE BRANCH / SpStage Loading, mas NAO a
+     mensagem de UI "Special Stage" (tem espaco). */
+  if (strcasestr(msg, "spstage")) {
+    if (!sonic_game_started)
+      fprintf(stderr, "=== gameplay state: started (special stage: %s) ===\n", msg);
+    sonic_game_started = 1;
+    return;
+  }
+
   if (strstr(msg, "game start") ||
       strstr(msg, "GmGameDatLoadExit") ||
       strstr(msg, "Gimmick set camera scale") ||
