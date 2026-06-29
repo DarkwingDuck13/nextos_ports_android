@@ -987,11 +987,34 @@ static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
   return 0;
 }
 
-/* Le audio.volume (0-100) do batocera.conf (atualizado pelos botoes de volume)
-   -> ganho 0..1. SONIC_VOLUME_FILE/SONIC_VOLUME_KEY overridam (outros CFW). */
+/* Le um arquivo com um NUMERO cru 0-100 (ex.: /var/run/batocera-pending-volume,
+   atualizado IMEDIATAMENTE pelos botoes). */
+static int sa_read_bare_int(const char *f, float *out) {
+  FILE *fp = fopen(f, "r");
+  if (!fp) return 0;
+  char buf[64] = {0};
+  size_t n = fread(buf, 1, sizeof buf - 1, fp);
+  fclose(fp);
+  if (!n) return 0;
+  char *p = buf; while (*p == ' ' || *p == '\t') p++;
+  if (*p < '0' || *p > '9') return 0;
+  int v = atoi(p);
+  if (v < 0 || v > 100) return 0;
+  *out = (float)v / 100.0f;
+  return 1;
+}
+/* Le o volume do sistema (0..1). Ordem: SONIC_VOLUME_FILE (override/teste) ->
+   /var/run/batocera-pending-volume (IMEDIATO, botoes em tempo real) ->
+   /userdata/system/batocera.conf (audio.volume=N, commit ~2s atrasado). */
 static int sa_read_sys_volume(float *out) {
-  const char *f = getenv("SONIC_VOLUME_FILE");
-  if (!f || !*f) f = "/userdata/system/batocera.conf";
+  const char *ovr = getenv("SONIC_VOLUME_FILE");
+  if (ovr && *ovr) {
+    if (sa_read_bare_int(ovr, out)) return 1;
+    /* tambem aceita key=value no override */
+  }
+  if (sa_read_bare_int("/var/run/batocera-pending-volume", out)) return 1;
+
+  const char *f = (ovr && *ovr) ? ovr : "/userdata/system/batocera.conf";
   const char *key = getenv("SONIC_VOLUME_KEY");
   if (!key || !*key) key = "audio.volume";
   FILE *fp = fopen(f, "r");
@@ -1011,10 +1034,17 @@ static int sa_read_sys_volume(float *out) {
 }
 static void *sa_sysvol_thread(void *a) {
   (void)a;
+  float last = -1.0f;
   for (;;) {
     float v;
-    if (sa_read_sys_volume(&v)) g_sys_vol = v;
-    usleep(400000); /* ~0.4s: responde aos botoes sem custo */
+    if (sa_read_sys_volume(&v)) {
+      g_sys_vol = v;
+      if (v != last) { /* diagnostico: prova que segue os botoes */
+        fprintf(stderr, "sonic_audio: sys volume -> %.2f\n", v);
+        last = v;
+      }
+    }
+    usleep(250000); /* ~0.25s: responde rapido aos botoes */
   }
   return NULL;
 }
