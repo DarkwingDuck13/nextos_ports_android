@@ -28,42 +28,10 @@ GAMEDIR="/$directory/ports/sonic4ep2"
 cd "$GAMEDIR" || exit 1
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-kill_existing_sonic4() {
-  self="$$"
-  pkill -x gptokeyb 2>/dev/null || true
-  for exe in /proc/[0-9]*/exe; do
-    pid="${exe#/proc/}"
-    pid="${pid%/exe}"
-    [ "$pid" = "$self" ] && continue
-    target="$(readlink "$exe" 2>/dev/null || true)"
-    case "$target" in
-      "$GAMEDIR"/sonic4|"$GAMEDIR"/sonic4.*)
-        echo "killing stale sonic4 pid $pid: $target"
-        kill "$pid" 2>/dev/null || true
-        ;;
-    esac
-  done
-  sleep 1
-  for exe in /proc/[0-9]*/exe; do
-    pid="${exe#/proc/}"
-    pid="${pid%/exe}"
-    [ "$pid" = "$self" ] && continue
-    target="$(readlink "$exe" 2>/dev/null || true)"
-    case "$target" in
-      "$GAMEDIR"/sonic4|"$GAMEDIR"/sonic4.*)
-        echo "force killing stale sonic4 pid $pid: $target"
-        kill -9 "$pid" 2>/dev/null || true
-        ;;
-    esac
-  done
-}
-
+# Primeira execução: extrai libfox.so + OBB do APK/cache (BYO-data).
 extract_data_first_run() {
-  need_lib=0
-  need_obb=0
-  [ -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || need_lib=1
-  [ -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ] || need_obb=1
-  [ "$need_lib" = 0 ] && [ "$need_obb" = 0 ] && return 0
+  [ -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] && \
+  [ -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ] && return 0
 
   echo "First run setup: extracting Sonic 4 Episode II data."
   $ESUDO chmod +x "$GAMEDIR/tools/sonic4ep2_extract.src" "$GAMEDIR/tools/progressor" 2>/dev/null || true
@@ -81,8 +49,7 @@ extract_data_first_run() {
   fi
 }
 
-kill_existing_sonic4
-trap 'kill_existing_sonic4; pkill -x gptokeyb 2>/dev/null || true' EXIT INT TERM
+trap 'pkill -x gptokeyb 2>/dev/null || true' EXIT INT TERM
 extract_data_first_run
 
 if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ]; then
@@ -102,99 +69,20 @@ fi
 
 export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/armeabi-v7a:/usr/lib32:/lib32:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/lib:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
-export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
-export SDL_VIDEO_FULLSCREEN_DESKTOP=1
-
-# --- Display: portavel Mali-fbdev (Amlogic) <-> Wayland/kmsdrm (R36S/ArchR ES-Sway) ---
-# NUNCA forcar SDL_VIDEODRIVER/SDL_AUDIODRIVER (regra do device): o SDL auto-detecta
-# wayland/pulse no R36S e fbdev no Amlogic. So garantimos que, em sessao Wayland, o
-# XDG_RUNTIME_DIR/WAYLAND_DISPLAY existam (runemu/ES geralmente exporta; fallback abaixo).
-# Em fbdev (Amlogic) nao ha socket wayland-N -> as vars ficam vazias -> SDL cai no fbdev.
-export SDL_NO_SIGNAL_HANDLERS=1
-if [ -z "$XDG_RUNTIME_DIR" ]; then
-  for d in /run/0-runtime-dir /var/run/0-runtime-dir /run/user/0 /var/run/user/0 /run/user/$(id -u 2>/dev/null); do
-    [ -d "$d" ] && { export XDG_RUNTIME_DIR="$d"; break; }
-  done
-fi
-if [ -z "$WAYLAND_DISPLAY" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
-  WD=$(ls "$XDG_RUNTIME_DIR"/ 2>/dev/null | grep -E '^wayland-[0-9]+$' | head -1)
-  [ -n "$WD" ] && export WAYLAND_DISPLAY="$WD"
-fi
-
-sonic_valid_res() {
-  case "$1" in
-    [0-9]*x[0-9]*)
-      rw="${1%x*}"
-      rh="${1#*x}"
-      rh="${rh%%[^0-9]*}"
-      [ -n "$rw" ] && [ -n "$rh" ] && [ "$rw" -ge 320 ] && [ "$rh" -ge 240 ]
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-sonic_real_res_from_wlroots() {
-  command -v wlr-randr >/dev/null 2>&1 || return 1
-  wlr-randr 2>/dev/null | awk '
-    /current/ {
-      for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[0-9]+x[0-9]+/) {
-          sub(/[^0-9x].*/, "", $i);
-          print $i;
-          exit;
-        }
-      }
-    }'
-}
-
-sonic_real_res_from_drm() {
-  for st in /sys/class/drm/card*-*/status; do
-    [ -r "$st" ] || continue
-    grep -q connected "$st" 2>/dev/null || continue
-    modefile="${st%/status}/modes"
-    mode="$(sed -n '1p' "$modefile" 2>/dev/null)"
-    sonic_valid_res "$mode" && { echo "$mode"; return 0; }
-  done
-  for modefile in /sys/class/drm/card*-*/modes; do
-    [ -r "$modefile" ] || continue
-    mode="$(sed -n '1p' "$modefile" 2>/dev/null)"
-    sonic_valid_res "$mode" && { echo "$mode"; return 0; }
-  done
-  return 1
-}
-
-sonic_apply_real_res_override() {
-  [ -n "$SONIC_RES" ] && return 0
-  [ -n "$WAYLAND_DISPLAY" ] || [ -e /dev/dri/card0 ] || return 0
-
-  real_res="$(sonic_real_res_from_wlroots)"
-  sonic_valid_res "$real_res" || real_res="$(sonic_real_res_from_drm)"
-  sonic_valid_res "$real_res" || return 0
-
-  export SONIC_RES="$real_res"
-  echo "Sonic display override: SONIC_RES=$SONIC_RES"
-}
-
-sonic_apply_real_res_override
-
-export SONIC_DATADIR="$GAMEDIR"
-export SONIC_AUTOSTART=0
-export SONIC_NOFAKESOUND=1
-export SONIC_SWAPINT=1
+# Display/áudio/single-instance/hints de SDL: TUDO no binário agora. O sistema/SDL
+# detectam wayland/kmsdrm/fbdev e pulse/alsa/pipewire automaticamente (nada forçado).
 
 $ESUDO chmod +x "$GAMEDIR/sonic4" 2>/dev/null || chmod +x "$GAMEDIR/sonic4"
 $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
 
-# PERF (best-effort, sem efeito visual): aumenta o readahead do storage p/ suavizar
-# o streaming de nivel (a OBB e lida em pedacos durante o gameplay). So leitura;
-# nao toca em save nem em driver. Falha silenciosa se nao tiver permissao.
+# PERF (best-effort, só leitura): readahead do storage p/ suavizar o streaming da
+# OBB durante o gameplay. Não toca em save nem driver; falha silenciosa sem root.
 if command -v blockdev >/dev/null 2>&1; then
   _sdev=$(df "$GAMEDIR" 2>/dev/null | awk 'NR==2{print $1}' | sed 's/p[0-9]*$//; s/[0-9]*$//')
   for _d in "$_sdev" /dev/mmcblk0 /dev/mmcblk1; do
     [ -b "$_d" ] && $ESUDO blockdev --setra 4096 "$_d" 2>/dev/null || true
   done
 fi
-# NOTA: NÃO mexer em CPU/GPU governor (performance é proibido pelo PortMaster).
 
 if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   export SONIC_INPUT=gptk
@@ -204,6 +92,13 @@ if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
     gptokeyb -1 "sonic4" -c "$GAMEDIR/sonic4.gptk" &
   fi
 fi
+
+# v3.6 build DIAGNOSTICO: liga o log de audio COMPLETO (banners de driver +
+# detalhe fino) p/ rastrear o "sem som" em devices que nao temos (muOS/Knulli).
+# Os banners principais (qual driver abriu) ja sao sempre-visiveis no binario.
+# Desligar com SONIC_AUDIOLOG=0 no ambiente. O tester pode FORCAR um driver p/
+# achar o audivel: SONIC_AUDIODRIVER=alsa (ou pulseaudio/pipewire). Vazio=auto.
+export SONIC_AUDIOLOG="${SONIC_AUDIOLOG:-1}"
 
 ./sonic4
 

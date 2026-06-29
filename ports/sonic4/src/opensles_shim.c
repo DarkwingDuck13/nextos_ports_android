@@ -520,15 +520,71 @@ static void ensure_audio_initialized(void) {
   want.callback = sdl_audio_callback;
   want.userdata = NULL;
 
-  g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+  /* Abertura ADAPTATIVA (espelha sonic_audio.c). O fox usa OpenSLES -> ESTE é o
+   * caminho de áudio real do jogo, e ele só fazia um SDL_OpenAudioDevice PLANO
+   * com o driver default. Em muitos devices PortMaster (muOS, Knulli) o SDL
+   * escolhe um default que NÃO abre de verdade (pipewire sem daemon, pulse sem
+   * runtime-dir) -> o open falhava e o jogo ficava MUDO, SEM fallback (vídeo e
+   * controle seguiam — exatamente o sintoma relatado). Aqui: tenta o default e,
+   * se falhar, VARRE todos os drivers e usa o 1º que ABRE. Sempre loga a lista
+   * (diagnóstico p/ devices que não temos). Regra #6: nada hardcoded, escolha
+   * automática entre os drivers que o SDL do device expõe. */
+  {
+    int ndrv = SDL_GetNumAudioDrivers();
+    char list[256]; size_t L = 0; list[0] = 0;
+    for (int i = 0; i < ndrv; i++) {
+      const char *n = SDL_GetAudioDriver(i);
+      if (n && L + strlen(n) + 2 < sizeof(list))
+        L += (size_t)snprintf(list + L, sizeof(list) - L, "%s ", n);
+    }
+    const char *cur0 = SDL_GetCurrentAudioDriver();
+    fprintf(stderr, "opensles_shim: audio drivers=[ %s] default=%s\n",
+            list, cur0 ? cur0 : "?");
+
+    /* (1) default escolhido pelo SDL do device */
+    char failed_drv[32]; failed_drv[0] = 0;
+    if (cur0 && strcmp(cur0, "dummy") != 0) {
+      g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+      if (g_audio_dev)
+        fprintf(stderr, "opensles_shim: audio aberto (auto) %dHz %dch samples=%d driver=%s\n",
+                have.freq, have.channels, have.samples, cur0);
+      else {
+        strncpy(failed_drv, cur0, sizeof(failed_drv) - 1);
+        failed_drv[sizeof(failed_drv) - 1] = 0;
+        fprintf(stderr, "opensles_shim: open auto falhou (driver=%s: %s) -> varrendo\n",
+                cur0, SDL_GetError());
+      }
+    }
+
+    /* (2) fallback: 1º driver que realmente abre o device */
+    for (int i = 0; !g_audio_dev && i < ndrv; i++) {
+      const char *name = SDL_GetAudioDriver(i);
+      if (!name || strcmp(name, "dummy") == 0) continue;
+      if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
+      SDL_QuitSubSystem(SDL_INIT_AUDIO);
+      setenv("SDL_AUDIODRIVER", name, 1); /* seleciona ESTE pro próximo init */
+      if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+        fprintf(stderr, "opensles_shim: init driver=%s falhou: %s\n", name, SDL_GetError());
+        continue;
+      }
+      const char *cur = SDL_GetCurrentAudioDriver();
+      if (!cur || strcmp(cur, name) != 0) continue;
+      g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+      if (g_audio_dev) {
+        fprintf(stderr, "opensles_shim: audio aberto (fallback) %dHz %dch samples=%d driver=%s\n",
+                have.freq, have.channels, have.samples, name);
+        break;
+      }
+      fprintf(stderr, "opensles_shim: driver=%s nao abriu: %s\n", name, SDL_GetError());
+    }
+    if (!g_audio_dev) unsetenv("SDL_AUDIODRIVER");
+  }
+
   if (g_audio_dev == 0) {
-    debugPrintf("opensles_shim: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
+    fprintf(stderr, "opensles_shim: NENHUM driver de audio abriu -> jogo segue MUDO\n");
     g_audio_initialized = 1;
     return;
   }
-
-  debugPrintf("opensles_shim: SDL audio opened: %dHz %dch %d samples\n",
-              have.freq, have.channels, have.samples);
   SDL_PauseAudioDevice(g_audio_dev, 0);
   g_audio_initialized = 1;
   /* 🔊 PUMP THREAD: no Android real o OpenSLES chama os bq callbacks de uma
