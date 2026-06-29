@@ -1001,8 +1001,10 @@ int main(int argc, char *argv[]) {
       if (ks[SDL_SCANCODE_E])     mask |= FOX_R1;
       if (ks[SDL_SCANCODE_1])     { mask |= FOX_L2; lt = 32767; }
       if (ks[SDL_SCANCODE_3])     { mask |= FOX_R2; rt = 32767; }
-      if (ks[SDL_SCANCODE_N])     mask |= FOX_L3;
-      if (ks[SDL_SCANCODE_M])     mask |= FOX_R3;
+      /* L3/R3 NÃO entram no mask: FOX_L3=0x4000 == FOX_PAUSE e FOX_R3=0x8000 ==
+         confirm/OUYAGetPauseKey -> stick-click causaria pausa/confirm espúrios
+         (mesma classe do bug pulo-pausa). Stick-click não é ação no Sonic 4. */
+      (void)0;
       if (ks[SDL_SCANCODE_ESCAPE]) mask |= FOX_BACK;
       if (ks[SDL_SCANCODE_RETURN]) {
         start_down = 1;
@@ -1022,8 +1024,8 @@ int main(int argc, char *argv[]) {
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_Y)) mask |= FOX_Y;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) mask |= FOX_L1;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= FOX_R1;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSTICK)) mask |= FOX_L3;
-      if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSTICK)) mask |= FOX_R3;
+      /* LEFTSTICK/RIGHTSTICK (L3/R3) NÃO entram no mask: colidem com PAUSE(0x4000)/
+         confirm(0x8000). Ver nota acima. */
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK)) mask |= FOX_BACK;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
         start_down = 1;
