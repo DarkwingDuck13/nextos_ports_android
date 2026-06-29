@@ -1068,6 +1068,22 @@ int main(int argc, char *argv[]) {
         mask |= FOX_A_MENU;
       }
     }
+    /* 🔎 DIAG Y=Left: SONIC_TESTBIT=0xNNNN injeta esse bit FOX no mask em pulsos
+       de 4 frames a cada 60, a partir de SONIC_TESTBIT_AT (default 1500). Determinístico
+       (sem uinput). Ex.: TESTBIT=0x0100 (FOX_Y) vs 0x0004 (FOX_LEFT) no world-map. */
+    {
+      static long testbit = -2; static long testat = 0;
+      if (testbit == -2) { const char *e = getenv("SONIC_TESTBIT");
+        testbit = e ? strtol(e, NULL, 0) : -1;
+        const char *a = getenv("SONIC_TESTBIT_AT"); testat = a ? atol(a) : 1500; }
+      if (testbit > 0 && (long)frame >= testat) {
+        long ph = ((long)frame - testat) % 60;
+        if (ph < 4) {
+          if (ph == 0) fprintf(stderr, "=== TESTBIT 0x%04lx pulse @frame %lu ===\n", testbit, frame);
+          mask |= (int)testbit;
+        }
+      }
+    }
     if (sonic_game_started && autoright_after >= 0 && (long)frame >= autoright_after) {
       mask |= FOX_RIGHT;
       lx = 32767;
@@ -1086,6 +1102,14 @@ int main(int argc, char *argv[]) {
       mask |= FOX_PAUSE;
       autopause_state = 1;
     }
+    /* 🔧 FIX Y=Left (reportado pelo luis, REPRODUZIDO no R36S): no WORLD MAP /
+       level select o bit FOX_Y(0x100) alias pra LEFT (injetar 0x100 move o mapa
+       IGUAL a 0x004 — confirmado por screenshot). FOX_Y/FOX_X foram bits "provisorios"
+       (chute, ver nota em 0x849); Y/X NAO sao acoes no Sonic 4 fora do gameplay.
+       Suprimir Y/X fora do gameplay mata o falso-left sem afetar jogo/menu.
+       SONIC_NO_YX_FIX=1 desliga (debug). */
+    if (!sonic_in_gameplay && !getenv("SONIC_NO_YX_FIX"))
+      mask &= ~(FOX_Y | FOX_X);
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
     if (gm_direct) *gm_direct = (short)mask;
     if (gm_lx) *gm_lx = (short)lx;
