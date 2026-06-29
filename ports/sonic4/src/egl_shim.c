@@ -85,38 +85,91 @@ void egl_shim_create_window(void) {
       sonic_screen_w = w; sonic_screen_h = h;
       debugPrintf("egl_shim: SONIC_RES override %dx%d\n", w, h);
     } }
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  /* contexto ES casa com o SONIC_GLVER passado pro engine (default 2.0);
-   * em GPU ES3 real (Mali-G310) GLVER=3.0 -> contexto ES 3.0 de verdade */
+  /* Criação RESILIENTE do contexto GL. O blob Mali proprietário (Utgard,
+     EmuELEC .79) aceita ES2 + depth24 + stencil8 de primeira. Mas o
+     mesa/panfrost (ROCKNIX e handhelds RK open-source) pode rejeitar essa
+     combinação EXATA com EGL_BAD_MATCH no eglCreateContext -> SDL falha ->
+     jogo fica SEM VÍDEO (só áudio; foi o sintoma relatado num device mesa).
+     Tentamos várias combinações de (versão ES, depth, stencil) e usamos a 1ª
+     que cria contexto. SEMPRE logado (não-gated) p/ diagnosticar devices que
+     não temos. Regra #6: nada de driver hardcoded — só negociação dos
+     atributos GL padrão do SDL; um contexto ES3 roda um engine ES2 sem
+     problema (compatível pra trás). */
+  /* Preferência de versão: ES3 primeiro (device com ES3 real pega ES3 — pedido
+     do NextOS), caindo p/ ES2 (Mali-450 Utgard, ES2-only). SONIC_GLVER=2 força
+     só ES2; =3 força só ES3; sem env = adaptativo ES3->ES2. */
+  int vers[2], nver;
   { const char *gv = sonic_env("SONIC_GLVER");
-    int major = (gv && gv[0] == '3') ? 3 : 2;
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
+    if (gv && gv[0] == '2')      { vers[0] = 2; nver = 1; }
+    else if (gv && gv[0] == '3') { vers[0] = 3; nver = 1; }
+    else                          { vers[0] = 3; vers[1] = 2; nver = 2; } }
+  /* depth/stencil sao fixados na criacao da JANELA -> 1 janela por combo; as
+     versoes ES sao testadas na MESMA janela (sem recriar) p/ nao estressar o
+     fbdev Mali do .79 (no caso comum cria uma janela so). */
+  static const struct { int depth, stencil; } dsc[] = { {24,8},{16,0},{0,0} };
+
+  egl_window = NULL; egl_share_root = NULL;
+  for (int d = 0; d < 3 && !egl_share_root; d++) {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, dsc[d].depth);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, dsc[d].stencil);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, vers[0]);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    if (major == 3) debugPrintf("egl_shim: pedindo contexto ES 3.0\n"); }
-  SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-  egl_window = SDL_CreateWindow(
-      PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      SCREEN_WIDTH, SCREEN_HEIGHT,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
-  if (!egl_window) {
-    debugPrintf("egl_shim: SDL_CreateWindow FAILED: %s\n", SDL_GetError());
+    egl_window = SDL_CreateWindow(
+        PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        SCREEN_WIDTH, SCREEN_HEIGHT,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+    if (!egl_window) {
+      fprintf(stderr, "egl_shim: depth%d stencil%d: SDL_CreateWindow FALHOU: %s\n",
+              dsc[d].depth, dsc[d].stencil, SDL_GetError());
+      continue;
+    }
+    for (int v = 0; v < nver && !egl_share_root; v++) {
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, vers[v]);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+      egl_share_root = gl_createcontext(egl_window);
+      if (egl_share_root) {
+        fprintf(stderr, "egl_shim: GL context OK -> ES%d depth%d stencil%d (window %dx%d)\n",
+                vers[v], dsc[d].depth, dsc[d].stencil, SCREEN_WIDTH, SCREEN_HEIGHT);
+        break;
+      }
+      fprintf(stderr, "egl_shim: try ES%d depth%d stencil%d: context FALHOU: %s\n",
+              vers[v], dsc[d].depth, dsc[d].stencil, SDL_GetError());
+    }
+    if (!egl_share_root) { SDL_DestroyWindow(egl_window); egl_window = NULL; }
+  }
+  if (!egl_window || !egl_share_root) {
+    fprintf(stderr, "egl_shim: NENHUMA combinacao GL criou contexto -> SEM VIDEO\n");
     return;
   }
-  debugPrintf("egl_shim: Window created %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
-
-  egl_share_root = gl_createcontext(egl_window);
-  if (!egl_share_root) {
-    debugPrintf("egl_shim: SDL_GL_CreateContext FAILED: %s\n", SDL_GetError());
-    return;
+  /* v3.8 diag de VIDEO: identidade GL real do device (o contexto recem-criado
+     ja esta current). Crucial p/ devices que nao temos (ROCKNIX mesa/panfrost,
+     handhelds RK): diz GPU/driver/versao GLES/GLSL e ajuda a explicar tela
+     preta. Sempre visivel. */
+  {
+    /* glGetString resolvido em runtime (o binario nao linka libGLESv2; GL vem
+       do device via dlsym). SDL_GL_GetProcAddress funciona com contexto current. */
+    const unsigned char *(*p_glGetString)(unsigned int) =
+        (const unsigned char *(*)(unsigned int))SDL_GL_GetProcAddress("glGetString");
+    if (p_glGetString) {
+      const char *ven = (const char *)p_glGetString(0x1F00); /* GL_VENDOR */
+      const char *r   = (const char *)p_glGetString(0x1F01); /* GL_RENDERER */
+      const char *v   = (const char *)p_glGetString(0x1F02); /* GL_VERSION */
+      const char *s   = (const char *)p_glGetString(0x8B8C); /* GL_SHADING_LANGUAGE_VERSION */
+      fprintf(stderr, "egl_shim: GL_VENDOR=%s\n", ven ? ven : "?");
+      fprintf(stderr, "egl_shim: GL_RENDERER=%s\n", r ? r : "?");
+      fprintf(stderr, "egl_shim: GL_VERSION=%s\n", v ? v : "?");
+      fprintf(stderr, "egl_shim: GL_GLSL=%s\n", s ? s : "?");
+    } else {
+      fprintf(stderr, "egl_shim: glGetString indisponivel (sem identidade GL)\n");
+    }
   }
-  debugPrintf("egl_shim: GL share-root context created\n");
   /* SONIC_SWAPINT no contexto novo (a engine pode nunca chamar
    * eglSwapInterval; default SDL=vsync 1 + limiter da engine = 30fps). */
   {
