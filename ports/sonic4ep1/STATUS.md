@@ -1,5 +1,163 @@
 # Sonic 4 Episode I — STATUS de debug do boot (so-loader Marmalade/s3e)
 
+## 🟢🟢 s3 RUN (2026-06-29) — VIRADA HISTÓRICA: engine s3e BOOTA INTEIRO, módulo .s3e CARREGA+RODA, 0 crash
+**De "crash do surface no frame 1" → boot completo de 937 linhas, áudio inicia, engine no loop de OS-tick.**
+Receita vencedora (JÁ no run.sh) = `HOOK62D90 + NO_CAPFIX + FAKE_FILEREG + TLSMAP(default)`, SEM SURFOBJ.
+
+### As 4 correções (em ordem de descoberta), todas no main.c:
+1. **setViewNative RELIGADO** — `0x3a9f4` NÃO é "config-parser" (erro da s2); a tabela JNINativeMethod
+   diz que é o nativo `setViewNative`. Estava hookado pra no-op (main.c) → o engine nunca cacheava os
+   method-IDs do view (glSwapBuffers/doDraw/soundInit...) → surface NULL. Agora só stuba se
+   `SONIC4EP1_STUB_SETVIEW`. Isso sozinho já levou o boot do frame-1-crash até o doDraw/tick.
+2. **NO_CAPFIX** — o CAPS FIX antigo (`0x58d60 ldr→mvn r3,#0`, caps=0xffffffff) marcava TODOS os
+   subsistemas como "já registrados". O device-register `0x58cdc` faz `r4 = requested & ~[caps]` e
+   registra os bits de r4 → com caps=0xffffffff, r4=0 → **NÃO registra NADA**, incl. ThreadCore
+   (bit 0x8, init `0x7f928` que cria as TLS keys do surface em 0xc9a74). Desligado (`SONIC4EP1_NO_CAPFIX`).
+   (mvn r3,#8 = "tudo menos ThreadCore" também funciona p/ rodar 0x7f928, mas NO_CAPFIX+FAKE_FILEREG
+   é a rota limpa que carrega o módulo.)
+3. **FAKE_FILEREG** — com caps naturais o dispatch TENTA registrar tudo, mas o **File-register
+   `0x5f02c` FALHA** (so-loader sem backend real) → device-register dá bail (ret=1) → **s3eMain
+   (`0x267fc`) NÃO chama bootstrap B → o módulo do jogo .s3e nunca carrega**. File já roda via nossos
+   hooks, então `my_filereg_5f02c` retorna 0 (skip) → dispatch CONTINUA e registra Fibre+ThreadCore+
+   Surface (criam as TLS keys). Hook em `0x5f02c` (NÃO trampolinar: 1ª instr é `ldr [pc]` PC-rel).
+4. **TLSMAP (a chave, default ON)** — emula `s3eThreadLocal` get=`0x82d60`/set=`0x82d70` com um **mapa
+   global key→valor** (`my_s3e_tls_get/set`, main.c). O esquema nativo guarda a "key" em globais
+   (0xc9a74 etc.) e faz `pthread_get/setspecific(key-1)`, mas no so-loader as keys vêm inválidas
+   (malloc-ptr/0) → getspecific NULL → crash do surface/fibre/threadcore (todos usam a MESMA key
+   0xc9a74). Como o so-loader é **single-thread** (main dirige tudo), o mapa global dá round-trip
+   perfeito e **conserta surface+fibre+threadcore DE UMA VEZ** (convergente, não whack-a-mole).
+   Desliga com `SONIC4EP1_NO_TLSMAP`.
+
+### 🎯 MURO ATUAL (s3 fim): `Error loading resources (Not implemented)` — loader do módulo .s3e
+- O engine **lê o .s3e INTEIRO** (703KB: reads 2+11+524288+178920 via HOOK62D90), inicia áudio
+  (soundInit 44100), entra no loop (runOnOSSignal→runOnOSTickNative), faz enableRespondingToRotation,
+  e aí o **engine** (não o game) loga via s3eDebugOutputString: **"Error loading resources (Not
+  implemented)"** e **TRAVA DURO** (linha 937 = última; 0 ticks depois; processo vivo mas parado).
+- Caller = base-rel **0x7b7dc** = dentro de `s3eStackSwitchCallS3EFuncR12_4Args_Fast_Void_NoSS_FastLock`
+  (thunk de stack-switch/fibre do s3e que chama `s3eDeviceLoaderCallStart` 0x5b454 + `bx ip`). Ou seja
+  o **loader de módulo/recurso .s3e** retorna "Not implemented" — provável LOADER do s3e não-registrado
+  ou um passo do load (decompress LZMA 0x50e78 / relocação ARM / s3eDeviceLoaderCallStart) stubado.
+- 🔎 **RAIZ ACHADA (decomprimindo o .s3e)**: o `Sonic4epI.s3e` é **LZMA-alone** (header `5d 00 00 01 00`;
+  os reads 2+11=13B = header LZMA) → descomprime p/ módulo **XE3U** de ~1.9MB (game code + config
+  Marmalade). O módulo CARREGA e RODA (suas strings estão em memória e ele chama s3eDebugOutputString).
+  As strings `"Error loading resources (%s)"` + `"Not implemented"` + **`resources.dz` / `high.dz` /
+  `mid.dz` / `ApkExpansion` / `obb status %d` / `obb not found: [%s]`** estão no módulo: o game carrega
+  os **recursos do jogo via OBB/APKExpansion** (`resources.dz`). A extensão **s3eAPKExpansion**
+  (libs3eAPKExpansion.so — carregada OK, RegisterExt OK) é a versão Android (JNI/OBB) e retorna
+  **"Not implemented"** sem o sistema de expansão do Android → `%s`="Not implemented" → game aborta.
+  Funcs da ext: `s3eAPKExpansionGetAbsolutePath / GetDownloadState / GetMainExpansionFilename /
+  Initialize / Start / Stop`. **resources.dz JÁ ESTÁ no device** (`/storage/roms/ports/sonic4ep1/`,
+  27MB — há tb `resources.dz.testcopy` 86MB; conferir qual é o certo).
+- 🎯 **PRÓXIMO**: fazer o resource-load achar `resources.dz` localmente — hookar/stubar as funcs do
+  s3eAPKExpansion p/ devolver: GetDownloadState=DOWNLOADED, GetAbsolutePath/GetMainExpansionFilename
+  = caminho do `resources.dz` local. O game então abre resources.dz (via nossos hooks s3eFile) e
+  carrega os recursos. (Achar como o game pega os ponteiros das funcs: s3eExtGetHash + RegisterExt
+  da ext; assinaturas das 6 funcs.) Capturar tela só após passar daqui (precisa glSwapBuffers).
+- 🔬 **DIAGNÓSTICO PRECISO do "Not implemented" (s3 cont, 2026-06-29)**: NÃO é APKExpansion nem
+  glGetString (game não chama nenhum dos dois antes do erro). O erro é um **TIMEOUT de
+  `pthread_cond_timedwait`**: o caller de s3eEdkErrorSet é **base-rel 0x82c68** (engine), numa
+  func de wait (entry 0x82b64 = s3eThread sem/cond-wait): `pthread_cond_timedwait` retorna
+  **110 (ETIMEDOUT)** → seta `s3eEdkErrorSet(group, code=1000, type=0)` → o game formata
+  "Error loading resources (%s='Not implemented')". Ou seja: **o load de recursos é ASSÍNCRONO**
+  (a main thread faz cond_timedwait esperando um job/worker completar) e **o produtor NUNCA
+  sinaliza** → timeout. `SONIC4EP1_TRACE_ERRORS=1` (stuba s3eEdkErrorSet→0) faz o game IGNORAR e
+  continuar, mas aí entra em **loop infinito** (13k+ timeouts) retentando — nunca abre resources.dz.
+  **Threads em runtime** (`/proc/PID/task/*/wchan`): main=`futex_wait` (o cond_timedwait),
+  2 workers=`futex_wait` IDLE (esperando job que nunca chega), Mali GPU thread, signal thread.
+  Os workers EXISTEM mas o job de recursos **não é despachado** pra eles. ⚠️ Corrigi o TLSMAP p/
+  **per-thread** (composite key thread+key, mutex) — necessário p/ o worker não colidir com a main,
+  mas NÃO resolveu sozinho (job ainda não despacha).
+- 🎯 **PRÓXIMO (muro real)**: o job-system do s3e. Achar (a) quem chama o wait 0x82b64 (o ponto de
+  espera do load de recursos), (b) o PRODUTOR (quem deveria postar/sinalizar o job nos workers idle),
+  (c) por que o dispatch não acontece no so-loader. Possíveis: queue do job-system não inicializada,
+  ou o engine espera rodar o job INLINE (single-core) e nosso setup confunde, ou falta um worker
+  específico. Quando o job completar → recursos carregam → primeira tela.
+- Captura: `touch /dev/shm/ep1_shot` só salva se o frame loop presentar (trava antes ainda).
+- ⚙️ **TENTATIVA s3 (opt-in `SONIC4EP1_APKEXP`, default OFF)**: `install_apkexpansion_hooks()` em
+  main.c computa a base da apkexp.so (`RegisterExt - 0xd1c`) e hooka as 6 funcs (ordem por endereço:
+  GetAbsolutePath@0x8a0, GetDownloadState@0x900, GetMainExpansionFilename@0x950, Initialize@0x9a0,
+  Start@0x9fc, Stop@0xa6c) p/ devolver path=deploy_dir, state=3(complete), filename="resources.dz".
+  🔴 **CRASHA no hook_arm**: o write no text da apkexp.so faulta (text R-X) e o `mprotect` que adicionei
+  NÃO resolve (write em base+0x8a4 ainda SIGSEGV) — o `so_load` mapeia o .so de um jeito que o mprotect
+  não torna gravável (file-backed? offset?). **PRÓXIMO**: (a) investigar so_load/so_util — como o text
+  da extensão é mapeado e por que não fica RWX; OU (b) abordagem alternativa: registrar MINHAS funcs do
+  s3eAPKExpansion no s3eEdkRegister (em vez de chamar o RegisterExt real da .so), OU servir os callbacks
+  s3eEdk que os wrappers usam (`ldr r3,[r0]; blx r3`) via jni_shim. Default (sem APKEXP) = estado bom de
+  937 linhas. Palpites a refinar quando hookar: GetDownloadState "complete" (valor real?), e se o game
+  abre `resources.dz` (27MB) ou precisa do `.testcopy` (86MB).
+
+---
+
+
+## 🟢 s3 STUDY (2026-06-29) — ANÁLISE ESTÁTICA (NextOS pediu "só estudar, não mexer no device")
+### ⭐ ACHADO PRINCIPAL (provável ROOT do muro do surface): `setViewNative` foi STUBADO POR ENGANO.
+A sessão anterior achou que `0x3a9f4` era "o parser de config que crasha (objeto NULL)" e
+hookou pra no-op (`my_cfg_load_noop`, main.c:1101, **ON por padrão** — run.sh não seta
+`SONIC4EP1_NO_CFGSHIM`). MAS a tabela JNINativeMethod do `libs3e_android.so` diz que
+**`0x3a9f4` = `setViewNative`** (confirmado: assinatura JNI (JNIEnv*,jobject,jobject) +
+disasm faz NewGlobalRef[env+84]/GetObjectClass[env+380]/GetMethodID na `view` e guarda os
+handles em globais `[g+12/16/20/24]`). Ou seja, hoje o `setViewNative(env,thiz,view)` chamado
+em main.c:1847 cai no no-op → **os handles do view/Java NUNCA são cacheados** → o caminho de
+surface/present do engine deref NULL → **o crash do surface** (TLS getter 0x82d60 / 0x5db04 /
+0x7be40). Não é "subsistema surface não-inicializado às cegas"; é **um native essencial
+desligado**. 🎯 FIX a testar (quando voltar ao device): **remover SÓ o hook de 0x3a9f4**
+(linha 1101) — deixar os 4 s3eConfig getters (0x52560/0x522b4/0x524d4/0x521f4). Como
+setViewNative faz chamadas JNI de verdade (NewGlobalRef/GetObjectClass/GetMethodID/Call*),
+o jni_shim PRECISA servir essas chamadas com handles válidos do "view" fake, senão
+setViewNative guarda lixo e crasha — ESSE é o trabalho real do surface (servir os callbacks
+JNI do present, não reconstruir a struct campo-a-campo).
+
+### Mapa da CADEIA DE BOOTSTRAP NATIVA (existe inteira; corrige a narrativa "bootstrap não roda"):
+`runNative`(**0x3c204**, table-confirmed) converte 3 jstrings → chama `s3eMain`(**0x2688c**→`0x267fc`):
+- `0x6e9e8` s3eMemory init (se !=0 → return cedo)
+- `0x13c44` **bootstrap A** (HOOKADO por `marm_gate_13c44`, mas chama o ORIGINAL via tramp):
+  cpuinfo init `0x3e964` (precisa retornar 0 = sucesso; **a nota antiga "cpuinfo=0 → device-init
+  não roda" estava INVERTIDA**: em `0x58cdc`/`0x58d44` o `bne 0x58e50` (early-return r0=1) só é
+  tomado se cpuinfo!=0; logo cpuinfo=0 = SEGUE e registra subsistemas) → device-register
+  `0x58cdc` (caps gated; sessão ant. forçou caps com patch `0x58d60 ldr→mvn r3,#0`) → **rom://
+  setup `0x26890`** → **seq de register de subsistemas `0x13db0`**: `0x59544, 0x57280`(debug),
+  **`0x5f798`(FILE)**, **`0x7e1b8`(SURFACE)**, `0x5be40`(ext), `0x7fa54`(surface-display),
+  `0x7c2c0` + `0x58cdc`.
+- `0x267b4` (gates 0x134a4/0x12e0c) → `0x13e28` **bootstrap B** (roda o app): inclui
+  `s3eSurfaceSetup`(**0x7cdbc**) em 0x13f40.
+
+### Nativos JNI registrados (tabela JNINativeMethod, addr confirmados):
+`setViewNative`=**0x3a9f4**, `setPixelsNative`=**0x3bed8**, `runNative`=**0x3c204**,
+`runOnOSTickNative`=**0x3abc8**. Lista completa de nativos: doDraw, eglWaitNative, initNative,
+onAccelNative, onCompassNative, onKeyEventNative, onOrientationChangedNative, runNative,
+runOnOSThreadNative, runOnOSTickNative, setCharInputEnabledNative, setPixelsNative,
+setViewNative, shutdownNative. **Surface = framebuffer SOFTWARE** (setPixelsNative dá um int[],
+engine renderiza nele e dá present via callback no view Java) — NÃO é EGL-backed. Por isso o
+present precisa dos handles do view (setViewNative) + jni_shim servindo os Call*Method do blit.
+
+### Surface por TLS (per-thread): getter `0x82d60`=pthread_getspecific(key-1); setter `0x82d70`;
+key-create `0x82d88`(=s3eThreadLocalCreate, em 0x7f944/0x7f9a8 na init do surface). Os
+setspecific do surface estão em 0x7ec64/0x8087c/0x80c30/0x810f4/0x812f0/0x81560/0x81a88 (subsist.
+surface 0x7e-0x81). ⚠️ se o surface for criado numa thread e lido em outra → NULL (validar que
+runNative e o frame-loop rodam na MESMA thread; em main.c são sequenciais na mesma função, então
+ok — o problema mais provável é o setViewNative stubado, não thread-mismatch).
+
+### jni_shim JÁ é maduro (confirma que o fix é simples): a vtable JNIEnv tem TODOS os índices que
+setViewNative usa (21 NewGlobalRef, 22 DeleteGlobalRef, 31 GetObjectClass→fake class, 33
+GetMethodID→fake id, 95 GetObjectField→fake object). E o caminho de PRESENT já está servido:
+`CallVoidMethod(view,"glSwapBuffers")`→egl_shim_swap+os_tick; idem doDraw/glInit/soundInit/
+audioPlay (jni_shim.c CallVoidMethodV/CallIntMethodV). Ou seja, o engine, no Android, PRESENTA
+chamando métodos Java no view; o so-loader já intercepta isso. **setViewNative só cacheia o view
++ os method-IDs (glSwapBuffers/doDraw/soundInit/...) pro engine poder chamá-los.** Stubá-lo
+(s2) = engine fica sem esses handles → surface object nunca é criado → crash. (s2 usou um
+loop de os_tick MANUAL em main.c como present alternativo e desligou o setViewNative — mas isso
+não cria o surface object.)
+
+### 🎯 PRÓXIMO PASSO (quando NextOS liberar o device — está em PAUSA "só estudar"):
+(1) tirar SÓ o hook de 0x3a9f4 (main.c:1101) — manter os 4 s3eConfig getters.
+(2) rodar; setViewNative deve cachear os handles (jni_shim já cobre tudo) → surface object criado
+   → TLS != NULL → some o crash 0x5db04/0x7be40.
+(3) se setViewNative crashar mesmo assim, logar QUAL Call*Method/Field ele faz com o view fake e
+   ajustar o retorno no jni_shim. Loop build→run→fix a partir daí até IMAGEM.
+NÃO precisa reconstruir surface struct campo-a-campo (caminho divergente da s2) — é só religar o
+native certo. Risco baixo, reversível.
+---
+
 Device alvo: **192.168.31.79** (Mali-450 Amlogic S905L, EmuELEC, kernel aarch64, fbdev).
 Binário: `sonic4ep1` (loader ARMHF), engine **Marmalade s3e** (`libs3e_android.so` armv7).
 Captura de tela: `touch /dev/shm/ep1_shot` → port faz glReadPixels → `/dev/shm/ep1_shot.raw`

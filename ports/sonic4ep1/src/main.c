@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -384,7 +385,11 @@ static void marm_s3eDeviceExit(void) {
 }
 
 static void marm_s3eDebugOutputString(const char *msg) {
-  debugPrintf("hook: s3eDebugOutputString: %s\n", msg ? msg : "(null)");
+  void *ra = __builtin_return_address(0);
+  debugPrintf("hook: s3eDebugOutputString: %s [caller=%p base-rel=0x%lx]\n",
+              msg ? msg : "(null)", ra,
+              g_main_text_base ? (unsigned long)((uintptr_t)ra - g_main_text_base)
+                               : 0ul);
 }
 
 static int (*real_s3eKeyboardGetState)(int);
@@ -433,8 +438,15 @@ static int marm_s3eDebugErrorShow(const char *title, const char *msg) {
 }
 
 static int marm_s3eEdkErrorSet(int group, int code, int type) {
-  debugPrintf("hook: s3eEdkErrorSet(group=%d, code=%d, type=%d)\n", group,
-              code, type);
+  static int n;
+  if (n < 4) {
+    void *ra = __builtin_return_address(0);
+    debugPrintf("hook: s3eEdkErrorSet(group=0x%x, code=%d, type=%d) caller base-rel=0x%lx str='%.40s'\n",
+                group, code, type,
+                g_main_text_base ? (unsigned long)((uintptr_t)ra - g_main_text_base) : 0ul,
+                (group > 0x10000) ? (const char *)(uintptr_t)group : "?");
+    n++;
+  }
   return 0;
 }
 
@@ -942,12 +954,229 @@ static void *my_tls_getter(unsigned kp1) {
   return v;
 }
 
+/* ---- cpuinfo gate 0x3e970: device-register (0x58cdc) faz `bne early-return`
+ * se cpuinfo!=0, pulando TODA a registracao de subsistemas (incl. surface
+ * 0x7f928). Logamos o retorno real; se SONIC4EP1_CPUINFO0, forcamos 0 (sucesso/
+ * device reconhecido) p/ a registracao rodar natural. ---- */
+static unsigned (*real_cpuinfo_3e970)(void);
+static int g_cpuinfo_logs;
+static unsigned diag_cpuinfo_3e970(void) {
+  unsigned r = real_cpuinfo_3e970 ? real_cpuinfo_3e970() : 0;
+  if (g_cpuinfo_logs < 6) {
+    debugPrintf("CPUINFO: 0x3e970 real_ret=%u%s\n", r,
+                getenv("SONIC4EP1_CPUINFO0") ? " -> FORCADO 0" : "");
+    g_cpuinfo_logs++;
+  }
+  if (getenv("SONIC4EP1_CPUINFO0"))
+    return 0;
+  return r;
+}
+
+/* ---- subsistemas que FALHAM ao registrar no device-register (0x58cdc) fazem ele
+ * dar bail (return 1) -> bootstrap A != 0 -> s3eMain NAO carrega o modulo do jogo.
+ * O File subsystem (0x5f02c) falha no so-loader (sem backend real), mas File JA
+ * funciona via nossos hooks (0x62d90/0x63438...). Forcamos o register a retornar 0
+ * (sucesso) p/ o dispatch CONTINUAR e registrar Fibre/ThreadCore/Surface (que criam
+ * as TLS keys do surface). Idem outros registers que falhem. ---- */
+/* NAO chamamos o original (1a instr e ldr [pc] PC-relativa, intrampolinavel; e o
+ * register real falha de qualquer forma) — so retornamos 0 = "File OK". */
+static int my_filereg_5f02c(void) {
+  static int once;
+  if (!once) { debugPrintf("FILEREG: 0x5f02c -> 0 (skip, File via hooks)\n"); once = 1; }
+  return 0;
+}
+
+/* ---- config interna 0x52628(key) = config[section][key] (byte). No so-loader a
+ * tabela de config esta vazia/quebrada e retorna LIXO (!=0) p/ chaves "DisableXxx",
+ * fazendo o device-register PULAR subsistemas — fatal p/ "DisableThreadCore"
+ * (a init de TLS 0x7f928 que cria a key do surface em 0xc9a74). Hookamos: chaves
+ * "Disable*" -> 0 (NADA desabilitado = default correto); resto -> original. ---- */
+static int (*real_cfg_internal_52628)(const char *);
+static int my_cfg_internal_52628(const char *key) {
+  if (key && strncmp(key, "Disable", 7) == 0) {
+    static int logs;
+    /* teste: DisableThreads=1 (sem worker pool -> jobs INLINE/sincrono na main,
+     * evitando o dispatch async quebrado que dava timeout no load de recursos).
+     * ThreadCore (TLS) FICA habilitado (=0). gated por SONIC4EP1_NOTHREADS. */
+    int v = 0;
+    if (getenv("SONIC4EP1_NOTHREADS") && strcmp(key, "DisableThreads") == 0)
+      v = 1;
+    if (logs < 24) { debugPrintf("CFGINT: '%s' -> %d\n", key, v); logs++; }
+    return v;
+  }
+  return real_cfg_internal_52628 ? real_cfg_internal_52628(key) : 0;
+}
+
+/* ---- device-register 0x58cdc: registra os subsistemas (File/Surface...).
+ * Se faz early-return (0x58e50, r0=1) por falha de um subsistema, pula o
+ * surface (0x7f928). Logamos entrada+retorno. ---- */
+static unsigned (*real_devreg_58cdc)(unsigned);
+static int g_devreg_logs;
+static unsigned diag_devreg_58cdc(unsigned a) {
+  unsigned r = real_devreg_58cdc ? real_devreg_58cdc(a) : 1;
+  if (g_devreg_logs < 8) {
+    debugPrintf("DEVREG: 0x58cdc(arg=%u) -> ret=%u\n", a, r);
+    g_devreg_logs++;
+  }
+  return r;
+}
+
+/* ---- SURFDIAG: descobrir se a init do surface roda e em qual thread ---- */
+static unsigned (*real_surf_init_7f928)(void);
+static unsigned diag_surf_init_7f928(void) {
+  debugPrintf("SURFDIAG: surface_init 0x7f928 ENTER thread=%p\n",
+              (void *)pthread_self());
+  unsigned r = real_surf_init_7f928 ? real_surf_init_7f928() : 1;
+  uintptr_t b = g_main_text_base;
+  unsigned key = b ? *(unsigned *)(b + 0xc9a74) : 0;
+  void *bound = key ? pthread_getspecific((pthread_key_t)(key - 1)) : (void *)0;
+  debugPrintf("SURFDIAG: surface_init 0x7f928 RET=%u key=%u bound_on_init_thread=%p\n",
+              r, key, bound);
+  return r;
+}
+static int g_surfdiag_get_logs;
+static void *diag_tls_getter(unsigned kp1) {
+  void *v = (kp1 == 0) ? (void *)0
+                       : pthread_getspecific((pthread_key_t)(kp1 - 1));
+  if (g_surfdiag_get_logs < 8) {
+    debugPrintf("SURFDIAG: TLS getter kp1=%u thread=%p -> %p\n", kp1,
+                (void *)pthread_self(), v);
+    g_surfdiag_get_logs++;
+  }
+  return v; /* valor REAL (pode ser NULL -> crash, mas ja logamos) */
+}
+
+/* ---- s3eAPKExpansion: o game (módulo .s3e) carrega os recursos (resources.dz)
+ * via OBB/APKExpansion; a extensao Android retorna "Not implemented" sem o sistema
+ * de expansao -> game aborta "Error loading resources (Not implemented)". resources.dz
+ * JA esta no deploy. Hookamos as funcs da ext (na apkexp.so, base = RegisterExt-0xd1c)
+ * p/ dizer "baixado/completo" + path local. Ordem dos wrappers (por endereco) casa a
+ * ordem dos nomes na .so: GetAbsolutePath, GetDownloadState, GetMainExpansionFilename,
+ * Initialize, Start, Stop. ---- */
+static char g_apkexp_dir[1024];
+static const char *apk_GetAbsolutePath(void) {
+  debugPrintf("APKEXP: GetAbsolutePath -> '%s'\n", g_apkexp_dir);
+  return g_apkexp_dir;
+}
+static int apk_GetDownloadState(void) {
+  debugPrintf("APKEXP: GetDownloadState -> 3 (complete)\n");
+  return 3; /* palpite: COMPLETE; refinar pelo log */
+}
+static const char *apk_GetMainExpansionFilename(void) {
+  debugPrintf("APKEXP: GetMainExpansionFilename -> 'resources.dz'\n");
+  return "resources.dz";
+}
+static int apk_Initialize(void) { debugPrintf("APKEXP: Initialize\n"); return 0; }
+static int apk_Start(void) { debugPrintf("APKEXP: Start\n"); return 0; }
+static int apk_Stop(void) { debugPrintf("APKEXP: Stop\n"); return 0; }
+
+static void install_apkexpansion_hooks(void) {
+  if (!getenv("SONIC4EP1_APKEXP")) /* opt-in: hook na apkexp.so ainda instavel */
+    return;
+  uintptr_t reg = 0;
+  for (int i = 0; i < g_ext_registers_n; i++)
+    if (g_ext_registers[i].name && strstr(g_ext_registers[i].name, "APKExpansion"))
+      reg = (uintptr_t)g_ext_registers[i].addr;
+  if (!reg) { debugPrintf("APKEXP: RegisterExt nao achado\n"); return; }
+  uintptr_t b = reg - 0x0d1c; /* RegisterExt @ off 0xd1c na apkexp.so */
+  /* o text da apkexp.so vem R-X; hook_arm escreve no codigo -> mprotect RWX antes. */
+  long pg = sysconf(_SC_PAGESIZE);
+  uintptr_t lo = (b + 0x800) & ~((uintptr_t)pg - 1);
+  uintptr_t hi = ((b + 0xc00) + pg - 1) & ~((uintptr_t)pg - 1);
+  int mpr = mprotect((void *)lo, hi - lo, PROT_READ | PROT_WRITE | PROT_EXEC);
+  debugPrintf("APKEXP: reg=%p base=%p mprotect(%p..%p)=%d errno=%d\n",
+              (void *)reg, (void *)b, (void *)lo, (void *)hi, mpr, errno);
+  /* prova: tenta ler+escrever em base+0x8a0 num try simples */
+  volatile uint32_t *probe = (volatile uint32_t *)(b + 0x8a0);
+  debugPrintf("APKEXP: probe read [base+0x8a0]=0x%08x (vai escrever...)\n", *probe);
+  const char *dd = getenv("SONIC4EP1_DEPLOY_DIR");
+  if (dd && *dd) snprintf(g_apkexp_dir, sizeof(g_apkexp_dir), "%s", dd);
+  else if (!getcwd(g_apkexp_dir, sizeof(g_apkexp_dir))) snprintf(g_apkexp_dir, sizeof(g_apkexp_dir), ".");
+  hook_arm(b + 0x8a0, (uintptr_t)apk_GetAbsolutePath);
+  hook_arm(b + 0x900, (uintptr_t)apk_GetDownloadState);
+  hook_arm(b + 0x950, (uintptr_t)apk_GetMainExpansionFilename);
+  hook_arm(b + 0x9a0, (uintptr_t)apk_Initialize);
+  hook_arm(b + 0x9fc, (uintptr_t)apk_Start);
+  hook_arm(b + 0xa6c, (uintptr_t)apk_Stop);
+  debugPrintf("APKEXP: 6 funcs hookadas (base=%p, dir='%s')\n", (void *)b, g_apkexp_dir);
+}
+
+/* ---- TLSMAP: emulacao do s3eThreadLocal (wrappers get=0x82d60 / set=0x82d70).
+ * O esquema nativo guarda a "key" em globais (0xc9a74 etc.) e os wrappers fazem
+ * pthread_get/setspecific(key-1). No so-loader as keys vem invalidas (malloc-ptr/0)
+ * -> getspecific NULL -> crash do surface/fibre/threadcore. Como o so-loader e
+ * single-thread (main thread dirige tudo), substituimos por um MAPA GLOBAL
+ * key->valor: set(key,val) guarda, get(key) devolve o mesmo. Round-trip perfeito,
+ * conserta TODAS as TLS de uma vez (convergente). ---- */
+/* PER-THREAD: o engine cria 1 worker thread (carregamento de recursos). A key e
+ * composta (thread, key) p/ cada thread ter seu proprio valor — senao o worker le
+ * o estado-de-surface da main, malfunciona, e o job nunca completa (wait timeout =
+ * "Error loading resources"). Mutex protege o array (acesso de 2 threads). */
+#define EP1_TLS_MAX 4096
+static uintptr_t g_tls_tid[EP1_TLS_MAX];
+static uintptr_t g_tls_keys[EP1_TLS_MAX];
+static void *g_tls_vals[EP1_TLS_MAX];
+static int g_tls_n;
+static pthread_mutex_t g_tls_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *my_s3e_tls_get(uintptr_t key) {
+  if (key == 0) return (void *)0;
+  uintptr_t tid = (uintptr_t)pthread_self();
+  void *r = (void *)0;
+  pthread_mutex_lock(&g_tls_lock);
+  for (int i = 0; i < g_tls_n; i++)
+    if (g_tls_keys[i] == key && g_tls_tid[i] == tid) { r = g_tls_vals[i]; break; }
+  pthread_mutex_unlock(&g_tls_lock);
+  return r;
+}
+static void my_s3e_tls_set(uintptr_t key, void *val) {
+  if (key == 0) return;
+  uintptr_t tid = (uintptr_t)pthread_self();
+  pthread_mutex_lock(&g_tls_lock);
+  for (int i = 0; i < g_tls_n; i++)
+    if (g_tls_keys[i] == key && g_tls_tid[i] == tid) {
+      g_tls_vals[i] = val; pthread_mutex_unlock(&g_tls_lock); return;
+    }
+  if (g_tls_n < EP1_TLS_MAX) {
+    g_tls_tid[g_tls_n] = tid; g_tls_keys[g_tls_n] = key;
+    g_tls_vals[g_tls_n] = val; g_tls_n++;
+  }
+  pthread_mutex_unlock(&g_tls_lock);
+}
+
 static void install_s3efile_shims(uintptr_t base) {
   if (!base || getenv("SONIC4EP1_NO_FILESHIM"))
     return;
+  if (!getenv("SONIC4EP1_NO_TLSMAP")) {
+    hook_arm(base + 0x82d60, (uintptr_t)my_s3e_tls_get);
+    hook_arm(base + 0x82d70, (uintptr_t)my_s3e_tls_set);
+    debugPrintf("TLSMAP: s3eThreadLocal get/set emulados (mapa global)\n");
+  }
   if (getenv("SONIC4EP1_HOOK62D90"))
     hook_arm(base + 0x62d90, (uintptr_t)my_s3eFile_internal_open);
-  if (getenv("SONIC4EP1_SURFOBJ"))
+  if (getenv("SONIC4EP1_SURFDIAG")) {
+    real_surf_init_7f928 = (unsigned (*)(void))make_arm_trampoline(base + 0x7f928);
+    hook_arm(base + 0x7f928, (uintptr_t)diag_surf_init_7f928);
+    hook_arm(base + 0x82d60, (uintptr_t)diag_tls_getter);
+    real_devreg_58cdc = (unsigned (*)(unsigned))make_arm_trampoline(base + 0x58cdc);
+    hook_arm(base + 0x58cdc, (uintptr_t)diag_devreg_58cdc);
+    debugPrintf("SURFDIAG: hooks 0x7f928 + 0x82d60 + 0x58cdc instalados\n");
+  }
+  if (!getenv("SONIC4EP1_NO_CFG_NODISABLE")) {
+    real_cfg_internal_52628 =
+        (int (*)(const char *))make_arm_trampoline(base + 0x52628);
+    hook_arm(base + 0x52628, (uintptr_t)my_cfg_internal_52628);
+    debugPrintf("CFGINT: hook 0x52628 (Disable*->0) instalado\n");
+  }
+  if (getenv("SONIC4EP1_FAKE_FILEREG")) {
+    hook_arm(base + 0x5f02c, (uintptr_t)my_filereg_5f02c);
+    debugPrintf("FILEREG: hook 0x5f02c instalado\n");
+  }
+  if (getenv("SONIC4EP1_CPUINFO_HOOK") || getenv("SONIC4EP1_CPUINFO0")) {
+    real_cpuinfo_3e970 = (unsigned (*)(void))make_arm_trampoline(base + 0x3e970);
+    hook_arm(base + 0x3e970, (uintptr_t)diag_cpuinfo_3e970);
+    debugPrintf("CPUINFO: hook 0x3e970 instalado\n");
+  }
+  if (getenv("SONIC4EP1_SURFOBJ") && !getenv("SONIC4EP1_SURFDIAG"))
     hook_arm(base + 0x82d60, (uintptr_t)my_tls_getter);
   if (getenv("SONIC4EP1_RESOLVE"))
     hook_arm(base + 0x67708, (uintptr_t)my_s3eFile_resolve);
@@ -1098,8 +1327,18 @@ static void install_s3econfig_shims(uintptr_t base) {
     hook_arm(base + 0x522b4, (uintptr_t)my_s3eConfigGetString);
     hook_arm(base + 0x524d4, (uintptr_t)my_s3eConfigGetIntHash);
     hook_arm(base + 0x521f4, (uintptr_t)my_s3eConfigGetStringHash);
+    debugPrintf("shim: s3eConfig GetXxx no-op (opt-in)\n");
+  }
+  /* s3 (2026-06-29): 0x3a9f4 NAO e parser de config — a tabela JNINativeMethod
+   * diz que e o NATIVO `setViewNative` (assinatura (JNIEnv*,jobject,jobject);
+   * faz NewGlobalRef/GetObjectClass/GetMethodID na view e cacheia os handles
+   * glSwapBuffers/doDraw/soundInit nos globais do engine). Stubá-lo (s2, por
+   * engano) impede o engine de obter esses handles -> o surface object nunca e
+   * criado -> crash do surface (TLS 0x82d60 / 0x5db04 / 0x7be40). Por isso AGORA
+   * fica OFF por padrao (setViewNative roda); so stuba se SONIC4EP1_STUB_SETVIEW. */
+  if (getenv("SONIC4EP1_STUB_SETVIEW")) {
     hook_arm(base + 0x3a9f4, (uintptr_t)my_cfg_load_noop);
-    debugPrintf("shim: s3eConfig GetXxx + parser no-op (opt-in)\n");
+    debugPrintf("shim: setViewNative 0x3a9f4 STUBADO (opt-in)\n");
   }
 }
 
@@ -1125,7 +1364,22 @@ static int marm_gate_13c44(void) {
   else if (!getcwd(g_deploy_dir, sizeof(g_deploy_dir)))
     snprintf(g_deploy_dir, sizeof(g_deploy_dir), ".");
   *(const char **)(base + 0xc5950 + 396) = g_deploy_dir;
-  return real_gate_13c44 ? real_gate_13c44() : 1;
+  int gr = real_gate_13c44 ? real_gate_13c44() : 1;
+  /* s3 (2026-06-29): o SURFDIAG mostrou que a init do surface 0x7f928 NUNCA e
+   * chamada pelo device-register no so-loader -> a TLS key em 0xc9a74 fica 0 e o
+   * surface object NULL -> crash 0x5db04. Forcamos 0x7f928 AQUI: bootstrap A ja
+   * registrou os subsistemas (device globals prontos) e estamos na MAIN thread
+   * (mesma do frame loop), entao o MakeCurrent interno de 0x7f928 binda o surface
+   * na thread certa. Gated por SONIC4EP1_FORCE_SURFINIT (default ON via run.sh). */
+  if (getenv("SONIC4EP1_FORCE_SURFINIT") && base) {
+    unsigned before = *(unsigned *)(base + 0xc9a74);
+    unsigned sr = ((unsigned (*)(void))(base + 0x7f928))();
+    unsigned after = *(unsigned *)(base + 0xc9a74);
+    void *bound = after ? pthread_getspecific((pthread_key_t)(after - 1)) : 0;
+    debugPrintf("FORCE_SURFINIT: 0x7f928 ret=%u key %u->%u bound=%p thread=%p\n",
+                sr, before, after, bound, (void *)pthread_self());
+  }
+  return gr;
 }
 
 static void patch_rel_ret0(uintptr_t rel, const char *name) {
@@ -1201,10 +1455,22 @@ static void patch_marmalade_guards(void) {
    */
   if (base && !getenv("SONIC4EP1_NO_CAPFIX")) {
     volatile uint32_t *p = (volatile uint32_t *)(base + 0x58d60);
-    *p = 0xe3e03000u; /* mvn r3, #0 */
+    /* s3 (2026-06-29): o device-register (0x58cdc) faz `r4 = requested & ~[r6+76]`
+     * e registra os subsistemas em r4. [r6+76] = 0x10000000 | r3 (r3 vem de
+     * [config+832], PATCHADO aqui). Com `mvn r3,#0` (=0xffffffff) TODOS os bits
+     * ficam "ja registrados" -> r4=0 -> NADA registra, incl. o ThreadCore/TLS
+     * (bit 0x8, init 0x7f928 que cria a key do surface em 0xc9a74) -> crash do
+     * surface. Solucao: `mvn r3,#8` (=0xfffffff7) marca tudo MENOS o bit 0x8,
+     * entao o dispatch registra SO o ThreadCore (cria a TLS/surface) e o resto
+     * fica "disponivel" pro gate 0x13c44. SONIC4EP1_CAPFIX_ALLBITS volta ao antigo. */
+    if (getenv("SONIC4EP1_CAPFIX_ALLBITS"))
+      *p = 0xe3e03000u; /* mvn r3, #0  -> caps = 0xffffffff (comportamento antigo) */
+    else
+      *p = 0xe3e03008u; /* mvn r3, #8  -> caps = 0xfffffff7 (registra ThreadCore) */
     __builtin___clear_cache((char *)(base + 0x58d60), (char *)(base + 0x58d64));
-    debugPrintf("patch: CAPS FIX @ %p (0x58d60 ldr->mvn r3,#0)\n",
-                (void *)(base + 0x58d60));
+    debugPrintf("patch: CAPS FIX @ %p (0x58d60 ldr->mvn r3,#%d)\n",
+                (void *)(base + 0x58d60),
+                getenv("SONIC4EP1_CAPFIX_ALLBITS") ? 0 : 8);
   }
 
   /*
@@ -1718,9 +1984,22 @@ static void wrap_glColorPointer(int size, unsigned int type, int stride,
   gl_trace_err("glColorPointer");
 }
 
+static const unsigned char *(*real_glGetString)(unsigned);
+static const unsigned char *wrap_glGetString(unsigned name) {
+  const unsigned char *r = real_glGetString ? real_glGetString(name) : 0;
+  debugPrintf("GL: glGetString(0x%x) -> '%s'\n", name,
+              r ? (const char *)r : "(null)");
+  return r;
+}
+static int (*real_glGetIntegerv_n)(unsigned, int *);
+
 static void *sonic4ep1_gl_hook(const char *symbol, void *p) {
   if (!symbol || !p)
     return p;
+  if (getenv("SONIC4EP1_GLLOG") && strcmp(symbol, "glGetString") == 0) {
+    real_glGetString = (const unsigned char *(*)(unsigned))p;
+    return (void *)wrap_glGetString;
+  }
   if (!want_gl_hook())
     return p;
 #define GL_HOOK(name) \
@@ -1777,6 +2056,7 @@ int main(int argc, char *argv[]) {
   if (load_module("libs3eAPKExpansion.so", 8, 1) < 0) return 1;
   if (load_module("libs3eDialog.so", 8, 1) < 0) return 1;
   if (load_module("libs3eFlurry.so", 8, 1) < 0) return 1;
+  install_apkexpansion_hooks();
 
   debugPrintf("entry: JNI_OnLoad=%p android_main=%p (combinada=%d símbolos)\n",
               (void *)g_main_jni_onload, (void *)g_main_android_main, g_comb_n);
