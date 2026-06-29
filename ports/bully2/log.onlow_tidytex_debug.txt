@@ -1,0 +1,4718 @@
+=== Bully2 original-first so-loader / NextOS Mali-450 ===
+preload: libSDL2-2.0.so.0 OK
+preload: libGLESv2.so OK
+preload: libEGL.so OK
+preload: libopenal.so.1 OK
+preload: libmpg123.so.0 OK
+preload: libm.so.6 OK
+== loading libc++_shared.so heap=0x7fa59f0000 size=48MB ==
+== libc++_shared.so text=0x7fa5a8c840+652032 data=0x7fa59f0000+1376256 ==
+libc++ exported symbols: 2358
+== loading libGame.so heap=0x7f9b8ab000 size=160MB ==
+so_load: Opening libc++_shared.so
+so_load: File size: 1330832 bytes
+so_load: ELF64 AArch64, 12 program headers, 28 section headers
+so_load: Total load size: 1376256 bytes (max: 50331648)
+so_load: load base = 0x7fa59f0000
+so_load:  PT_LOAD vaddr=0x0 file=0x9b838 mem=0x9b838 R--
+so_load:  PT_LOAD vaddr=0x9c840 file=0x9f300 mem=0x9f300 R-X
+so_load:  PT_LOAD vaddr=0x13cb40 file=0x9800 mem=0x9800 RW-
+so_load:  PT_LOAD vaddr=0x147340 file=0x1c8 mem=0x7d80 RW-
+so_load: 2523 dynamic symbols found
+so_execute_init_array: 3 construtores
+  init[0] @ 0x7fa5b24764
+  init[1] @ 0x7fa5b24c34
+  init[2] @ 0x7fa5ae2480
+so_execute_init_array: concluído (3)
+so_load: Opening libGame.so
+so_load: File size: 19252456 bytes
+so_load: ELF64 AArch64, 9 program headers, 26 section headers
+so_load: Total load size: 22597632 bytes (max: 167772160)
+so_load: load base = 0x7f9b8ab000
+so_load:  PT_LOAD vaddr=0x0 file=0x11a9290 mem=0x11a9290 R-X
+so_load:  PT_LOAD vaddr=0x11aa290 file=0x90a00 mem=0x90a00 RW-
+so_load:  PT_LOAD vaddr=0x123bc90 file=0x22008 mem=0x350ed8 RW-
+so_load: 50356 dynamic symbols found
+so_execute_init_array: 506 construtores
+  init[0] @ 0x7f9ca1f4d4
+  init[1] @ 0x7f9ca1f9a4
+  init[2] @ 0x7f9c0e0198
+  init[3] @ 0x7f9c0fca94
+  init[4] @ 0x7f9c11f55c
+  init[5] @ 0x7f9c13f34c
+  init[6] @ 0x7f9c13fe58
+  init[7] @ 0x7f9c1418dc
+  init[8] @ 0x7f9c144670
+  init[9] @ 0x7f9c1454d4
+  init[10] @ 0x7f9c1480fc
+  init[11] @ 0x7f9c14d008
+  init[12] @ 0x7f9c14f6cc
+  init[13] @ 0x7f9c154454
+  init[14] @ 0x7f9c158bf0
+  init[15] @ 0x7f9c15d6dc
+  init[16] @ 0x7f9c1613e4
+  init[17] @ 0x7f9c1c94d0
+  init[18] @ 0x7f9c1cdc90
+  init[19] @ 0x7f9c1d0ccc
+  init[20] @ 0x7f9c1e5608
+  init[21] @ 0x7f9c1f734c
+  init[22] @ 0x7f9c1f762c
+  init[23] @ 0x7f9c1ff2d0
+  init[24] @ 0x7f9c200934
+  init[25] @ 0x7f9c206d8c
+  init[26] @ 0x7f9c20784c
+  init[27] @ 0x7f9c20d8d0
+  init[28] @ 0x7f9c21117c
+  init[29] @ 0x7f9c21162c
+  init[30] @ 0x7f9c211c68
+  init[31] @ 0x7f9c215264
+  init[32] @ 0x7f9c21b570
+  init[33] @ 0x7f9c21cc04
+  init[34] @ 0x7f9c21ef04
+  init[35] @ 0x7f9c235034
+  init[36] @ 0x7f9c23b498
+  init[37] @ 0x7f9c23dd24
+  init[38] @ 0x7f9c23e56c
+  init[39] @ 0x7f9c23e798
+  init[40] @ 0x7f9c23ec44
+  init[41] @ 0x7f9c261660
+  init[42] @ 0x7f9c26226c
+  init[43] @ 0x7f9c264130
+  init[44] @ 0x7f9c274e84
+  init[45] @ 0x7f9c27e138
+  init[46] @ 0x7f9c28daf8
+  init[47] @ 0x7f9c2c8150
+  init[48] @ 0x7f9c2d17ac
+  init[49] @ 0x7f9c2deaec
+  init[50] @ 0x7f9c2fe154
+  init[51] @ 0x7f9c2fe3dc
+  init[52] @ 0x7f9c33ac34
+  init[53] @ 0x7f9c378e10
+  init[54] @ 0x7f9c37c058
+  init[55] @ 0x7f9c380148
+  init[56] @ 0x7f9c38bda4
+  init[57] @ 0x7f9c3926ac
+  init[58] @ 0x7f9c399ab8
+  init[59] @ 0x7f9c3a0a90
+  init[60] @ 0x7f9c3ab7f4
+  init[61] @ 0x7f9c3c7bfc
+  init[62] @ 0x7f9c3e24ec
+  init[63] @ 0x7f9c3e796c
+  init[64] @ 0x7f9c3f2f94
+  init[65] @ 0x7f9c3f78d0
+  init[66] @ 0x7f9c3f9a20
+  init[67] @ 0x7f9c3fad30
+  init[68] @ 0x7f9c4023a4
+  init[69] @ 0x7f9c403d40
+  init[70] @ 0x7f9c404268
+  init[71] @ 0x7f9c404970
+  init[72] @ 0x7f9c405108
+  init[73] @ 0x7f9c405570
+  init[74] @ 0x7f9c407d90
+  init[75] @ 0x7f9c409b40
+  init[76] @ 0x7f9c409c3c
+  init[77] @ 0x7f9c4149e0
+  init[78] @ 0x7f9c415838
+  init[79] @ 0x7f9c415d70
+  init[80] @ 0x7f9c4179d8
+  init[81] @ 0x7f9c41d4b4
+  init[82] @ 0x7f9c426010
+  init[83] @ 0x7f9c42716c
+  init[84] @ 0x7f9c42be74
+  init[85] @ 0x7f9c42e270
+  init[86] @ 0x7f9c432ae0
+  init[87] @ 0x7f9c434df0
+  init[88] @ 0x7f9c435e2c
+  init[89] @ 0x7f9c43af3c
+  init[90] @ 0x7f9c43c0b4
+  init[91] @ 0x7f9c43f170
+  init[92] @ 0x7f9c44953c
+  init[93] @ 0x7f9c456654
+  init[94] @ 0x7f9c457498
+  init[95] @ 0x7f9c458bac
+  init[96] @ 0x7f9c4594a8
+  init[97] @ 0x7f9c45c550
+  init[98] @ 0x7f9c45de2c
+  init[99] @ 0x7f9c45e1b8
+  init[100] @ 0x7f9c46a1e4
+  init[101] @ 0x7f9c46f010
+  init[102] @ 0x7f9c46f62c
+  init[103] @ 0x7f9c4701f8
+  init[104] @ 0x7f9c472f1c
+  init[105] @ 0x7f9c4767c0
+  init[106] @ 0x7f9c477a4c
+  init[107] @ 0x7f9c47a898
+  init[108] @ 0x7f9c48020c
+  init[109] @ 0x7f9c482a3c
+  init[110] @ 0x7f9c483b54
+  init[111] @ 0x7f9c4853dc
+  init[112] @ 0x7f9c4873fc
+  init[113] @ 0x7f9c488b1c
+  init[114] @ 0x7f9c493384
+  init[115] @ 0x7f9c4945f8
+  init[116] @ 0x7f9c498000
+  init[117] @ 0x7f9c498890
+  init[118] @ 0x7f9c499c78
+  init[119] @ 0x7f9c499ec0
+  init[120] @ 0x7f9c499f14
+  init[121] @ 0x7f9c49a184
+  init[122] @ 0x7f9c49b1c4
+  init[123] @ 0x7f9c49df2c
+  init[124] @ 0x7f9c49f2f4
+  init[125] @ 0x7f9c4a419c
+  init[126] @ 0x7f9c4a76f4
+  init[127] @ 0x7f9c4a955c
+  init[128] @ 0x7f9c4a9958
+  init[129] @ 0x7f9c4aaec4
+  init[130] @ 0x7f9c4abb6c
+  init[131] @ 0x7f9c4acc6c
+  init[132] @ 0x7f9c4b0b94
+  init[133] @ 0x7f9c4b2338
+  init[134] @ 0x7f9c4b23cc
+  init[135] @ 0x7f9c4c7804
+  init[136] @ 0x7f9c4c7868
+  init[137] @ 0x7f9c4c8f50
+  init[138] @ 0x7f9c4cc618
+  init[139] @ 0x7f9c4cd368
+  init[140] @ 0x7f9c4cd3dc
+  init[141] @ 0x7f9c4cf270
+  init[142] @ 0x7f9c4d072c
+  init[143] @ 0x7f9c4d1328
+  init[144] @ 0x7f9c4d2a14
+  init[145] @ 0x7f9c4d36ac
+  init[146] @ 0x7f9c4d3b08
+  init[147] @ 0x7f9c4d3d80
+  init[148] @ 0x7f9c4d4bf8
+  init[149] @ 0x7f9c4e0dac
+  init[150] @ 0x7f9c4e4cdc
+  init[151] @ 0x7f9c4e5b38
+  init[152] @ 0x7f9c4e6818
+  init[153] @ 0x7f9c4e6a38
+  init[154] @ 0x7f9c4e6d28
+  init[155] @ 0x7f9c4e9034
+  init[156] @ 0x7f9c4f217c
+  init[157] @ 0x7f9c4f5778
+  init[158] @ 0x7f9c4f7230
+  init[159] @ 0x7f9c4f916c
+  init[160] @ 0x7f9c4fb600
+  init[161] @ 0x7f9c500c38
+  init[162] @ 0x7f9c501dd8
+  init[163] @ 0x7f9c503ecc
+  init[164] @ 0x7f9c50ae94
+  init[165] @ 0x7f9c51d4e4
+  init[166] @ 0x7f9c52ba20
+  init[167] @ 0x7f9c52bdd8
+  init[168] @ 0x7f9c52e104
+  init[169] @ 0x7f9c531834
+  init[170] @ 0x7f9c5320bc
+  init[171] @ 0x7f9c535bec
+  init[172] @ 0x7f9c537c1c
+  init[173] @ 0x7f9c5381b8
+  init[174] @ 0x7f9c53a1c8
+  init[175] @ 0x7f9c53a77c
+  init[176] @ 0x7f9c543db0
+  init[177] @ 0x7f9c545c64
+  init[178] @ 0x7f9c547448
+  init[179] @ 0x7f9c547510
+  init[180] @ 0x7f9c559a7c
+  init[181] @ 0x7f9c55c4dc
+  init[182] @ 0x7f9c55f174
+  init[183] @ 0x7f9c56b1bc
+  init[184] @ 0x7f9c56c48c
+  init[185] @ 0x7f9c56c7cc
+  init[186] @ 0x7f9c57019c
+  init[187] @ 0x7f9c5728fc
+  init[188] @ 0x7f9c57bd5c
+  init[189] @ 0x7f9c57bdd8
+  init[190] @ 0x7f9c580968
+  init[191] @ 0x7f9c5818fc
+  init[192] @ 0x7f9c5825c4
+  init[193] @ 0x7f9c5841b4
+  init[194] @ 0x7f9c588dc0
+  init[195] @ 0x7f9c589274
+  init[196] @ 0x7f9c58c004
+  init[197] @ 0x7f9c58c674
+  init[198] @ 0x7f9c58cb78
+  init[199] @ 0x7f9c58d580
+  init[200] @ 0x7f9c58e71c
+  init[201] @ 0x7f9c58eb00
+  init[202] @ 0x7f9c58f360
+  init[203] @ 0x7f9c592848
+  init[204] @ 0x7f9c5931e0
+  init[205] @ 0x7f9c5937f0
+  init[206] @ 0x7f9c5977fc
+  init[207] @ 0x7f9c5982d0
+  init[208] @ 0x7f9c598538
+  init[209] @ 0x7f9c599b24
+  init[210] @ 0x7f9c59ab24
+  init[211] @ 0x7f9c59aed8
+  init[212] @ 0x7f9c59bc88
+  init[213] @ 0x7f9c59c26c
+  init[214] @ 0x7f9c59cf04
+  init[215] @ 0x7f9c59e588
+  init[216] @ 0x7f9c59f02c
+  init[217] @ 0x7f9c5ae1e0
+  init[218] @ 0x7f9c5b0214
+  init[219] @ 0x7f9c5b5798
+  init[220] @ 0x7f9c5b5c68
+  init[221] @ 0x7f9c5b7e18
+  init[222] @ 0x7f9c5b81c4
+  init[223] @ 0x7f9c5b9b00
+  init[224] @ 0x7f9c5bb7f4
+  init[225] @ 0x7f9c5bdc20
+  init[226] @ 0x7f9c5be1a4
+  init[227] @ 0x7f9c5be2c8
+  init[228] @ 0x7f9c5c0560
+  init[229] @ 0x7f9c5c22b8
+  init[230] @ 0x7f9c5d1aec
+  init[231] @ 0x7f9c5d1dac
+  init[232] @ 0x7f9c5d7490
+  init[233] @ 0x7f9c5dfd94
+  init[234] @ 0x7f9c5e2414
+  init[235] @ 0x7f9c5e3784
+  init[236] @ 0x7f9c5e40dc
+  init[237] @ 0x7f9c5e4e7c
+  init[238] @ 0x7f9c5e68ac
+  init[239] @ 0x7f9c5e7280
+  init[240] @ 0x7f9c5e7a58
+  init[241] @ 0x7f9c5e9b04
+  init[242] @ 0x7f9c614fdc
+  init[243] @ 0x7f9c61cdac
+  init[244] @ 0x7f9c61f5b0
+  init[245] @ 0x7f9c623a24
+  init[246] @ 0x7f9c624760
+  init[247] @ 0x7f9c626918
+  init[248] @ 0x7f9c6281f8
+  init[249] @ 0x7f9c62c8bc
+  init[250] @ 0x7f9c62e430
+  init[251] @ 0x7f9c631b28
+  init[252] @ 0x7f9c632c8c
+  init[253] @ 0x7f9c637a20
+  init[254] @ 0x7f9c63e904
+  init[255] @ 0x7f9c63fcac
+  init[256] @ 0x7f9c6429b0
+  init[257] @ 0x7f9c647a34
+  init[258] @ 0x7f9c66d5c8
+  init[259] @ 0x7f9c66f038
+  init[260] @ 0x7f9c674454
+  init[261] @ 0x7f9c67b0f4
+  init[262] @ 0x7f9c67cb10
+  init[263] @ 0x7f9c67ce60
+  init[264] @ 0x7f9c67d0e8
+  init[265] @ 0x7f9c67e6e4
+  init[266] @ 0x7f9c67eea0
+  init[267] @ 0x7f9c684ccc
+  init[268] @ 0x7f9c685260
+  init[269] @ 0x7f9c68530c
+  init[270] @ 0x7f9c68548c
+  init[271] @ 0x7f9c68a4e8
+  init[272] @ 0x7f9c68f2f8
+  init[273] @ 0x7f9c692e10
+  init[274] @ 0x7f9c693ec4
+  init[275] @ 0x7f9c694ea0
+  init[276] @ 0x7f9c695dec
+  init[277] @ 0x7f9c6975a0
+  init[278] @ 0x7f9c6986ec
+  init[279] @ 0x7f9c699998
+  init[280] @ 0x7f9c69aa60
+  init[281] @ 0x7f9c69ae10
+  init[282] @ 0x7f9c69afac
+  init[283] @ 0x7f9c69b794
+  init[284] @ 0x7f9c69b9cc
+  init[285] @ 0x7f9c69c554
+  init[286] @ 0x7f9c69c79c
+  init[287] @ 0x7f9c69d2d4
+  init[288] @ 0x7f9c69d540
+  init[289] @ 0x7f9c6ab64c
+  init[290] @ 0x7f9c6ad1a0
+  init[291] @ 0x7f9c6b390c
+  init[292] @ 0x7f9c6b3e64
+  init[293] @ 0x7f9c6b6a20
+  init[294] @ 0x7f9c6b793c
+  init[295] @ 0x7f9c6bc234
+  init[296] @ 0x7f9c6bc974
+  init[297] @ 0x7f9c6cfe90
+  init[298] @ 0x7f9c6d03d8
+  init[299] @ 0x7f9c6d573c
+  init[300] @ 0x7f9c6d6780
+  init[301] @ 0x7f9c6d8c18
+  init[302] @ 0x7f9c6d93d0
+  init[303] @ 0x7f9c6dbc6c
+  init[304] @ 0x7f9c6ddf80
+  init[305] @ 0x7f9c6de178
+  init[306] @ 0x7f9c6de444
+  init[307] @ 0x7f9c6df314
+  init[308] @ 0x7f9c6df72c
+  init[309] @ 0x7f9c6e0540
+  init[310] @ 0x7f9c6e06cc
+  init[311] @ 0x7f9c6e0778
+  init[312] @ 0x7f9c6e52b4
+  init[313] @ 0x7f9c6e7e5c
+  init[314] @ 0x7f9c6e8120
+  init[315] @ 0x7f9c6f2924
+  init[316] @ 0x7f9c6f4b2c
+  init[317] @ 0x7f9c6f6698
+  init[318] @ 0x7f9c6f6d20
+  init[319] @ 0x7f9c6fd610
+  init[320] @ 0x7f9c7013c8
+  init[321] @ 0x7f9c702460
+  init[322] @ 0x7f9c7046b8
+  init[323] @ 0x7f9c70741c
+  init[324] @ 0x7f9c707470
+  init[325] @ 0x7f9c70adac
+  init[326] @ 0x7f9c710c80
+  init[327] @ 0x7f9c712398
+  init[328] @ 0x7f9c714bac
+  init[329] @ 0x7f9c71eaac
+  init[330] @ 0x7f9c720fb8
+  init[331] @ 0x7f9c72230c
+  init[332] @ 0x7f9c72258c
+  init[333] @ 0x7f9c722c68
+  init[334] @ 0x7f9c725750
+  init[335] @ 0x7f9c725b40
+  init[336] @ 0x7f9c725e98
+  init[337] @ 0x7f9c7261c8
+  init[338] @ 0x7f9c726dd0
+  init[339] @ 0x7f9c72794c
+  init[340] @ 0x7f9c727b8c
+  init[341] @ 0x7f9c7284c0
+  init[342] @ 0x7f9c729120
+  init[343] @ 0x7f9c72988c
+  init[344] @ 0x7f9c72a364
+  init[345] @ 0x7f9c72b774
+  init[346] @ 0x7f9c72bf94
+  init[347] @ 0x7f9c72ca18
+  init[348] @ 0x7f9c72d2d4
+  init[349] @ 0x7f9c72dc44
+  init[350] @ 0x7f9c72e2d8
+  init[351] @ 0x7f9c731a28
+  init[352] @ 0x7f9c7325fc
+  init[353] @ 0x7f9c73dbb8
+  init[354] @ 0x7f9c73dd34
+  init[355] @ 0x7f9c73fd54
+  init[356] @ 0x7f9c74052c
+  init[357] @ 0x7f9c7451a4
+  init[358] @ 0x7f9c745688
+  init[359] @ 0x7f9c7460b8
+  init[360] @ 0x7f9c749104
+  init[361] @ 0x7f9c74a3cc
+  init[362] @ 0x7f9c74a644
+  init[363] @ 0x7f9c74b12c
+  init[364] @ 0x7f9c74b650
+  init[365] @ 0x7f9c74e86c
+  init[366] @ 0x7f9c752d6c
+  init[367] @ 0x7f9c757c18
+  init[368] @ 0x7f9c758078
+  init[369] @ 0x7f9c75add0
+  init[370] @ 0x7f9c75b6e4
+  init[371] @ 0x7f9c75b848
+  init[372] @ 0x7f9c75eaf8
+  init[373] @ 0x7f9c763664
+  init[374] @ 0x7f9c777b9c
+  init[375] @ 0x7f9c77dd90
+  init[376] @ 0x7f9c781b30
+  init[377] @ 0x7f9c78245c
+  init[378] @ 0x7f9c7871c0
+  init[379] @ 0x7f9c78d06c
+  init[380] @ 0x7f9c791044
+  init[381] @ 0x7f9c7935d0
+  init[382] @ 0x7f9c796aa0
+  init[383] @ 0x7f9c7a1cb8
+  init[384] @ 0x7f9c7a4c44
+  init[385] @ 0x7f9c7a5fc8
+  init[386] @ 0x7f9c7a742c
+  init[387] @ 0x7f9c7a8080
+  init[388] @ 0x7f9c7aa6c0
+  init[389] @ 0x7f9c7b3840
+  init[390] @ 0x7f9c7b4544
+  init[391] @ 0x7f9c7b68f0
+  init[392] @ 0x7f9c7b6ee4
+  init[393] @ 0x7f9c7be0a8
+  init[394] @ 0x7f9c7bee24
+  init[395] @ 0x7f9c7bf560
+  init[396] @ 0x7f9c7c1390
+  init[397] @ 0x7f9c7c19b8
+  init[398] @ 0x7f9c7c49fc
+  init[399] @ 0x7f9c7c4f50
+  init[400] @ 0x7f9c7c7388
+  init[401] @ 0x7f9c7c7918
+  init[402] @ 0x7f9c7c8cac
+  init[403] @ 0x7f9c7c9e38
+  init[404] @ 0x7f9c7cac38
+  init[405] @ 0x7f9c8cc1e8
+  init[406] @ 0x7f9c8ce27c
+  init[407] @ 0x7f9c8cf000
+  init[408] @ 0x7f9c8d2058
+  init[409] @ 0x7f9c8d36fc
+  init[410] @ 0x7f9c8d69e8
+  init[411] @ 0x7f9c8d77cc
+  init[412] @ 0x7f9c8d8390
+  init[413] @ 0x7f9c8db35c
+  init[414] @ 0x7f9c8de58c
+  init[415] @ 0x7f9c8e0404
+  init[416] @ 0x7f9c8e55c4
+  init[417] == libGame.so text=0x7f9b8ab000+18518672 data=0x7f9b8ab000+22597632 ==
+=== entering JNI lifecycle ===
+[drv] NvAPK mode: native-libGame
+[evict] enabled mode=onlow budget=128 MB request=64 MB LoadScene=0x7f9c774cd4 budget_hook=0 tramp=0x7fa9815000 used=0x7f9c788e14 low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 process=0x7f9c55cd84 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 all=0x7f9c767558 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c txdmem=0x7f9cd16808 heapcache=0x7f9cd165d8 stream=0x7f9cd0a2f4/0x7f9cd0a3dc
+[drv] impl*: setup=0x7f9ca00e4c act=0x7f9ca00f60 surfC=0x7f9c9fed70 surfCh=0x7f9c9fed7c draw=0x7f9ca010b8 resume=0x7f9ca01020
+[drv] StorageRootPath=0x7f9ce35c48
+[drv] JNI_OnLoad => 0x10004
+[drv] implOnInitialSetup...
+[ALOG:3 OSWrapper] AttachCurrentThread: 0, 0x0x5571764e80
+[ALOG:3 OSWrapper] AttachCurrentThread: 0, 0x0x5571764e80
+[ALOG:3 OSWrapper] [!!] Storage root is .
+[drv] implOnInitialSetup OK
+[drv] OS_ZipAdd data_0.zip
+[drv] OS_ZipAdd data_1.zip
+[drv] OS_ZipAdd data_2.zip
+[drv] OS_ZipAdd data_3.zip
+[drv] OS_ZipAdd data_4.zip
+[drv] implOnActivityCreated...
+[drv] implOnActivityCreated OK
+[gl] 1280x720 driver=mali | EGL d=0x1 s=0x20000001 c=0x40000001 | Mali-450 MP / OpenGL ES 2.0
+[pad] SDL_NumJoysticks=1
+[pad] js0 "USB Gamepad" isGameController=1
+[pad] opened: OK
+[drv] OS_EGL globals: d=0x1 s=0x20000001 c=0x40000001
+[drv] implOnSurfaceCreated...
+[drv] implOnSurfaceChanged 1280x720...
+[ALOG:3 OSWrapper] [!!] AND_RenderThread_OnDestroyEglSurface: enqueuing for game thread
+[ALOG:3 OSWrapper] [!!] AND_RenderThread_OnCreateEglSurface: enqueuing for game thread
+[drv] OS_EGL globals re-seeded
+[drv] implOnResume...
+[async] AND_FileUpdated=0x7f9c9ff970 firstAsyncFile=0x7f9ce359a0
+[async] worker started
+[drv] -- loop implOnDrawFrame --
+[pad] BULLY2_INPUT=gptk
+[ALOG:3 OSWrapper] [!!] OS_RockstarShowInitial
+[jni] rockstarShowInitial -> pending
+[stream] frame=0 asset_kb=1052
+[drv] frame 0
+[glmem] frame live=0 MB peak=0 MB gen=0 del=0 upload=0 bound2d=0 boundcube=0
+[drv] frame 1
+[glmem] frame live=0 MB peak=0 MB gen=0 del=0 upload=0 bound2d=0 boundcube=0
+[drv] frame 2
+[glmem] frame live=0 MB peak=0 MB gen=0 del=0 upload=0 bound2d=0 boundcube=0
+[drv] frame 3
+[glmem] frame live=0 MB peak=0 MB gen=0 del=0 upload=0 bound2d=0 boundcube=0
+[drv] frame 4
+[glmem] frame live=0 MB peak=0 MB gen=0 del=0 upload=0 bound2d=0 boundcube=0
+[drv] Rockstar complete frame=31 type=0
+[ALOG:3 OSWrapper] [!!] OS_OnRockstarInitialComplete
+[ALOG:3 OSWrapper] [!!] OS_OnRockstarGateComplete: pass
+[ALOG:3 OSWrapper] [!!] OS_ApplicationEvent: OSET_Resume
+[gl] OS_ThreadUnmakeCurrent tid=548304674848
+[thr] OS_ThreadLaunch 'GameMain' -> 0x55afb5f1e0
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[ALOG:3 OSWrapper] AttachCurrentThread: 0, 0x0x5571764e80
+[stream] frame=32 asset_kb=131
+[stream] frame=33 asset_kb=131
+[stream] frame=34 asset_kb=124
+[stream] frame=35 asset_kb=133
+[stream] frame=36 asset_kb=98
+[stream] frame=37 asset_kb=132
+[stream] frame=38 asset_kb=129
+[stream] frame=39 asset_kb=127
+[stream] frame=40 asset_kb=51
+[stream] frame=43 asset_kb=768
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=60 asset_kb=0
+[thr] OS_ThreadLaunch 'Sound' -> 0x7f90d300f0
+[stream] frame=80 asset_kb=2
+[stream] frame=82 asset_kb=585
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=86 asset_kb=15
+[stream] frame=87 asset_kb=5
+[stream] frame=88 asset_kb=5
+[stream] frame=89 asset_kb=3
+[stream] frame=91 asset_kb=2
+[stream] frame=93 asset_kb=2
+[stream] frame=94 asset_kb=3
+[stream] frame=104 asset_kb=5
+[stream] frame=106 asset_kb=7
+[stream] frame=108 asset_kb=11
+[stream] frame=109 asset_kb=3
+[stream] frame=110 asset_kb=2
+[stream] frame=113 asset_kb=1
+[stream] frame=114 asset_kb=3
+[stream] frame=115 asset_kb=3
+[stream] frame=120 asset_kb=6
+[stream] frame=121 asset_kb=2
+[stream] frame=122 asset_kb=3
+[stream] frame=123 asset_kb=5
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[stream] frame=124 asset_kb=3
+[stream] frame=180 asset_kb=0
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=195 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[thr] OS_ThreadLaunch 'RenderThread' -> 0x7f90d2dc60
+[stream] frame=196 asset_kb=2
+[stream] frame=199 asset_kb=1040
+[stream] frame=240 asset_kb=0
+[stream] frame=300 asset_kb=0
+[drv] frame 300
+[glmem] frame live=0 MB peak=0 MB gen=3 del=0 upload=9 bound2d=0 boundcube=0
+[stream] frame=360 asset_kb=0
+[stream] frame=364 asset_kb=54
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=366 asset_kb=89
+[stream] frame=368 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=369 asset_kb=173
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[stream] frame=374 asset_kb=174
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=376 asset_kb=23
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[stream] frame=377 asset_kb=174
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=379 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=380 asset_kb=259
+[stream] frame=381 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[thr] OS_ThreadLaunch 'SCListener' -> 0x7f90d2d850
+[thr] OS_ThreadLaunch 'SCUpdate' -> 0x7f90d2a380
+[stream] frame=382 asset_kb=173
+[stream] frame=384 asset_kb=38
+[stream] frame=385 asset_kb=35
+[stream] frame=386 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=390 asset_kb=1366
+[stream] frame=397 asset_kb=37
+[stream] frame=398 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=402 asset_kb=1366
+[stream] frame=405 asset_kb=1
+[stream] frame=406 asset_kb=30
+[stream] frame=408 asset_kb=30
+[stream] frame=409 asset_kb=2
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=410 asset_kb=1366
+[stream] frame=415 asset_kb=1
+[stream] frame=417 asset_kb=428
+[stream] frame=420 asset_kb=0
+[stream] frame=421 asset_kb=1
+[stream] frame=427 asset_kb=2353
+[thr] OS_ThreadLaunch 'CDStreamThread' -> 0x7f91711ef0
+[stream] frame=448 asset_kb=38
+[stream] frame=450 asset_kb=284
+[stream] frame=458 asset_kb=198
+[stream] frame=459 asset_kb=46
+[stream] frame=460 asset_kb=168
+[stream] frame=467 asset_kb=204
+[stream] frame=468 asset_kb=282
+[stream] frame=469 asset_kb=38
+[stream] frame=470 asset_kb=392
+[stream] frame=477 asset_kb=26
+[stream] frame=479 asset_kb=122
+[stream] frame=480 asset_kb=38
+[stream] frame=483 asset_kb=942
+[stream] frame=484 asset_kb=234
+[stream] frame=486 asset_kb=116
+[stream] frame=487 asset_kb=102
+[stream] frame=488 asset_kb=302
+[stream] frame=489 asset_kb=46
+[stream] frame=491 asset_kb=420
+[stream] frame=492 asset_kb=282
+[stream] frame=499 asset_kb=160
+[stream] frame=500 asset_kb=278
+[stream] frame=501 asset_kb=238
+[stream] frame=502 asset_kb=304
+[stream] frame=503 asset_kb=1096
+[stream] frame=504 asset_kb=82
+[stream] frame=505 asset_kb=482
+[stream] frame=511 asset_kb=378
+[stream] frame=512 asset_kb=66
+[stream] frame=515 asset_kb=596
+[stream] frame=516 asset_kb=532
+[stream] frame=517 asset_kb=428
+[stream] frame=518 asset_kb=486
+[stream] frame=519 asset_kb=80
+[stream] frame=521 asset_kb=22
+[stream] frame=523 asset_kb=3
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[gl] OS_ThreadUnmakeCurrent tid=548015722656
+[stream] frame=524 asset_kb=3
+[gl] OS_ThreadMakeCurrent tid=548015722656 ok=1
+[stream] frame=525 asset_kb=56
+[stream] frame=526 asset_kb=149
+[stream] frame=528 asset_kb=36
+[stream] frame=529 asset_kb=70
+[stream] frame=530 asset_kb=21
+[stream] frame=531 asset_kb=72
+[stream] frame=532 asset_kb=2
+[stream] frame=533 asset_kb=171
+[stream] frame=535 asset_kb=37
+[stream] frame=536 asset_kb=140
+[stream] frame=537 asset_kb=12
+[stream] frame=538 asset_kb=1
+[stream] frame=539 asset_kb=596
+[stream] frame=540 asset_kb=0
+[stream] frame=545 asset_kb=68
+[stream] frame=546 asset_kb=377
+[stream] frame=550 asset_kb=11
+[stream] frame=551 asset_kb=10
+[stream] frame=552 asset_kb=8
+[stream] frame=557 asset_kb=250
+[stream] frame=558 asset_kb=812
+[stream] frame=559 asset_kb=109
+[stream] frame=560 asset_kb=64
+[stream] frame=564 asset_kb=1456
+[stream] frame=571 asset_kb=2
+[stream] frame=575 asset_kb=1
+[stream] frame=576 asset_kb=179
+[stream] frame=577 asset_kb=130
+[stream] frame=578 asset_kb=75
+[stream] frame=579 asset_kb=214
+[stream] frame=580 asset_kb=132
+[stream] frame=581 asset_kb=197
+[stream] frame=582 asset_kb=193
+[stream] frame=583 asset_kb=193
+[stream] frame=584 asset_kb=194
+[stream] frame=585 asset_kb=65
+[stream] frame=586 asset_kb=151
+[stream] frame=587 asset_kb=151
+[stream] frame=588 asset_kb=193
+[stream] frame=589 asset_kb=87
+[stream] frame=590 asset_kb=135
+[stream] frame=591 asset_kb=66
+[stream] frame=592 asset_kb=150
+[stream] frame=594 asset_kb=151
+[stream] frame=595 asset_kb=193
+[stream] frame=596 asset_kb=193
+[stream] frame=597 asset_kb=193
+[stream] frame=598 asset_kb=51
+[stream] frame=599 asset_kb=5
+[stream] frame=600 asset_kb=0
+[drv] frame 600
+[glmem] frame live=8 MB peak=8 MB gen=95 del=0 upload=654 bound2d=0 boundcube=0
+[stream] frame=602 asset_kb=13
+[stream] frame=603 asset_kb=76
+[stream] frame=605 asset_kb=26
+[stream] frame=608 asset_kb=59
+[stream] frame=609 asset_kb=2
+[stream] frame=610 asset_kb=176
+[stream] frame=613 asset_kb=2
+[stream] frame=614 asset_kb=547
+[stream] frame=620 asset_kb=53
+[stream] frame=621 asset_kb=2
+[stream] frame=623 asset_kb=635
+[stream] frame=626 asset_kb=11
+[stream] frame=627 asset_kb=33
+[stream] frame=628 asset_kb=33
+[stream] frame=629 asset_kb=32
+[stream] frame=630 asset_kb=33
+[stream] frame=631 asset_kb=33
+[stream] frame=632 asset_kb=37
+[stream] frame=633 asset_kb=23
+[stream] frame=634 asset_kb=27
+[stream] frame=635 asset_kb=33
+[stream] frame=636 asset_kb=33
+[stream] frame=637 asset_kb=27
+[stream] frame=638 asset_kb=28
+[stream] frame=639 asset_kb=42
+[stream] frame=640 asset_kb=33
+[stream] frame=641 asset_kb=33
+[stream] frame=642 asset_kb=33
+[stream] frame=643 asset_kb=33
+[stream] frame=644 asset_kb=33
+[stream] frame=645 asset_kb=27
+[stream] frame=646 asset_kb=27
+[stream] frame=647 asset_kb=27
+[stream] frame=648 asset_kb=38
+[stream] frame=649 asset_kb=33
+[stream] frame=650 asset_kb=39
+[stream] frame=651 asset_kb=27
+[stream] frame=652 asset_kb=27
+[stream] frame=653 asset_kb=33
+[stream] frame=654 asset_kb=33
+[stream] frame=655 asset_kb=33
+[stream] frame=656 asset_kb=33
+[stream] frame=657 asset_kb=38
+[stream] frame=658 asset_kb=27
+[stream] frame=659 asset_kb=39
+[stream] frame=660 asset_kb=22
+[stream] frame=661 asset_kb=33
+[stream] frame=662 asset_kb=33
+[stream] frame=663 asset_kb=33
+[stream] frame=664 asset_kb=33
+[stream] frame=665 asset_kb=27
+[stream] frame=666 asset_kb=33
+[stream] frame=667 asset_kb=33
+[stream] frame=668 asset_kb=33
+[stream] frame=669 asset_kb=33
+[stream] frame=670 asset_kb=33
+[stream] frame=671 asset_kb=27
+[stream] frame=672 asset_kb=33
+[stream] frame=673 asset_kb=33
+[stream] frame=674 asset_kb=33
+[stream] frame=675 asset_kb=33
+[stream] frame=676 asset_kb=27
+[stream] frame=677 asset_kb=33
+[stream] frame=678 asset_kb=33
+[stream] frame=679 asset_kb=33
+[stream] frame=680 asset_kb=33
+[stream] frame=681 asset_kb=38
+[stream] frame=682 asset_kb=27
+[stream] frame=683 asset_kb=33
+[stream] frame=684 asset_kb=27
+[stream] frame=685 asset_kb=33
+[stream] frame=686 asset_kb=33
+[stream] frame=687 asset_kb=44
+[stream] frame=688 asset_kb=33
+[stream] frame=689 asset_kb=27
+[stream] frame=690 asset_kb=27
+[stream] frame=691 asset_kb=33
+[stream] frame=692 asset_kb=33
+[stream] frame=693 asset_kb=33
+[stream] frame=694 asset_kb=33
+[stream] frame=695 asset_kb=33
+[stream] frame=696 asset_kb=27
+[stream] frame=697 asset_kb=33
+[stream] frame=698 asset_kb=33
+[stream] frame=699 asset_kb=33
+[stream] frame=700 asset_kb=29
+[stream] frame=701 asset_kb=31
+[stream] frame=702 asset_kb=33
+[stream] frame=703 asset_kb=33
+[stream] frame=704 asset_kb=33
+[stream] frame=705 asset_kb=32
+[stream] frame=706 asset_kb=33
+[stream] frame=707 asset_kb=33
+[stream] frame=708 asset_kb=38
+[stream] frame=709 asset_kb=38
+[stream] frame=710 asset_kb=33
+[stream] frame=711 asset_kb=33
+[stream] frame=712 asset_kb=43
+[stream] frame=713 asset_kb=33
+[stream] frame=714 asset_kb=27
+[stream] frame=715 asset_kb=33
+[stream] frame=716 asset_kb=33
+[stream] frame=717 asset_kb=38
+[stream] frame=718 asset_kb=34
+[stream] frame=719 asset_kb=33
+[stream] frame=720 asset_kb=37
+[stream] frame=721 asset_kb=33
+[stream] frame=722 asset_kb=43
+[stream] frame=723 asset_kb=43
+[stream] frame=724 asset_kb=27
+[stream] frame=725 asset_kb=34
+[stream] frame=726 asset_kb=33
+[stream] frame=727 asset_kb=33
+[stream] frame=728 asset_kb=33
+[stream] frame=729 asset_kb=33
+[stream] frame=730 asset_kb=27
+[stream] frame=731 asset_kb=27
+[stream] frame=732 asset_kb=33
+[stream] frame=733 asset_kb=33
+[stream] frame=734 asset_kb=27
+[stream] frame=735 asset_kb=33
+[stream] frame=736 asset_kb=34
+[stream] frame=737 asset_kb=32
+[stream] frame=738 asset_kb=33
+[stream] frame=739 asset_kb=33
+[stream] frame=740 asset_kb=33
+[stream] frame=741 asset_kb=33
+[stream] frame=742 asset_kb=33
+[stream] frame=743 asset_kb=27
+[stream] frame=744 asset_kb=27
+[stream] frame=745 asset_kb=33
+[stream] frame=746 asset_kb=27
+[stream] frame=747 asset_kb=33
+[stream] frame=748 asset_kb=33
+[stream] frame=749 asset_kb=64
+[stream] frame=750 asset_kb=377
+[stream] frame=751 asset_kb=470
+[stream] frame=752 asset_kb=332
+[stream] frame=753 asset_kb=56
+[stream] frame=754 asset_kb=4
+[stream] frame=780 asset_kb=0
+[stream] frame=821 asset_kb=17
+[stream] frame=822 asset_kb=193
+[stream] frame=824 asset_kb=69
+[stream] frame=825 asset_kb=193
+[stream] frame=826 asset_kb=193
+[stream] frame=827 asset_kb=65
+[stream] frame=828 asset_kb=65
+[stream] frame=829 asset_kb=129
+[stream] frame=830 asset_kb=27
+[stream] frame=831 asset_kb=32
+[stream] frame=832 asset_kb=22
+[stream] frame=833 asset_kb=30
+[stream] frame=834 asset_kb=6
+[stream] frame=835 asset_kb=25
+[stream] frame=836 asset_kb=22
+[stream] frame=837 asset_kb=7
+[stream] frame=838 asset_kb=13
+[stream] frame=839 asset_kb=321
+[stream] frame=840 asset_kb=354
+[stream] frame=841 asset_kb=360
+[stream] frame=842 asset_kb=292
+[stream] frame=843 asset_kb=168
+[stream] frame=844 asset_kb=156
+[stream] frame=845 asset_kb=220
+[stream] frame=846 asset_kb=292
+[stream] frame=847 asset_kb=310
+[stream] frame=848 asset_kb=216
+[stream] frame=849 asset_kb=796
+[stream] frame=850 asset_kb=468
+[stream] frame=851 asset_kb=72
+[stream] frame=852 asset_kb=260
+[stream] frame=853 asset_kb=274
+[stream] frame=854 asset_kb=182
+[stream] frame=855 asset_kb=426
+[stream] frame=856 asset_kb=342
+[stream] frame=857 asset_kb=256
+[stream] frame=858 asset_kb=210
+[stream] frame=859 asset_kb=354
+[stream] frame=860 asset_kb=378
+[stream] frame=861 asset_kb=362
+[stream] frame=862 asset_kb=172
+[stream] frame=863 asset_kb=2
+[stream] frame=866 asset_kb=128
+[stream] frame=867 asset_kb=240
+[stream] frame=868 asset_kb=500
+[stream] frame=869 asset_kb=112
+[stream] frame=870 asset_kb=94
+[stream] frame=871 asset_kb=126
+[stream] frame=872 asset_kb=46
+[stream] frame=873 asset_kb=128
+[stream] frame=874 asset_kb=86
+[stream] frame=875 asset_kb=200
+[stream] frame=876 asset_kb=202
+[stream] frame=877 asset_kb=118
+[stream] frame=878 asset_kb=136
+[stream] frame=879 asset_kb=92
+[stream] frame=880 asset_kb=88
+[stream] frame=881 asset_kb=82
+[stream] frame=882 asset_kb=78
+[stream] frame=883 asset_kb=64
+[stream] frame=884 asset_kb=58
+[stream] frame=885 asset_kb=58
+[stream] frame=886 asset_kb=112
+[stream] frame=887 asset_kb=174
+[stream] frame=888 asset_kb=236
+[stream] frame=889 asset_kb=222
+[stream] frame=890 asset_kb=1352
+[stream] frame=891 asset_kb=736
+[stream] frame=892 asset_kb=894
+[stream] frame=893 asset_kb=138
+[stream] frame=894 asset_kb=292
+[stream] frame=895 asset_kb=114
+[stream] frame=896 asset_kb=538
+[stream] frame=897 asset_kb=314
+[stream] frame=898 asset_kb=236
+[stream] frame=899 asset_kb=380
+[stream] frame=900 asset_kb=86
+[drv] frame 900
+[glmem] frame live=10 MB peak=10 MB gen=129 del=0 upload=892 bound2d=0 boundcube=0
+[stream] frame=901 asset_kb=124
+[stream] frame=902 asset_kb=360
+[stream] frame=903 asset_kb=280
+[stream] frame=904 asset_kb=324
+[stream] frame=905 asset_kb=372
+[stream] frame=906 asset_kb=360
+[stream] frame=907 asset_kb=318
+[stream] frame=908 asset_kb=148
+[stream] frame=909 asset_kb=90
+[stream] frame=910 asset_kb=20
+[stream] frame=912 asset_kb=6
+[stream] frame=913 asset_kb=34
+[stream] frame=914 asset_kb=58
+[stream] frame=915 asset_kb=28
+[stream] frame=916 asset_kb=238
+[stream] frame=917 asset_kb=222
+[stream] frame=918 asset_kb=298
+[stream] frame=919 asset_kb=70
+[stream] frame=921 asset_kb=45
+[stream] frame=922 asset_kb=2
+[stream] frame=923 asset_kb=220
+[stream] frame=924 asset_kb=177
+[stream] frame=926 asset_kb=89
+[stream] frame=927 asset_kb=309
+[stream] frame=928 asset_kb=265
+[stream] frame=929 asset_kb=309
+[stream] frame=930 asset_kb=134
+[stream] frame=936 asset_kb=176
+[stream] frame=937 asset_kb=266
+[stream] frame=938 asset_kb=220
+[stream] frame=939 asset_kb=309
+[stream] frame=940 asset_kb=309
+[stream] frame=941 asset_kb=133
+[stream] frame=943 asset_kb=265
+[stream] frame=944 asset_kb=134
+[stream] frame=945 asset_kb=308
+[stream] frame=946 asset_kb=309
+[stream] frame=947 asset_kb=265
+[stream] frame=948 asset_kb=267
+[stream] frame=949 asset_kb=177
+[stream] frame=951 asset_kb=176
+[stream] frame=952 asset_kb=266
+[stream] frame=953 asset_kb=308
+[stream] frame=954 asset_kb=309
+[stream] frame=955 asset_kb=265
+[stream] frame=956 asset_kb=353
+[stream] frame=957 asset_kb=265
+[stream] frame=958 asset_kb=309
+[stream] frame=959 asset_kb=309
+[stream] frame=960 asset_kb=309
+[stream] frame=961 asset_kb=309
+[stream] frame=962 asset_kb=309
+[stream] frame=963 asset_kb=309
+[stream] frame=964 asset_kb=309
+[stream] frame=965 asset_kb=222
+[stream] frame=967 asset_kb=220
+[stream] frame=968 asset_kb=309
+[stream] frame=969 asset_kb=353
+[stream] frame=970 asset_kb=309
+[stream] frame=971 asset_kb=177
+[stream] frame=973 asset_kb=46
+[stream] frame=974 asset_kb=352
+[stream] frame=975 asset_kb=309
+[stream] frame=976 asset_kb=309
+[stream] frame=977 asset_kb=309
+[stream] frame=978 asset_kb=309
+[stream] frame=979 asset_kb=309
+[stream] frame=980 asset_kb=309
+[stream] frame=981 asset_kb=309
+[stream] frame=982 asset_kb=309
+[stream] frame=983 asset_kb=309
+[stream] frame=984 asset_kb=309
+[stream] frame=985 asset_kb=309
+[stream] frame=986 asset_kb=309
+[stream] frame=987 asset_kb=265
+[stream] frame=988 asset_kb=309
+[stream] frame=989 asset_kb=309
+[stream] frame=990 asset_kb=309
+[stream] frame=991 asset_kb=267
+[stream] frame=992 asset_kb=267
+[stream] frame=993 asset_kb=308
+[stream] frame=994 asset_kb=265
+[stream] frame=995 asset_kb=309
+[stream] frame=996 asset_kb=265
+[stream] frame=997 asset_kb=223
+[stream] frame=998 asset_kb=178
+[stream] frame=999 asset_kb=46
+[stream] frame=1000 asset_kb=23
+[stream] frame=1001 asset_kb=87
+[stream] frame=1002 asset_kb=25
+[stream] frame=1003 asset_kb=112
+[stream] frame=1004 asset_kb=25
+[stream] frame=1005 asset_kb=136
+[stream] frame=1006 asset_kb=54
+[stream] frame=1007 asset_kb=24
+[stream] frame=1008 asset_kb=45
+[stream] frame=1009 asset_kb=133
+[stream] frame=1010 asset_kb=122
+[stream] frame=1011 asset_kb=94
+[stream] frame=1012 asset_kb=191
+[stream] frame=1014 asset_kb=6
+[stream] frame=1015 asset_kb=4
+[stream] frame=1017 asset_kb=15
+[stream] frame=1018 asset_kb=39
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::PauseSound
+[stream] frame=1019 asset_kb=4
+[stream] frame=1020 asset_kb=9
+[stream] frame=1021 asset_kb=16
+[stream] frame=1022 asset_kb=43
+[stream] frame=1024 asset_kb=19
+[stream] frame=1025 asset_kb=43
+[stream] frame=1027 asset_kb=42
+[stream] frame=1028 asset_kb=3
+[stream] frame=1030 asset_kb=89
+[stream] frame=1031 asset_kb=13
+[stream] frame=1032 asset_kb=53
+[stream] frame=1033 asset_kb=2
+[stream] frame=1034 asset_kb=74
+[stream] frame=1036 asset_kb=90
+[stream] frame=1037 asset_kb=45
+[stream] frame=1038 asset_kb=35
+[stream] frame=1039 asset_kb=15
+[stream] frame=1040 asset_kb=45
+[stream] frame=1041 asset_kb=7
+[stream] frame=1042 asset_kb=86
+[stream] frame=1044 asset_kb=21
+[stream] frame=1045 asset_kb=30
+[stream] frame=1046 asset_kb=13
+[stream] frame=1047 asset_kb=50
+[stream] frame=1048 asset_kb=27
+[stream] frame=1049 asset_kb=45
+[stream] frame=1050 asset_kb=30
+[stream] frame=1051 asset_kb=91
+[stream] frame=1052 asset_kb=22
+[stream] frame=1053 asset_kb=89
+[stream] frame=1054 asset_kb=41
+[stream] frame=1055 asset_kb=7
+[stream] frame=1056 asset_kb=46
+[stream] frame=1057 asset_kb=24
+[stream] frame=1058 asset_kb=2
+[stream] frame=1059 asset_kb=72
+[stream] frame=1065 asset_kb=4
+[stream] frame=1066 asset_kb=87
+[stream] frame=1067 asset_kb=13
+[stream] frame=1073 asset_kb=45
+[stream] frame=1074 asset_kb=25
+[stream] frame=1075 asset_kb=13
+[stream] frame=1076 asset_kb=45
+[stream] frame=1077 asset_kb=37
+[stream] frame=1078 asset_kb=7
+[stream] frame=1079 asset_kb=89
+[stream] frame=1080 asset_kb=28
+[stream] frame=1081 asset_kb=30
+[stream] frame=1082 asset_kb=25
+[stream] frame=1083 asset_kb=17
+[stream] frame=1084 asset_kb=32
+[stream] frame=1085 asset_kb=21
+[stream] frame=1086 asset_kb=133
+[stream] frame=1087 asset_kb=7
+[stream] frame=1088 asset_kb=3
+[stream] frame=1089 asset_kb=25
+[stream] frame=1090 asset_kb=40
+[stream] frame=1091 asset_kb=18
+[stream] frame=1092 asset_kb=24
+[stream] frame=1093 asset_kb=35
+[stream] frame=1094 asset_kb=44
+[stream] frame=1095 asset_kb=27
+[stream] frame=1096 asset_kb=22
+[stream] frame=1097 asset_kb=34
+[stream] frame=1098 asset_kb=34
+[stream] frame=1099 asset_kb=44
+[stream] frame=1100 asset_kb=58
+[stream] frame=1101 asset_kb=58
+[stream] frame=1102 asset_kb=60
+[stream] frame=1103 asset_kb=60
+[stream] frame=1104 asset_kb=114
+[stream] frame=1105 asset_kb=214
+[stream] frame=1106 asset_kb=598
+[stream] frame=1107 asset_kb=496
+[stream] frame=1108 asset_kb=58
+[stream] frame=1109 asset_kb=162
+[stream] frame=1110 asset_kb=138
+[stream] frame=1111 asset_kb=58
+[stream] frame=1112 asset_kb=58
+[stream] frame=1113 asset_kb=812
+[stream] frame=1114 asset_kb=952
+[stream] frame=1115 asset_kb=58
+[stream] frame=1116 asset_kb=58
+[stream] frame=1117 asset_kb=1248
+[stream] frame=1118 asset_kb=1356
+[stream] frame=1119 asset_kb=360
+[stream] frame=1120 asset_kb=98
+[stream] frame=1140 asset_kb=0
+[stream] frame=1141 asset_kb=5236
+[stream] frame=1142 asset_kb=447
+[stream] frame=1143 asset_kb=64
+[stream] frame=1149 asset_kb=257
+[stream] frame=1154 asset_kb=129
+[stream] frame=1155 asset_kb=193
+[stream] frame=1156 asset_kb=641
+[stream] frame=1157 asset_kb=641
+[stream] frame=1158 asset_kb=126
+[stream] frame=1164 asset_kb=65
+[stream] frame=1165 asset_kb=193
+[stream] frame=1166 asset_kb=577
+[stream] frame=1167 asset_kb=138
+[stream] frame=1168 asset_kb=171
+[stream] frame=1171 asset_kb=2
+[stream] frame=1172 asset_kb=183
+[stream] frame=1173 asset_kb=173
+[stream] frame=1174 asset_kb=2
+[stream] frame=1175 asset_kb=184
+[stream] frame=1176 asset_kb=7
+[stream] frame=1177 asset_kb=121
+[stream] frame=1180 asset_kb=130
+[stream] frame=1181 asset_kb=8
+[stream] frame=1182 asset_kb=342
+[stream] frame=1189 asset_kb=2
+[stream] frame=1191 asset_kb=342
+[stream] frame=1198 asset_kb=2
+[stream] frame=1199 asset_kb=342
+[stream] frame=1200 asset_kb=21
+[drv] frame 1200
+[glmem] frame live=91 MB peak=91 MB gen=705 del=1 upload=5814 bound2d=0 boundcube=0
+[stream] frame=1201 asset_kb=10
+[stream] frame=1202 asset_kb=1366
+[stream] frame=1203 asset_kb=2
+[stream] frame=1204 asset_kb=171
+[stream] frame=1208 asset_kb=46
+[stream] frame=1209 asset_kb=121
+[stream] frame=1210 asset_kb=9
+[stream] frame=1211 asset_kb=301
+[stream] frame=1214 asset_kb=16
+[stream] frame=1215 asset_kb=19
+[stream] frame=1219 asset_kb=1316
+[stream] frame=1223 asset_kb=343
+[stream] frame=1227 asset_kb=2
+[stream] frame=1246 asset_kb=5462
+[stream] frame=1257 asset_kb=129
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::ContinueSound
+[stream] frame=1259 asset_kb=2
+[stream] frame=1260 asset_kb=103
+[stream] frame=1261 asset_kb=291
+[stream] frame=1262 asset_kb=26
+[stream] frame=1263 asset_kb=12
+[stream] frame=1266 asset_kb=64
+[stream] frame=1267 asset_kb=36
+[stream] frame=1270 asset_kb=3
+[stream] frame=1271 asset_kb=48
+[stream] frame=1272 asset_kb=23
+[stream] frame=1273 asset_kb=26
+[stream] frame=1274 asset_kb=23
+[stream] frame=1276 asset_kb=9
+[stream] frame=1277 asset_kb=87
+[stream] frame=1278 asset_kb=15
+[stream] frame=1279 asset_kb=38
+[stream] frame=1280 asset_kb=60
+[stream] frame=1281 asset_kb=10
+[stream] frame=1282 asset_kb=342
+[stream] frame=1290 asset_kb=87
+[stream] frame=1292 asset_kb=23
+[stream] frame=1293 asset_kb=74
+[stream] frame=1294 asset_kb=89
+[stream] frame=1295 asset_kb=30
+[stream] frame=1296 asset_kb=325
+[stream] frame=1297 asset_kb=129
+[stream] frame=1298 asset_kb=129
+[stream] frame=1299 asset_kb=577
+[stream] frame=1301 asset_kb=193
+[stream] frame=1302 asset_kb=379
+[stream] frame=1303 asset_kb=137
+[stream] frame=1306 asset_kb=13
+[stream] frame=1307 asset_kb=173
+[stream] frame=1311 asset_kb=45
+[stream] frame=1312 asset_kb=13
+[stream] frame=1315 asset_kb=2
+[stream] frame=1317 asset_kb=227
+[stream] frame=1318 asset_kb=68
+[stream] frame=1320 asset_kb=12
+[stream] frame=1321 asset_kb=86
+[stream] frame=1323 asset_kb=87
+[stream] frame=1325 asset_kb=35
+[stream] frame=1326 asset_kb=4
+[stream] frame=1327 asset_kb=89
+[stream] frame=1328 asset_kb=2
+[stream] frame=1329 asset_kb=171
+[stream] frame=1332 asset_kb=2
+[stream] frame=1333 asset_kb=132
+[stream] frame=1335 asset_kb=2
+[stream] frame=1336 asset_kb=87
+[stream] frame=1337 asset_kb=51
+[stream] frame=1338 asset_kb=9
+[stream] frame=1339 asset_kb=171
+[stream] frame=1343 asset_kb=173
+[stream] frame=1344 asset_kb=173
+[stream] frame=1345 asset_kb=2
+[stream] frame=1346 asset_kb=171
+[stream] frame=1349 asset_kb=2
+[stream] frame=1350 asset_kb=171
+[stream] frame=1351 asset_kb=89
+[stream] frame=1353 asset_kb=87
+[stream] frame=1354 asset_kb=87
+[stream] frame=1355 asset_kb=301
+[stream] frame=1357 asset_kb=16
+[stream] frame=1358 asset_kb=43
+[stream] frame=1359 asset_kb=43
+[stream] frame=1360 asset_kb=2
+[stream] frame=1361 asset_kb=171
+[stream] frame=1364 asset_kb=2
+[stream] frame=1365 asset_kb=193
+[stream] frame=1366 asset_kb=265
+[stream] frame=1375 asset_kb=2
+[stream] frame=1380 asset_kb=641
+[stream] frame=1381 asset_kb=385
+[stream] frame=1382 asset_kb=513
+[stream] frame=1384 asset_kb=15
+[stream] frame=1385 asset_kb=86
+[stream] frame=1387 asset_kb=102
+[stream] frame=1388 asset_kb=15
+[stream] frame=1389 asset_kb=45
+[stream] frame=1390 asset_kb=157
+[stream] frame=1392 asset_kb=8
+[stream] frame=1393 asset_kb=2
+[stream] frame=1394 asset_kb=342
+[stream] frame=1401 asset_kb=2
+[stream] frame=1402 asset_kb=86
+[stream] frame=1404 asset_kb=23
+[stream] frame=1406 asset_kb=62
+[stream] frame=1407 asset_kb=5
+[stream] frame=1408 asset_kb=95
+[stream] frame=1409 asset_kb=87
+[stream] frame=1411 asset_kb=45
+[stream] frame=1412 asset_kb=1
+[stream] frame=1413 asset_kb=2
+[stream] frame=1414 asset_kb=15
+[stream] frame=1415 asset_kb=29
+[stream] frame=1416 asset_kb=8
+[stream] frame=1417 asset_kb=89
+[stream] frame=1418 asset_kb=2
+[stream] frame=1419 asset_kb=89
+[stream] frame=1420 asset_kb=43
+[stream] frame=1421 asset_kb=68
+[stream] frame=1422 asset_kb=2
+[stream] frame=1423 asset_kb=45
+[stream] frame=1424 asset_kb=45
+[stream] frame=1425 asset_kb=2
+[stream] frame=1426 asset_kb=2
+[stream] frame=1427 asset_kb=86
+[stream] frame=1429 asset_kb=2
+[stream] frame=1430 asset_kb=43
+[stream] frame=1432 asset_kb=45
+[stream] frame=1433 asset_kb=2
+[stream] frame=1434 asset_kb=97
+[stream] frame=1435 asset_kb=54
+[stream] frame=1436 asset_kb=90
+[stream] frame=1440 asset_kb=0
+[stream] frame=1442 asset_kb=50
+[stream] frame=1443 asset_kb=49
+[stream] frame=1444 asset_kb=23
+[stream] frame=1445 asset_kb=3
+[stream] frame=1447 asset_kb=2
+[stream] frame=1448 asset_kb=43
+[stream] frame=1449 asset_kb=45
+[stream] frame=1451 asset_kb=14
+[stream] frame=1452 asset_kb=46
+[stream] frame=1453 asset_kb=57
+[stream] frame=1454 asset_kb=86
+[stream] frame=1456 asset_kb=23
+[stream] frame=1457 asset_kb=48
+[stream] frame=1458 asset_kb=3
+[stream] frame=1459 asset_kb=48
+[stream] frame=1460 asset_kb=101
+[stream] frame=1461 asset_kb=134
+[stream] frame=1463 asset_kb=45
+[stream] frame=1464 asset_kb=89
+[stream] frame=1465 asset_kb=2
+[stream] frame=1466 asset_kb=99
+[stream] frame=1467 asset_kb=31
+[stream] frame=1468 asset_kb=47
+[stream] frame=1469 asset_kb=43
+[stream] frame=1470 asset_kb=24
+[stream] frame=1471 asset_kb=23
+[stream] frame=1472 asset_kb=39
+[stream] frame=1473 asset_kb=2
+[stream] frame=1474 asset_kb=45
+[stream] frame=1475 asset_kb=45
+[stream] frame=1476 asset_kb=45
+[stream] frame=1477 asset_kb=47
+[stream] frame=1478 asset_kb=43
+[stream] frame=1479 asset_kb=45
+[stream] frame=1480 asset_kb=46
+[stream] frame=1481 asset_kb=51
+[stream] frame=1483 asset_kb=57
+[stream] frame=1484 asset_kb=101
+[stream] frame=1485 asset_kb=69
+[stream] frame=1489 asset_kb=25
+[stream] frame=1490 asset_kb=45
+[stream] frame=1491 asset_kb=46
+[stream] frame=1493 asset_kb=13
+[stream] frame=1496 asset_kb=94
+[stream] frame=1497 asset_kb=15
+[stream] frame=1498 asset_kb=89
+[stream] frame=1499 asset_kb=25
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=133->133 MB glpeak=133 MB gencnt=880 delcnt=1 uploads=7309 lowmem=1 stream=0/0 MB observed=133->133 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=133 MB peak=133 MB gen=880 del=1 upload=7309 bound2d=0 boundcube=0
+[stream] frame=1500 asset_kb=87
+[drv] frame 1500
+[glmem] frame live=133 MB peak=133 MB gen=880 del=1 upload=7309 bound2d=0 boundcube=0
+[stream] frame=1501 asset_kb=59
+[stream] frame=1502 asset_kb=43
+[stream] frame=1504 asset_kb=121
+[stream] frame=1505 asset_kb=4
+[stream] frame=1506 asset_kb=171
+[stream] frame=1510 asset_kb=173
+[stream] frame=1514 asset_kb=2
+[stream] frame=1515 asset_kb=217
+[stream] frame=1516 asset_kb=81
+[stream] frame=1517 asset_kb=31
+[stream] frame=1518 asset_kb=27
+[stream] frame=1519 asset_kb=45
+[stream] frame=1521 asset_kb=45
+[stream] frame=1522 asset_kb=26
+[stream] frame=1523 asset_kb=8
+[stream] frame=1524 asset_kb=171
+[stream] frame=1527 asset_kb=2
+[stream] frame=1528 asset_kb=178
+[stream] frame=1529 asset_kb=55
+[stream] frame=1531 asset_kb=12
+[stream] frame=1532 asset_kb=89
+[stream] frame=1533 asset_kb=43
+[stream] frame=1534 asset_kb=18
+[stream] frame=1535 asset_kb=2
+[stream] frame=1536 asset_kb=342
+[stream] frame=1543 asset_kb=2
+[stream] frame=1544 asset_kb=87
+[stream] frame=1546 asset_kb=66
+[stream] frame=1547 asset_kb=27
+[stream] frame=1548 asset_kb=46
+[stream] frame=1549 asset_kb=2
+[stream] frame=1550 asset_kb=171
+[stream] frame=1553 asset_kb=58
+[stream] frame=1554 asset_kb=104
+[stream] frame=1555 asset_kb=25
+[stream] frame=1556 asset_kb=89
+[stream] frame=1557 asset_kb=58
+[stream] frame=1559 asset_kb=2
+[stream] frame=1560 asset_kb=43
+[stream] frame=1561 asset_kb=102
+[stream] frame=1563 asset_kb=59
+[stream] frame=1564 asset_kb=188
+[stream] frame=1565 asset_kb=146
+[stream] frame=1572 asset_kb=58
+[stream] frame=1573 asset_kb=89
+[stream] frame=1574 asset_kb=68
+[stream] frame=1575 asset_kb=4
+[stream] frame=1576 asset_kb=45
+[stream] frame=1578 asset_kb=9
+[stream] frame=1579 asset_kb=87
+[stream] frame=1580 asset_kb=27
+[stream] frame=1581 asset_kb=40
+[stream] frame=1582 asset_kb=89
+[stream] frame=1583 asset_kb=220
+[stream] frame=1590 asset_kb=2
+[stream] frame=1591 asset_kb=45
+[stream] frame=1592 asset_kb=2
+[stream] frame=1598 asset_kb=87
+[stream] frame=1599 asset_kb=1
+[stream] frame=1600 asset_kb=2
+[stream] frame=1601 asset_kb=86
+[stream] frame=1603 asset_kb=102
+[stream] frame=1604 asset_kb=2
+[stream] frame=1605 asset_kb=86
+[stream] frame=1606 asset_kb=13
+[stream] frame=1607 asset_kb=26
+[stream] frame=1608 asset_kb=25
+[stream] frame=1609 asset_kb=88
+[stream] frame=1611 asset_kb=7
+[stream] frame=1612 asset_kb=45
+[stream] frame=1613 asset_kb=23
+[stream] frame=1614 asset_kb=50
+[stream] frame=1615 asset_kb=47
+[stream] frame=1616 asset_kb=176
+[stream] frame=1617 asset_kb=2
+[stream] frame=1618 asset_kb=260
+[stream] frame=1620 asset_kb=0
+[stream] frame=1623 asset_kb=2
+[stream] frame=1624 asset_kb=178
+[stream] frame=1625 asset_kb=88
+[stream] frame=1628 asset_kb=45
+[stream] frame=1629 asset_kb=2
+[stream] frame=1630 asset_kb=60
+[stream] frame=1631 asset_kb=49
+[stream] frame=1632 asset_kb=188
+[stream] frame=1634 asset_kb=16
+[stream] frame=1635 asset_kb=23
+[stream] frame=1636 asset_kb=47
+[stream] frame=1637 asset_kb=47
+[stream] frame=1639 asset_kb=2
+[stream] frame=1640 asset_kb=45
+[stream] frame=1641 asset_kb=25
+[stream] frame=1642 asset_kb=9
+[stream] frame=1643 asset_kb=44
+[stream] frame=1644 asset_kb=2
+[stream] frame=1645 asset_kb=59
+[stream] frame=1646 asset_kb=71
+[stream] frame=1647 asset_kb=9
+[stream] frame=1648 asset_kb=45
+[stream] frame=1650 asset_kb=25
+[stream] frame=1651 asset_kb=22
+[stream] frame=1653 asset_kb=89
+[stream] frame=1654 asset_kb=15
+[stream] frame=1655 asset_kb=88
+[stream] frame=1656 asset_kb=39
+[stream] frame=1657 asset_kb=23
+[stream] frame=1658 asset_kb=93
+[stream] frame=1659 asset_kb=19
+[stream] frame=1660 asset_kb=23
+[stream] frame=1661 asset_kb=48
+[stream] frame=1663 asset_kb=13
+[stream] frame=1664 asset_kb=51
+[stream] frame=1667 asset_kb=100
+[stream] frame=1668 asset_kb=145
+[stream] frame=1669 asset_kb=13
+[stream] frame=1670 asset_kb=34
+[stream] frame=1671 asset_kb=71
+[stream] frame=1672 asset_kb=71
+[stream] frame=1673 asset_kb=27
+[stream] frame=1674 asset_kb=15
+[stream] frame=1675 asset_kb=113
+[stream] frame=1677 asset_kb=3
+[stream] frame=1678 asset_kb=31
+[stream] frame=1679 asset_kb=22
+[stream] frame=1680 asset_kb=41
+[stream] frame=1681 asset_kb=61
+[stream] frame=1682 asset_kb=4
+[stream] frame=1683 asset_kb=18
+[stream] frame=1684 asset_kb=45
+[stream] frame=1686 asset_kb=48
+[stream] frame=1687 asset_kb=14
+[stream] frame=1688 asset_kb=89
+[stream] frame=1689 asset_kb=2
+[stream] frame=1690 asset_kb=131
+[stream] frame=1691 asset_kb=1
+[stream] frame=1692 asset_kb=2
+[stream] frame=1693 asset_kb=88
+[stream] frame=1694 asset_kb=25
+[stream] frame=1696 asset_kb=432
+[stream] frame=1700 asset_kb=70
+[stream] frame=1701 asset_kb=13
+[stream] frame=1702 asset_kb=55
+[stream] frame=1703 asset_kb=24
+[stream] frame=1705 asset_kb=24
+[stream] frame=1706 asset_kb=15
+[stream] frame=1707 asset_kb=196
+[stream] frame=1709 asset_kb=89
+[stream] frame=1711 asset_kb=2
+[stream] frame=1712 asset_kb=68
+[stream] frame=1713 asset_kb=97
+[stream] frame=1714 asset_kb=45
+[stream] frame=1716 asset_kb=148
+[stream] frame=1717 asset_kb=4
+[stream] frame=1718 asset_kb=171
+[stream] frame=1722 asset_kb=173
+[stream] frame=1723 asset_kb=90
+[stream] frame=1724 asset_kb=45
+[stream] frame=1725 asset_kb=352
+[stream] frame=1731 asset_kb=87
+[stream] frame=1732 asset_kb=44
+[stream] frame=1733 asset_kb=81
+[stream] frame=1734 asset_kb=219
+[stream] frame=1735 asset_kb=89
+[stream] frame=1736 asset_kb=6
+[stream] frame=1737 asset_kb=45
+[stream] frame=1738 asset_kb=48
+[stream] frame=1739 asset_kb=228
+[stream] frame=1740 asset_kb=14
+[stream] frame=1741 asset_kb=19
+[stream] frame=1742 asset_kb=27
+[stream] frame=1743 asset_kb=46
+[stream] frame=1745 asset_kb=11
+[stream] frame=1746 asset_kb=4
+[stream] frame=1747 asset_kb=86
+[stream] frame=1748 asset_kb=2
+[stream] frame=1749 asset_kb=88
+[stream] frame=1750 asset_kb=15
+[stream] frame=1751 asset_kb=100
+[stream] frame=1752 asset_kb=42
+[stream] frame=1753 asset_kb=87
+[stream] frame=1754 asset_kb=111
+[stream] frame=1755 asset_kb=16
+[stream] frame=1756 asset_kb=35
+[stream] frame=1757 asset_kb=11
+[stream] frame=1758 asset_kb=46
+[stream] frame=1760 asset_kb=2
+[stream] frame=1761 asset_kb=67
+[stream] frame=1762 asset_kb=176
+[stream] frame=1763 asset_kb=89
+[stream] frame=1764 asset_kb=42
+[stream] frame=1765 asset_kb=10
+[stream] frame=1766 asset_kb=342
+[stream] frame=1774 asset_kb=87
+[stream] frame=1776 asset_kb=7
+[stream] frame=1777 asset_kb=84
+[stream] frame=1778 asset_kb=10
+[stream] frame=1779 asset_kb=342
+[stream] frame=1786 asset_kb=2
+[stream] frame=1787 asset_kb=86
+[stream] frame=1789 asset_kb=23
+[stream] frame=1790 asset_kb=69
+[stream] frame=1791 asset_kb=10
+[stream] frame=1792 asset_kb=342
+[stream] frame=1794 asset_kb=87
+[stream] frame=1795 asset_kb=23
+[stream] frame=1797 asset_kb=82
+[stream] frame=1798 asset_kb=342
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=171->171 MB glpeak=171 MB gencnt=1146 delcnt=1 uploads=9624 lowmem=2 stream=0/0 MB observed=171->171 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=171 MB peak=171 MB gen=1146 del=1 upload=9624 bound2d=0 boundcube=0
+[stream] frame=1800 asset_kb=0
+[drv] frame 1800
+[glmem] frame live=171 MB peak=171 MB gen=1146 del=1 upload=9624 bound2d=0 boundcube=0
+[stream] frame=1809 asset_kb=2
+[stream] frame=1810 asset_kb=86
+[stream] frame=1813 asset_kb=7
+[stream] frame=1814 asset_kb=84
+[stream] frame=1815 asset_kb=45
+[stream] frame=1816 asset_kb=45
+[stream] frame=1817 asset_kb=13
+[stream] frame=1818 asset_kb=25
+[stream] frame=1819 asset_kb=22
+[stream] frame=1821 asset_kb=7
+[stream] frame=1822 asset_kb=193
+[stream] frame=1827 asset_kb=25
+[stream] frame=1828 asset_kb=25
+[stream] frame=1829 asset_kb=8
+[stream] frame=1830 asset_kb=29
+[stream] frame=1831 asset_kb=47
+[stream] frame=1832 asset_kb=53
+[stream] frame=1833 asset_kb=82
+[stream] frame=1834 asset_kb=13
+[stream] frame=1835 asset_kb=171
+[stream] frame=1839 asset_kb=45
+[stream] frame=1841 asset_kb=13
+[stream] frame=1842 asset_kb=110
+[stream] frame=1844 asset_kb=8
+[stream] frame=1845 asset_kb=89
+[stream] frame=1847 asset_kb=128
+[stream] frame=1848 asset_kb=11
+[stream] frame=1849 asset_kb=44
+[stream] frame=1850 asset_kb=89
+[stream] frame=1851 asset_kb=137
+[stream] frame=1852 asset_kb=10
+[stream] frame=1853 asset_kb=342
+[stream] frame=1860 asset_kb=0
+[stream] frame=1861 asset_kb=87
+[stream] frame=1863 asset_kb=23
+[stream] frame=1864 asset_kb=48
+[stream] frame=1865 asset_kb=10
+[stream] frame=1866 asset_kb=89
+[stream] frame=1868 asset_kb=13
+[stream] frame=1869 asset_kb=29
+[stream] frame=1870 asset_kb=47
+[stream] frame=1872 asset_kb=7
+[stream] frame=1873 asset_kb=78
+[stream] frame=1874 asset_kb=24
+[stream] frame=1875 asset_kb=15
+[stream] frame=1881 asset_kb=4
+[stream] frame=1882 asset_kb=87
+[stream] frame=1883 asset_kb=36
+[stream] frame=1884 asset_kb=91
+[stream] frame=1885 asset_kb=90
+[stream] frame=1886 asset_kb=88
+[stream] frame=1888 asset_kb=36
+[stream] frame=1889 asset_kb=89
+[stream] frame=1891 asset_kb=14
+[stream] frame=1892 asset_kb=61
+[stream] frame=1893 asset_kb=45
+[stream] frame=1894 asset_kb=23
+[stream] frame=1895 asset_kb=6
+[stream] frame=1896 asset_kb=4
+[stream] frame=1897 asset_kb=88
+[stream] frame=1898 asset_kb=46
+[stream] frame=1900 asset_kb=149
+[stream] frame=1901 asset_kb=16
+[stream] frame=1902 asset_kb=27
+[stream] frame=1903 asset_kb=5
+[stream] frame=1904 asset_kb=46
+[stream] frame=1906 asset_kb=12
+[stream] frame=1907 asset_kb=46
+[stream] frame=1908 asset_kb=2
+[stream] frame=1909 asset_kb=47
+[stream] frame=1910 asset_kb=461
+[stream] frame=1911 asset_kb=3
+[stream] frame=1912 asset_kb=11
+[stream] frame=1913 asset_kb=29
+[stream] frame=1914 asset_kb=2
+[stream] frame=1915 asset_kb=361
+[stream] frame=1916 asset_kb=29
+[stream] frame=1918 asset_kb=641
+[stream] frame=1920 asset_kb=0
+[stream] frame=1922 asset_kb=21
+[stream] frame=1923 asset_kb=38
+[stream] frame=1924 asset_kb=18
+[stream] frame=1925 asset_kb=15
+[stream] frame=1926 asset_kb=54
+[stream] frame=1927 asset_kb=25
+[stream] frame=1928 asset_kb=53
+[stream] frame=1929 asset_kb=43
+[stream] frame=1931 asset_kb=29
+[stream] frame=1932 asset_kb=22
+[stream] frame=1934 asset_kb=118
+[stream] frame=1935 asset_kb=13
+[stream] frame=1936 asset_kb=17
+[stream] frame=1937 asset_kb=24
+[stream] frame=1938 asset_kb=89
+[stream] frame=1940 asset_kb=28
+[stream] frame=1941 asset_kb=50
+[stream] frame=1942 asset_kb=27
+[stream] frame=1943 asset_kb=91
+[stream] frame=1947 asset_kb=48
+[stream] frame=1949 asset_kb=22
+[stream] frame=1950 asset_kb=176
+[stream] frame=1951 asset_kb=103
+[stream] frame=1952 asset_kb=2
+[stream] frame=1953 asset_kb=73
+[stream] frame=1956 asset_kb=52
+[stream] frame=1957 asset_kb=98
+[stream] frame=1959 asset_kb=27
+[stream] frame=1960 asset_kb=137
+[stream] frame=1962 asset_kb=71
+[stream] frame=1964 asset_kb=103
+[stream] frame=1965 asset_kb=61
+[stream] frame=1966 asset_kb=48
+[stream] frame=1967 asset_kb=27
+[stream] frame=1968 asset_kb=49
+[stream] frame=1969 asset_kb=54
+[stream] frame=1970 asset_kb=46
+[stream] frame=1972 asset_kb=23
+[stream] frame=1973 asset_kb=2
+[stream] frame=1974 asset_kb=38
+[stream] frame=1975 asset_kb=66
+[stream] frame=1976 asset_kb=46
+[stream] frame=1977 asset_kb=4
+[stream] frame=1978 asset_kb=24
+[stream] frame=1979 asset_kb=88
+[stream] frame=1980 asset_kb=0
+[stream] frame=1981 asset_kb=2
+[stream] frame=1982 asset_kb=171
+[stream] frame=1985 asset_kb=23
+[stream] frame=1986 asset_kb=80
+[stream] frame=1987 asset_kb=23
+[stream] frame=1988 asset_kb=4
+[stream] frame=1989 asset_kb=131
+[stream] frame=1990 asset_kb=18
+[stream] frame=1991 asset_kb=36
+[stream] frame=1992 asset_kb=10
+[stream] frame=1993 asset_kb=342
+[stream] frame=2001 asset_kb=110
+[stream] frame=2003 asset_kb=49
+[stream] frame=2005 asset_kb=2
+[stream] frame=2006 asset_kb=30
+[stream] frame=2007 asset_kb=19
+[stream] frame=2008 asset_kb=87
+[stream] frame=2010 asset_kb=87
+[stream] frame=2011 asset_kb=89
+[stream] frame=2013 asset_kb=2
+[stream] frame=2014 asset_kb=184
+[stream] frame=2015 asset_kb=4
+[stream] frame=2016 asset_kb=89
+[stream] frame=2017 asset_kb=7
+[stream] frame=2018 asset_kb=171
+[stream] frame=2022 asset_kb=173
+[stream] frame=2026 asset_kb=13
+[stream] frame=2027 asset_kb=49
+[stream] frame=2028 asset_kb=36
+[stream] frame=2029 asset_kb=6
+[stream] frame=2030 asset_kb=171
+[stream] frame=2033 asset_kb=2
+[stream] frame=2034 asset_kb=43
+[stream] frame=2035 asset_kb=13
+[stream] frame=2036 asset_kb=2
+[stream] frame=2037 asset_kb=245
+[stream] frame=2038 asset_kb=40
+[stream] frame=2039 asset_kb=144
+[stream] frame=2040 asset_kb=91
+[stream] frame=2041 asset_kb=24
+[stream] frame=2042 asset_kb=3
+[stream] frame=2043 asset_kb=86
+[stream] frame=2045 asset_kb=14
+[stream] frame=2046 asset_kb=67
+[stream] frame=2047 asset_kb=45
+[stream] frame=2048 asset_kb=16
+[stream] frame=2049 asset_kb=110
+[stream] frame=2050 asset_kb=45
+[stream] frame=2052 asset_kb=76
+[stream] frame=2053 asset_kb=3
+[stream] frame=2054 asset_kb=171
+[stream] frame=2057 asset_kb=2
+[stream] frame=2058 asset_kb=57
+[stream] frame=2059 asset_kb=86
+[stream] frame=2061 asset_kb=104
+[stream] frame=2062 asset_kb=6
+[stream] frame=2063 asset_kb=86
+[stream] frame=2064 asset_kb=2
+[stream] frame=2065 asset_kb=22
+[stream] frame=2066 asset_kb=91
+[stream] frame=2067 asset_kb=44
+[stream] frame=2068 asset_kb=123
+[stream] frame=2069 asset_kb=15
+[stream] frame=2071 asset_kb=31
+[stream] frame=2073 asset_kb=351
+[stream] frame=2074 asset_kb=87
+[stream] frame=2079 asset_kb=23
+[stream] frame=2081 asset_kb=64
+[stream] frame=2082 asset_kb=8
+[stream] frame=2083 asset_kb=2
+[stream] frame=2084 asset_kb=342
+[stream] frame=2091 asset_kb=2
+[stream] frame=2092 asset_kb=86
+[stream] frame=2093 asset_kb=2
+[stream] frame=2094 asset_kb=22
+[stream] frame=2095 asset_kb=105
+[stream] frame=2096 asset_kb=10
+[stream] frame=2097 asset_kb=342
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=196->196 MB glpeak=196 MB gencnt=1364 delcnt=14 uploads=11464 lowmem=3 stream=0/0 MB observed=196->196 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=196 MB peak=196 MB gen=1364 del=14 upload=11464 bound2d=0 boundcube=0
+[stream] frame=2100 asset_kb=0
+[drv] frame 2100
+[glmem] frame live=196 MB peak=196 MB gen=1364 del=14 upload=11464 bound2d=0 boundcube=0
+[stream] frame=2104 asset_kb=2
+[stream] frame=2105 asset_kb=86
+[stream] frame=2107 asset_kb=23
+[stream] frame=2108 asset_kb=90
+[stream] frame=2109 asset_kb=9
+[stream] frame=2110 asset_kb=27
+[stream] frame=2111 asset_kb=7
+[stream] frame=2112 asset_kb=1
+[stream] frame=2116 asset_kb=89
+[stream] frame=2117 asset_kb=30
+[stream] frame=2118 asset_kb=103
+[stream] frame=2120 asset_kb=37
+[stream] frame=2121 asset_kb=18
+[stream] frame=2122 asset_kb=43
+[stream] frame=2123 asset_kb=23
+[stream] frame=2124 asset_kb=13
+[stream] frame=2125 asset_kb=45
+[stream] frame=2126 asset_kb=41
+[stream] frame=2127 asset_kb=41
+[stream] frame=2128 asset_kb=75
+[stream] frame=2129 asset_kb=11
+[stream] frame=2131 asset_kb=146
+[stream] frame=2132 asset_kb=78
+[stream] frame=2136 asset_kb=16
+[evict] LoadScene mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=198->198 MB glpeak=198 MB gencnt=1386 delcnt=14 uploads=11650 lowmem=4 stream=0/0 MB observed=198->198 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] LoadScene live=198 MB peak=198 MB gen=1386 del=14 upload=11650 bound2d=0 boundcube=0
+[stream] frame=2137 asset_kb=26
+[stream] frame=2139 asset_kb=2
+[stream] frame=2140 asset_kb=86
+[stream] frame=2147 asset_kb=2
+[stream] frame=2149 asset_kb=2
+[stream] frame=2156 asset_kb=2731
+[stream] frame=2160 asset_kb=0
+[stream] frame=2165 asset_kb=6
+[stream] frame=2166 asset_kb=5
+[stream] frame=2167 asset_kb=2
+[stream] frame=2168 asset_kb=2
+[stream] frame=2169 asset_kb=5
+[stream] frame=2171 asset_kb=5
+[stream] frame=2172 asset_kb=2
+[stream] frame=2173 asset_kb=2
+[stream] frame=2174 asset_kb=166
+[stream] frame=2176 asset_kb=8
+[stream] frame=2177 asset_kb=171
+[stream] frame=2178 asset_kb=2
+[stream] frame=2180 asset_kb=5
+[stream] frame=2181 asset_kb=35
+[stream] frame=2182 asset_kb=53
+[stream] frame=2183 asset_kb=55
+[stream] frame=2184 asset_kb=19
+[stream] frame=2185 asset_kb=86
+[stream] frame=2186 asset_kb=2
+[stream] frame=2187 asset_kb=45
+[stream] frame=2188 asset_kb=15
+[stream] frame=2189 asset_kb=23
+[stream] frame=2190 asset_kb=4
+[stream] frame=2192 asset_kb=2
+[stream] frame=2194 asset_kb=2
+[stream] frame=2197 asset_kb=14
+[stream] frame=2198 asset_kb=95
+[stream] frame=2199 asset_kb=89
+[stream] frame=2200 asset_kb=45
+[stream] frame=2201 asset_kb=15
+[stream] frame=2202 asset_kb=95
+[stream] frame=2204 asset_kb=8
+[stream] frame=2205 asset_kb=2
+[stream] frame=2206 asset_kb=14
+[stream] frame=2207 asset_kb=48
+[stream] frame=2208 asset_kb=45
+[stream] frame=2209 asset_kb=49
+[stream] frame=2210 asset_kb=8
+[stream] frame=2211 asset_kb=10
+[stream] frame=2213 asset_kb=342
+[stream] frame=2214 asset_kb=2
+[stream] frame=2220 asset_kb=87
+[stream] frame=2222 asset_kb=2
+[stream] frame=2223 asset_kb=22
+[stream] frame=2224 asset_kb=55
+[stream] frame=2226 asset_kb=2
+[stream] frame=2240 asset_kb=4
+[stream] frame=2242 asset_kb=10
+[stream] frame=2244 asset_kb=342
+[stream] frame=2251 asset_kb=87
+[stream] frame=2253 asset_kb=2
+[stream] frame=2254 asset_kb=74
+[stream] frame=2258 asset_kb=2
+[stream] frame=2271 asset_kb=2
+[stream] frame=2275 asset_kb=10
+[stream] frame=2277 asset_kb=342
+[stream] frame=2280 asset_kb=0
+[stream] frame=2284 asset_kb=87
+[stream] frame=2285 asset_kb=2
+[stream] frame=2286 asset_kb=23
+[stream] frame=2287 asset_kb=64
+[stream] frame=2296 asset_kb=8
+[stream] frame=2297 asset_kb=2
+[stream] frame=2298 asset_kb=342
+[stream] frame=2299 asset_kb=2
+[stream] frame=2305 asset_kb=2
+[stream] frame=2306 asset_kb=86
+[stream] frame=2308 asset_kb=80
+[stream] frame=2314 asset_kb=2
+[stream] frame=2316 asset_kb=2
+[stream] frame=2318 asset_kb=683
+[stream] frame=2321 asset_kb=2
+[stream] frame=2322 asset_kb=171
+[stream] frame=2327 asset_kb=10
+[stream] frame=2328 asset_kb=342
+[stream] frame=2330 asset_kb=2
+[stream] frame=2333 asset_kb=110
+[stream] frame=2334 asset_kb=66
+[stream] frame=2340 asset_kb=2
+[stream] frame=2341 asset_kb=6
+[stream] frame=2346 asset_kb=2
+[stream] frame=2359 asset_kb=2
+[stream] frame=2360 asset_kb=353
+[stream] frame=2366 asset_kb=87
+[stream] frame=2367 asset_kb=23
+[stream] frame=2368 asset_kb=47
+[stream] frame=2375 asset_kb=2
+[stream] frame=2391 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=215->215 MB glpeak=215 MB gencnt=1433 delcnt=14 uploads=12079 lowmem=5 stream=0/0 MB observed=215->215 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=215 MB peak=215 MB gen=1433 del=14 upload=12079 bound2d=1429 boundcube=0
+[stream] frame=2400 asset_kb=0
+[drv] frame 2400
+[glmem] frame live=215 MB peak=215 MB gen=1433 del=14 upload=12079 bound2d=1429 boundcube=0
+[stream] frame=2408 asset_kb=2
+[stream] frame=2418 asset_kb=4
+[stream] frame=2434 asset_kb=2
+[stream] frame=2443 asset_kb=3
+[stream] frame=2449 asset_kb=2
+[stream] frame=2460 asset_kb=0
+[stream] frame=2465 asset_kb=2
+[stream] frame=2478 asset_kb=2
+[stream] frame=2492 asset_kb=4
+[stream] frame=2509 asset_kb=2
+[stream] frame=2520 asset_kb=0
+[stream] frame=2523 asset_kb=4
+[stream] frame=2537 asset_kb=2
+[stream] frame=2552 asset_kb=4
+[stream] frame=2568 asset_kb=2
+[stream] frame=2580 asset_kb=0
+[stream] frame=2583 asset_kb=4
+[stream] frame=2599 asset_kb=2
+[stream] frame=2612 asset_kb=4
+[stream] frame=2628 asset_kb=2
+[stream] frame=2640 asset_kb=0
+[stream] frame=2642 asset_kb=4
+[stream] frame=2655 asset_kb=2
+[stream] frame=2671 asset_kb=2
+[stream] frame=2686 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=215->215 MB glpeak=215 MB gencnt=1433 delcnt=14 uploads=12079 lowmem=6 stream=0/0 MB observed=215->215 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=215 MB peak=215 MB gen=1433 del=14 upload=12079 bound2d=1425 boundcube=0
+[stream] frame=2700 asset_kb=4
+[drv] frame 2700
+[glmem] frame live=215 MB peak=215 MB gen=1433 del=14 upload=12079 bound2d=1425 boundcube=0
+[stream] frame=2713 asset_kb=1
+[stream] frame=2716 asset_kb=2
+[stream] frame=2724 asset_kb=29
+[stream] frame=2725 asset_kb=45
+[stream] frame=2726 asset_kb=10
+[stream] frame=2727 asset_kb=342
+[stream] frame=2731 asset_kb=4
+[stream] frame=2735 asset_kb=87
+[stream] frame=2737 asset_kb=23
+[stream] frame=2738 asset_kb=63
+[stream] frame=2745 asset_kb=2
+[stream] frame=2760 asset_kb=4
+[stream] frame=2774 asset_kb=4
+[stream] frame=2789 asset_kb=2
+[stream] frame=2805 asset_kb=4
+[stream] frame=2820 asset_kb=2
+[stream] frame=2821 asset_kb=2
+[stream] frame=2834 asset_kb=2
+[stream] frame=2850 asset_kb=4
+[stream] frame=2863 asset_kb=4
+[stream] frame=2879 asset_kb=2
+[stream] frame=2880 asset_kb=0
+[stream] frame=2894 asset_kb=2
+[stream] frame=2906 asset_kb=6
+[stream] frame=2908 asset_kb=4
+[stream] frame=2923 asset_kb=2
+[stream] frame=2939 asset_kb=4
+[stream] frame=2940 asset_kb=0
+[stream] frame=2945 asset_kb=3
+[stream] frame=2946 asset_kb=86
+[stream] frame=2947 asset_kb=2
+[stream] frame=2948 asset_kb=44
+[stream] frame=2953 asset_kb=4
+[stream] frame=2968 asset_kb=2
+[stream] frame=2982 asset_kb=4
+[stream] frame=2997 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=7 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3000 asset_kb=0
+[drv] frame 3000
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3013 asset_kb=4
+[stream] frame=3027 asset_kb=2
+[stream] frame=3042 asset_kb=4
+[stream] frame=3058 asset_kb=4
+[stream] frame=3060 asset_kb=0
+[stream] frame=3073 asset_kb=4
+[stream] frame=3087 asset_kb=4
+[stream] frame=3100 asset_kb=2
+[stream] frame=3116 asset_kb=4
+[stream] frame=3120 asset_kb=0
+[stream] frame=3132 asset_kb=6
+[stream] frame=3145 asset_kb=2
+[stream] frame=3161 asset_kb=4
+[stream] frame=3176 asset_kb=4
+[stream] frame=3180 asset_kb=0
+[stream] frame=3190 asset_kb=2
+[stream] frame=3206 asset_kb=4
+[stream] frame=3221 asset_kb=2
+[stream] frame=3235 asset_kb=4
+[stream] frame=3240 asset_kb=0
+[stream] frame=3250 asset_kb=2
+[stream] frame=3266 asset_kb=4
+[stream] frame=3279 asset_kb=2
+[stream] frame=3295 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=8 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3300 asset_kb=0
+[drv] frame 3300
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3311 asset_kb=4
+[stream] frame=3326 asset_kb=2
+[stream] frame=3340 asset_kb=2
+[stream] frame=3354 asset_kb=2
+[stream] frame=3360 asset_kb=0
+[stream] frame=3369 asset_kb=4
+[stream] frame=3385 asset_kb=4
+[stream] frame=3398 asset_kb=2
+[stream] frame=3414 asset_kb=4
+[stream] frame=3420 asset_kb=0
+[stream] frame=3428 asset_kb=2
+[stream] frame=3445 asset_kb=2
+[stream] frame=3459 asset_kb=2
+[stream] frame=3472 asset_kb=4
+[stream] frame=3480 asset_kb=0
+[stream] frame=3488 asset_kb=2
+[stream] frame=3503 asset_kb=2
+[stream] frame=3517 asset_kb=4
+[stream] frame=3533 asset_kb=2
+[stream] frame=3540 asset_kb=0
+[stream] frame=3548 asset_kb=4
+[stream] frame=3562 asset_kb=4
+[stream] frame=3579 asset_kb=4
+[stream] frame=3593 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=9 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3600 asset_kb=0
+[drv] frame 3600
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3606 asset_kb=2
+[stream] frame=3607 asset_kb=4
+[stream] frame=3623 asset_kb=2
+[stream] frame=3636 asset_kb=4
+[stream] frame=3652 asset_kb=2
+[stream] frame=3660 asset_kb=0
+[stream] frame=3667 asset_kb=2
+[stream] frame=3681 asset_kb=4
+[stream] frame=3697 asset_kb=2
+[stream] frame=3712 asset_kb=4
+[stream] frame=3720 asset_kb=0
+[stream] frame=3726 asset_kb=2
+[stream] frame=3741 asset_kb=4
+[stream] frame=3757 asset_kb=2
+[stream] frame=3772 asset_kb=4
+[stream] frame=3773 asset_kb=2
+[stream] frame=3780 asset_kb=0
+[stream] frame=3786 asset_kb=2
+[stream] frame=3800 asset_kb=4
+[stream] frame=3815 asset_kb=2
+[stream] frame=3831 asset_kb=2
+[stream] frame=3840 asset_kb=0
+[stream] frame=3844 asset_kb=4
+[stream] frame=3860 asset_kb=4
+[stream] frame=3875 asset_kb=2
+[stream] frame=3891 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=10 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3900 asset_kb=0
+[drv] frame 3900
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=3906 asset_kb=2
+[stream] frame=3907 asset_kb=4
+[stream] frame=3919 asset_kb=4
+[stream] frame=3934 asset_kb=4
+[stream] frame=3950 asset_kb=4
+[stream] frame=3960 asset_kb=0
+[stream] frame=3963 asset_kb=2
+[stream] frame=3979 asset_kb=4
+[stream] frame=3993 asset_kb=2
+[stream] frame=4008 asset_kb=4
+[stream] frame=4020 asset_kb=0
+[stream] frame=4024 asset_kb=2
+[stream] frame=4037 asset_kb=4
+[stream] frame=4053 asset_kb=2
+[stream] frame=4068 asset_kb=2
+[stream] frame=4069 asset_kb=2
+[stream] frame=4080 asset_kb=0
+[stream] frame=4082 asset_kb=2
+[stream] frame=4098 asset_kb=4
+[stream] frame=4113 asset_kb=2
+[stream] frame=4127 asset_kb=4
+[stream] frame=4140 asset_kb=0
+[stream] frame=4142 asset_kb=2
+[stream] frame=4158 asset_kb=4
+[stream] frame=4172 asset_kb=4
+[stream] frame=4187 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=11 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=4200 asset_kb=0
+[drv] frame 4200
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=4207 asset_kb=4
+[stream] frame=4217 asset_kb=2
+[stream] frame=4232 asset_kb=4
+[stream] frame=4246 asset_kb=2
+[stream] frame=4260 asset_kb=0
+[stream] frame=4262 asset_kb=4
+[stream] frame=4275 asset_kb=2
+[stream] frame=4291 asset_kb=4
+[stream] frame=4306 asset_kb=2
+[stream] frame=4320 asset_kb=4
+[stream] frame=4336 asset_kb=4
+[stream] frame=4351 asset_kb=4
+[stream] frame=4365 asset_kb=2
+[stream] frame=4380 asset_kb=4
+[stream] frame=4396 asset_kb=4
+[stream] frame=4410 asset_kb=2
+[stream] frame=4425 asset_kb=4
+[stream] frame=4440 asset_kb=0
+[stream] frame=4441 asset_kb=2
+[stream] frame=4454 asset_kb=4
+[stream] frame=4470 asset_kb=2
+[stream] frame=4483 asset_kb=4
+[stream] frame=4484 asset_kb=2
+[stream] frame=4499 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=12 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=4500 asset_kb=0
+[drv] frame 4500
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=4515 asset_kb=2
+[stream] frame=4528 asset_kb=4
+[stream] frame=4544 asset_kb=4
+[stream] frame=4559 asset_kb=2
+[stream] frame=4560 asset_kb=0
+[stream] frame=4573 asset_kb=4
+[stream] frame=4588 asset_kb=2
+[stream] frame=4602 asset_kb=4
+[stream] frame=4618 asset_kb=2
+[stream] frame=4620 asset_kb=0
+[stream] frame=4633 asset_kb=4
+[stream] frame=4647 asset_kb=2
+[stream] frame=4662 asset_kb=2
+[stream] frame=4676 asset_kb=4
+[stream] frame=4680 asset_kb=0
+[stream] frame=4691 asset_kb=2
+[stream] frame=4707 asset_kb=4
+[stream] frame=4722 asset_kb=4
+[stream] frame=4736 asset_kb=2
+[stream] frame=4740 asset_kb=0
+[stream] frame=4750 asset_kb=4
+[stream] frame=4765 asset_kb=2
+[stream] frame=4781 asset_kb=2
+[stream] frame=4796 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=13 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1104 boundcube=0
+[stream] frame=4800 asset_kb=0
+[drv] frame 4800
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1107 boundcube=0
+[stream] frame=4810 asset_kb=4
+[stream] frame=4826 asset_kb=4
+[stream] frame=4841 asset_kb=4
+[stream] frame=4855 asset_kb=2
+[stream] frame=4860 asset_kb=0
+[stream] frame=4868 asset_kb=4
+[stream] frame=4886 asset_kb=4
+[stream] frame=4899 asset_kb=2
+[stream] frame=4915 asset_kb=4
+[stream] frame=4920 asset_kb=0
+[stream] frame=4929 asset_kb=4
+[stream] frame=4944 asset_kb=2
+[stream] frame=4960 asset_kb=4
+[stream] frame=4973 asset_kb=2
+[stream] frame=4980 asset_kb=0
+[stream] frame=4989 asset_kb=4
+[stream] frame=5004 asset_kb=2
+[stream] frame=5005 asset_kb=2
+[stream] frame=5018 asset_kb=2
+[stream] frame=5034 asset_kb=4
+[stream] frame=5040 asset_kb=0
+[stream] frame=5049 asset_kb=2
+[stream] frame=5063 asset_kb=2
+[stream] frame=5076 asset_kb=2
+[stream] frame=5077 asset_kb=2
+[stream] frame=5092 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=14 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=5100 asset_kb=0
+[drv] frame 5100
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=5107 asset_kb=2
+[stream] frame=5108 asset_kb=2
+[stream] frame=5122 asset_kb=2
+[stream] frame=5137 asset_kb=4
+[stream] frame=5151 asset_kb=4
+[stream] frame=5160 asset_kb=0
+[stream] frame=5166 asset_kb=2
+[stream] frame=5182 asset_kb=4
+[stream] frame=5196 asset_kb=2
+[stream] frame=5211 asset_kb=4
+[stream] frame=5220 asset_kb=0
+[stream] frame=5225 asset_kb=2
+[stream] frame=5240 asset_kb=4
+[stream] frame=5256 asset_kb=2
+[stream] frame=5269 asset_kb=2
+[stream] frame=5270 asset_kb=2
+[stream] frame=5280 asset_kb=0
+[stream] frame=5285 asset_kb=4
+[stream] frame=5301 asset_kb=4
+[stream] frame=5314 asset_kb=2
+[stream] frame=5330 asset_kb=4
+[stream] frame=5340 asset_kb=0
+[stream] frame=5345 asset_kb=2
+[stream] frame=5359 asset_kb=4
+[stream] frame=5374 asset_kb=2
+[stream] frame=5388 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=15 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=5400 asset_kb=0
+[drv] frame 5400
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1425 boundcube=0
+[stream] frame=5407 asset_kb=2
+[stream] frame=5420 asset_kb=4
+[stream] frame=5433 asset_kb=2
+[stream] frame=5449 asset_kb=2
+[stream] frame=5460 asset_kb=0
+[stream] frame=5462 asset_kb=2
+[stream] frame=5478 asset_kb=4
+[stream] frame=5493 asset_kb=2
+[stream] frame=5507 asset_kb=2
+[stream] frame=5520 asset_kb=0
+[stream] frame=5523 asset_kb=1
+[stream] frame=5580 asset_kb=0
+[stream] frame=5640 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=218->218 MB glpeak=218 MB gencnt=1440 delcnt=14 uploads=12143 lowmem=16 stream=0/0 MB observed=218->218 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1 boundcube=0
+[stream] frame=5700 asset_kb=0
+[drv] frame 5700
+[glmem] frame live=218 MB peak=218 MB gen=1440 del=14 upload=12143 bound2d=1 boundcube=0
+[stream] frame=5746 asset_kb=351
+[stream] frame=5747 asset_kb=2
+[stream] frame=5748 asset_kb=86
+[stream] frame=5749 asset_kb=2
+[stream] frame=5750 asset_kb=22
+[stream] frame=5751 asset_kb=57
+[stream] frame=5752 asset_kb=8
+[stream] frame=5753 asset_kb=8
+[stream] frame=5754 asset_kb=2
+[stream] frame=5755 asset_kb=2
+[stream] frame=5757 asset_kb=2
+[stream] frame=5758 asset_kb=344
+[stream] frame=5759 asset_kb=4
+[stream] frame=5760 asset_kb=2
+[stream] frame=5765 asset_kb=86
+[stream] frame=5768 asset_kb=87
+[stream] frame=5769 asset_kb=14
+[stream] frame=5770 asset_kb=4
+[stream] frame=5771 asset_kb=10
+[stream] frame=5772 asset_kb=346
+[stream] frame=5774 asset_kb=4
+[stream] frame=5777 asset_kb=87
+[stream] frame=5779 asset_kb=39
+[stream] frame=5780 asset_kb=8
+[stream] frame=5781 asset_kb=2
+[stream] frame=5783 asset_kb=71
+[stream] frame=5784 asset_kb=10
+[stream] frame=5785 asset_kb=344
+[stream] frame=5787 asset_kb=2
+[stream] frame=5789 asset_kb=4
+[stream] frame=5790 asset_kb=2
+[stream] frame=5796 asset_kb=87
+[stream] frame=5798 asset_kb=25
+[stream] frame=5799 asset_kb=61
+[stream] frame=5800 asset_kb=10
+[stream] frame=5802 asset_kb=342
+[stream] frame=5803 asset_kb=110
+[stream] frame=5809 asset_kb=405
+[stream] frame=5810 asset_kb=2
+[stream] frame=5811 asset_kb=109
+[stream] frame=5812 asset_kb=2
+[stream] frame=5813 asset_kb=53
+[stream] frame=5814 asset_kb=10
+[stream] frame=5815 asset_kb=342
+[stream] frame=5820 asset_kb=0
+[stream] frame=5823 asset_kb=87
+[stream] frame=5825 asset_kb=23
+[stream] frame=5826 asset_kb=44
+[stream] frame=5827 asset_kb=355
+[stream] frame=5828 asset_kb=87
+[stream] frame=5836 asset_kb=2
+[stream] frame=5837 asset_kb=58
+[stream] frame=5838 asset_kb=10
+[stream] frame=5839 asset_kb=342
+[stream] frame=5843 asset_kb=2
+[stream] frame=5847 asset_kb=87
+[stream] frame=5849 asset_kb=23
+[stream] frame=5850 asset_kb=73
+[stream] frame=5853 asset_kb=8
+[stream] frame=5854 asset_kb=2
+[stream] frame=5856 asset_kb=2
+[stream] frame=5857 asset_kb=81
+[stream] frame=5858 asset_kb=14
+[stream] frame=5859 asset_kb=342
+[stream] frame=5864 asset_kb=6
+[stream] frame=5865 asset_kb=18
+[stream] frame=5866 asset_kb=4
+[stream] frame=5869 asset_kb=6
+[stream] frame=5870 asset_kb=90
+[stream] frame=5871 asset_kb=2
+[stream] frame=5872 asset_kb=25
+[stream] frame=5873 asset_kb=429
+[stream] frame=5874 asset_kb=91
+[stream] frame=5876 asset_kb=4
+[stream] frame=5877 asset_kb=92
+[stream] frame=5878 asset_kb=7
+[stream] frame=5879 asset_kb=342
+[stream] frame=5880 asset_kb=6
+[stream] frame=5882 asset_kb=6
+[stream] frame=5883 asset_kb=2
+[stream] frame=5884 asset_kb=90
+[stream] frame=5886 asset_kb=6
+[stream] frame=5888 asset_kb=4
+[stream] frame=5889 asset_kb=83
+[stream] frame=5892 asset_kb=4
+[stream] frame=5894 asset_kb=47
+[stream] frame=5895 asset_kb=50
+[stream] frame=5898 asset_kb=2
+[stream] frame=5902 asset_kb=4
+[stream] frame=5903 asset_kb=2
+[stream] frame=5905 asset_kb=1
+[stream] frame=5907 asset_kb=2
+[stream] frame=5909 asset_kb=3
+[stream] frame=5910 asset_kb=38
+[stream] frame=5911 asset_kb=89
+[stream] frame=5912 asset_kb=51
+[stream] frame=5915 asset_kb=351
+[stream] frame=5916 asset_kb=87
+[stream] frame=5917 asset_kb=23
+[stream] frame=5923 asset_kb=54
+[stream] frame=5925 asset_kb=2
+[stream] frame=5926 asset_kb=42
+[stream] frame=5927 asset_kb=33
+[stream] frame=5928 asset_kb=10
+[stream] frame=5930 asset_kb=21
+[stream] frame=5932 asset_kb=2
+[stream] frame=5936 asset_kb=14
+[stream] frame=5937 asset_kb=13
+[stream] frame=5940 asset_kb=0
+[stream] frame=5943 asset_kb=2
+[stream] frame=5947 asset_kb=2
+[stream] frame=5949 asset_kb=9
+[stream] frame=5957 asset_kb=2
+[stream] frame=5961 asset_kb=4
+[stream] frame=5973 asset_kb=2
+[stream] frame=5977 asset_kb=2
+[stream] frame=5988 asset_kb=2
+[stream] frame=5992 asset_kb=15
+[stream] frame=5995 asset_kb=2
+[stream] frame=5996 asset_kb=343
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=241->241 MB glpeak=241 MB gencnt=1490 delcnt=15 uploads=12625 lowmem=17 stream=0/0 MB observed=241->241 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=241 MB peak=241 MB gen=1490 del=15 upload=12625 bound2d=1270 boundcube=0
+[stream] frame=6000 asset_kb=0
+[drv] frame 6000
+[glmem] frame live=241 MB peak=241 MB gen=1490 del=15 upload=12625 bound2d=1273 boundcube=0
+[stream] frame=6008 asset_kb=6
+[stream] frame=6017 asset_kb=2
+[stream] frame=6021 asset_kb=4
+[stream] frame=6032 asset_kb=2
+[stream] frame=6037 asset_kb=2
+[stream] frame=6048 asset_kb=4
+[stream] frame=6050 asset_kb=2
+[stream] frame=6060 asset_kb=0
+[stream] frame=6062 asset_kb=2
+[stream] frame=6065 asset_kb=2
+[stream] frame=6077 asset_kb=11
+[stream] frame=6081 asset_kb=4
+[stream] frame=6091 asset_kb=2
+[stream] frame=6095 asset_kb=2
+[stream] frame=6106 asset_kb=4
+[stream] frame=6110 asset_kb=2
+[stream] frame=6120 asset_kb=0
+[stream] frame=6122 asset_kb=2
+[stream] frame=6126 asset_kb=2
+[stream] frame=6135 asset_kb=2
+[stream] frame=6139 asset_kb=2
+[stream] frame=6140 asset_kb=2
+[stream] frame=6151 asset_kb=4
+[stream] frame=6155 asset_kb=2
+[stream] frame=6165 asset_kb=2
+[stream] frame=6171 asset_kb=2
+[stream] frame=6180 asset_kb=0
+[stream] frame=6182 asset_kb=2
+[stream] frame=6184 asset_kb=4
+[stream] frame=6196 asset_kb=4
+[stream] frame=6200 asset_kb=2
+[stream] frame=6203 asset_kb=9
+[stream] frame=6211 asset_kb=2
+[stream] frame=6213 asset_kb=2
+[stream] frame=6227 asset_kb=2
+[stream] frame=6229 asset_kb=4
+[stream] frame=6240 asset_kb=0
+[stream] frame=6241 asset_kb=4
+[stream] frame=6244 asset_kb=2
+[stream] frame=6254 asset_kb=2
+[stream] frame=6258 asset_kb=2
+[stream] frame=6270 asset_kb=2
+[stream] frame=6274 asset_kb=2
+[stream] frame=6285 asset_kb=2
+[stream] frame=6289 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=234->234 MB glpeak=241 MB gencnt=1490 delcnt=33 uploads=12625 lowmem=18 stream=0/0 MB observed=234->234 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=234 MB peak=241 MB gen=1490 del=33 upload=12625 bound2d=1 boundcube=0
+[stream] frame=6300 asset_kb=0
+[drv] frame 6300
+[glmem] frame live=234 MB peak=241 MB gen=1490 del=33 upload=12625 bound2d=1 boundcube=0
+[stream] frame=6307 asset_kb=6
+[stream] frame=6315 asset_kb=2
+[stream] frame=6319 asset_kb=4
+[stream] frame=6329 asset_kb=4
+[stream] frame=6333 asset_kb=2
+[stream] frame=6344 asset_kb=2
+[stream] frame=6348 asset_kb=2
+[stream] frame=6360 asset_kb=4
+[stream] frame=6362 asset_kb=4
+[stream] frame=6374 asset_kb=2
+[stream] frame=6377 asset_kb=2
+[stream] frame=6389 asset_kb=2
+[stream] frame=6393 asset_kb=2
+[stream] frame=6403 asset_kb=4
+[stream] frame=6407 asset_kb=4
+[stream] frame=6418 asset_kb=2
+[stream] frame=6420 asset_kb=0
+[stream] frame=6422 asset_kb=2
+[stream] frame=6434 asset_kb=2
+[stream] frame=6438 asset_kb=2
+[stream] frame=6447 asset_kb=2
+[stream] frame=6451 asset_kb=2
+[stream] frame=6463 asset_kb=4
+[stream] frame=6467 asset_kb=4
+[stream] frame=6479 asset_kb=4
+[stream] frame=6480 asset_kb=0
+[stream] frame=6482 asset_kb=2
+[stream] frame=6494 asset_kb=2
+[stream] frame=6496 asset_kb=2
+[stream] frame=6508 asset_kb=2
+[stream] frame=6512 asset_kb=2
+[stream] frame=6521 asset_kb=2
+[stream] frame=6522 asset_kb=2
+[stream] frame=6527 asset_kb=4
+[stream] frame=6537 asset_kb=2
+[stream] frame=6540 asset_kb=0
+[stream] frame=6542 asset_kb=2
+[stream] frame=6553 asset_kb=2
+[stream] frame=6556 asset_kb=2
+[stream] frame=6563 asset_kb=173
+[stream] frame=6566 asset_kb=2
+[stream] frame=6570 asset_kb=2
+[stream] frame=6582 asset_kb=2
+[stream] frame=6586 asset_kb=2
+[stream] frame=6597 asset_kb=2
+[stream] frame=6598 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=234->234 MB glpeak=241 MB gencnt=1491 delcnt=33 uploads=12634 lowmem=19 stream=0/0 MB observed=234->234 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=234 MB peak=241 MB gen=1491 del=33 upload=12634 bound2d=1 boundcube=0
+[stream] frame=6600 asset_kb=0
+[drv] frame 6600
+[glmem] frame live=234 MB peak=241 MB gen=1491 del=33 upload=12634 bound2d=1 boundcube=0
+[stream] frame=6607 asset_kb=4
+[stream] frame=6612 asset_kb=2
+[stream] frame=6616 asset_kb=2
+[stream] frame=6628 asset_kb=4
+[stream] frame=6630 asset_kb=2
+[stream] frame=6641 asset_kb=2
+[stream] frame=6645 asset_kb=2
+[stream] frame=6657 asset_kb=4
+[stream] frame=6660 asset_kb=0
+[stream] frame=6661 asset_kb=4
+[stream] frame=6670 asset_kb=2
+[stream] frame=6674 asset_kb=2
+[stream] frame=6686 asset_kb=2
+[stream] frame=6690 asset_kb=2
+[stream] frame=6700 asset_kb=2
+[stream] frame=6705 asset_kb=2
+[stream] frame=6715 asset_kb=4
+[stream] frame=6719 asset_kb=2
+[stream] frame=6720 asset_kb=0
+[stream] frame=6730 asset_kb=2
+[stream] frame=6735 asset_kb=4
+[stream] frame=6746 asset_kb=4
+[stream] frame=6748 asset_kb=2
+[stream] frame=6760 asset_kb=2
+[stream] frame=6763 asset_kb=2
+[stream] frame=6775 asset_kb=4
+[stream] frame=6779 asset_kb=2
+[stream] frame=6780 asset_kb=0
+[stream] frame=6789 asset_kb=2
+[stream] frame=6793 asset_kb=4
+[stream] frame=6804 asset_kb=2
+[stream] frame=6808 asset_kb=2
+[stream] frame=6820 asset_kb=4
+[stream] frame=6824 asset_kb=2
+[stream] frame=6833 asset_kb=2
+[stream] frame=6838 asset_kb=2
+[stream] frame=6840 asset_kb=0
+[stream] frame=6849 asset_kb=4
+[stream] frame=6853 asset_kb=2
+[stream] frame=6865 asset_kb=2
+[stream] frame=6868 asset_kb=2
+[stream] frame=6869 asset_kb=2
+[stream] frame=6878 asset_kb=2
+[stream] frame=6882 asset_kb=2
+[stream] frame=6894 asset_kb=4
+[stream] frame=6898 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=234->234 MB glpeak=241 MB gencnt=1491 delcnt=33 uploads=12634 lowmem=20 stream=0/0 MB observed=234->234 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=234 MB peak=241 MB gen=1491 del=33 upload=12634 bound2d=1 boundcube=0
+[stream] frame=6900 asset_kb=0
+[drv] frame 6900
+[glmem] frame live=234 MB peak=241 MB gen=1491 del=33 upload=12634 bound2d=1 boundcube=0
+[stream] frame=6907 asset_kb=2
+[stream] frame=6912 asset_kb=13
+[stream] frame=6924 asset_kb=4
+[stream] frame=6927 asset_kb=2
+[stream] frame=6928 asset_kb=2
+[stream] frame=6937 asset_kb=6
+[stream] frame=6938 asset_kb=111
+[stream] frame=6939 asset_kb=19
+[stream] frame=6940 asset_kb=2
+[stream] frame=6941 asset_kb=342
+[stream] frame=6942 asset_kb=2
+[stream] frame=6948 asset_kb=2
+[stream] frame=6949 asset_kb=86
+[stream] frame=6951 asset_kb=23
+[stream] frame=6952 asset_kb=55
+[stream] frame=6953 asset_kb=2
+[stream] frame=6957 asset_kb=2
+[stream] frame=6960 asset_kb=0
+[stream] frame=6961 asset_kb=11
+[stream] frame=6966 asset_kb=4
+[stream] frame=6972 asset_kb=2
+[stream] frame=6982 asset_kb=2
+[stream] frame=6986 asset_kb=2
+[stream] frame=6998 asset_kb=2
+[stream] frame=7000 asset_kb=11
+[stream] frame=7001 asset_kb=6
+[stream] frame=7002 asset_kb=48
+[stream] frame=7003 asset_kb=2
+[stream] frame=7005 asset_kb=2
+[stream] frame=7011 asset_kb=4
+[stream] frame=7013 asset_kb=43
+[stream] frame=7015 asset_kb=2
+[stream] frame=7018 asset_kb=2
+[stream] frame=7020 asset_kb=0
+[stream] frame=7027 asset_kb=2
+[stream] frame=7031 asset_kb=4
+[stream] frame=7032 asset_kb=2
+[stream] frame=7036 asset_kb=2
+[stream] frame=7038 asset_kb=4
+[stream] frame=7039 asset_kb=18
+[stream] frame=7040 asset_kb=2
+[stream] frame=7042 asset_kb=6
+[stream] frame=7046 asset_kb=4
+[stream] frame=7048 asset_kb=2
+[stream] frame=7053 asset_kb=1
+[stream] frame=7056 asset_kb=2
+[stream] frame=7060 asset_kb=2
+[stream] frame=7067 asset_kb=10
+[stream] frame=7069 asset_kb=342
+[stream] frame=7071 asset_kb=2
+[stream] frame=7072 asset_kb=2
+[stream] frame=7075 asset_kb=6
+[stream] frame=7076 asset_kb=87
+[stream] frame=7078 asset_kb=2
+[stream] frame=7079 asset_kb=22
+[stream] frame=7080 asset_kb=49
+[stream] frame=7081 asset_kb=20
+[stream] frame=7082 asset_kb=5
+[stream] frame=7083 asset_kb=43
+[stream] frame=7084 asset_kb=45
+[stream] frame=7085 asset_kb=5
+[stream] frame=7088 asset_kb=22
+[stream] frame=7089 asset_kb=4
+[stream] frame=7090 asset_kb=4
+[stream] frame=7091 asset_kb=9
+[stream] frame=7092 asset_kb=49
+[stream] frame=7093 asset_kb=22
+[stream] frame=7095 asset_kb=48
+[stream] frame=7096 asset_kb=91
+[stream] frame=7097 asset_kb=2
+[stream] frame=7098 asset_kb=46
+[stream] frame=7099 asset_kb=2
+[stream] frame=7101 asset_kb=45
+[stream] frame=7102 asset_kb=65
+[stream] frame=7103 asset_kb=47
+[stream] frame=7104 asset_kb=18
+[stream] frame=7105 asset_kb=51
+[stream] frame=7106 asset_kb=20
+[stream] frame=7107 asset_kb=21
+[stream] frame=7108 asset_kb=2
+[stream] frame=7109 asset_kb=342
+[stream] frame=7115 asset_kb=2
+[stream] frame=7116 asset_kb=2
+[stream] frame=7117 asset_kb=86
+[stream] frame=7119 asset_kb=90
+[stream] frame=7120 asset_kb=9
+[stream] frame=7121 asset_kb=2
+[stream] frame=7122 asset_kb=342
+[stream] frame=7129 asset_kb=2
+[stream] frame=7130 asset_kb=88
+[stream] frame=7131 asset_kb=2
+[stream] frame=7132 asset_kb=22
+[stream] frame=7133 asset_kb=60
+[stream] frame=7134 asset_kb=14
+[stream] frame=7140 asset_kb=0
+[stream] frame=7142 asset_kb=10
+[stream] frame=7143 asset_kb=342
+[stream] frame=7144 asset_kb=4
+[stream] frame=7150 asset_kb=2
+[stream] frame=7151 asset_kb=86
+[stream] frame=7154 asset_kb=4
+[stream] frame=7155 asset_kb=20
+[stream] frame=7156 asset_kb=6
+[stream] frame=7157 asset_kb=4
+[stream] frame=7158 asset_kb=72
+[stream] frame=7159 asset_kb=2
+[stream] frame=7161 asset_kb=2
+[stream] frame=7163 asset_kb=12
+[stream] frame=7165 asset_kb=342
+[stream] frame=7171 asset_kb=6
+[stream] frame=7172 asset_kb=4
+[stream] frame=7174 asset_kb=6
+[stream] frame=7175 asset_kb=86
+[stream] frame=7176 asset_kb=4
+[stream] frame=7177 asset_kb=22
+[stream] frame=7178 asset_kb=54
+[stream] frame=7180 asset_kb=2
+[stream] frame=7181 asset_kb=21
+[stream] frame=7182 asset_kb=52
+[stream] frame=7190 asset_kb=2
+[stream] frame=7193 asset_kb=4
+[stream] frame=7194 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=247->247 MB glpeak=247 MB gencnt=1534 delcnt=33 uploads=13030 lowmem=21 stream=0/0 MB observed=247->247 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=247 MB peak=247 MB gen=1534 del=33 upload=13030 bound2d=720 boundcube=0
+[stream] frame=7200 asset_kb=0
+[drv] frame 7200
+[glmem] frame live=247 MB peak=247 MB gen=1534 del=33 upload=13030 bound2d=720 boundcube=0
+[stream] frame=7207 asset_kb=4
+[stream] frame=7208 asset_kb=6
+[stream] frame=7220 asset_kb=2
+[stream] frame=7224 asset_kb=4
+[stream] frame=7233 asset_kb=13
+[stream] frame=7234 asset_kb=2
+[stream] frame=7236 asset_kb=8
+[stream] frame=7237 asset_kb=2
+[stream] frame=7249 asset_kb=2
+[stream] frame=7253 asset_kb=6
+[stream] frame=7259 asset_kb=14
+[stream] frame=7260 asset_kb=6
+[stream] frame=7263 asset_kb=4
+[stream] frame=7265 asset_kb=2
+[stream] frame=7267 asset_kb=2
+[stream] frame=7279 asset_kb=2
+[stream] frame=7280 asset_kb=10
+[stream] frame=7281 asset_kb=342
+[stream] frame=7282 asset_kb=2
+[stream] frame=7283 asset_kb=2
+[stream] frame=7289 asset_kb=87
+[stream] frame=7291 asset_kb=2
+[stream] frame=7292 asset_kb=60
+[stream] frame=7293 asset_kb=3
+[stream] frame=7294 asset_kb=49
+[stream] frame=7295 asset_kb=13
+[stream] frame=7296 asset_kb=45
+[stream] frame=7297 asset_kb=45
+[stream] frame=7298 asset_kb=6
+[stream] frame=7299 asset_kb=44
+[stream] frame=7300 asset_kb=45
+[stream] frame=7301 asset_kb=89
+[stream] frame=7302 asset_kb=24
+[stream] frame=7303 asset_kb=23
+[stream] frame=7305 asset_kb=19
+[stream] frame=7306 asset_kb=6
+[stream] frame=7307 asset_kb=2
+[stream] frame=7308 asset_kb=57
+[stream] frame=7309 asset_kb=94
+[stream] frame=7312 asset_kb=25
+[stream] frame=7313 asset_kb=30
+[stream] frame=7315 asset_kb=27
+[stream] frame=7316 asset_kb=25
+[stream] frame=7317 asset_kb=4
+[stream] frame=7318 asset_kb=132
+[stream] frame=7319 asset_kb=2
+[stream] frame=7320 asset_kb=2
+[stream] frame=7321 asset_kb=87
+[stream] frame=7322 asset_kb=65
+[stream] frame=7323 asset_kb=38
+[stream] frame=7324 asset_kb=4
+[stream] frame=7326 asset_kb=38
+[stream] frame=7327 asset_kb=1
+[stream] frame=7328 asset_kb=2
+[stream] frame=7330 asset_kb=39
+[stream] frame=7331 asset_kb=2
+[stream] frame=7332 asset_kb=38
+[stream] frame=7334 asset_kb=79
+[stream] frame=7335 asset_kb=9
+[stream] frame=7336 asset_kb=6
+[stream] frame=7337 asset_kb=342
+[stream] frame=7342 asset_kb=6
+[stream] frame=7347 asset_kb=87
+[stream] frame=7349 asset_kb=3
+[stream] frame=7350 asset_kb=22
+[stream] frame=7351 asset_kb=54
+[stream] frame=7352 asset_kb=89
+[stream] frame=7353 asset_kb=29
+[stream] frame=7354 asset_kb=30
+[stream] frame=7357 asset_kb=4
+[stream] frame=7367 asset_kb=4
+[stream] frame=7371 asset_kb=2
+[stream] frame=7372 asset_kb=2
+[stream] frame=7377 asset_kb=46
+[stream] frame=7378 asset_kb=57
+[stream] frame=7380 asset_kb=0
+[stream] frame=7383 asset_kb=12
+[stream] frame=7384 asset_kb=12
+[stream] frame=7385 asset_kb=4
+[stream] frame=7387 asset_kb=2
+[stream] frame=7389 asset_kb=14
+[stream] frame=7390 asset_kb=15
+[stream] frame=7391 asset_kb=2
+[stream] frame=7393 asset_kb=2
+[stream] frame=7395 asset_kb=2
+[stream] frame=7401 asset_kb=6
+[stream] frame=7407 asset_kb=10
+[stream] frame=7410 asset_kb=2
+[stream] frame=7411 asset_kb=47
+[stream] frame=7412 asset_kb=2
+[stream] frame=7413 asset_kb=2
+[stream] frame=7416 asset_kb=6
+[stream] frame=7423 asset_kb=6
+[stream] frame=7426 asset_kb=8
+[stream] frame=7428 asset_kb=24
+[stream] frame=7430 asset_kb=4
+[stream] frame=7435 asset_kb=13
+[stream] frame=7440 asset_kb=0
+[stream] frame=7442 asset_kb=2
+[stream] frame=7445 asset_kb=2
+[stream] frame=7446 asset_kb=2
+[stream] frame=7457 asset_kb=4
+[stream] frame=7461 asset_kb=2
+[stream] frame=7471 asset_kb=2
+[stream] frame=7475 asset_kb=4
+[stream] frame=7476 asset_kb=22
+[stream] frame=7477 asset_kb=4
+[stream] frame=7480 asset_kb=2
+[stream] frame=7482 asset_kb=2
+[stream] frame=7486 asset_kb=6
+[stream] frame=7487 asset_kb=2
+[stream] frame=7488 asset_kb=8
+[stream] frame=7489 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=254->254 MB glpeak=254 MB gencnt=1578 delcnt=33 uploads=13416 lowmem=22 stream=0/0 MB observed=254->254 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=254 MB peak=254 MB gen=1578 del=33 upload=13416 bound2d=720 boundcube=0
+[stream] frame=7500 asset_kb=0
+[drv] frame 7500
+[glmem] frame live=254 MB peak=254 MB gen=1578 del=33 upload=13416 bound2d=720 boundcube=0
+[stream] frame=7507 asset_kb=6
+[stream] frame=7516 asset_kb=4
+[stream] frame=7520 asset_kb=2
+[stream] frame=7527 asset_kb=13
+[stream] frame=7529 asset_kb=2
+[stream] frame=7532 asset_kb=1
+[stream] frame=7533 asset_kb=13
+[stream] frame=7535 asset_kb=4
+[stream] frame=7545 asset_kb=4
+[stream] frame=7549 asset_kb=2
+[stream] frame=7554 asset_kb=1
+[stream] frame=7558 asset_kb=2
+[stream] frame=7560 asset_kb=0
+[stream] frame=7564 asset_kb=2
+[stream] frame=7569 asset_kb=2
+[stream] frame=7570 asset_kb=45
+[stream] frame=7571 asset_kb=51
+[stream] frame=7574 asset_kb=4
+[stream] frame=7580 asset_kb=4
+[stream] frame=7589 asset_kb=2
+[stream] frame=7593 asset_kb=2
+[stream] frame=7595 asset_kb=70
+[stream] frame=7601 asset_kb=140
+[stream] frame=7603 asset_kb=4
+[stream] frame=7607 asset_kb=2
+[stream] frame=7619 asset_kb=2
+[stream] frame=7620 asset_kb=10
+[stream] frame=7622 asset_kb=342
+[stream] frame=7623 asset_kb=2
+[stream] frame=7631 asset_kb=87
+[stream] frame=7632 asset_kb=4
+[stream] frame=7633 asset_kb=2
+[stream] frame=7634 asset_kb=22
+[stream] frame=7635 asset_kb=49
+[stream] frame=7636 asset_kb=27
+[stream] frame=7638 asset_kb=18
+[stream] frame=7640 asset_kb=2
+[stream] frame=7641 asset_kb=68
+[stream] frame=7642 asset_kb=2
+[stream] frame=7643 asset_kb=4
+[stream] frame=7644 asset_kb=106
+[stream] frame=7645 asset_kb=14
+[stream] frame=7647 asset_kb=23
+[stream] frame=7651 asset_kb=2
+[stream] frame=7665 asset_kb=4
+[stream] frame=7667 asset_kb=2
+[stream] frame=7678 asset_kb=2
+[stream] frame=7680 asset_kb=0
+[stream] frame=7682 asset_kb=2
+[stream] frame=7692 asset_kb=2
+[stream] frame=7696 asset_kb=2
+[stream] frame=7707 asset_kb=4
+[stream] frame=7711 asset_kb=12
+[stream] frame=7715 asset_kb=6
+[stream] frame=7716 asset_kb=11
+[stream] frame=7719 asset_kb=25
+[stream] frame=7720 asset_kb=23
+[stream] frame=7722 asset_kb=24
+[stream] frame=7723 asset_kb=4
+[stream] frame=7724 asset_kb=87
+[stream] frame=7726 asset_kb=53
+[stream] frame=7727 asset_kb=47
+[stream] frame=7728 asset_kb=135
+[stream] frame=7729 asset_kb=43
+[stream] frame=7732 asset_kb=35
+[stream] frame=7738 asset_kb=2
+[stream] frame=7739 asset_kb=2
+[stream] frame=7740 asset_kb=2
+[stream] frame=7745 asset_kb=1
+[stream] frame=7747 asset_kb=12
+[stream] frame=7752 asset_kb=2
+[stream] frame=7756 asset_kb=2
+[stream] frame=7766 asset_kb=2
+[stream] frame=7771 asset_kb=2
+[stream] frame=7772 asset_kb=2
+[stream] frame=7781 asset_kb=4
+[stream] frame=7785 asset_kb=2
+[stream] frame=7792 asset_kb=64
+[stream] frame=7793 asset_kb=129
+[stream] frame=7794 asset_kb=257
+[stream] frame=7795 asset_kb=321
+[stream] frame=7796 asset_kb=385
+[stream] frame=7797 asset_kb=65
+[stream] frame=7798 asset_kb=257
+[stream] frame=7799 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=258->258 MB glpeak=258 MB gencnt=1603 delcnt=33 uploads=13639 lowmem=23 stream=0/0 MB observed=258->258 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=258 MB peak=258 MB gen=1603 del=33 upload=13639 bound2d=1 boundcube=0
+[stream] frame=7800 asset_kb=2
+[drv] frame 7800
+[glmem] frame live=258 MB peak=258 MB gen=1603 del=33 upload=13639 bound2d=1 boundcube=0
+[stream] frame=7801 asset_kb=10
+[stream] frame=7802 asset_kb=171
+[stream] frame=7806 asset_kb=45
+[stream] frame=7807 asset_kb=13
+[stream] frame=7808 asset_kb=174
+[stream] frame=7809 asset_kb=55
+[stream] frame=7810 asset_kb=60
+[stream] frame=7816 asset_kb=6
+[stream] frame=7822 asset_kb=46
+[stream] frame=7823 asset_kb=2
+[stream] frame=7824 asset_kb=29
+[stream] frame=7825 asset_kb=25
+[stream] frame=7826 asset_kb=22
+[stream] frame=7827 asset_kb=91
+[stream] frame=7828 asset_kb=16
+[stream] frame=7829 asset_kb=45
+[stream] frame=7831 asset_kb=26
+[stream] frame=7832 asset_kb=4
+[stream] frame=7833 asset_kb=132
+[stream] frame=7834 asset_kb=2
+[stream] frame=7835 asset_kb=45
+[stream] frame=7837 asset_kb=5
+[stream] frame=7838 asset_kb=43
+[stream] frame=7840 asset_kb=37
+[stream] frame=7841 asset_kb=89
+[stream] frame=7843 asset_kb=2
+[stream] frame=7844 asset_kb=43
+[stream] frame=7846 asset_kb=25
+[stream] frame=7847 asset_kb=21
+[stream] frame=7848 asset_kb=25
+[stream] frame=7849 asset_kb=26
+[stream] frame=7850 asset_kb=2
+[stream] frame=7851 asset_kb=46
+[stream] frame=7852 asset_kb=29
+[stream] frame=7853 asset_kb=15
+[stream] frame=7854 asset_kb=43
+[stream] frame=7856 asset_kb=54
+[stream] frame=7857 asset_kb=4
+[stream] frame=7858 asset_kb=174
+[stream] frame=7859 asset_kb=6
+[stream] frame=7860 asset_kb=0
+[stream] frame=7866 asset_kb=91
+[stream] frame=7867 asset_kb=23
+[stream] frame=7868 asset_kb=45
+[stream] frame=7869 asset_kb=89
+[stream] frame=7871 asset_kb=45
+[stream] frame=7873 asset_kb=25
+[stream] frame=7874 asset_kb=67
+[stream] frame=7876 asset_kb=36
+[stream] frame=7877 asset_kb=86
+[stream] frame=7879 asset_kb=49
+[stream] frame=7880 asset_kb=89
+[stream] frame=7882 asset_kb=89
+[stream] frame=7883 asset_kb=45
+[stream] frame=7885 asset_kb=25
+[stream] frame=7886 asset_kb=51
+[stream] frame=7887 asset_kb=2
+[stream] frame=7888 asset_kb=50
+[stream] frame=7889 asset_kb=54
+[stream] frame=7891 asset_kb=19
+[stream] frame=7892 asset_kb=89
+[stream] frame=7893 asset_kb=49
+[stream] frame=7894 asset_kb=89
+[stream] frame=7896 asset_kb=47
+[stream] frame=7897 asset_kb=43
+[stream] frame=7899 asset_kb=9
+[stream] frame=7900 asset_kb=43
+[stream] frame=7901 asset_kb=2
+[stream] frame=7902 asset_kb=116
+[stream] frame=7903 asset_kb=26
+[stream] frame=7904 asset_kb=92
+[stream] frame=7905 asset_kb=43
+[stream] frame=7906 asset_kb=51
+[stream] frame=7907 asset_kb=220
+[stream] frame=7912 asset_kb=88
+[stream] frame=7914 asset_kb=45
+[stream] frame=7915 asset_kb=45
+[stream] frame=7916 asset_kb=14
+[stream] frame=7917 asset_kb=11
+[stream] frame=7918 asset_kb=93
+[stream] frame=7919 asset_kb=93
+[stream] frame=7920 asset_kb=7
+[stream] frame=7921 asset_kb=131
+[stream] frame=7922 asset_kb=1
+[stream] frame=7923 asset_kb=25
+[stream] frame=7924 asset_kb=90
+[stream] frame=7925 asset_kb=45
+[stream] frame=7927 asset_kb=45
+[stream] frame=7929 asset_kb=6
+[stream] frame=7930 asset_kb=89
+[stream] frame=7931 asset_kb=7
+[stream] frame=7932 asset_kb=86
+[stream] frame=7934 asset_kb=94
+[stream] frame=7935 asset_kb=19
+[stream] frame=7936 asset_kb=107
+[stream] frame=7938 asset_kb=2
+[stream] frame=7939 asset_kb=47
+[stream] frame=7940 asset_kb=26
+[stream] frame=7941 asset_kb=3
+[stream] frame=7942 asset_kb=155
+[stream] frame=7943 asset_kb=46
+[stream] frame=7946 asset_kb=45
+[stream] frame=7947 asset_kb=45
+[stream] frame=7950 asset_kb=2
+[stream] frame=7951 asset_kb=48
+[stream] frame=7952 asset_kb=4
+[stream] frame=7953 asset_kb=43
+[stream] frame=7954 asset_kb=49
+[stream] frame=7955 asset_kb=5
+[stream] frame=7956 asset_kb=45
+[stream] frame=7958 asset_kb=13
+[stream] frame=7959 asset_kb=45
+[stream] frame=7960 asset_kb=4
+[stream] frame=7961 asset_kb=136
+[stream] frame=7963 asset_kb=13
+[stream] frame=7964 asset_kb=46
+[stream] frame=7966 asset_kb=7
+[stream] frame=7967 asset_kb=49
+[stream] frame=7968 asset_kb=25
+[stream] frame=7969 asset_kb=94
+[stream] frame=7971 asset_kb=17
+[stream] frame=7972 asset_kb=48
+[stream] frame=7974 asset_kb=46
+[stream] frame=7975 asset_kb=57
+[stream] frame=7976 asset_kb=17
+[stream] frame=7977 asset_kb=45
+[stream] frame=7978 asset_kb=101
+[stream] frame=7979 asset_kb=47
+[stream] frame=7980 asset_kb=45
+[stream] frame=7982 asset_kb=89
+[stream] frame=7983 asset_kb=51
+[stream] frame=7984 asset_kb=88
+[stream] frame=7986 asset_kb=25
+[stream] frame=7987 asset_kb=7
+[stream] frame=7988 asset_kb=132
+[stream] frame=7990 asset_kb=23
+[stream] frame=7991 asset_kb=13
+[stream] frame=7992 asset_kb=51
+[stream] frame=7994 asset_kb=9
+[stream] frame=7995 asset_kb=88
+[stream] frame=7998 asset_kb=13
+[stream] frame=7999 asset_kb=47
+[stream] frame=8000 asset_kb=87
+[stream] frame=8001 asset_kb=26
+[stream] frame=8002 asset_kb=68
+[stream] frame=8003 asset_kb=4
+[stream] frame=8004 asset_kb=43
+[stream] frame=8005 asset_kb=58
+[stream] frame=8006 asset_kb=52
+[stream] frame=8007 asset_kb=15
+[stream] frame=8008 asset_kb=25
+[stream] frame=8009 asset_kb=38
+[stream] frame=8010 asset_kb=32
+[stream] frame=8011 asset_kb=2
+[stream] frame=8012 asset_kb=45
+[stream] frame=8015 asset_kb=22
+[stream] frame=8016 asset_kb=45
+[stream] frame=8017 asset_kb=13
+[stream] frame=8018 asset_kb=43
+[stream] frame=8019 asset_kb=45
+[stream] frame=8020 asset_kb=58
+[stream] frame=8021 asset_kb=53
+[stream] frame=8022 asset_kb=26
+[stream] frame=8023 asset_kb=43
+[stream] frame=8025 asset_kb=30
+[stream] frame=8026 asset_kb=4
+[stream] frame=8027 asset_kb=43
+[stream] frame=8028 asset_kb=47
+[stream] frame=8029 asset_kb=3
+[stream] frame=8030 asset_kb=32
+[stream] frame=8031 asset_kb=23
+[stream] frame=8032 asset_kb=18
+[stream] frame=8033 asset_kb=45
+[stream] frame=8034 asset_kb=45
+[stream] frame=8035 asset_kb=13
+[stream] frame=8036 asset_kb=25
+[stream] frame=8038 asset_kb=197
+[stream] frame=8040 asset_kb=4
+[stream] frame=8041 asset_kb=45
+[stream] frame=8042 asset_kb=51
+[stream] frame=8043 asset_kb=49
+[stream] frame=8044 asset_kb=132
+[stream] frame=8045 asset_kb=92
+[stream] frame=8047 asset_kb=13
+[stream] frame=8048 asset_kb=43
+[stream] frame=8050 asset_kb=19
+[stream] frame=8051 asset_kb=25
+[stream] frame=8052 asset_kb=88
+[stream] frame=8053 asset_kb=24
+[stream] frame=8054 asset_kb=23
+[stream] frame=8055 asset_kb=5
+[stream] frame=8056 asset_kb=59
+[stream] frame=8057 asset_kb=86
+[stream] frame=8058 asset_kb=2
+[stream] frame=8059 asset_kb=23
+[stream] frame=8060 asset_kb=100
+[stream] frame=8069 asset_kb=13
+[stream] frame=8070 asset_kb=9
+[stream] frame=8071 asset_kb=37
+[stream] frame=8072 asset_kb=27
+[stream] frame=8073 asset_kb=2
+[stream] frame=8074 asset_kb=45
+[stream] frame=8076 asset_kb=23
+[stream] frame=8077 asset_kb=95
+[stream] frame=8078 asset_kb=2
+[stream] frame=8079 asset_kb=87
+[stream] frame=8080 asset_kb=26
+[stream] frame=8081 asset_kb=90
+[stream] frame=8082 asset_kb=4
+[stream] frame=8083 asset_kb=45
+[stream] frame=8084 asset_kb=22
+[stream] frame=8085 asset_kb=17
+[stream] frame=8086 asset_kb=22
+[stream] frame=8087 asset_kb=45
+[stream] frame=8088 asset_kb=50
+[stream] frame=8089 asset_kb=45
+[stream] frame=8090 asset_kb=65
+[stream] frame=8091 asset_kb=55
+[stream] frame=8092 asset_kb=9
+[stream] frame=8093 asset_kb=26
+[stream] frame=8094 asset_kb=46
+[stream] frame=8096 asset_kb=45
+[stream] frame=8098 asset_kb=10
+[stream] frame=8099 asset_kb=25
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=288->288 MB glpeak=288 MB gencnt=1914 delcnt=33 uploads=16213 lowmem=24 stream=1/0 MB observed=288->288 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=288 MB peak=288 MB gen=1914 del=33 upload=16213 bound2d=0 boundcube=0
+[stream] frame=8100 asset_kb=7
+[drv] frame 8100
+[glmem] frame live=288 MB peak=288 MB gen=1914 del=33 upload=16213 bound2d=0 boundcube=0
+[stream] frame=8101 asset_kb=45
+[stream] frame=8102 asset_kb=10
+[stream] frame=8103 asset_kb=45
+[stream] frame=8106 asset_kb=93
+[stream] frame=8108 asset_kb=14
+[stream] frame=8114 asset_kb=2
+[stream] frame=8115 asset_kb=77
+[stream] frame=8117 asset_kb=4
+[stream] frame=8118 asset_kb=19
+[stream] frame=8119 asset_kb=42
+[stream] frame=8120 asset_kb=46
+[stream] frame=8121 asset_kb=19
+[stream] frame=8122 asset_kb=19
+[stream] frame=8123 asset_kb=47
+[stream] frame=8124 asset_kb=14
+[stream] frame=8125 asset_kb=19
+[stream] frame=8126 asset_kb=44
+[stream] frame=8127 asset_kb=89
+[stream] frame=8129 asset_kb=7
+[stream] frame=8130 asset_kb=45
+[stream] frame=8131 asset_kb=2
+[stream] frame=8132 asset_kb=25
+[stream] frame=8133 asset_kb=176
+[stream] frame=8135 asset_kb=19
+[stream] frame=8136 asset_kb=19
+[stream] frame=8137 asset_kb=45
+[stream] frame=8139 asset_kb=45
+[stream] frame=8140 asset_kb=47
+[stream] frame=8141 asset_kb=86
+[stream] frame=8144 asset_kb=89
+[stream] frame=8145 asset_kb=86
+[stream] frame=8146 asset_kb=1
+[stream] frame=8150 asset_kb=45
+[stream] frame=8152 asset_kb=7
+[stream] frame=8153 asset_kb=87
+[stream] frame=8154 asset_kb=7
+[stream] frame=8155 asset_kb=86
+[stream] frame=8157 asset_kb=45
+[stream] frame=8159 asset_kb=88
+[stream] frame=8160 asset_kb=45
+[stream] frame=8162 asset_kb=25
+[stream] frame=8163 asset_kb=49
+[stream] frame=8164 asset_kb=3
+[stream] frame=8165 asset_kb=131
+[stream] frame=8168 asset_kb=1
+[stream] frame=8170 asset_kb=2
+[stream] frame=8171 asset_kb=171
+[stream] frame=8175 asset_kb=45
+[stream] frame=8176 asset_kb=105
+[stream] frame=8180 asset_kb=4
+[stream] frame=8181 asset_kb=43
+[stream] frame=8182 asset_kb=46
+[stream] frame=8184 asset_kb=25
+[stream] frame=8185 asset_kb=44
+[stream] frame=8186 asset_kb=23
+[stream] frame=8187 asset_kb=71
+[stream] frame=8188 asset_kb=28
+[stream] frame=8189 asset_kb=25
+[stream] frame=8190 asset_kb=17
+[stream] frame=8191 asset_kb=13
+[stream] frame=8192 asset_kb=17
+[stream] frame=8193 asset_kb=19
+[stream] frame=8194 asset_kb=90
+[stream] frame=8195 asset_kb=4
+[stream] frame=8196 asset_kb=43
+[stream] frame=8198 asset_kb=3
+[stream] frame=8199 asset_kb=171
+[stream] frame=8220 asset_kb=0
+[stream] frame=8232 asset_kb=2
+[stream] frame=8241 asset_kb=43
+[stream] frame=8246 asset_kb=13
+[stream] frame=8248 asset_kb=1
+[stream] frame=8250 asset_kb=2
+[stream] frame=8252 asset_kb=22
+[stream] frame=8255 asset_kb=2
+[stream] frame=8257 asset_kb=11
+[stream] frame=8261 asset_kb=2
+[stream] frame=8262 asset_kb=22
+[stream] frame=8263 asset_kb=1
+[stream] frame=8265 asset_kb=2
+[stream] frame=8267 asset_kb=86
+[stream] frame=8269 asset_kb=2
+[stream] frame=8271 asset_kb=86
+[stream] frame=8274 asset_kb=1
+[stream] frame=8276 asset_kb=2
+[stream] frame=8278 asset_kb=11
+[stream] frame=8279 asset_kb=5
+[stream] frame=8280 asset_kb=0
+[stream] frame=8282 asset_kb=2
+[stream] frame=8283 asset_kb=2
+[stream] frame=8286 asset_kb=43
+[stream] frame=8289 asset_kb=74
+[stream] frame=8293 asset_kb=2
+[stream] frame=8295 asset_kb=1
+[stream] frame=8297 asset_kb=17
+[stream] frame=8300 asset_kb=2
+[stream] frame=8303 asset_kb=1
+[stream] frame=8304 asset_kb=49
+[stream] frame=8306 asset_kb=1
+[stream] frame=8308 asset_kb=2
+[stream] frame=8310 asset_kb=1
+[stream] frame=8314 asset_kb=2
+[stream] frame=8317 asset_kb=44
+[stream] frame=8318 asset_kb=2
+[stream] frame=8321 asset_kb=1
+[stream] frame=8323 asset_kb=2
+[stream] frame=8324 asset_kb=43
+[stream] frame=8326 asset_kb=13
+[stream] frame=8328 asset_kb=16
+[stream] frame=8330 asset_kb=2
+[stream] frame=8332 asset_kb=1
+[stream] frame=8334 asset_kb=2
+[stream] frame=8337 asset_kb=86
+[stream] frame=8340 asset_kb=7
+[stream] frame=8341 asset_kb=1
+[stream] frame=8344 asset_kb=2
+[stream] frame=8346 asset_kb=23
+[stream] frame=8347 asset_kb=22
+[stream] frame=8349 asset_kb=5
+[stream] frame=8351 asset_kb=2
+[stream] frame=8354 asset_kb=66
+[stream] frame=8355 asset_kb=7
+[stream] frame=8358 asset_kb=45
+[stream] frame=8360 asset_kb=2
+[stream] frame=8361 asset_kb=43
+[stream] frame=8363 asset_kb=5
+[stream] frame=8365 asset_kb=1
+[stream] frame=8376 asset_kb=2
+[stream] frame=8379 asset_kb=43
+[stream] frame=8382 asset_kb=1
+[stream] frame=8386 asset_kb=14
+[stream] frame=8388 asset_kb=11
+[stream] frame=8391 asset_kb=5
+[stream] frame=8395 asset_kb=1
+[stream] frame=8397 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=300->300 MB glpeak=300 MB gencnt=2024 delcnt=33 uploads=17150 lowmem=25 stream=1/0 MB observed=300->300 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=300 MB peak=300 MB gen=2024 del=33 upload=17150 bound2d=0 boundcube=0
+[stream] frame=8400 asset_kb=22
+[drv] frame 8400
+[glmem] frame live=300 MB peak=300 MB gen=2024 del=33 upload=17150 bound2d=0 boundcube=0
+[stream] frame=8404 asset_kb=3
+[stream] frame=8408 asset_kb=1
+[stream] frame=8412 asset_kb=2
+[stream] frame=8416 asset_kb=86
+[stream] frame=8422 asset_kb=2
+[stream] frame=8425 asset_kb=22
+[stream] frame=8427 asset_kb=17
+[stream] frame=8431 asset_kb=2
+[stream] frame=8434 asset_kb=48
+[stream] frame=8436 asset_kb=2
+[stream] frame=8440 asset_kb=1
+[stream] frame=8446 asset_kb=2
+[stream] frame=8460 asset_kb=0
+[stream] frame=8484 asset_kb=133
+[stream] frame=8485 asset_kb=43
+[stream] frame=8490 asset_kb=1
+[stream] frame=8491 asset_kb=46
+[stream] frame=8492 asset_kb=43
+[stream] frame=8509 asset_kb=1
+[stream] frame=8520 asset_kb=0
+[stream] frame=8541 asset_kb=2
+[stream] frame=8558 asset_kb=86
+[stream] frame=8577 asset_kb=2
+[stream] frame=8580 asset_kb=0
+[stream] frame=8593 asset_kb=43
+[stream] frame=8594 asset_kb=14
+[stream] frame=8612 asset_kb=2
+[stream] frame=8629 asset_kb=1
+[stream] frame=8639 asset_kb=33
+[stream] frame=8640 asset_kb=0
+[stream] frame=8643 asset_kb=1
+[stream] frame=8647 asset_kb=2
+[stream] frame=8657 asset_kb=1
+[stream] frame=8663 asset_kb=2
+[stream] frame=8666 asset_kb=87
+[stream] frame=8668 asset_kb=14
+[stream] frame=8673 asset_kb=8
+[stream] frame=8677 asset_kb=2
+[stream] frame=8679 asset_kb=1
+[stream] frame=8687 asset_kb=2
+[stream] frame=8690 asset_kb=11
+[stream] frame=8696 asset_kb=1
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=302->302 MB glpeak=302 MB gencnt=2040 delcnt=33 uploads=17284 lowmem=26 stream=1/0 MB observed=302->302 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=302 MB peak=302 MB gen=2040 del=33 upload=17284 bound2d=0 boundcube=0
+[stream] frame=8700 asset_kb=0
+[drv] frame 8700
+[glmem] frame live=302 MB peak=302 MB gen=2040 del=33 upload=17284 bound2d=0 boundcube=0
+[stream] frame=8707 asset_kb=2
+[stream] frame=8710 asset_kb=22
+[stream] frame=8717 asset_kb=1
+[stream] frame=8723 asset_kb=13
+[stream] frame=8725 asset_kb=3
+[stream] frame=8728 asset_kb=1
+[stream] frame=8731 asset_kb=5
+[stream] frame=8732 asset_kb=38
+[stream] frame=8734 asset_kb=2
+[stream] frame=8738 asset_kb=1
+[stream] frame=8741 asset_kb=2
+[stream] frame=8745 asset_kb=86
+[stream] frame=8749 asset_kb=2
+[stream] frame=8752 asset_kb=86
+[stream] frame=8755 asset_kb=1
+[stream] frame=8758 asset_kb=2
+[stream] frame=8760 asset_kb=0
+[stream] frame=8761 asset_kb=22
+[stream] frame=8762 asset_kb=1
+[stream] frame=8765 asset_kb=2
+[stream] frame=8769 asset_kb=86
+[stream] frame=8772 asset_kb=88
+[stream] frame=8778 asset_kb=2
+[stream] frame=8781 asset_kb=86
+[stream] frame=8784 asset_kb=1
+[stream] frame=8787 asset_kb=2
+[stream] frame=8790 asset_kb=109
+[stream] frame=8801 asset_kb=26
+[stream] frame=8818 asset_kb=2
+[stream] frame=8820 asset_kb=0
+[stream] frame=8821 asset_kb=1
+[stream] frame=8824 asset_kb=2
+[stream] frame=8826 asset_kb=43
+[stream] frame=8828 asset_kb=1
+[stream] frame=8830 asset_kb=1
+[stream] frame=8832 asset_kb=43
+[stream] frame=8838 asset_kb=1
+[stream] frame=8840 asset_kb=1
+[stream] frame=8842 asset_kb=1
+[stream] frame=8845 asset_kb=2
+[stream] frame=8848 asset_kb=87
+[stream] frame=8851 asset_kb=25
+[stream] frame=8853 asset_kb=1
+[stream] frame=8854 asset_kb=1
+[stream] frame=8857 asset_kb=1
+[stream] frame=8860 asset_kb=2
+[stream] frame=8863 asset_kb=86
+[stream] frame=8868 asset_kb=2
+[stream] frame=8872 asset_kb=2
+[stream] frame=8874 asset_kb=5
+[stream] frame=8876 asset_kb=1
+[stream] frame=8879 asset_kb=2
+[stream] frame=8880 asset_kb=0
+[stream] frame=8882 asset_kb=44
+[stream] frame=8884 asset_kb=88
+[stream] frame=8887 asset_kb=88
+[stream] frame=8897 asset_kb=3
+[stream] frame=8899 asset_kb=2
+[stream] frame=8906 asset_kb=87
+[stream] frame=8922 asset_kb=1
+[stream] frame=8923 asset_kb=4
+[stream] frame=8924 asset_kb=44
+[stream] frame=8925 asset_kb=74
+[stream] frame=8926 asset_kb=48
+[stream] frame=8927 asset_kb=2
+[stream] frame=8928 asset_kb=43
+[stream] frame=8929 asset_kb=52
+[stream] frame=8937 asset_kb=2
+[stream] frame=8940 asset_kb=0
+[stream] frame=8944 asset_kb=2
+[stream] frame=8951 asset_kb=2
+[stream] frame=8956 asset_kb=86
+[stream] frame=8957 asset_kb=1
+[stream] frame=8960 asset_kb=1
+[stream] frame=8965 asset_kb=86
+[stream] frame=8971 asset_kb=2
+[stream] frame=8974 asset_kb=91
+[stream] frame=8976 asset_kb=2
+[stream] frame=8979 asset_kb=1
+[stream] frame=8981 asset_kb=2
+[stream] frame=8984 asset_kb=2
+[stream] frame=8987 asset_kb=1
+[stream] frame=8988 asset_kb=1
+[stream] frame=8990 asset_kb=2
+[stream] frame=8994 asset_kb=86
+[stream] frame=8998 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=306->306 MB glpeak=306 MB gencnt=2071 delcnt=33 uploads=17556 lowmem=27 stream=1/0 MB observed=306->306 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=306 MB peak=306 MB gen=2071 del=33 upload=17556 bound2d=0 boundcube=0
+[stream] frame=9000 asset_kb=0
+[drv] frame 9000
+[glmem] frame live=306 MB peak=306 MB gen=2071 del=33 upload=17556 bound2d=0 boundcube=0
+[stream] frame=9001 asset_kb=86
+[stream] frame=9005 asset_kb=2
+[stream] frame=9008 asset_kb=100
+[stream] frame=9011 asset_kb=1
+[stream] frame=9013 asset_kb=2
+[stream] frame=9060 asset_kb=0
+[stream] frame=9079 asset_kb=45
+[stream] frame=9080 asset_kb=2
+[stream] frame=9081 asset_kb=45
+[stream] frame=9082 asset_kb=49
+[stream] frame=9084 asset_kb=97
+[stream] frame=9085 asset_kb=70
+[stream] frame=9086 asset_kb=76
+[stream] frame=9087 asset_kb=3
+[stream] frame=9088 asset_kb=78
+[stream] frame=9089 asset_kb=92
+[stream] frame=9090 asset_kb=45
+[stream] frame=9091 asset_kb=58
+[stream] frame=9092 asset_kb=93
+[stream] frame=9093 asset_kb=3
+[stream] frame=9094 asset_kb=47
+[stream] frame=9095 asset_kb=76
+[stream] frame=9096 asset_kb=4
+[stream] frame=9097 asset_kb=59
+[stream] frame=9099 asset_kb=47
+[stream] frame=9100 asset_kb=51
+[stream] frame=9101 asset_kb=22
+[stream] frame=9102 asset_kb=20
+[stream] frame=9103 asset_kb=2
+[stream] frame=9104 asset_kb=86
+[stream] frame=9106 asset_kb=58
+[stream] frame=9107 asset_kb=68
+[stream] frame=9108 asset_kb=26
+[stream] frame=9109 asset_kb=24
+[stream] frame=9110 asset_kb=36
+[stream] frame=9111 asset_kb=25
+[stream] frame=9112 asset_kb=29
+[stream] frame=9113 asset_kb=4
+[stream] frame=9114 asset_kb=19
+[stream] frame=9115 asset_kb=25
+[stream] frame=9116 asset_kb=14
+[stream] frame=9117 asset_kb=15
+[stream] frame=9118 asset_kb=44
+[stream] frame=9119 asset_kb=2
+[stream] frame=9120 asset_kb=45
+[stream] frame=9121 asset_kb=15
+[stream] frame=9122 asset_kb=60
+[stream] frame=9123 asset_kb=23
+[stream] frame=9124 asset_kb=26
+[stream] frame=9125 asset_kb=50
+[stream] frame=9126 asset_kb=40
+[stream] frame=9127 asset_kb=48
+[stream] frame=9128 asset_kb=48
+[stream] frame=9129 asset_kb=36
+[stream] frame=9130 asset_kb=1
+[stream] frame=9133 asset_kb=13
+[stream] frame=9137 asset_kb=14
+[stream] frame=9138 asset_kb=24
+[stream] frame=9141 asset_kb=3
+[stream] frame=9142 asset_kb=2
+[stream] frame=9145 asset_kb=45
+[stream] frame=9146 asset_kb=5
+[stream] frame=9147 asset_kb=43
+[stream] frame=9149 asset_kb=38
+[stream] frame=9151 asset_kb=24
+[stream] frame=9152 asset_kb=5
+[stream] frame=9153 asset_kb=54
+[stream] frame=9154 asset_kb=5
+[stream] frame=9155 asset_kb=45
+[stream] frame=9157 asset_kb=38
+[stream] frame=9158 asset_kb=6
+[stream] frame=9161 asset_kb=14
+[stream] frame=9162 asset_kb=30
+[stream] frame=9166 asset_kb=150
+[stream] frame=9172 asset_kb=44
+[stream] frame=9174 asset_kb=78
+[stream] frame=9175 asset_kb=4
+[stream] frame=9176 asset_kb=42
+[stream] frame=9177 asset_kb=72
+[stream] frame=9179 asset_kb=34
+[stream] frame=9180 asset_kb=20
+[evict] LoadScene mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=312->312 MB glpeak=312 MB gencnt=2131 delcnt=33 uploads=18071 lowmem=28 stream=1/0 MB observed=312->312 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] LoadScene live=312 MB peak=312 MB gen=2131 del=33 upload=18071 bound2d=0 boundcube=0
+[stream] frame=9226 asset_kb=6
+[stream] frame=9227 asset_kb=15
+[stream] frame=9228 asset_kb=10
+[stream] frame=9230 asset_kb=342
+[stream] frame=9237 asset_kb=2
+[stream] frame=9238 asset_kb=86
+[stream] frame=9240 asset_kb=23
+[stream] frame=9241 asset_kb=57
+[stream] frame=9266 asset_kb=8
+[stream] frame=9267 asset_kb=2
+[stream] frame=9268 asset_kb=2
+[stream] frame=9273 asset_kb=22
+[stream] frame=9274 asset_kb=2
+[stream] frame=9275 asset_kb=4
+[stream] frame=9276 asset_kb=8
+[stream] frame=9277 asset_kb=4
+[stream] frame=9278 asset_kb=342
+[stream] frame=9287 asset_kb=2
+[stream] frame=9288 asset_kb=86
+[stream] frame=9290 asset_kb=23
+[stream] frame=9291 asset_kb=57
+[stream] frame=9294 asset_kb=17
+[stream] frame=9295 asset_kb=4
+[stream] frame=9296 asset_kb=6
+[stream] frame=9299 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=315->315 MB glpeak=315 MB gencnt=2141 delcnt=33 uploads=18157 lowmem=29 stream=1/0 MB observed=315->315 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=315 MB peak=315 MB gen=2141 del=33 upload=18157 bound2d=1 boundcube=0
+[stream] frame=9300 asset_kb=2
+[drv] frame 9300
+[glmem] frame live=315 MB peak=315 MB gen=2141 del=33 upload=18157 bound2d=1 boundcube=0
+[stream] frame=9303 asset_kb=46
+[stream] frame=9305 asset_kb=45
+[stream] frame=9306 asset_kb=13
+[stream] frame=9317 asset_kb=20
+[stream] frame=9318 asset_kb=15
+[stream] frame=9325 asset_kb=8
+[stream] frame=9327 asset_kb=6
+[stream] frame=9328 asset_kb=2
+[stream] frame=9329 asset_kb=13
+[stream] frame=9331 asset_kb=2
+[stream] frame=9333 asset_kb=6
+[stream] frame=9334 asset_kb=2
+[stream] frame=9335 asset_kb=14
+[stream] frame=9336 asset_kb=8
+[stream] frame=9337 asset_kb=2
+[stream] frame=9338 asset_kb=4
+[stream] frame=9339 asset_kb=2
+[stream] frame=9341 asset_kb=8
+[stream] frame=9342 asset_kb=8
+[stream] frame=9343 asset_kb=2
+[stream] frame=9344 asset_kb=342
+[stream] frame=9347 asset_kb=2
+[stream] frame=9353 asset_kb=87
+[stream] frame=9355 asset_kb=2
+[stream] frame=9356 asset_kb=22
+[stream] frame=9358 asset_kb=13
+[stream] frame=9359 asset_kb=25
+[stream] frame=9360 asset_kb=77
+[stream] frame=9361 asset_kb=11
+[stream] frame=9362 asset_kb=11
+[stream] frame=9365 asset_kb=10
+[stream] frame=9371 asset_kb=4
+[stream] frame=9376 asset_kb=10
+[stream] frame=9378 asset_kb=342
+[stream] frame=9385 asset_kb=2
+[stream] frame=9386 asset_kb=86
+[stream] frame=9387 asset_kb=2
+[stream] frame=9388 asset_kb=22
+[stream] frame=9389 asset_kb=56
+[stream] frame=9392 asset_kb=6
+[stream] frame=9400 asset_kb=4
+[stream] frame=9401 asset_kb=2
+[stream] frame=9410 asset_kb=6
+[stream] frame=9413 asset_kb=11
+[stream] frame=9420 asset_kb=18
+[stream] frame=9421 asset_kb=2
+[stream] frame=9422 asset_kb=2
+[stream] frame=9423 asset_kb=2
+[stream] frame=9425 asset_kb=2
+[stream] frame=9426 asset_kb=6
+[stream] frame=9428 asset_kb=2
+[stream] frame=9429 asset_kb=2
+[stream] frame=9432 asset_kb=2
+[stream] frame=9433 asset_kb=10
+[stream] frame=9436 asset_kb=2
+[stream] frame=9437 asset_kb=2
+[stream] frame=9439 asset_kb=2
+[stream] frame=9441 asset_kb=4
+[stream] frame=9455 asset_kb=6
+[stream] frame=9456 asset_kb=2
+[stream] frame=9469 asset_kb=2
+[stream] frame=9471 asset_kb=2
+[stream] frame=9476 asset_kb=11
+[stream] frame=9480 asset_kb=0
+[stream] frame=9484 asset_kb=8
+[stream] frame=9500 asset_kb=4
+[stream] frame=9514 asset_kb=4
+[stream] frame=9516 asset_kb=14
+[stream] frame=9517 asset_kb=14
+[stream] frame=9518 asset_kb=2
+[stream] frame=9520 asset_kb=2
+[stream] frame=9524 asset_kb=2
+[stream] frame=9526 asset_kb=2
+[stream] frame=9528 asset_kb=2
+[stream] frame=9530 asset_kb=4
+[stream] frame=9540 asset_kb=0
+[stream] frame=9543 asset_kb=4
+[stream] frame=9545 asset_kb=2
+[stream] frame=9549 asset_kb=3
+[stream] frame=9558 asset_kb=2
+[stream] frame=9559 asset_kb=2
+[stream] frame=9560 asset_kb=2
+[stream] frame=9561 asset_kb=11
+[stream] frame=9572 asset_kb=16
+[stream] frame=9573 asset_kb=4
+[stream] frame=9576 asset_kb=4
+[stream] frame=9589 asset_kb=4
+[stream] frame=9592 asset_kb=8
+[stream] frame=9593 asset_kb=2
+[stream] frame=9594 asset_kb=342
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=319->319 MB glpeak=319 MB gencnt=2158 delcnt=33 uploads=18304 lowmem=30 stream=1/0 MB observed=319->319 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=319 MB peak=319 MB gen=2158 del=33 upload=18304 bound2d=70 boundcube=0
+[stream] frame=9600 asset_kb=0
+[drv] frame 9600
+[glmem] frame live=319 MB peak=319 MB gen=2158 del=33 upload=18304 bound2d=70 boundcube=0
+[stream] frame=9602 asset_kb=87
+[stream] frame=9604 asset_kb=87
+[stream] frame=9605 asset_kb=60
+[stream] frame=9611 asset_kb=6
+[stream] frame=9617 asset_kb=2
+[stream] frame=9619 asset_kb=4
+[stream] frame=9621 asset_kb=14
+[stream] frame=9622 asset_kb=4
+[stream] frame=9623 asset_kb=2
+[stream] frame=9626 asset_kb=2
+[stream] frame=9628 asset_kb=2
+[stream] frame=9632 asset_kb=6
+[stream] frame=9634 asset_kb=4
+[stream] frame=9636 asset_kb=2
+[stream] frame=9642 asset_kb=47
+[stream] frame=9643 asset_kb=50
+[stream] frame=9648 asset_kb=4
+[stream] frame=9660 asset_kb=0
+[stream] frame=9661 asset_kb=4
+[stream] frame=9662 asset_kb=2
+[stream] frame=9678 asset_kb=6
+[stream] frame=9681 asset_kb=9
+[stream] frame=9683 asset_kb=4
+[stream] frame=9684 asset_kb=40
+[stream] frame=9691 asset_kb=2
+[stream] frame=9693 asset_kb=14
+[stream] frame=9707 asset_kb=2
+[stream] frame=9708 asset_kb=2
+[stream] frame=9709 asset_kb=2
+[stream] frame=9720 asset_kb=0
+[stream] frame=9722 asset_kb=6
+[stream] frame=9742 asset_kb=6
+[stream] frame=9749 asset_kb=2
+[stream] frame=9751 asset_kb=4
+[stream] frame=9766 asset_kb=4
+[stream] frame=9780 asset_kb=4
+[stream] frame=9782 asset_kb=4
+[stream] frame=9796 asset_kb=2
+[stream] frame=9798 asset_kb=2
+[stream] frame=9808 asset_kb=18
+[stream] frame=9809 asset_kb=10
+[stream] frame=9810 asset_kb=2
+[stream] frame=9812 asset_kb=2
+[stream] frame=9814 asset_kb=2
+[stream] frame=9816 asset_kb=2
+[stream] frame=9820 asset_kb=2
+[stream] frame=9824 asset_kb=8
+[stream] frame=9825 asset_kb=3
+[stream] frame=9826 asset_kb=6
+[stream] frame=9828 asset_kb=4
+[stream] frame=9829 asset_kb=2
+[stream] frame=9831 asset_kb=2
+[stream] frame=9835 asset_kb=2
+[stream] frame=9837 asset_kb=2
+[stream] frame=9839 asset_kb=4
+[stream] frame=9840 asset_kb=0
+[stream] frame=9853 asset_kb=4
+[stream] frame=9854 asset_kb=2
+[stream] frame=9868 asset_kb=2
+[stream] frame=9870 asset_kb=4
+[stream] frame=9883 asset_kb=2
+[stream] frame=9884 asset_kb=2
+[stream] frame=9886 asset_kb=2
+[stream] frame=9899 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=322->322 MB glpeak=322 MB gencnt=2167 delcnt=33 uploads=18381 lowmem=31 stream=1/0 MB observed=322->322 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=322 MB peak=322 MB gen=2167 del=33 upload=18381 bound2d=70 boundcube=0
+[stream] frame=9900 asset_kb=0
+[drv] frame 9900
+[glmem] frame live=322 MB peak=322 MB gen=2167 del=33 upload=18381 bound2d=70 boundcube=0
+[stream] frame=9912 asset_kb=4
+[stream] frame=9914 asset_kb=2
+[stream] frame=9928 asset_kb=2
+[stream] frame=9931 asset_kb=4
+[stream] frame=9943 asset_kb=6
+[stream] frame=9957 asset_kb=2
+[stream] frame=9960 asset_kb=0
+[stream] frame=9961 asset_kb=2
+[stream] frame=9973 asset_kb=2
+[stream] frame=9974 asset_kb=2
+[stream] frame=9975 asset_kb=2
+[stream] frame=9988 asset_kb=4
+[stream] frame=9990 asset_kb=2
+[stream] frame=10002 asset_kb=2
+[stream] frame=10005 asset_kb=2
+[stream] frame=10018 asset_kb=4
+[stream] frame=10020 asset_kb=4
+[stream] frame=10031 asset_kb=2
+[stream] frame=10033 asset_kb=2
+[stream] frame=10047 asset_kb=2
+[stream] frame=10050 asset_kb=2
+[stream] frame=10060 asset_kb=4
+[stream] frame=10064 asset_kb=2
+[stream] frame=10076 asset_kb=2
+[stream] frame=10078 asset_kb=4
+[stream] frame=10080 asset_kb=0
+[stream] frame=10093 asset_kb=4
+[stream] frame=10125 asset_kb=2
+[stream] frame=10126 asset_kb=12
+[stream] frame=10140 asset_kb=0
+[stream] frame=10142 asset_kb=4
+[stream] frame=10149 asset_kb=2
+[stream] frame=10153 asset_kb=4
+[stream] frame=10167 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=322->322 MB glpeak=322 MB gencnt=2167 delcnt=33 uploads=18381 lowmem=32 stream=1/0 MB observed=322->322 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=322 MB peak=322 MB gen=2167 del=33 upload=18381 bound2d=720 boundcube=0
+[stream] frame=10200 asset_kb=0
+[drv] frame 10200
+[glmem] frame live=322 MB peak=322 MB gen=2167 del=33 upload=18381 bound2d=720 boundcube=0
+[stream] frame=10204 asset_kb=4
+[stream] frame=10214 asset_kb=22
+[stream] frame=10215 asset_kb=14
+[stream] frame=10223 asset_kb=2
+[stream] frame=10224 asset_kb=4
+[stream] frame=10225 asset_kb=2
+[stream] frame=10227 asset_kb=2
+[stream] frame=10228 asset_kb=2
+[stream] frame=10235 asset_kb=4
+[stream] frame=10236 asset_kb=43
+[stream] frame=10237 asset_kb=37
+[stream] frame=10240 asset_kb=2
+[stream] frame=10241 asset_kb=10
+[stream] frame=10243 asset_kb=4
+[stream] frame=10251 asset_kb=26
+[stream] frame=10255 asset_kb=4
+[stream] frame=10260 asset_kb=0
+[stream] frame=10262 asset_kb=9
+[stream] frame=10269 asset_kb=4
+[stream] frame=10271 asset_kb=2
+[stream] frame=10284 asset_kb=6
+[stream] frame=10285 asset_kb=2
+[stream] frame=10298 asset_kb=2
+[stream] frame=10301 asset_kb=2
+[stream] frame=10304 asset_kb=16
+[stream] frame=10305 asset_kb=4
+[stream] frame=10306 asset_kb=2
+[stream] frame=10309 asset_kb=2
+[stream] frame=10311 asset_kb=2
+[stream] frame=10313 asset_kb=4
+[stream] frame=10314 asset_kb=2
+[stream] frame=10315 asset_kb=2
+[stream] frame=10320 asset_kb=0
+[stream] frame=10330 asset_kb=6
+[stream] frame=10336 asset_kb=24
+[stream] frame=10337 asset_kb=2
+[stream] frame=10340 asset_kb=2
+[stream] frame=10343 asset_kb=2
+[stream] frame=10344 asset_kb=4
+[stream] frame=10345 asset_kb=2
+[stream] frame=10349 asset_kb=2
+[stream] frame=10351 asset_kb=2
+[stream] frame=10353 asset_kb=2
+[stream] frame=10357 asset_kb=10
+[stream] frame=10358 asset_kb=342
+[stream] frame=10366 asset_kb=10
+[stream] frame=10367 asset_kb=86
+[stream] frame=10369 asset_kb=87
+[stream] frame=10371 asset_kb=51
+[stream] frame=10374 asset_kb=2
+[stream] frame=10376 asset_kb=4
+[stream] frame=10380 asset_kb=0
+[stream] frame=10387 asset_kb=4
+[stream] frame=10389 asset_kb=2
+[stream] frame=10403 asset_kb=2
+[stream] frame=10404 asset_kb=4
+[stream] frame=10414 asset_kb=4
+[stream] frame=10415 asset_kb=12
+[stream] frame=10416 asset_kb=2
+[stream] frame=10418 asset_kb=8
+[stream] frame=10422 asset_kb=2
+[stream] frame=10432 asset_kb=2
+[stream] frame=10434 asset_kb=4
+[stream] frame=10440 asset_kb=0
+[stream] frame=10447 asset_kb=4
+[stream] frame=10449 asset_kb=2
+[stream] frame=10463 asset_kb=4
+[stream] frame=10476 asset_kb=2
+[stream] frame=10478 asset_kb=4
+[stream] frame=10492 asset_kb=2
+[stream] frame=10494 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=324->324 MB glpeak=324 MB gencnt=2172 delcnt=33 uploads=18429 lowmem=33 stream=1/0 MB observed=324->324 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=324 MB peak=324 MB gen=2172 del=33 upload=18429 bound2d=1903 boundcube=0
+[stream] frame=10500 asset_kb=0
+[drv] frame 10500
+[glmem] frame live=324 MB peak=324 MB gen=2172 del=33 upload=18429 bound2d=1907 boundcube=0
+[stream] frame=10508 asset_kb=4
+[stream] frame=10510 asset_kb=14
+[stream] frame=10511 asset_kb=10
+[stream] frame=10512 asset_kb=11
+[stream] frame=10516 asset_kb=2
+[stream] frame=10520 asset_kb=16
+[stream] frame=10521 asset_kb=8
+[stream] frame=10522 asset_kb=4
+[stream] frame=10524 asset_kb=2
+[stream] frame=10526 asset_kb=4
+[stream] frame=10528 asset_kb=2
+[stream] frame=10530 asset_kb=2
+[stream] frame=10532 asset_kb=13
+[stream] frame=10534 asset_kb=2
+[stream] frame=10536 asset_kb=4
+[stream] frame=10539 asset_kb=6
+[stream] frame=10540 asset_kb=2
+[stream] frame=10542 asset_kb=2
+[stream] frame=10544 asset_kb=2
+[stream] frame=10552 asset_kb=2
+[stream] frame=10554 asset_kb=2
+[stream] frame=10560 asset_kb=0
+[stream] frame=10565 asset_kb=4
+[stream] frame=10569 asset_kb=4
+[stream] frame=10571 asset_kb=2
+[stream] frame=10581 asset_kb=2
+[stream] frame=10583 asset_kb=2
+[stream] frame=10596 asset_kb=8
+[stream] frame=10610 asset_kb=4
+[stream] frame=10611 asset_kb=20
+[stream] frame=10614 asset_kb=2
+[stream] frame=10616 asset_kb=2
+[stream] frame=10620 asset_kb=2
+[stream] frame=10624 asset_kb=4
+[stream] frame=10626 asset_kb=6
+[stream] frame=10639 asset_kb=2
+[stream] frame=10640 asset_kb=2
+[stream] frame=10641 asset_kb=2
+[stream] frame=10655 asset_kb=4
+[stream] frame=10657 asset_kb=4
+[stream] frame=10669 asset_kb=2
+[stream] frame=10670 asset_kb=2
+[stream] frame=10680 asset_kb=0
+[stream] frame=10684 asset_kb=4
+[stream] frame=10686 asset_kb=2
+[stream] frame=10699 asset_kb=2
+[stream] frame=10701 asset_kb=2
+[stream] frame=10702 asset_kb=2
+[stream] frame=10713 asset_kb=2
+[stream] frame=10715 asset_kb=2
+[stream] frame=10729 asset_kb=4
+[stream] frame=10731 asset_kb=4
+[stream] frame=10740 asset_kb=0
+[stream] frame=10744 asset_kb=4
+[stream] frame=10757 asset_kb=2
+[stream] frame=10758 asset_kb=12
+[stream] frame=10759 asset_kb=12
+[stream] frame=10760 asset_kb=4
+[stream] frame=10761 asset_kb=10
+[stream] frame=10764 asset_kb=16
+[stream] frame=10765 asset_kb=4
+[stream] frame=10768 asset_kb=12
+[stream] frame=10771 asset_kb=2
+[stream] frame=10773 asset_kb=4
+[stream] frame=10776 asset_kb=4
+[stream] frame=10777 asset_kb=12
+[stream] frame=10778 asset_kb=12
+[stream] frame=10789 asset_kb=6
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=324->324 MB glpeak=324 MB gencnt=2173 delcnt=33 uploads=18434 lowmem=34 stream=1/0 MB observed=324->324 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=324 MB peak=324 MB gen=2173 del=33 upload=18434 bound2d=2065 boundcube=0
+[stream] frame=10800 asset_kb=0
+[drv] frame 10800
+[glmem] frame live=324 MB peak=324 MB gen=2173 del=33 upload=18434 bound2d=2065 boundcube=0
+[stream] frame=10808 asset_kb=2
+[stream] frame=10809 asset_kb=2
+[stream] frame=10817 asset_kb=2
+[stream] frame=10821 asset_kb=2
+[stream] frame=10833 asset_kb=4
+[stream] frame=10835 asset_kb=4
+[stream] frame=10848 asset_kb=4
+[stream] frame=10860 asset_kb=0
+[stream] frame=10862 asset_kb=2
+[stream] frame=10864 asset_kb=4
+[stream] frame=10877 asset_kb=4
+[stream] frame=10879 asset_kb=2
+[stream] frame=10886 asset_kb=16
+[stream] frame=10887 asset_kb=8
+[stream] frame=10890 asset_kb=12
+[stream] frame=10891 asset_kb=16
+[stream] frame=10892 asset_kb=4
+[stream] frame=10894 asset_kb=2
+[stream] frame=10896 asset_kb=4
+[stream] frame=10898 asset_kb=4
+[stream] frame=10902 asset_kb=2
+[stream] frame=10904 asset_kb=2
+[stream] frame=10907 asset_kb=4
+[stream] frame=10908 asset_kb=2
+[stream] frame=10910 asset_kb=4
+[stream] frame=10912 asset_kb=2
+[stream] frame=10914 asset_kb=2
+[stream] frame=10915 asset_kb=8
+[stream] frame=10916 asset_kb=2
+[stream] frame=10917 asset_kb=342
+[stream] frame=10920 asset_kb=0
+[stream] frame=10924 asset_kb=2
+[stream] frame=10925 asset_kb=93
+[stream] frame=10927 asset_kb=87
+[stream] frame=10928 asset_kb=13
+[stream] frame=10929 asset_kb=17
+[stream] frame=10930 asset_kb=72
+[stream] frame=10936 asset_kb=2
+[stream] frame=10939 asset_kb=4
+[stream] frame=10940 asset_kb=2
+[stream] frame=10942 asset_kb=2
+[stream] frame=10951 asset_kb=4
+[stream] frame=10955 asset_kb=2
+[stream] frame=10967 asset_kb=2
+[stream] frame=10968 asset_kb=2
+[stream] frame=10980 asset_kb=4
+[stream] frame=10982 asset_kb=4
+[stream] frame=10988 asset_kb=12
+[stream] frame=10990 asset_kb=12
+[stream] frame=10992 asset_kb=12
+[stream] frame=10994 asset_kb=2
+[stream] frame=10998 asset_kb=2
+[stream] frame=11005 asset_kb=4
+[stream] frame=11007 asset_kb=22
+[stream] frame=11009 asset_kb=4
+[stream] frame=11010 asset_kb=2
+[stream] frame=11012 asset_kb=4
+[stream] frame=11018 asset_kb=16
+[stream] frame=11027 asset_kb=6
+[stream] frame=11028 asset_kb=11
+[stream] frame=11040 asset_kb=2
+[stream] frame=11042 asset_kb=2
+[stream] frame=11044 asset_kb=11
+[stream] frame=11045 asset_kb=6
+[stream] frame=11046 asset_kb=3
+[stream] frame=11053 asset_kb=4
+[stream] frame=11056 asset_kb=4
+[stream] frame=11067 asset_kb=4
+[stream] frame=11068 asset_kb=16
+[stream] frame=11071 asset_kb=12
+[stream] frame=11072 asset_kb=2
+[stream] frame=11073 asset_kb=344
+[stream] frame=11077 asset_kb=2
+[stream] frame=11080 asset_kb=87
+[stream] frame=11082 asset_kb=23
+[stream] frame=11083 asset_kb=2
+[stream] frame=11084 asset_kb=45
+[stream] frame=11087 asset_kb=2
+[stream] frame=11099 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=328->328 MB glpeak=328 MB gencnt=2183 delcnt=33 uploads=18525 lowmem=35 stream=1/0 MB observed=328->328 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=328 MB peak=328 MB gen=2183 del=33 upload=18525 bound2d=2053 boundcube=0
+[stream] frame=11100 asset_kb=4
+[drv] frame 11100
+[glmem] frame live=328 MB peak=328 MB gen=2183 del=33 upload=18525 bound2d=1802 boundcube=0
+[stream] frame=11102 asset_kb=10
+[stream] frame=11112 asset_kb=16
+[stream] frame=11116 asset_kb=2
+[stream] frame=11127 asset_kb=2
+[stream] frame=11131 asset_kb=2
+[stream] frame=11143 asset_kb=4
+[stream] frame=11145 asset_kb=4
+[stream] frame=11158 asset_kb=2
+[stream] frame=11160 asset_kb=0
+[stream] frame=11161 asset_kb=2
+[stream] frame=11173 asset_kb=2
+[stream] frame=11174 asset_kb=2
+[stream] frame=11175 asset_kb=2
+[stream] frame=11176 asset_kb=10
+[stream] frame=11187 asset_kb=4
+[stream] frame=11190 asset_kb=8
+[stream] frame=11191 asset_kb=20
+[stream] frame=11192 asset_kb=2
+[stream] frame=11194 asset_kb=11
+[stream] frame=11197 asset_kb=2
+[stream] frame=11204 asset_kb=4
+[stream] frame=11216 asset_kb=2
+[stream] frame=11219 asset_kb=2
+[stream] frame=11220 asset_kb=2
+[stream] frame=11231 asset_kb=2
+[stream] frame=11235 asset_kb=2
+[stream] frame=11247 asset_kb=4
+[stream] frame=11249 asset_kb=4
+[stream] frame=11262 asset_kb=2
+[stream] frame=11265 asset_kb=2
+[stream] frame=11278 asset_kb=2
+[stream] frame=11280 asset_kb=4
+[stream] frame=11291 asset_kb=4
+[stream] frame=11293 asset_kb=2
+[stream] frame=11307 asset_kb=2
+[stream] frame=11309 asset_kb=2
+[stream] frame=11320 asset_kb=2
+[stream] frame=11324 asset_kb=4
+[stream] frame=11336 asset_kb=4
+[stream] frame=11338 asset_kb=2
+[stream] frame=11340 asset_kb=0
+[stream] frame=11350 asset_kb=2
+[stream] frame=11353 asset_kb=2
+[stream] frame=11365 asset_kb=2
+[stream] frame=11367 asset_kb=4
+[stream] frame=11381 asset_kb=2
+[stream] frame=11383 asset_kb=2
+[stream] frame=11394 asset_kb=2
+[stream] frame=11398 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=328->328 MB glpeak=328 MB gencnt=2183 delcnt=33 uploads=18525 lowmem=36 stream=1/0 MB observed=328->328 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=328 MB peak=328 MB gen=2183 del=33 upload=18525 bound2d=720 boundcube=0
+[stream] frame=11400 asset_kb=0
+[drv] frame 11400
+[glmem] frame live=328 MB peak=328 MB gen=2183 del=33 upload=18525 bound2d=720 boundcube=0
+[stream] frame=11409 asset_kb=4
+[stream] frame=11413 asset_kb=2
+[stream] frame=11418 asset_kb=8
+[stream] frame=11419 asset_kb=2
+[stream] frame=11420 asset_kb=342
+[stream] frame=11431 asset_kb=93
+[stream] frame=11433 asset_kb=87
+[stream] frame=11434 asset_kb=53
+[stream] frame=11440 asset_kb=4
+[stream] frame=11442 asset_kb=2
+[stream] frame=11456 asset_kb=2
+[stream] frame=11457 asset_kb=2
+[stream] frame=11458 asset_kb=2
+[stream] frame=11460 asset_kb=0
+[stream] frame=11471 asset_kb=4
+[stream] frame=11473 asset_kb=2
+[stream] frame=11484 asset_kb=2
+[stream] frame=11486 asset_kb=2
+[stream] frame=11500 asset_kb=2
+[stream] frame=11502 asset_kb=4
+[stream] frame=11515 asset_kb=2
+[stream] frame=11518 asset_kb=16
+[stream] frame=11519 asset_kb=4
+[stream] frame=11520 asset_kb=0
+[stream] frame=11523 asset_kb=2
+[stream] frame=11527 asset_kb=2
+[stream] frame=11529 asset_kb=4
+[stream] frame=11531 asset_kb=4
+[stream] frame=11545 asset_kb=4
+[stream] frame=11547 asset_kb=4
+[stream] frame=11558 asset_kb=2
+[stream] frame=11562 asset_kb=4
+[stream] frame=11574 asset_kb=2
+[stream] frame=11576 asset_kb=2
+[stream] frame=11580 asset_kb=0
+[stream] frame=11587 asset_kb=4
+[stream] frame=11591 asset_kb=2
+[stream] frame=11597 asset_kb=1
+[stream] frame=11598 asset_kb=9
+[stream] frame=11603 asset_kb=2
+[stream] frame=11605 asset_kb=4
+[stream] frame=11618 asset_kb=2
+[stream] frame=11620 asset_kb=2
+[stream] frame=11632 asset_kb=4
+[stream] frame=11636 asset_kb=4
+[stream] frame=11640 asset_kb=0
+[stream] frame=11648 asset_kb=2
+[stream] frame=11650 asset_kb=2
+[stream] frame=11660 asset_kb=14
+[stream] frame=11661 asset_kb=10
+[stream] frame=11662 asset_kb=4
+[stream] frame=11666 asset_kb=4
+[stream] frame=11668 asset_kb=2
+[stream] frame=11672 asset_kb=2
+[stream] frame=11674 asset_kb=2
+[stream] frame=11675 asset_kb=2
+[stream] frame=11677 asset_kb=4
+[stream] frame=11679 asset_kb=4
+[stream] frame=11692 asset_kb=2
+[stream] frame=11695 asset_kb=4
+[stream] frame=11696 asset_kb=22
+[stream] frame=11697 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=330->330 MB glpeak=330 MB gencnt=2186 delcnt=33 uploads=18556 lowmem=37 stream=1/0 MB observed=330->330 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=330 MB peak=330 MB gen=2186 del=33 upload=18556 bound2d=720 boundcube=0
+[stream] frame=11700 asset_kb=2
+[drv] frame 11700
+[glmem] frame live=330 MB peak=330 MB gen=2186 del=33 upload=18556 bound2d=720 boundcube=0
+[stream] frame=11708 asset_kb=2
+[stream] frame=11709 asset_kb=6
+[stream] frame=11711 asset_kb=2
+[stream] frame=11713 asset_kb=2
+[stream] frame=11715 asset_kb=2
+[stream] frame=11719 asset_kb=2
+[stream] frame=11720 asset_kb=2
+[stream] frame=11722 asset_kb=4
+[stream] frame=11724 asset_kb=4
+[stream] frame=11736 asset_kb=2
+[stream] frame=11740 asset_kb=2
+[stream] frame=11750 asset_kb=2
+[stream] frame=11756 asset_kb=4
+[stream] frame=11760 asset_kb=0
+[stream] frame=11765 asset_kb=10
+[stream] frame=11766 asset_kb=2
+[stream] frame=11769 asset_kb=2
+[stream] frame=11780 asset_kb=4
+[stream] frame=11784 asset_kb=4
+[stream] frame=11796 asset_kb=2
+[stream] frame=11798 asset_kb=2
+[stream] frame=11809 asset_kb=2
+[stream] frame=11813 asset_kb=4
+[stream] frame=11820 asset_kb=0
+[stream] frame=11825 asset_kb=2
+[stream] frame=11829 asset_kb=2
+[stream] frame=11839 asset_kb=18
+[stream] frame=11840 asset_kb=2
+[stream] frame=11841 asset_kb=2
+[stream] frame=11842 asset_kb=10
+[stream] frame=11843 asset_kb=171
+[stream] frame=11847 asset_kb=45
+[stream] frame=11848 asset_kb=17
+[stream] frame=11849 asset_kb=173
+[stream] frame=11850 asset_kb=57
+[stream] frame=11851 asset_kb=56
+[stream] frame=11852 asset_kb=12
+[stream] frame=11855 asset_kb=4
+[stream] frame=11857 asset_kb=4
+[stream] frame=11861 asset_kb=10
+[stream] frame=11862 asset_kb=342
+[stream] frame=11870 asset_kb=4
+[stream] frame=11871 asset_kb=86
+[stream] frame=11872 asset_kb=2
+[stream] frame=11873 asset_kb=23
+[stream] frame=11874 asset_kb=65
+[stream] frame=11880 asset_kb=0
+[stream] frame=11885 asset_kb=2
+[stream] frame=11887 asset_kb=2
+[stream] frame=11888 asset_kb=2
+[stream] frame=11899 asset_kb=2
+[stream] frame=11903 asset_kb=4
+[stream] frame=11914 asset_kb=4
+[stream] frame=11916 asset_kb=4
+[stream] frame=11930 asset_kb=2
+[stream] frame=11932 asset_kb=4
+[stream] frame=11940 asset_kb=0
+[stream] frame=11943 asset_kb=2
+[stream] frame=11946 asset_kb=2
+[stream] frame=11950 asset_kb=16
+[stream] frame=11951 asset_kb=8
+[stream] frame=11953 asset_kb=8
+[stream] frame=11954 asset_kb=4
+[stream] frame=11955 asset_kb=342
+[stream] frame=11963 asset_kb=95
+[stream] frame=11965 asset_kb=23
+[stream] frame=11967 asset_kb=47
+[stream] frame=11974 asset_kb=2
+[stream] frame=11976 asset_kb=4
+[stream] frame=11988 asset_kb=2
+[stream] frame=11991 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=335->335 MB glpeak=335 MB gencnt=2198 delcnt=33 uploads=18670 lowmem=38 stream=1/0 MB observed=335->335 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=335 MB peak=335 MB gen=2198 del=33 upload=18670 bound2d=1 boundcube=0
+[stream] frame=12000 asset_kb=0
+[drv] frame 12000
+[glmem] frame live=335 MB peak=335 MB gen=2198 del=33 upload=18670 bound2d=1 boundcube=0
+[stream] frame=12001 asset_kb=64
+[stream] frame=12002 asset_kb=129
+[stream] frame=12004 asset_kb=129
+[stream] frame=12005 asset_kb=129
+[stream] frame=12007 asset_kb=257
+[stream] frame=12009 asset_kb=129
+[stream] frame=12010 asset_kb=65
+[stream] frame=12012 asset_kb=129
+[stream] frame=12013 asset_kb=449
+[stream] frame=12014 asset_kb=65
+[stream] frame=12021 asset_kb=4
+[stream] frame=12022 asset_kb=8
+[stream] frame=12060 asset_kb=0
+[stream] frame=12120 asset_kb=0
+[stream] frame=12180 asset_kb=0
+[stream] frame=12240 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=335->335 MB glpeak=335 MB gencnt=2198 delcnt=33 uploads=18670 lowmem=39 stream=1/0 MB observed=335->335 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=335 MB peak=335 MB gen=2198 del=33 upload=18670 bound2d=1 boundcube=0
+[stream] frame=12300 asset_kb=0
+[drv] frame 12300
+[glmem] frame live=335 MB peak=335 MB gen=2198 del=33 upload=18670 bound2d=1 boundcube=0
+[stream] frame=12330 asset_kb=8
+[stream] frame=12331 asset_kb=173
+[stream] frame=12335 asset_kb=45
+[stream] frame=12336 asset_kb=13
+[stream] frame=12337 asset_kb=2
+[stream] frame=12338 asset_kb=171
+[stream] frame=12341 asset_kb=2
+[stream] frame=12342 asset_kb=171
+[stream] frame=12343 asset_kb=13
+[stream] frame=12344 asset_kb=53
+[stream] frame=12345 asset_kb=10
+[stream] frame=12346 asset_kb=342
+[stream] frame=12354 asset_kb=87
+[stream] frame=12356 asset_kb=2
+[stream] frame=12357 asset_kb=61
+[stream] frame=12358 asset_kb=8
+[stream] frame=12359 asset_kb=2
+[stream] frame=12360 asset_kb=342
+[stream] frame=12369 asset_kb=87
+[stream] frame=12371 asset_kb=23
+[stream] frame=12372 asset_kb=39
+[stream] frame=12373 asset_kb=4
+[stream] frame=12374 asset_kb=43
+[stream] frame=12375 asset_kb=46
+[evict] LoadScene mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=341->341 MB glpeak=341 MB gencnt=2213 delcnt=33 uploads=18809 lowmem=40 stream=1/0 MB observed=341->341 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] LoadScene live=341 MB peak=341 MB gen=2213 del=33 upload=18809 bound2d=0 boundcube=0
+[stream] frame=12405 asset_kb=2
+[stream] frame=12406 asset_kb=4
+[stream] frame=12420 asset_kb=0
+[stream] frame=12421 asset_kb=4
+[stream] frame=12422 asset_kb=4
+[stream] frame=12425 asset_kb=30
+[stream] frame=12443 asset_kb=6
+[stream] frame=12445 asset_kb=2
+[stream] frame=12453 asset_kb=2
+[stream] frame=12454 asset_kb=2
+[stream] frame=12457 asset_kb=114
+[stream] frame=12480 asset_kb=0
+[stream] frame=12540 asset_kb=0
+[stream] frame=12549 asset_kb=6
+[stream] frame=12553 asset_kb=4
+[stream] frame=12558 asset_kb=2
+[stream] frame=12573 asset_kb=78
+[stream] frame=12585 asset_kb=2
+[stream] frame=12586 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=341->341 MB glpeak=341 MB gencnt=2213 delcnt=33 uploads=18809 lowmem=41 stream=1/0 MB observed=341->341 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=341 MB peak=341 MB gen=2213 del=33 upload=18809 bound2d=1 boundcube=0
+[stream] frame=12600 asset_kb=0
+[drv] frame 12600
+[glmem] frame live=341 MB peak=341 MB gen=2213 del=33 upload=18809 bound2d=1 boundcube=0
+[stream] frame=12606 asset_kb=16
+[stream] frame=12611 asset_kb=3
+[stream] frame=12620 asset_kb=1
+[stream] frame=12622 asset_kb=1
+[stream] frame=12625 asset_kb=43
+[stream] frame=12633 asset_kb=1
+[stream] frame=12634 asset_kb=44
+[stream] frame=12643 asset_kb=1
+[stream] frame=12645 asset_kb=12
+[stream] frame=12650 asset_kb=15
+[stream] frame=12656 asset_kb=1
+[stream] frame=12660 asset_kb=1
+[stream] frame=12666 asset_kb=1
+[stream] frame=12674 asset_kb=1
+[stream] frame=12684 asset_kb=1
+[stream] frame=12690 asset_kb=1
+[stream] frame=12692 asset_kb=43
+[stream] frame=12699 asset_kb=1
+[stream] frame=12706 asset_kb=44
+[stream] frame=12720 asset_kb=0
+[stream] frame=12728 asset_kb=1
+[stream] frame=12734 asset_kb=12
+[stream] frame=12745 asset_kb=2
+[stream] frame=12746 asset_kb=14
+[stream] frame=12747 asset_kb=1
+[stream] frame=12748 asset_kb=5
+[stream] frame=12749 asset_kb=1
+[stream] frame=12750 asset_kb=3
+[stream] frame=12751 asset_kb=43
+[stream] frame=12752 asset_kb=57
+[stream] frame=12754 asset_kb=1
+[stream] frame=12756 asset_kb=2
+[stream] frame=12757 asset_kb=172
+[stream] frame=12761 asset_kb=2
+[stream] frame=12762 asset_kb=171
+[stream] frame=12766 asset_kb=2
+[stream] frame=12767 asset_kb=43
+[stream] frame=12769 asset_kb=59
+[stream] frame=12771 asset_kb=2
+[stream] frame=12772 asset_kb=87
+[stream] frame=12774 asset_kb=1
+[stream] frame=12775 asset_kb=44
+[stream] frame=12776 asset_kb=5
+[stream] frame=12777 asset_kb=88
+[stream] frame=12780 asset_kb=3
+[stream] frame=12781 asset_kb=44
+[stream] frame=12782 asset_kb=44
+[stream] frame=12783 asset_kb=1
+[stream] frame=12784 asset_kb=48
+[stream] frame=12785 asset_kb=26
+[stream] frame=12805 asset_kb=8
+[stream] frame=12807 asset_kb=8
+[stream] frame=12808 asset_kb=2
+[stream] frame=12830 asset_kb=6
+[stream] frame=12840 asset_kb=0
+[stream] frame=12849 asset_kb=4
+[stream] frame=12855 asset_kb=4
+[stream] frame=12880 asset_kb=2
+[stream] frame=12881 asset_kb=1
+[stream] frame=12882 asset_kb=47
+[stream] frame=12887 asset_kb=2
+[stream] frame=12888 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2234 delcnt=33 uploads=18990 lowmem=42 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=12900 asset_kb=0
+[drv] frame 12900
+[glmem] frame live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=12908 asset_kb=1
+[stream] frame=12909 asset_kb=1
+[stream] frame=12911 asset_kb=1
+[stream] frame=12939 asset_kb=4
+[stream] frame=12940 asset_kb=2
+[stream] frame=12941 asset_kb=10
+[stream] frame=12955 asset_kb=4
+[stream] frame=12956 asset_kb=2
+[stream] frame=12960 asset_kb=0
+[stream] frame=12970 asset_kb=4
+[stream] frame=12975 asset_kb=4
+[stream] frame=12983 asset_kb=2
+[stream] frame=12984 asset_kb=2
+[stream] frame=12990 asset_kb=2
+[stream] frame=13001 asset_kb=2
+[stream] frame=13020 asset_kb=0
+[stream] frame=13022 asset_kb=4
+[stream] frame=13023 asset_kb=6
+[stream] frame=13036 asset_kb=2
+[stream] frame=13053 asset_kb=6
+[stream] frame=13054 asset_kb=4
+[stream] frame=13065 asset_kb=4
+[stream] frame=13080 asset_kb=0
+[stream] frame=13089 asset_kb=10
+[stream] frame=13095 asset_kb=2
+[stream] frame=13107 asset_kb=2
+[stream] frame=13109 asset_kb=2
+[stream] frame=13117 asset_kb=1
+[stream] frame=13119 asset_kb=1
+[stream] frame=13120 asset_kb=13
+[stream] frame=13140 asset_kb=0
+[stream] frame=13155 asset_kb=2
+[stream] frame=13186 asset_kb=10
+[stream] frame=13187 asset_kb=8
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2234 delcnt=33 uploads=18990 lowmem=43 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=2161 boundcube=0
+[stream] frame=13200 asset_kb=26
+[drv] frame 13200
+[glmem] frame live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=2161 boundcube=0
+[stream] frame=13260 asset_kb=0
+[stream] frame=13320 asset_kb=0
+[stream] frame=13369 asset_kb=12
+[stream] frame=13370 asset_kb=10
+[stream] frame=13371 asset_kb=18
+[stream] frame=13372 asset_kb=20
+[stream] frame=13373 asset_kb=4
+[stream] frame=13377 asset_kb=2
+[stream] frame=13380 asset_kb=0
+[stream] frame=13392 asset_kb=4
+[stream] frame=13401 asset_kb=4
+[stream] frame=13423 asset_kb=8
+[stream] frame=13440 asset_kb=0
+[stream] frame=13454 asset_kb=3
+[stream] frame=13455 asset_kb=18
+[stream] frame=13468 asset_kb=4
+[stream] frame=13469 asset_kb=2
+[stream] frame=13474 asset_kb=4
+[stream] frame=13486 asset_kb=4
+[stream] frame=13488 asset_kb=2
+[stream] frame=13496 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2234 delcnt=33 uploads=18990 lowmem=44 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=13500 asset_kb=0
+[drv] frame 13500
+[glmem] frame live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=13552 asset_kb=2
+[stream] frame=13553 asset_kb=10
+[stream] frame=13560 asset_kb=0
+[stream] frame=13562 asset_kb=10
+[stream] frame=13620 asset_kb=0
+[stream] frame=13621 asset_kb=4
+[stream] frame=13645 asset_kb=20
+[stream] frame=13653 asset_kb=2
+[stream] frame=13664 asset_kb=2
+[stream] frame=13665 asset_kb=10
+[stream] frame=13666 asset_kb=10
+[stream] frame=13671 asset_kb=2
+[stream] frame=13673 asset_kb=8
+[stream] frame=13677 asset_kb=4
+[stream] frame=13678 asset_kb=6
+[stream] frame=13680 asset_kb=10
+[stream] frame=13681 asset_kb=2
+[stream] frame=13685 asset_kb=4
+[stream] frame=13740 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2234 delcnt=33 uploads=18990 lowmem=45 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=13800 asset_kb=0
+[drv] frame 13800
+[glmem] frame live=345 MB peak=345 MB gen=2234 del=33 upload=18990 bound2d=720 boundcube=0
+[stream] frame=13860 asset_kb=0
+[stream] frame=13920 asset_kb=0
+[stream] frame=13967 asset_kb=8
+[stream] frame=13968 asset_kb=10
+[stream] frame=13973 asset_kb=4
+[stream] frame=13975 asset_kb=22
+[stream] frame=13976 asset_kb=14
+[stream] frame=13977 asset_kb=10
+[stream] frame=13978 asset_kb=18
+[stream] frame=13979 asset_kb=16
+[stream] frame=13980 asset_kb=0
+[stream] frame=14035 asset_kb=24
+[stream] frame=14038 asset_kb=2
+[stream] frame=14040 asset_kb=0
+[stream] frame=14045 asset_kb=10
+[stream] frame=14051 asset_kb=6
+[stream] frame=14053 asset_kb=2
+[stream] frame=14059 asset_kb=2
+[stream] frame=14061 asset_kb=1
+[stream] frame=14062 asset_kb=2
+[stream] frame=14063 asset_kb=22
+[stream] frame=14066 asset_kb=6
+[stream] frame=14071 asset_kb=2
+[stream] frame=14074 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2236 delcnt=33 uploads=19003 lowmem=46 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=80 boundcube=0
+[stream] frame=14100 asset_kb=0
+[drv] frame 14100
+[glmem] frame live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=80 boundcube=0
+[stream] frame=14160 asset_kb=0
+[stream] frame=14220 asset_kb=0
+[stream] frame=14280 asset_kb=0
+[stream] frame=14340 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2236 delcnt=33 uploads=19003 lowmem=47 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=14400 asset_kb=0
+[drv] frame 14400
+[glmem] frame live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=14410 asset_kb=2
+[stream] frame=14413 asset_kb=2
+[stream] frame=14424 asset_kb=4
+[stream] frame=14425 asset_kb=10
+[stream] frame=14443 asset_kb=16
+[stream] frame=14444 asset_kb=26
+[stream] frame=14450 asset_kb=10
+[stream] frame=14452 asset_kb=4
+[stream] frame=14453 asset_kb=10
+[stream] frame=14456 asset_kb=10
+[stream] frame=14457 asset_kb=6
+[stream] frame=14458 asset_kb=4
+[stream] frame=14459 asset_kb=8
+[stream] frame=14460 asset_kb=0
+[stream] frame=14473 asset_kb=1
+[stream] frame=14474 asset_kb=1
+[stream] frame=14475 asset_kb=4
+[stream] frame=14476 asset_kb=15
+[stream] frame=14520 asset_kb=0
+[stream] frame=14541 asset_kb=6
+[stream] frame=14545 asset_kb=2
+[stream] frame=14546 asset_kb=12
+[stream] frame=14548 asset_kb=10
+[stream] frame=14580 asset_kb=0
+[stream] frame=14613 asset_kb=2
+[stream] frame=14614 asset_kb=16
+[stream] frame=14622 asset_kb=6
+[stream] frame=14623 asset_kb=2
+[stream] frame=14640 asset_kb=0
+[stream] frame=14649 asset_kb=2
+[stream] frame=14666 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2236 delcnt=33 uploads=19003 lowmem=48 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=14700 asset_kb=16
+[drv] frame 14700
+[glmem] frame live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=14704 asset_kb=10
+[stream] frame=14760 asset_kb=0
+[stream] frame=14820 asset_kb=0
+[stream] frame=14880 asset_kb=0
+[stream] frame=14892 asset_kb=4
+[stream] frame=14897 asset_kb=2
+[stream] frame=14900 asset_kb=6
+[stream] frame=14906 asset_kb=16
+[stream] frame=14910 asset_kb=6
+[stream] frame=14912 asset_kb=2
+[stream] frame=14913 asset_kb=16
+[stream] frame=14914 asset_kb=12
+[stream] frame=14917 asset_kb=8
+[stream] frame=14921 asset_kb=4
+[stream] frame=14922 asset_kb=4
+[stream] frame=14924 asset_kb=2
+[stream] frame=14938 asset_kb=4
+[stream] frame=14939 asset_kb=2
+[stream] frame=14940 asset_kb=0
+[stream] frame=14949 asset_kb=2
+[stream] frame=14955 asset_kb=2
+[stream] frame=14956 asset_kb=2
+[stream] frame=14964 asset_kb=2
+[stream] frame=14970 asset_kb=2
+[stream] frame=14978 asset_kb=2
+[stream] frame=14984 asset_kb=4
+[stream] frame=14994 asset_kb=2
+[stream] frame=14995 asset_kb=2
+[stream] frame=14998 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2236 delcnt=33 uploads=19003 lowmem=49 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=15000 asset_kb=0
+[drv] frame 15000
+[glmem] frame live=345 MB peak=345 MB gen=2236 del=33 upload=19003 bound2d=720 boundcube=0
+[stream] frame=15013 asset_kb=2
+[stream] frame=15018 asset_kb=2
+[stream] frame=15019 asset_kb=2
+[stream] frame=15038 asset_kb=2
+[stream] frame=15042 asset_kb=6
+[stream] frame=15046 asset_kb=4
+[stream] frame=15056 asset_kb=2
+[stream] frame=15060 asset_kb=0
+[stream] frame=15094 asset_kb=10
+[stream] frame=15097 asset_kb=2
+[stream] frame=15098 asset_kb=2
+[stream] frame=15120 asset_kb=0
+[stream] frame=15148 asset_kb=2
+[stream] frame=15152 asset_kb=4
+[stream] frame=15153 asset_kb=8
+[stream] frame=15154 asset_kb=4
+[stream] frame=15170 asset_kb=8
+[stream] frame=15180 asset_kb=0
+[stream] frame=15182 asset_kb=4
+[stream] frame=15197 asset_kb=4
+[stream] frame=15202 asset_kb=8
+[stream] frame=15203 asset_kb=10
+[stream] frame=15205 asset_kb=10
+[stream] frame=15208 asset_kb=2
+[stream] frame=15209 asset_kb=1
+[stream] frame=15212 asset_kb=1
+[stream] frame=15213 asset_kb=1
+[stream] frame=15216 asset_kb=2
+[stream] frame=15227 asset_kb=6
+[stream] frame=15228 asset_kb=4
+[stream] frame=15229 asset_kb=9
+[stream] frame=15233 asset_kb=2
+[stream] frame=15234 asset_kb=1
+[stream] frame=15238 asset_kb=1
+[stream] frame=15239 asset_kb=2
+[stream] frame=15240 asset_kb=0
+[stream] frame=15248 asset_kb=2
+[stream] frame=15251 asset_kb=22
+[stream] frame=15262 asset_kb=2
+[stream] frame=15263 asset_kb=29
+[stream] frame=15265 asset_kb=3
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=50 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=720 boundcube=0
+[stream] frame=15300 asset_kb=4
+[drv] frame 15300
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=720 boundcube=0
+[stream] frame=15303 asset_kb=6
+[stream] frame=15304 asset_kb=4
+[stream] frame=15360 asset_kb=0
+[stream] frame=15390 asset_kb=6
+[stream] frame=15391 asset_kb=12
+[stream] frame=15392 asset_kb=16
+[stream] frame=15398 asset_kb=2
+[stream] frame=15403 asset_kb=2
+[stream] frame=15420 asset_kb=0
+[stream] frame=15480 asset_kb=0
+[stream] frame=15496 asset_kb=2
+[stream] frame=15500 asset_kb=2
+[stream] frame=15502 asset_kb=18
+[stream] frame=15506 asset_kb=10
+[stream] frame=15507 asset_kb=10
+[stream] frame=15531 asset_kb=6
+[stream] frame=15532 asset_kb=2
+[stream] frame=15533 asset_kb=4
+[stream] frame=15540 asset_kb=0
+[stream] frame=15541 asset_kb=2
+[stream] frame=15543 asset_kb=2
+[stream] frame=15553 asset_kb=4
+[stream] frame=15557 asset_kb=2
+[stream] frame=15572 asset_kb=2
+[stream] frame=15573 asset_kb=4
+[stream] frame=15586 asset_kb=2
+[stream] frame=15588 asset_kb=2
+[stream] frame=15597 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=51 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=15600 asset_kb=0
+[drv] frame 15600
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=15660 asset_kb=0
+[stream] frame=15704 asset_kb=6
+[stream] frame=15707 asset_kb=8
+[stream] frame=15710 asset_kb=10
+[stream] frame=15711 asset_kb=14
+[stream] frame=15713 asset_kb=2
+[stream] frame=15720 asset_kb=2
+[stream] frame=15731 asset_kb=4
+[stream] frame=15735 asset_kb=2
+[stream] frame=15745 asset_kb=2
+[stream] frame=15747 asset_kb=4
+[stream] frame=15759 asset_kb=4
+[stream] frame=15762 asset_kb=2
+[stream] frame=15774 asset_kb=2
+[stream] frame=15780 asset_kb=0
+[stream] frame=15781 asset_kb=2
+[stream] frame=15789 asset_kb=4
+[stream] frame=15795 asset_kb=2
+[stream] frame=15802 asset_kb=2
+[stream] frame=15807 asset_kb=4
+[stream] frame=15819 asset_kb=2
+[stream] frame=15824 asset_kb=2
+[stream] frame=15833 asset_kb=4
+[stream] frame=15836 asset_kb=2
+[stream] frame=15840 asset_kb=0
+[stream] frame=15854 asset_kb=2
+[stream] frame=15859 asset_kb=2
+[stream] frame=15861 asset_kb=2
+[stream] frame=15874 asset_kb=4
+[stream] frame=15881 asset_kb=4
+[stream] frame=15882 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=52 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=1263 boundcube=0
+[stream] frame=15900 asset_kb=0
+[drv] frame 15900
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=1263 boundcube=0
+[stream] frame=15960 asset_kb=0
+[stream] frame=16020 asset_kb=0
+[stream] frame=16080 asset_kb=0
+[stream] frame=16140 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=53 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=16200 asset_kb=0
+[drv] frame 16200
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=16260 asset_kb=0
+[stream] frame=16320 asset_kb=0
+[stream] frame=16380 asset_kb=0
+[stream] frame=16440 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=54 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=1062 boundcube=0
+[stream] frame=16500 asset_kb=0
+[drv] frame 16500
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=1062 boundcube=0
+[stream] frame=16560 asset_kb=0
+[stream] frame=16563 asset_kb=4
+[stream] frame=16569 asset_kb=4
+[stream] frame=16574 asset_kb=2
+[stream] frame=16579 asset_kb=4
+[stream] frame=16584 asset_kb=2
+[stream] frame=16585 asset_kb=4
+[stream] frame=16588 asset_kb=6
+[stream] frame=16590 asset_kb=2
+[stream] frame=16593 asset_kb=4
+[stream] frame=16594 asset_kb=2
+[stream] frame=16596 asset_kb=2
+[stream] frame=16598 asset_kb=6
+[stream] frame=16601 asset_kb=2
+[stream] frame=16602 asset_kb=8
+[stream] frame=16605 asset_kb=4
+[stream] frame=16617 asset_kb=2
+[stream] frame=16618 asset_kb=10
+[stream] frame=16620 asset_kb=0
+[stream] frame=16625 asset_kb=2
+[stream] frame=16627 asset_kb=2
+[stream] frame=16628 asset_kb=2
+[stream] frame=16631 asset_kb=4
+[stream] frame=16633 asset_kb=4
+[stream] frame=16638 asset_kb=4
+[stream] frame=16639 asset_kb=2
+[stream] frame=16641 asset_kb=2
+[stream] frame=16643 asset_kb=2
+[stream] frame=16648 asset_kb=6
+[stream] frame=16649 asset_kb=2
+[stream] frame=16651 asset_kb=4
+[stream] frame=16655 asset_kb=4
+[stream] frame=16663 asset_kb=2
+[stream] frame=16665 asset_kb=4
+[stream] frame=16670 asset_kb=4
+[stream] frame=16680 asset_kb=2
+[stream] frame=16688 asset_kb=2
+[stream] frame=16692 asset_kb=4
+[stream] frame=16704 asset_kb=2
+[stream] frame=16710 asset_kb=2
+[stream] frame=16722 asset_kb=4
+[stream] frame=16735 asset_kb=18
+[stream] frame=16736 asset_kb=2
+[stream] frame=16739 asset_kb=10
+[stream] frame=16740 asset_kb=0
+[stream] frame=16750 asset_kb=6
+[stream] frame=16753 asset_kb=2
+[stream] frame=16763 asset_kb=2
+[stream] frame=16765 asset_kb=4
+[stream] frame=16778 asset_kb=2
+[stream] frame=16780 asset_kb=2
+[stream] frame=16792 asset_kb=4
+[stream] frame=16796 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=55 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=16800 asset_kb=0
+[drv] frame 16800
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=16860 asset_kb=0
+[stream] frame=16920 asset_kb=0
+[stream] frame=16980 asset_kb=0
+[stream] frame=17010 asset_kb=4
+[stream] frame=17011 asset_kb=8
+[stream] frame=17026 asset_kb=2
+[stream] frame=17028 asset_kb=12
+[stream] frame=17029 asset_kb=10
+[stream] frame=17030 asset_kb=2
+[stream] frame=17031 asset_kb=2
+[stream] frame=17032 asset_kb=12
+[stream] frame=17033 asset_kb=10
+[stream] frame=17035 asset_kb=8
+[stream] frame=17036 asset_kb=8
+[stream] frame=17040 asset_kb=0
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=56 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=17100 asset_kb=0
+[drv] frame 17100
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=17126 asset_kb=8
+[stream] frame=17127 asset_kb=18
+[stream] frame=17128 asset_kb=10
+[stream] frame=17135 asset_kb=6
+[stream] frame=17144 asset_kb=4
+[stream] frame=17147 asset_kb=2
+[stream] frame=17160 asset_kb=2
+[stream] frame=17162 asset_kb=2
+[stream] frame=17174 asset_kb=2
+[stream] frame=17177 asset_kb=2
+[stream] frame=17188 asset_kb=4
+[stream] frame=17191 asset_kb=4
+[stream] frame=17202 asset_kb=2
+[stream] frame=17206 asset_kb=4
+[stream] frame=17217 asset_kb=2
+[stream] frame=17220 asset_kb=0
+[stream] frame=17221 asset_kb=2
+[stream] frame=17231 asset_kb=4
+[stream] frame=17237 asset_kb=2
+[stream] frame=17248 asset_kb=2
+[stream] frame=17250 asset_kb=4
+[stream] frame=17263 asset_kb=2
+[stream] frame=17269 asset_kb=2
+[stream] frame=17274 asset_kb=4
+[stream] frame=17278 asset_kb=14
+[stream] frame=17280 asset_kb=2
+[stream] frame=17281 asset_kb=2
+[stream] frame=17284 asset_kb=2
+[stream] frame=17288 asset_kb=2
+[stream] frame=17290 asset_kb=2
+[stream] frame=17292 asset_kb=2
+[stream] frame=17293 asset_kb=2
+[stream] frame=17294 asset_kb=2
+[stream] frame=17306 asset_kb=2
+[stream] frame=17309 asset_kb=2
+[stream] frame=17321 asset_kb=2
+[stream] frame=17325 asset_kb=4
+[stream] frame=17337 asset_kb=2
+[stream] frame=17340 asset_kb=0
+[stream] frame=17341 asset_kb=2
+[stream] frame=17350 asset_kb=2
+[stream] frame=17351 asset_kb=2
+[stream] frame=17355 asset_kb=4
+[stream] frame=17367 asset_kb=2
+[stream] frame=17370 asset_kb=2
+[stream] frame=17380 asset_kb=2
+[stream] frame=17384 asset_kb=4
+[stream] frame=17398 asset_kb=4
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=57 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=17400 asset_kb=0
+[drv] frame 17400
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=65 boundcube=0
+[stream] frame=17460 asset_kb=0
+[stream] frame=17485 asset_kb=8
+[stream] frame=17486 asset_kb=16
+[stream] frame=17487 asset_kb=6
+[stream] frame=17488 asset_kb=2
+[stream] frame=17498 asset_kb=2
+[stream] frame=17500 asset_kb=4
+[stream] frame=17513 asset_kb=2
+[stream] frame=17515 asset_kb=2
+[stream] frame=17520 asset_kb=0
+[stream] frame=17580 asset_kb=0
+[stream] frame=17640 asset_kb=0
+[stream] frame=17696 asset_kb=2
+[evict] tick mode=onlow tex=0->0 MB helper=0->0 txd=0->0 cache=0->0 gl=345->345 MB glpeak=345 MB gencnt=2238 delcnt=33 uploads=19021 lowmem=58 stream=1/0 MB observed=345->345 MB budget=128 MB request=64 MB funcs low=0x7f9ca010ac app=0x7f9c0ecf60 tidytex=0x7f9c55cd74 tidymem=0x7f9c55c378 drastic=0x7f9c55cc58 rm=0x7f9c76ead0 island=0x7f9c76faf0 msf=0x7f9c772230 txdgc=0x7f9c78b11c
+[glmem] tick live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=888 boundcube=0
+[stream] frame=17700 asset_kb=0
+[drv] frame 17700
+[glmem] frame live=345 MB peak=345 MB gen=2238 del=33 upload=19021 bound2d=888 boundcube=0
+[stream] frame=17703 asset_kb=10
+[stream] frame=17710 asset_kb=2
+[stream] frame=17713 asset_kb=6
+[stream] frame=17714 asset_kb=12
+[stream] frame=17715 asset_kb=6
+[stream] frame=17718 asset_kb=2
+[stream] frame=17720 asset_kb=8
+[stream] frame=17721 asset_kb=14
+[stream] frame=17722 asset_kb=4
+[stream] frame=17725 asset_kb=4
+[stream] frame=17726 asset_kb=2
+[stream] frame=17760 asset_kb=0
+[stream] frame=17820 asset_kb=0
+[stream] frame=17880 asset_kb=0
+[stream] frame=17940 asset_kb=0

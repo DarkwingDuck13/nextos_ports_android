@@ -97,6 +97,20 @@ export DUCK_NORAISE="${DUCK_NORAISE:-1}"
 # skip wild stores from the heap UAF so the menu-load reaches the menu without a
 # crash (corruption contained; the lost bookkeeping write just leaks a block).
 export DUCK_RECOVER="${DUCK_RECOVER:-1}"
+# Current stable gameplay bootstrap on Mali-450: switch to Amazon before the
+# Money Bin/title world initializes, then use the passthrough shader for ETC1
+# scene/sprite atlases. This is intentionally env-overridable for continued RE.
+export DUCK_FORCE_GAMESTATE="${DUCK_FORCE_GAMESTATE:-Amazon}"
+export DUCK_FORCE_GAMESTATE_FRAME="${DUCK_FORCE_GAMESTATE_FRAME:-330}"
+export DUCK_TEXMIRROR_ANY="${DUCK_TEXMIRROR_ANY:-1}"
+export DUCK_ETC1RGBA="${DUCK_ETC1RGBA:-1}"
+export DUCK_MVPASS="${DUCK_MVPASS:-1}"
+export DUCK_MVPASS_ALL="${DUCK_MVPASS_ALL:-1}"
+export DUCK_MVPASS_AFTER="${DUCK_MVPASS_AFTER:-850}"
+export DUCK_MVPASS_FORCESTATE="${DUCK_MVPASS_FORCESTATE:-1}"
+export DUCK_MVPASS_DROPWHITE="${DUCK_MVPASS_DROPWHITE:-1}"
+export DUCK_MVPASS_REPLACE="${DUCK_MVPASS_REPLACE:-1}"
+export DUCK_MVPASS_KEEPBLEND="${DUCK_MVPASS_KEEPBLEND:-1}"
 # FIXSAMPLERS is ON in the binary by default: corrects the GFx textured-fill
 # sampler units (engine never calls glUniform1i, so samplers defaulted to unit 0;
 # when the GL_ALPHA texture sat on unit 0 the colour read was black). This made

@@ -939,6 +939,18 @@ int main(int argc, char *argv[]) {
   if (getenv("SONIC_INPUTLOG"))
     fprintf(stderr, "=== gmPad globals direct=%p lx=%p ly=%p ===\n",
             (void *)gm_direct, (void *)gm_lx, (void *)gm_ly);
+  /* 🔎 DIAG Y=Left (SONIC_KEYDUMP=1): o bug "Y age como Left no level select" não é
+     colisão de bit no nosso FOX mask (Y=0x100, LEFT=0x4 no .data). Hipótese: o engine
+     REMAPEIA os bits de tecla de menu (g_gs_env_key_*) em runtime (keymap OUYA/alt).
+     Dump dos valores REAIS dessas globais em runtime fecha a questão: se LEFT != 0x4
+     (ou == 0x100), é remap. Só LÊ globais (zero efeito no jogo). */
+  short *gk_right  = (short *)so_find_addr_safe("g_gs_env_key_right");
+  short *gk_left   = (short *)so_find_addr_safe("g_gs_env_key_left");
+  short *gk_down   = (short *)so_find_addr_safe("g_gs_env_key_down");
+  short *gk_up     = (short *)so_find_addr_safe("g_gs_env_key_up");
+  short *gk_decide = (short *)so_find_addr_safe("g_gs_env_key_decide");
+  short *gk_cancel = (short *)so_find_addr_safe("g_gs_env_key_cancel");
+  long keydump_last = -100000;
   /* Special/bonus stage (moedas): sinal por-frame determinístico.
      g_SsMain = ss::CMain::s_main (singleton da special stage) @vaddr 0x99e480.
      Não é símbolo exportado, então resolvo via o vizinho exportado
@@ -1083,6 +1095,19 @@ int main(int argc, char *argv[]) {
     if (getenv("SONIC_INPUTLOG") && sonic_game_started && (frame % 60) == 0)
       fprintf(stderr, "[input f%lu] mask=%04x lx=%d ly=%d rx=%d ry=%d lt=%d rt=%d\n",
               frame, mask & 0xffff, lx, ly, rx, ry, lt, rt);
+    /* 🔎 SONIC_KEYDUMP: dump dos bits de tecla de menu REAIS em runtime (a cada ~2s)
+       p/ confirmar/descartar remap do keymap (bug Y=Left). */
+    if (getenv("SONIC_KEYDUMP") && (frame - keydump_last) >= 120) {
+      keydump_last = frame;
+      fprintf(stderr, "[keydump f%lu] L=%04x R=%04x U=%04x D=%04x decide=%04x cancel=%04x  (FOX_Y=0100 FOX_LEFT=0004)\n",
+              frame,
+              gk_left   ? (*gk_left   & 0xffff) : 0xdead,
+              gk_right  ? (*gk_right  & 0xffff) : 0xdead,
+              gk_up     ? (*gk_up     & 0xffff) : 0xdead,
+              gk_down   ? (*gk_down   & 0xffff) : 0xdead,
+              gk_decide ? (*gk_decide & 0xffff) : 0xdead,
+              gk_cancel ? (*gk_cancel & 0xffff) : 0xdead);
+    }
 
     sonic_native_save_load_poll("frame");
     sonic_save_bootstrap_poll(frame);

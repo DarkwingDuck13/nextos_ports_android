@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
@@ -46,6 +47,32 @@ void *re4_gl_override(const char *procname) { (void)procname; return NULL; }
 
 extern void hook_arm(uintptr_t addr, uintptr_t dst);
 extern int egl_shim_frame_count(void);
+
+static int env_flag(const char *name) {
+  const char *v = getenv(name);
+  if (!v || !v[0]) return 0;
+  return strcmp(v, "0") && strcasecmp(v, "off") && strcasecmp(v, "false") && strcasecmp(v, "no");
+}
+
+static int env_int_list_has(const char *name, int value) {
+  const char *s = getenv(name);
+  if (!s || !s[0]) return 0;
+  while (*s) {
+    while (*s == ',' || *s == ';' || *s == ' ' || *s == '\t')
+      s++;
+    char *end = NULL;
+    long v = strtol(s, &end, 0);
+    if (end == s) {
+      while (*s && *s != ',' && *s != ';')
+        s++;
+      continue;
+    }
+    if (v == value)
+      return 1;
+    s = end;
+  }
+  return 0;
+}
 
 /* ---- timestamped log line to stderr (launcher tees to logs/) ---- */
 static void tslog(const char *tag, const char *msg) {
@@ -161,6 +188,8 @@ void drt_set_fmt(int fmt);
 /* status de upload por textura: 0=nunca 1=ETC1-arte 2=RGBA-data 3=RGBA-NULL. expõe se
    a textura que o movie amostra recebeu arte ou está vazia. */
 unsigned char g_tex_up[4096];
+#define DRT_N 4096
+static unsigned short g_texw[DRT_N], g_texh[DRT_N], g_texfmt[DRT_N];
 static int curtex(void){ extern void glGetIntegerv(unsigned,int*); int b=0; glGetIntegerv(0x8069,&b); return b; }
 
 /* ===== TEXTURE MIRROR (DUCK_TEXMIRROR) =====
@@ -168,18 +197,184 @@ static int curtex(void){ extern void glGetIntegerv(unsigned,int*); int b=0; glGe
    não as torna visíveis à RENDER thread -> ela amostra textura vazia -> preto. Guardamos o
    dado da textura no upload (qualquer thread) e RE-UPLOAMOS no contexto da render thread
    logo antes do draw do movie (my_glDrawElements) -> a render thread passa a ter o dado. */
-typedef struct { void *data; int sz,w,h; unsigned ifmt; int compressed, dirty; } TexMir;
+typedef struct { void *data, *rgba; int sz, rgba_sz, w, h; unsigned ifmt; int compressed, dirty; } TexMir;
 static TexMir g_mir[4096];
 static int g_texmirror = -1;
+typedef struct { void *data, *rgba; int sz, rgba_sz, w, h; unsigned ifmt, serial; } TexAny;
+static TexAny g_any_color[16], g_any_alpha[16];
+static unsigned g_any_color_applied[4096], g_any_alpha_applied[4096];
+static unsigned g_any_serial = 1;
+static int g_texmirror_any = -1;
+static int g_etc1rgba = -1;
+static pthread_mutex_t g_any_mtx = PTHREAD_MUTEX_INITIALIZER;
+static inline int etc1_clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+static inline int etc1_clamp5(int v) { return v < 0 ? 0 : (v > 31 ? 31 : v); }
+static inline int etc1_exp4(int v) { return (v << 4) | v; }
+static inline int etc1_exp5(int v) { return (v << 3) | (v >> 2); }
+static inline int etc1_s3(int v) { return (v & 4) ? v - 8 : v; }
+static const int k_etc1_mod[8][4] = {
+  {  2,   8,  -2,   -8}, {  5,  17,  -5,  -17},
+  {  9,  29,  -9,  -29}, { 13,  42, -13,  -42},
+  { 18,  60, -18,  -60}, { 24,  80, -24,  -80},
+  { 33, 106, -33, -106}, { 47, 183, -47, -183}
+};
+static int etc1rgba_enabled(void) {
+  if (g_etc1rgba < 0) g_etc1rgba = env_flag("DUCK_ETC1RGBA");
+  return g_etc1rgba;
+}
+static unsigned char *etc1_decode_rgba(int w, int h, const void *data, int sz) {
+  if (!data || w <= 0 || h <= 0 || sz <= 0) return NULL;
+  int bw = (w + 3) / 4, bh = (h + 3) / 4;
+  size_t need = (size_t)bw * (size_t)bh * 8u;
+  size_t outsz = (size_t)w * (size_t)h * 4u;
+  if ((size_t)sz < need || outsz / 4u != (size_t)w * (size_t)h) return NULL;
+  unsigned char *out = (unsigned char *)malloc(outsz);
+  if (!out) return NULL;
+  const unsigned char *src = (const unsigned char *)data;
+  for (int by = 0; by < bh; by++) {
+    for (int bx = 0; bx < bw; bx++) {
+      const unsigned char *b = src + ((size_t)by * bw + bx) * 8u;
+      int diff = (b[3] >> 1) & 1, flip = b[3] & 1;
+      int t0 = (b[3] >> 5) & 7, t1 = (b[3] >> 2) & 7;
+      int c0[3], c1[3];
+      if (!diff) {
+        c0[0] = etc1_exp4(b[0] >> 4); c1[0] = etc1_exp4(b[0] & 15);
+        c0[1] = etc1_exp4(b[1] >> 4); c1[1] = etc1_exp4(b[1] & 15);
+        c0[2] = etc1_exp4(b[2] >> 4); c1[2] = etc1_exp4(b[2] & 15);
+      } else {
+        int r0 = b[0] >> 3, g0 = b[1] >> 3, bl0 = b[2] >> 3;
+        int r1 = r0 + etc1_s3(b[0] & 7);
+        int g1 = g0 + etc1_s3(b[1] & 7);
+        int bl1 = bl0 + etc1_s3(b[2] & 7);
+        c0[0] = etc1_exp5(r0); c0[1] = etc1_exp5(g0); c0[2] = etc1_exp5(bl0);
+        c1[0] = etc1_exp5(etc1_clamp5(r1));
+        c1[1] = etc1_exp5(etc1_clamp5(g1));
+        c1[2] = etc1_exp5(etc1_clamp5(bl1));
+      }
+      unsigned msb = ((unsigned)b[4] << 8) | b[5];
+      unsigned lsb = ((unsigned)b[6] << 8) | b[7];
+      for (int y = 0; y < 4; y++) {
+        int py = by * 4 + y; if (py >= h) continue;
+        for (int x = 0; x < 4; x++) {
+          int px = bx * 4 + x; if (px >= w) continue;
+          int p = x * 4 + y;
+          int second = flip ? (y >= 2) : (x >= 2);
+          int sel = (int)(((msb >> p) & 1u) << 1) | (int)((lsb >> p) & 1u);
+          const int *base = second ? c1 : c0;
+          int m = k_etc1_mod[second ? t1 : t0][sel];
+          unsigned char *o = out + ((size_t)py * w + px) * 4u;
+          o[0] = (unsigned char)etc1_clamp8(base[0] + m);
+          o[1] = (unsigned char)etc1_clamp8(base[1] + m);
+          o[2] = (unsigned char)etc1_clamp8(base[2] + m);
+          o[3] = 255;
+        }
+      }
+    }
+  }
+  return out;
+}
+static int etc1_looks_alpha_mask(const unsigned char *p, int sz) {
+  if (!p || sz < 8) return 0;
+  int blocks = sz / 8, step = blocks > 256 ? blocks / 256 : 1;
+  int sampled = 0, white = 0;
+  for (int b = 0; b < blocks; b += step) {
+    const unsigned char *q = p + b * 8;
+    if (q[0] == 0xff && q[1] == 0xff && q[2] == 0xff && q[3] == 0x00)
+      white++;
+    sampled++;
+  }
+  return sampled > 0 && white * 100 / sampled > 70;
+}
+static void any_store(unsigned ifmt, int w, int h, int sz, const void *px) {
+  if (g_texmirror_any < 0)
+    g_texmirror_any = env_flag("DUCK_TEXMIRROR_ANY");
+  if (!g_texmirror_any || !px || sz <= 0 || ifmt != 0x8d64 || w < 256 || h < 128)
+    return;
+  TexAny *tab = etc1_looks_alpha_mask((const unsigned char *)px, sz) ? g_any_alpha : g_any_color;
+  pthread_mutex_lock(&g_any_mtx);
+  int slot = -1;
+  for (int i = 0; i < 16; i++)
+    if (tab[i].data && tab[i].w == w && tab[i].h == h && tab[i].ifmt == ifmt) { slot = i; break; }
+  if (slot < 0) {
+    static unsigned rr = 0;
+    slot = (int)(rr++ & 15);
+  }
+  TexAny *m = &tab[slot];
+  if (m->data && m->sz < sz) { free(m->data); m->data = NULL; }
+  if (!m->data) m->data = malloc(sz);
+  if (m->data) {
+    if (m->rgba) { free(m->rgba); m->rgba = NULL; m->rgba_sz = 0; }
+    memcpy(m->data, px, sz);
+    m->sz = sz; m->w = w; m->h = h; m->ifmt = ifmt; m->serial = g_any_serial++;
+    if (getenv("DUCK_MIRLOG")) {
+      static int n = 0;
+      if (n++ < 80)
+        fprintf(stderr, "[MIRANY-STORE] %s %dx%d sz=%d serial=%u tid=%lx\n",
+                tab == g_any_alpha ? "alpha" : "color", w, h, sz, m->serial,
+                (unsigned long)pthread_self());
+    }
+  }
+  pthread_mutex_unlock(&g_any_mtx);
+}
+static void any_replay_one(unsigned tex, int want_alpha) {
+  if (g_texmirror_any <= 0 || tex == 0 || tex >= 4096) return;
+  int w = g_texw[tex], h = g_texh[tex];
+  if (w < 256 || h < 128) return;
+  TexAny *tab = want_alpha ? g_any_alpha : g_any_color;
+  unsigned *applied = want_alpha ? g_any_alpha_applied : g_any_color_applied;
+  pthread_mutex_lock(&g_any_mtx);
+  TexAny *best = NULL;
+  for (int i = 0; i < 16; i++) {
+    TexAny *m = &tab[i];
+    if (!m->data || m->w != w || m->h != h || m->ifmt != 0x8d64) continue;
+    if (!best || m->serial > best->serial) best = m;
+  }
+  if (best && best->serial > applied[tex]) {
+    extern void glBindTexture(unsigned,unsigned);
+    extern void glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
+    extern void glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
+    extern void glTexParameteri(unsigned,unsigned,int);
+    glBindTexture(0x0DE1, tex);
+    if (etc1rgba_enabled()) {
+      size_t need = (size_t)best->w * (size_t)best->h * 4u;
+      if (!best->rgba || best->rgba_sz != (int)need) {
+        free(best->rgba);
+        best->rgba = etc1_decode_rgba(best->w, best->h, best->data, best->sz);
+        best->rgba_sz = best->rgba ? (int)need : 0;
+      }
+      if (best->rgba)
+        glTexImage2D(0x0DE1, 0, 0x1908, best->w, best->h, 0, 0x1908, 0x1401, best->rgba);
+      else
+        glCompressedTexImage2D(0x0DE1, 0, best->ifmt, best->w, best->h, 0, best->sz, best->data);
+    } else {
+      glCompressedTexImage2D(0x0DE1, 0, best->ifmt, best->w, best->h, 0, best->sz, best->data);
+    }
+    glTexParameteri(0x0DE1, 0x2801, 0x2601); /* MIN_FILTER=LINEAR */
+    glTexParameteri(0x0DE1, 0x2800, 0x2601); /* MAG_FILTER=LINEAR */
+    glTexParameteri(0x0DE1, 0x2802, 0x812F); /* WRAP_S=CLAMP_TO_EDGE */
+    glTexParameteri(0x0DE1, 0x2803, 0x812F); /* WRAP_T=CLAMP_TO_EDGE */
+    applied[tex] = best->serial;
+    g_tex_up[tex] = best->rgba ? 2 : 1;
+    if (getenv("DUCK_MIRLOG")) {
+      static int n = 0;
+      if (n++ < 80)
+        fprintf(stderr, "[MIRANY] replay %s serial=%u -> tex%u %dx%d on render%s\n",
+                want_alpha ? "alpha" : "color", best->serial, tex, best->w, best->h,
+                best->rgba ? " RGBA" : "");
+    }
+  }
+  pthread_mutex_unlock(&g_any_mtx);
+}
 static void mir_store(int compressed, unsigned ifmt, int w, int h, int sz, const void *px) {
-  if (g_texmirror < 0) g_texmirror = getenv("DUCK_TEXMIRROR") ? 1 : 0;
+  if (g_texmirror < 0) g_texmirror = env_flag("DUCK_TEXMIRROR");
   if (!g_texmirror || !px || sz <= 0 || (w < 256 && h < 256)) return; /* só grandes (movie) */
   int id = curtex(); if (id <= 0 || id >= 4096) return;
   TexMir *m = &g_mir[id];
-  if (m->data && m->sz < sz) { free(m->data); m->data = NULL; }
+  if (m->data && m->sz < sz) { free(m->data); m->data = NULL; free(m->rgba); m->rgba = NULL; m->rgba_sz = 0; }
   if (!m->data) m->data = malloc(sz);
   if (!m->data) return;
   memcpy(m->data, px, sz);
+  free(m->rgba); m->rgba = NULL; m->rgba_sz = 0;
   m->sz = sz; m->w = w; m->h = h; m->ifmt = ifmt; m->compressed = compressed; m->dirty = 1;
   { static int n=0; if(getenv("DUCK_MIRLOG") && n++<40) fprintf(stderr,"[MIRSTORE] id=%d %dx%d tid_thread=%lx\n",id,w,h,(unsigned long)pthread_self()); }
 }
@@ -189,11 +384,24 @@ static void mir_replay(unsigned id) {
   TexMir *m = &g_mir[id]; if (!m->dirty || !m->data) return;
   extern void glBindTexture(unsigned,unsigned);
   extern void glCompressedTexImage2D(unsigned,int,unsigned,int,int,int,int,const void*);
+  extern void glTexImage2D(unsigned,int,int,int,int,int,unsigned,unsigned,const void*);
   glBindTexture(0x0DE1, id);
-  if (m->compressed) glCompressedTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,m->sz,m->data);
+  if (m->compressed && m->ifmt == 0x8d64 && etc1rgba_enabled()) {
+    size_t need = (size_t)m->w * (size_t)m->h * 4u;
+    if (!m->rgba || m->rgba_sz != (int)need) {
+      free(m->rgba);
+      m->rgba = etc1_decode_rgba(m->w, m->h, m->data, m->sz);
+      m->rgba_sz = m->rgba ? (int)need : 0;
+    }
+    if (m->rgba)
+      glTexImage2D(0x0DE1,0,0x1908,m->w,m->h,0,0x1908,0x1401,m->rgba);
+    else
+      glCompressedTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,m->sz,m->data);
+  } else if (m->compressed) glCompressedTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,m->sz,m->data);
   else glTexImage2D(0x0DE1,0,m->ifmt,m->w,m->h,0,0x1908,0x1401,m->data);
   m->dirty = 0;
-  { static int n=0; if(n++<6) fprintf(stderr,"[MIRROR] replay tex%u %dx%d na render thread\n",id,m->w,m->h); }
+  g_tex_up[id] = m->rgba ? 2 : 1;
+  { static int n=0; if(n++<6) fprintf(stderr,"[MIRROR] replay tex%u %dx%d na render thread%s\n",id,m->w,m->h,m->rgba?" RGBA":""); }
 }
 static void my_glTexImage2D(unsigned t, int l, int ifmt, int w, int h, int b, unsigned fmt, unsigned typ, const void *px) {
   glTexImage2D(t, l, ifmt, w, h, b, fmt, typ, px);
@@ -209,7 +417,7 @@ static void my_glTexImage2D(unsigned t, int l, int ifmt, int w, int h, int b, un
 static void my_glCompressedTexImage2D(unsigned t, int l, unsigned ifmt, int w, int h, int b, int sz, const void *px) {
   glCompressedTexImage2D(t, l, ifmt, w, h, b, sz, px);
   if (l == 0) { drt_set_dim(w, h); drt_set_fmt(ifmt); { int bt=curtex(); if(bt>0&&bt<4096) g_tex_up[bt]=1; }
-    mir_store(1, ifmt, w, h, sz, px); }
+    mir_store(1, ifmt, w, h, sz, px); any_store(ifmt, w, h, sz, px); }
   /* DUCK_TEXFLUSH: glFinish após upload de textura grande -> torna o dado VISÍVEL ao
      contexto do render thread (a worker uploada noutro contexto compartilhado; sem
      flush/sync o render thread amostra textura vazia -> fundo preto). */
@@ -287,6 +495,30 @@ extern void glGetShaderSource(unsigned, int, int *, char *);
    If the bg/sprites then appear, the modulate color (g_tint) is wrong/zero. */
 static int g_shaderfix = 0;
 static int g_shaderred = -1;
+static const char *shader_find_texcoord_varying(const char *s) {
+  static char name[64];
+  const char *p = s;
+  while ((p = strstr(p, "varying")) != NULL) {
+    const char *semi = strchr(p, ';');
+    if (!semi) break;
+    const char *x = strstr(p, "xlv_TEXCOORD");
+    if (x && x < semi) {
+      int n = 0;
+      while (x[n] && n < (int)sizeof(name)-1 &&
+             ((x[n] >= 'A' && x[n] <= 'Z') || (x[n] >= 'a' && x[n] <= 'z') ||
+              (x[n] >= '0' && x[n] <= '9') || x[n] == '_')) {
+        name[n] = x[n];
+        n++;
+      }
+      name[n] = 0;
+      return name;
+    }
+    p = semi + 1;
+  }
+  if (strstr(s, "xlv_TEXCOORD0")) return "xlv_TEXCOORD0";
+  if (strstr(s, "xlv_TEXCOORD")) return "xlv_TEXCOORD";
+  return "xlv_TEXCOORD0";
+}
 static void my_glShaderSource(unsigned sh, int cnt, const char *const *str, const int *len) {
   if (g_shaderred < 0) g_shaderred = getenv("DUCK_SHADERRED") ? 1 : 0;
   /* DUCK_SHADERRED: força TODO fragment shader a cor sólida vermelha. Se a área do
@@ -305,10 +537,8 @@ static void my_glShaderSource(unsigned sh, int cnt, const char *const *str, cons
     const char *s = str[0];
     int frag = strstr(s, "gl_FragData") || strstr(s, "gl_FragColor");
     int textured = strstr(s, "g_textureSampler") != NULL;
-    int istint = strstr(s, "g_tint") != NULL;   /* textured-fill variant uses g_tint */
-    if (frag && textured && istint) {
-      /* find the varying vec2 name (texcoord) */
-      const char *vn = "xlv_TEXCOORD0";
+    if (frag && textured) {
+      const char *vn = shader_find_texcoord_varying(s);
       static char rb[512];
       snprintf(rb, sizeof(rb),
         "uniform sampler2D g_textureSampler;\n"
@@ -403,8 +633,6 @@ static int g_drawlog = 0;
 extern void glBindTexture(unsigned target, unsigned tex);
 extern void glDrawElements(unsigned mode, int count, unsigned type, const void *idx);
 extern void glDrawArrays(unsigned mode, int first, int count);
-#define DRT_N 4096
-static unsigned short g_texw[DRT_N], g_texh[DRT_N], g_texfmt[DRT_N];
 static _Thread_local unsigned g_bound_tex = 0;
 static unsigned g_draw_by_class[6];   /* <64,128,256,512,1024,>=2048 by max dim */
 static unsigned g_draw_total = 0, g_draw_big = 0, g_bigtex_last = 0;
@@ -413,16 +641,34 @@ static unsigned g_draw_total = 0, g_draw_big = 0, g_bigtex_last = 0;
    read comes from the alpha texture on unit 0 -> black. */
 extern void glUniform1i(int loc, int v);
 extern int glGetUniformLocation(unsigned prog, const char *name);
+extern void glUniformMatrix4fv(int, int, unsigned char, const float *);
 static int g_u1ilog = 0;
+static _Thread_local unsigned g_cur_prog = 0;
+static int g_loc_mvp_mat[DRT_N], g_loc_world_mat[DRT_N], g_loc_proj_mat[DRT_N];
+static unsigned char g_have_mvp_mat[DRT_N], g_have_world_mat[DRT_N], g_have_proj_mat[DRT_N];
+static float g_mvp_mat_cache[DRT_N][16], g_world_mat_cache[DRT_N][16], g_proj_mat_cache[DRT_N][16];
 static void my_glUniform1i(int loc, int v) {
   glUniform1i(loc, v);
   if (g_u1ilog) { static int n=0; if (n++<80) fprintf(stderr, "[U1I] loc=%d val=%d\n", loc, v); }
 }
 static int my_glGetUniformLocation(unsigned prog, const char *name) {
   int loc = glGetUniformLocation(prog, name);
+  if (prog < DRT_N && name) {
+    if (!strcmp(name, "g_matWVP")) g_loc_mvp_mat[prog] = loc >= 0 ? loc + 1 : 0;
+    else if (!strcmp(name, "g_worldView")) g_loc_world_mat[prog] = loc >= 0 ? loc + 1 : 0;
+    else if (!strcmp(name, "g_projection")) g_loc_proj_mat[prog] = loc >= 0 ? loc + 1 : 0;
+  }
   if (g_u1ilog && name && strstr(name, "ampler")) { static int n=0; if (n++<40)
       fprintf(stderr, "[ULOC] prog=%u %s -> loc=%d\n", prog, name, loc); }
   return loc;
+}
+static void my_glUniformMatrix4fv(int loc, int count, unsigned char transpose, const float *value) {
+  glUniformMatrix4fv(loc, count, transpose, value);
+  unsigned p = g_cur_prog;
+  if (p >= DRT_N || count <= 0 || !value) return;
+  if (g_loc_mvp_mat[p] == loc + 1) { memcpy(g_mvp_mat_cache[p], value, sizeof(g_mvp_mat_cache[p])); g_have_mvp_mat[p] = 1; }
+  if (g_loc_world_mat[p] == loc + 1) { memcpy(g_world_mat_cache[p], value, sizeof(g_world_mat_cache[p])); g_have_world_mat[p] = 1; }
+  if (g_loc_proj_mat[p] == loc + 1) { memcpy(g_proj_mat_cache[p], value, sizeof(g_proj_mat_cache[p])); g_have_proj_mat[p] = 1; }
 }
 static _Thread_local unsigned g_active_unit = 0;
 static _Thread_local unsigned g_unit_tex[8] = {0};
@@ -453,6 +699,276 @@ static void drt_record(void) {
             g_draw_total, g_draw_big, g_bigtex_last, g_texw[g_bigtex_last], g_texh[g_bigtex_last],
             g_draw_by_class[0],g_draw_by_class[1],g_draw_by_class[2],g_draw_by_class[3],g_draw_by_class[4],g_draw_by_class[5]);
 }
+static int movie_is_big(void); /* fwd */
+/* Minimal movie/background pass (DUCK_MVPASS=1).
+   Scaleform's movie/background draws reach GL with valid geometry and decoded
+   texture data, but the original fragment path still resolves to black on the
+   Mali-450. This pass reuses the current vertex/index state, copies the current
+   WVP matrix, and draws the colour texture with a trivial sampler shader. */
+extern unsigned glCreateShader(unsigned);
+extern unsigned glCreateProgram(void);
+extern void glAttachShader(unsigned, unsigned);
+extern void glBindAttribLocation(unsigned, unsigned, const char *);
+extern int glGetAttribLocation(unsigned, const char *);
+extern void glGetUniformfv(unsigned, int, float *);
+extern void glGetVertexAttribiv(unsigned, unsigned, int *);
+extern void glBindBuffer(unsigned, unsigned);
+extern unsigned char glIsEnabled(unsigned);
+extern void glUseProgram(unsigned);
+extern void glDisable(unsigned);
+extern void glEnable(unsigned);
+extern void glGetIntegerv(unsigned, int *);
+extern void glBlendFuncSeparate(unsigned, unsigned, unsigned, unsigned);
+static int g_mvpass = -1, g_mvpassdbg = -1, g_mvpass_after = -1;
+static int g_mvpass_min_count = -1, g_mvpass_max_count = -1;
+static int g_mvpass_force_state = -1, g_mvpass_noblend = -1, g_mvpass_replace = -1;
+static int mvpass_replace_enabled(void) {
+  if (g_mvpass_replace < 0)
+    g_mvpass_replace = env_flag("DUCK_MVPASS_REPLACE");
+  return g_mvpass_replace;
+}
+static _Thread_local unsigned g_array_buffer = 0, g_elem_buffer = 0;
+static unsigned char g_attr_enabled[16];
+static int g_bound_pos[DRT_N], g_bound_uv[DRT_N], g_bound_known[DRT_N];
+static void my_glBindBuffer(unsigned target, unsigned buf) {
+  extern void glBindBuffer(unsigned, unsigned);
+  glBindBuffer(target, buf);
+  if (target == 0x8892) g_array_buffer = buf;       /* GL_ARRAY_BUFFER */
+  else if (target == 0x8893) g_elem_buffer = buf;   /* GL_ELEMENT_ARRAY_BUFFER */
+}
+static void my_glBindAttribLocation(unsigned prog, unsigned idx, const char *name) {
+  glBindAttribLocation(prog, idx, name);
+  if (prog < DRT_N && name) {
+    if (!strcmp(name, "xlat_attrib_POSITION") || !strcmp(name, "xlat_attrib_POSITION0"))
+      g_bound_pos[prog] = (int)idx + 1;
+    if (!strcmp(name, "xlat_attrib_TEXCOORD") || !strcmp(name, "xlat_attrib_TEXCOORD0"))
+      g_bound_uv[prog] = (int)idx + 1;
+    g_bound_known[prog] = 1;
+  }
+  if (g_mvpassdbg > 0) { static int n=0; if (n++<80)
+    fprintf(stderr, "[ATTRBIND] prog=%u loc=%u name=%s\n", prog, idx, name ? name : "(null)"); }
+}
+extern void glEnableVertexAttribArray(unsigned);
+extern void glDisableVertexAttribArray(unsigned);
+static void my_glEnableVertexAttribArray(unsigned idx) {
+  glEnableVertexAttribArray(idx);
+  if (idx < 16) g_attr_enabled[idx] = 1;
+}
+static void my_glDisableVertexAttribArray(unsigned idx) {
+  glDisableVertexAttribArray(idx);
+  if (idx < 16) g_attr_enabled[idx] = 0;
+}
+extern void glVertexAttribPointer(unsigned, int, unsigned, unsigned char, int, const void *);
+static void my_glVertexAttribPointer(unsigned idx, int size, unsigned type, unsigned char norm, int stride, const void *ptr) {
+  glVertexAttribPointer(idx, size, type, norm, stride, ptr);
+  if (g_mvpassdbg > 0 && idx < 16) { static int n=0; if (n++<80)
+    fprintf(stderr, "[ATTRPTR] idx=%u size=%d type=0x%x norm=%u stride=%d ptr=%p abuf=%u ebuf=%u\n",
+            idx, size, type, norm, stride, ptr, g_array_buffer, g_elem_buffer); }
+}
+extern void glUniform1f(int, float);
+typedef struct { unsigned prog; int pos, uv, mvp, tex, alpha, alpha_mode, drop_white, drop_black; } MvPassProgram;
+static MvPassProgram g_mvpass_prog[16];
+static void mvpass_ident(float m[16]) {
+  for (int i = 0; i < 16; i++) m[i] = (i % 5) == 0 ? 1.0f : 0.0f;
+}
+static void mvpass_mul(float out[16], const float a[16], const float b[16]) {
+  float r[16];
+  for (int c = 0; c < 4; c++)
+    for (int r0 = 0; r0 < 4; r0++)
+      r[c*4+r0] = a[0*4+r0]*b[c*4+0] + a[1*4+r0]*b[c*4+1] +
+                  a[2*4+r0]*b[c*4+2] + a[3*4+r0]*b[c*4+3];
+  memcpy(out, r, sizeof(r));
+}
+static int mvpass_compile_ok(unsigned obj, int shader) {
+  int ok = 1;
+  if (shader) {
+    glGetShaderiv(obj, GL_COMPILE_STATUS, &ok);
+    if (!ok) { char log[512]={0}; glGetShaderInfoLog(obj, sizeof(log)-1, NULL, log);
+      fprintf(stderr, "[MVPASS] shader compile failed: %s\n", log); }
+  } else {
+    glGetProgramiv(obj, GL_LINK_STATUS, &ok);
+    if (!ok) { char log[512]={0}; glGetProgramInfoLog(obj, sizeof(log)-1, NULL, log);
+      fprintf(stderr, "[MVPASS] program link failed: %s\n", log); }
+  }
+  return ok;
+}
+static MvPassProgram *mvpass_get_prog(int pos, int uv) {
+  if (pos < 0 || uv < 0 || pos >= 16 || uv >= 16) return NULL;
+  for (int i = 0; i < 16; i++)
+    if (g_mvpass_prog[i].prog && g_mvpass_prog[i].pos == pos && g_mvpass_prog[i].uv == uv)
+      return &g_mvpass_prog[i];
+  int slot = -1;
+  for (int i = 0; i < 16; i++) if (!g_mvpass_prog[i].prog) { slot = i; break; }
+  if (slot < 0) return NULL;
+  const char *vs =
+    "uniform highp mat4 u_mvp;\n"
+    "attribute highp vec4 p;\n"
+    "attribute highp vec4 tc;\n"
+    "varying highp vec2 v_uv;\n"
+    "void main(){ gl_Position = u_mvp * vec4(p.xyz, 1.0); v_uv = tc.xy; }\n";
+  const char *fs =
+    "precision mediump float;\n"
+    "uniform sampler2D u_tex;\n"
+    "uniform sampler2D u_alpha;\n"
+    "uniform mediump float u_alpha_mode;\n"
+    "uniform mediump float u_drop_white;\n"
+    "uniform mediump float u_drop_black;\n"
+    "varying highp vec2 v_uv;\n"
+    "void main(){ mediump vec4 c = texture2D(u_tex, v_uv);\n"
+    "  mediump float m = texture2D(u_alpha, v_uv).r;\n"
+    "  mediump float a = (u_alpha_mode < 0.5) ? c.a : ((u_alpha_mode < 1.5) ? m : (1.0 - m));\n"
+    "  mediump float hi = max(max(c.r, c.g), c.b);\n"
+    "  mediump float lo = min(min(c.r, c.g), c.b);\n"
+    "  if (u_drop_white > 0.5 && hi > 0.92 && (hi - lo) < 0.08) a = 0.0;\n"
+    "  if (u_drop_black > 0.5 && hi < 0.035) a = 0.0;\n"
+    "  gl_FragColor = vec4(c.rgb * a, a); }\n";
+  int vl = (int)strlen(vs), fl = (int)strlen(fs);
+  unsigned v = glCreateShader(0x8B31), f = glCreateShader(0x8B30);
+  glShaderSource(v, 1, &vs, &vl); glCompileShader(v);
+  glShaderSource(f, 1, &fs, &fl); glCompileShader(f);
+  if (!mvpass_compile_ok(v, 1) || !mvpass_compile_ok(f, 1)) return NULL;
+  unsigned pr = glCreateProgram();
+  glAttachShader(pr, v); glAttachShader(pr, f);
+  glBindAttribLocation(pr, (unsigned)pos, "p");
+  glBindAttribLocation(pr, (unsigned)uv, "tc");
+  glLinkProgram(pr);
+  if (!mvpass_compile_ok(pr, 0)) return NULL;
+  MvPassProgram *pp = &g_mvpass_prog[slot];
+  pp->prog = pr; pp->pos = pos; pp->uv = uv;
+  pp->mvp = glGetUniformLocation(pr, "u_mvp");
+  pp->tex = glGetUniformLocation(pr, "u_tex");
+  pp->alpha = glGetUniformLocation(pr, "u_alpha");
+  pp->alpha_mode = glGetUniformLocation(pr, "u_alpha_mode");
+  pp->drop_white = glGetUniformLocation(pr, "u_drop_white");
+  pp->drop_black = glGetUniformLocation(pr, "u_drop_black");
+  fprintf(stderr, "[MVPASS] program=%u posLoc=%d uvLoc=%d\n", pr, pos, uv);
+  return pp;
+}
+static int mvpass_attr_loc(unsigned prog, const char *a, const char *b, int bound_plus1) {
+  int loc = glGetAttribLocation(prog, a);
+  if (loc < 0 && b) loc = glGetAttribLocation(prog, b);
+  if (loc < 0 && bound_plus1 > 0) loc = bound_plus1 - 1;
+  return loc;
+}
+static int mvpass_mvp(unsigned prog, float out[16]) {
+  if (prog < DRT_N && g_have_mvp_mat[prog]) {
+    memcpy(out, g_mvp_mat_cache[prog], sizeof(g_mvp_mat_cache[prog]));
+    return 1;
+  }
+  if (prog < DRT_N && g_have_world_mat[prog] && g_have_proj_mat[prog]) {
+    mvpass_mul(out, g_proj_mat_cache[prog], g_world_mat_cache[prog]);
+    return 1;
+  }
+  mvpass_ident(out);
+  return 0;
+}
+static int mvpass_draw(unsigned mode, int count, unsigned type, const void *idx) {
+  if (g_mvpass < 0) {
+    g_mvpass = getenv("DUCK_MVPASS") ? 1 : 0;
+    g_mvpassdbg = getenv("DUCK_MVPASSDBG") ? 1 : 0;
+    g_mvpass_after = getenv("DUCK_MVPASS_AFTER") ? atoi(getenv("DUCK_MVPASS_AFTER")) : 780;
+    g_mvpass_min_count = getenv("DUCK_MVPASS_MINCOUNT") ? atoi(getenv("DUCK_MVPASS_MINCOUNT")) : 0;
+    g_mvpass_max_count = getenv("DUCK_MVPASS_MAXCOUNT") ? atoi(getenv("DUCK_MVPASS_MAXCOUNT")) : 0;
+    g_mvpass_force_state = getenv("DUCK_MVPASS_FORCESTATE") ? 1 : 0;
+    g_mvpass_noblend = getenv("DUCK_MVPASS_NOBLEND") ? 1 : 0;
+    mvpass_replace_enabled();
+  }
+  if (!g_mvpass || !movie_is_big() || count <= 0) return 0;
+  if ((g_mvpass_min_count > 0 && count < g_mvpass_min_count) ||
+      (g_mvpass_max_count > 0 && count > g_mvpass_max_count))
+    return 0;
+  if (env_int_list_has("DUCK_MVPASS_DROP_COUNTS", count)) {
+    if (g_mvpassdbg > 0) { static int n=0; if (n++<80)
+      fprintf(stderr, "[MVPASS] drop count=%d tex%u/alpha%u fc=%d\n",
+              count, g_unit_tex[0], g_unit_tex[1], egl_shim_frame_count()); }
+    return 1;
+  }
+  int fc = egl_shim_frame_count();
+  if (fc < g_mvpass_after) return 0;
+  unsigned oldp = g_cur_prog;
+  if (!oldp || oldp >= DRT_N) return 0;
+  int pos = mvpass_attr_loc(oldp, "xlat_attrib_POSITION", "xlat_attrib_POSITION0", g_bound_pos[oldp]);
+  int uv = mvpass_attr_loc(oldp, "xlat_attrib_TEXCOORD", "xlat_attrib_TEXCOORD0", g_bound_uv[oldp]);
+  int ep = 0, eu = 0;
+  if (pos >= 0 && pos < 16) glGetVertexAttribiv((unsigned)pos, 0x8622 /*ENABLED*/, &ep);
+  if (uv >= 0 && uv < 16) glGetVertexAttribiv((unsigned)uv, 0x8622 /*ENABLED*/, &eu);
+  if (!ep && pos >= 0 && pos < 16) ep = g_attr_enabled[pos];
+  if (!eu && uv >= 0 && uv < 16) eu = g_attr_enabled[uv];
+  if (pos < 0 || uv < 0 || !ep || !eu) {
+    if (g_mvpassdbg > 0) { static int n=0; if (n++<80)
+      fprintf(stderr, "[MVPASS] skip fc=%d oldprog=%u pos=%d uv=%d enabled=%d/%d bound=%d/%d\n",
+              fc, oldp, pos, uv, ep, eu, g_bound_pos[oldp]-1, g_bound_uv[oldp]-1); }
+    return 0;
+  }
+  MvPassProgram *pp = mvpass_get_prog(pos, uv);
+  if (!pp) return 0;
+  float mvp[16]; int have_mvp = mvpass_mvp(oldp, mvp);
+  unsigned tex = g_unit_tex[0];
+  unsigned atex = g_unit_tex[1];
+  unsigned old_unit = g_active_unit;
+  int ob = 0, od = 0, os = 0, osc = 0;
+  int osr = 1, odr = 0, osa = 1, oda = 0;
+  if (g_mvpass_force_state) {
+    ob = glIsEnabled(0x0BE2); od = glIsEnabled(0x0B71); os = glIsEnabled(0x0B90); osc = glIsEnabled(0x0C11);
+    glGetIntegerv(0x80C9 /*GL_BLEND_SRC_RGB*/, &osr);
+    glGetIntegerv(0x80C8 /*GL_BLEND_DST_RGB*/, &odr);
+    glGetIntegerv(0x80CB /*GL_BLEND_SRC_ALPHA*/, &osa);
+    glGetIntegerv(0x80CA /*GL_BLEND_DST_ALPHA*/, &oda);
+    if (g_mvpass_noblend) glDisable(0x0BE2);
+    else {
+      glEnable(0x0BE2);
+      if (!getenv("DUCK_MVPASS_KEEPBLEND"))
+        glBlendFuncSeparate(1 /*ONE*/, 0x0303 /*ONE_MINUS_SRC_ALPHA*/, 1, 0x0303);
+    }
+    glDisable(0x0B71); glDisable(0x0B90); glDisable(0x0C11);
+  }
+  glUseProgram(pp->prog);
+  if (pp->mvp >= 0) glUniformMatrix4fv(pp->mvp, 1, 0, mvp);
+  if (pp->tex >= 0) glUniform1i(pp->tex, 0);
+  if (pp->alpha >= 0) glUniform1i(pp->alpha, 1);
+  if (pp->alpha_mode >= 0) {
+    static int alpha_mode = -1;
+    if (alpha_mode < 0) {
+      const char *am = getenv("DUCK_MVPASS_ALPHA");
+      alpha_mode = (!am || !am[0]) ? 1 :
+                   (!strcmp(am, "off") || !strcmp(am, "0")) ? 0 :
+                   (!strcmp(am, "invert") || !strcmp(am, "inv") || !strcmp(am, "2")) ? 2 : 1;
+    }
+    glUniform1f(pp->alpha_mode, atex ? (float)alpha_mode : 0.0f);
+  }
+  if (pp->drop_white >= 0) {
+    static int drop_white = -1;
+    if (drop_white < 0) drop_white = getenv("DUCK_MVPASS_DROPWHITE") ? 1 : 0;
+    glUniform1f(pp->drop_white, (float)drop_white);
+  }
+  if (pp->drop_black >= 0) {
+    static int drop_black = -1, drop_black_count = -1;
+    if (drop_black < 0) {
+      drop_black = getenv("DUCK_MVPASS_DROPBLACK") ? 1 : 0;
+      drop_black_count = getenv("DUCK_MVPASS_DROPBLACK_COUNT") ? atoi(getenv("DUCK_MVPASS_DROPBLACK_COUNT")) : 900;
+      if (drop_black_count < 0) drop_black_count = 0;
+    }
+    glUniform1f(pp->drop_black, (drop_black && count >= drop_black_count) ? 1.0f : 0.0f);
+  }
+  glActiveTexture(0x84C0); glBindTexture(0x0DE1, tex);
+  if (atex) { glActiveTexture(0x84C1); glBindTexture(0x0DE1, atex); }
+  glDrawElements(mode, count, type, idx);
+  glUseProgram(oldp);
+  if (old_unit < 8) glActiveTexture(0x84C0 + old_unit);
+  if (g_mvpass_force_state) {
+    if (!g_mvpass_noblend && !getenv("DUCK_MVPASS_KEEPBLEND"))
+      glBlendFuncSeparate((unsigned)osr, (unsigned)odr, (unsigned)osa, (unsigned)oda);
+    if (ob) glEnable(0x0BE2); else glDisable(0x0BE2);
+    if (od) glEnable(0x0B71); else glDisable(0x0B71);
+    if (os) glEnable(0x0B90); else glDisable(0x0B90);
+    if (osc) glEnable(0x0C11); else glDisable(0x0C11);
+  }
+  if (g_mvpassdbg > 0) { static int n=0; if (n++<120)
+    fprintf(stderr, "[MVPASS] drew fc=%d oldprog=%u passprog=%u count=%d tex%u/alpha%u %dx%d pos=%d uv=%d mvp=%d\n",
+            fc, oldp, pp->prog, count, tex, atex, tex<DRT_N?g_texw[tex]:0, tex<DRT_N?g_texh[tex]:0,
+            pos, uv, have_mvp); }
+  return 1;
+}
 /* DUCK_DRAWSTOP=N: execute only the first N draw calls each frame (skip the
    rest) -> bisect the frame to find the draw that covers the bg with black. */
 static int g_drawstop = 0;
@@ -481,13 +997,21 @@ static void draw_dbg(const char *kind, int count) {
   if (fc < 1150) return;
   if (!g_dbg_started) { g_dbg_started = 1; g_dbg_frame = fc; }
   if (di < 25 || di > 78) return;
+  static int sx = -1, sy = -1;
+  if (sx < 0) {
+    sx = getenv("DUCK_DRAWDBG_X") ? atoi(getenv("DUCK_DRAWDBG_X")) : 640;
+    sy = getenv("DUCK_DRAWDBG_Y") ? atoi(getenv("DUCK_DRAWDBG_Y")) : 300;
+  }
+  unsigned char pix[4] = {0,0,0,0};
+  glReadPixels(sx, sy, 1, 1, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pix);
   unsigned t = g_bound_tex;
   int blend = glIsEnabled(0x0BE2);
   int sf=0,df=0; glGetIntegerv(0x0BE1/*BLEND_DST*/,&df); glGetIntegerv(0x0BE0/*BLEND_SRC*/,&sf);
   int prog=0; glGetIntegerv(0x8B8D/*CURRENT_PROGRAM*/,&prog);
   unsigned u0=g_unit_tex[0], u1=g_unit_tex[1];
-  fprintf(stderr, "[DD] frame %d draw#%d %s count=%d unit0=tex%u(%dx%d fmt=0x%x) unit1=tex%u(%dx%d fmt=0x%x) blend=%d prog=%d\n",
-          fc, di, kind, count, u0, u0<DRT_N?g_texw[u0]:0, u0<DRT_N?g_texh[u0]:0, u0<DRT_N?g_texfmt[u0]:0,
+  fprintf(stderr, "[DD] frame %d draw#%d %s count=%d px@%d,%d=%02x%02x%02x unit0=tex%u(%dx%d fmt=0x%x) unit1=tex%u(%dx%d fmt=0x%x) blend=%d prog=%d\n",
+          fc, di, kind, count, sx, sy, pix[0], pix[1], pix[2],
+          u0, u0<DRT_N?g_texw[u0]:0, u0<DRT_N?g_texh[u0]:0, u0<DRT_N?g_texfmt[u0]:0,
           u1, u1<DRT_N?g_texw[u1]:0, u1<DRT_N?g_texh[u1]:0, u1<DRT_N?g_texfmt[u1]:0, blend, prog);
   (void)t;(void)sf;(void)df;
 }
@@ -503,8 +1027,6 @@ static int g_fixsamplers = 1, g_fixdbg = 0;
 extern unsigned glGetError(void);
 static int g_loc_color[DRT_N], g_loc_alpha[DRT_N], g_loc_light[DRT_N], g_loc_known[DRT_N];
 static int g_loc_tint[DRT_N], g_loc_add[DRT_N];
-static int movie_is_big(void); /* fwd */
-static _Thread_local unsigned g_cur_prog = 0;
 static unsigned g_useprog_n=0, g_fix_n=0, g_fix_nop=0, g_fix_nosamp=0;
 static void my_glUseProgram(unsigned p) { extern void glUseProgram(unsigned); glUseProgram(p); g_cur_prog = p; g_useprog_n++; }
 static void fix_samplers(void) {
@@ -542,9 +1064,16 @@ static void fix_samplers(void) {
      troca color<->alpha -> testa se o engine bindou a COR na unit 1. */
   { static int sw=-1; if (sw<0) sw=getenv("DUCK_MVSWAP")?1:0;
     if (sw && movie_is_big()) { int t=colorUnit; colorUnit=alphaUnit; alphaUnit=t; } }
+  /* DUCK_MVALPHACOLOR: A/B test for dual-ETC1 movie fills. If the alpha
+     texture/mask is stale-black, point g_textureSamplerA at the colour unit. */
+  { static int ac=-1; if (ac<0) ac=getenv("DUCK_MVALPHACOLOR")?1:0;
+    if (ac && movie_is_big()) alphaUnit = colorUnit; }
+  int lightUnit = 2;
+  { static int lc=-1; if (lc<0) lc=getenv("DUCK_MVLIGHTCOLOR")?1:0;
+    if (lc && movie_is_big()) lightUnit = colorUnit; }
   if (g_loc_color[p] >= 0) glUniform1i(g_loc_color[p], colorUnit);
   if (g_loc_alpha[p] >= 0) glUniform1i(g_loc_alpha[p], alphaUnit);
-  if (g_loc_light[p] >= 0) glUniform1i(g_loc_light[p], 2);
+  if (g_loc_light[p] >= 0) glUniform1i(g_loc_light[p], lightUnit);
   if (g_fixdbg) {
     int fc2 = egl_shim_frame_count();
     if (fc2 >= 1150 && fc2 <= 1153 && g_loc_color[p] >= 0) { static int n=0; if (n++<30)
@@ -593,8 +1122,15 @@ static void movie_state_log(int count) {
    cor crua do fragmento (ignora alpha/backdrop). Se o fundo aparecer -> era src.alpha=0
    (transparente sobre backdrop preto). Se continuar preto -> a COR do fragmento é preta. */
 static int g_mvnoblend = -1;
+static int g_mvpass_all = -1;
+static int mvpass_all_enabled(void) {
+  if (g_mvpass_all < 0) g_mvpass_all = getenv("DUCK_MVPASS_ALL") ? 1 : 0;
+  return g_mvpass_all;
+}
 static int movie_is_big(void) {
   unsigned u0=g_unit_tex[0];
+  if (mvpass_all_enabled())
+    return (u0<DRT_N && g_texw[u0] > 0 && g_texh[u0] > 0);
   return (u0<DRT_N && (g_texw[u0]>=1024 || g_texh[u0]>=1024));
 }
 static int mv_blend_off(void) {
@@ -604,8 +1140,14 @@ static int mv_blend_off(void) {
 }
 /* antes do draw do movie, re-uploa (no contexto da render thread) as texturas dele */
 static void mir_replay_movie(void) {
-  if (g_texmirror <= 0 || !movie_is_big()) return;
+  if (!movie_is_big()) return;
   extern void glActiveTexture(unsigned);
+  if (g_texmirror_any > 0) {
+    glActiveTexture(0x84C1); any_replay_one(g_unit_tex[1], 1);
+    glActiveTexture(0x84C0); any_replay_one(g_unit_tex[0], 0);
+    return;
+  }
+  if (g_texmirror <= 0) return;
   glActiveTexture(0x84C1); mir_replay(g_unit_tex[1]); /* unit 1 */
   glActiveTexture(0x84C0); mir_replay(g_unit_tex[0]); /* unit 0 (deixa current=0) */
 }
@@ -616,11 +1158,20 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type, const voi
   if (g_drawlog) drt_record();
   if (g_drawdbg) draw_dbg("elem", count);
   if (g_fixsamplers) fix_samplers();
-  if (!drawstop_skip()) glDrawElements(mode, count, type, idx);
+  if (!drawstop_skip()) {
+    if (mvpass_replace_enabled()) {
+      if (!mvpass_draw(mode, count, type, idx))
+        glDrawElements(mode, count, type, idx);
+    } else {
+      glDrawElements(mode, count, type, idx);
+      mvpass_draw(mode, count, type, idx);
+    }
+  }
   if (reb) { extern void glEnable(unsigned); glEnable(0x0BE2); }
 }
 static void my_glDrawArrays(unsigned mode, int first, int count) {
   movie_state_log(count);
+  mir_replay_movie();
   int reb = mv_blend_off();
   if (g_drawlog) drt_record();
   if (g_drawdbg) draw_dbg("arr", count);
@@ -1487,6 +2038,711 @@ static void install_inflate_serial(void) {
     debugPrintf("[inflatelock] zlib inflate serialized\n"); }
 }
 
+typedef void (*title_update_fn)(void *, uint32_t);
+typedef void (*title_startgame_fn)(void *, unsigned);
+typedef void (*title_postnew_fn)(void *);
+typedef void (*title_confirm_fn)(void *);
+typedef void (*title_prompt_ctor_fn)(void *, void *, void *, void *);
+typedef void (*title_prompt_confirm_fn)(void *, unsigned);
+typedef void (*menu_push_frame_fn)(void *, int, void *, unsigned);
+typedef void (*menu_update_fn)(void *, uint32_t);
+static title_update_fn g_title_update_tramp = NULL;
+static title_startgame_fn g_title_startgame = NULL;
+static title_postnew_fn g_title_postnewgame = NULL;
+static title_confirm_fn g_title_onconfirm = NULL;
+static title_prompt_ctor_fn g_title_prompt_ctor_tramp = NULL;
+static title_prompt_confirm_fn g_title_prompt_confirm = NULL;
+static menu_push_frame_fn g_menu_push_frame_tramp = NULL;
+static menu_update_fn g_menu_update_tramp = NULL;
+static int g_title_autostart_after = 1320;
+static int g_title_autostart_diff = 0;
+static int g_title_autostart_done = 0;
+static int g_title_autostart_confirm = 0;
+static int g_title_confirm_step = -1;
+static int g_title_prompt_autostart = 0;
+static int g_title_prompt_after = 1385;
+static int g_title_prompt_done = 0;
+static int g_title_pushframe_autostart = 0;
+static int g_title_pushframe_after = 1320;
+static int g_title_pushframe_done = 0;
+static const char *g_title_pushframe_state = "Lvl 1 - Forest_01_a";
+static void *g_title_last_self = NULL;
+static void *g_title_prompt_enter = NULL;
+static void *g_menu_last_manager = NULL;
+static void title_update_wrap(void *self, uint32_t dt_bits) {
+  g_title_update_tramp(self, dt_bits);
+  if (!self) return;
+  g_title_last_self = self;
+  int fc = egl_shim_frame_count();
+  if (fc < g_title_autostart_after) return;
+  if (g_title_autostart_confirm && g_title_onconfirm) {
+    int step = (fc - g_title_autostart_after) / 150;
+    if (step > g_title_confirm_step && step < 5) {
+      g_title_confirm_step = step;
+      fprintf(stderr, "[TITLEAUTOSTART] frame=%d self=%p OnConfirm(step=%d)\n",
+              fc, self, step);
+      g_title_onconfirm(self);
+    }
+    return;
+  }
+  if (g_title_autostart_done || !g_title_startgame) return;
+  g_title_autostart_done = 1;
+  fprintf(stderr, "[TITLEAUTOSTART] frame=%d self=%p StartGame(diff=%d)\n",
+          fc, self, g_title_autostart_diff);
+  g_title_startgame(self, (unsigned)(g_title_autostart_diff & 0xff));
+  if (g_title_postnewgame) {
+    fprintf(stderr, "[TITLEAUTOSTART] frame=%d self=%p PostAdNewGame()\n", fc, self);
+    g_title_postnewgame(self);
+  }
+}
+static void install_title_autostart(void) {
+  if (!getenv("DUCK_AUTOSTART_TITLE")) return;
+  const char *af = getenv("DUCK_AUTOSTART_TITLE_FRAME");
+  if (af) g_title_autostart_after = atoi(af);
+  const char *df = getenv("DUCK_AUTOSTART_DIFFICULTY");
+  if (df) g_title_autostart_diff = atoi(df);
+  g_title_autostart_confirm = getenv("DUCK_AUTOSTART_CONFIRM") ? 1 : 0;
+  uintptr_t up = so_find_addr_safe("_ZN9TitleScrn6UpdateEf");
+  uintptr_t sg = so_find_addr_safe("_ZN9TitleScrn9StartGameEh");
+  uintptr_t pn = so_find_addr_safe("_ZN9TitleScrn13PostAdNewGameEv");
+  uintptr_t oc = so_find_addr_safe("_ZN9TitleScrn9OnConfirmEv");
+  if (!up || !sg) {
+    debugPrintf("[TITLEAUTOSTART] symbols missing update=%p start=%p\n",
+                (void *)up, (void *)sg);
+    return;
+  }
+  g_title_update_tramp = (title_update_fn)make_tramp(up);
+  g_title_startgame = (title_startgame_fn)sg;
+  g_title_postnewgame = (title_postnew_fn)pn;
+  g_title_onconfirm = (title_confirm_fn)oc;
+  if (g_title_update_tramp) {
+    hook_arm(up, (uintptr_t)title_update_wrap);
+    debugPrintf("[TITLEAUTOSTART] hooked TitleScrn::Update after frame %d diff=%d confirm=%d\n",
+                g_title_autostart_after, g_title_autostart_diff, g_title_autostart_confirm);
+  }
+}
+
+static void title_prompt_ctor_wrap(void *self, void *env, void *rp, void *ent) {
+  g_title_prompt_ctor_tramp(self, env, rp, ent);
+  g_title_prompt_enter = self;
+  fprintf(stderr, "[TITLEPROMPT] EnterGame ctor frame=%d self=%p\n",
+          egl_shim_frame_count(), self);
+}
+
+static void menu_push_frame_wrap(void *self, int id, void *arg, unsigned modal) {
+  g_menu_last_manager = self;
+  static int n = 0;
+  if (n++ < 120 || id == 44)
+    fprintf(stderr, "[MENU] PushFrame frame=%d mgr=%p id=%d arg=%p modal=%u\n",
+            egl_shim_frame_count(), self, id, arg, modal);
+  g_menu_push_frame_tramp(self, id, arg, modal);
+}
+
+static void menu_update_wrap(void *self, uint32_t dt_bits) {
+  if (self) g_menu_last_manager = self;
+  g_menu_update_tramp(self, dt_bits);
+}
+
+static void install_title_prompt_autostart(void) {
+  if (!getenv("DUCK_AUTOSTART_PROMPT") && !getenv("DUCK_MENUTRACE") &&
+      !getenv("DUCK_AUTOSTART_PUSHFRAME"))
+    return;
+  g_title_prompt_autostart = getenv("DUCK_AUTOSTART_PROMPT") ? 1 : 0;
+  g_title_pushframe_autostart = getenv("DUCK_AUTOSTART_PUSHFRAME") ? 1 : 0;
+  const char *pf = getenv("DUCK_AUTOSTART_PROMPT_FRAME");
+  if (pf && pf[0]) g_title_prompt_after = atoi(pf);
+  const char *uf = getenv("DUCK_AUTOSTART_PUSHFRAME_FRAME");
+  if (uf && uf[0]) g_title_pushframe_after = atoi(uf);
+  const char *sn = getenv("DUCK_AUTOSTART_PUSHFRAME_STATE");
+  if (sn && sn[0]) g_title_pushframe_state = sn;
+  uintptr_t ct = so_find_addr_safe("_ZN25TitlePromptEnterGameFrameC1EP13wfEnvironmentP12wfRenderPassP8wfEntity");
+  uintptr_t oc = so_find_addr_safe("_ZN25TitlePromptEnterGameFrame9OnConfirmEj");
+  uintptr_t pfaddr = so_find_addr_safe("_ZN16MenuFrameManager9PushFrameEiPvb");
+  uintptr_t mu = so_find_addr_safe("_ZN16MenuFrameManager6UpdateEf");
+  if (ct) {
+    g_title_prompt_ctor_tramp = (title_prompt_ctor_fn)make_tramp(ct);
+    if (g_title_prompt_ctor_tramp) hook_arm(ct, (uintptr_t)title_prompt_ctor_wrap);
+  }
+  if (oc) g_title_prompt_confirm = (title_prompt_confirm_fn)oc;
+  if (pfaddr) {
+    g_menu_push_frame_tramp = (menu_push_frame_fn)make_tramp(pfaddr);
+    if (g_menu_push_frame_tramp) hook_arm(pfaddr, (uintptr_t)menu_push_frame_wrap);
+  }
+  if (mu) {
+    g_menu_update_tramp = (menu_update_fn)make_tramp(mu);
+    if (g_menu_update_tramp) hook_arm(mu, (uintptr_t)menu_update_wrap);
+  }
+  debugPrintf("[TITLEPROMPT] hooks ctor=%p confirm=%p push=%p menu_update=%p autostart=%d frame=%d pushauto=%d/%d state=%s\n",
+              (void *)ct, (void *)oc, (void *)pfaddr, (void *)mu,
+              g_title_prompt_autostart, g_title_prompt_after,
+              g_title_pushframe_autostart, g_title_pushframe_after,
+              g_title_pushframe_state);
+}
+
+typedef void *(*eq_add_query_fn)(void *, const void *);
+static eq_add_query_fn g_eq_add_query_tramp = NULL;
+static void *g_eq_query_pool = NULL;
+static unsigned char g_eq_dummy_query[0x90] __attribute__((aligned(16)));
+static int g_eq_guard_hits = 0;
+static int g_eq_extra_each = 4096;
+static int g_eq_extra_chunks = 0;
+static pthread_mutex_t g_eq_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static int eq_pool_empty(void) {
+  if (!g_eq_query_pool) return 0;
+  void **head = (void **)((unsigned char *)g_eq_query_pool + 0x12000);
+  return *head == NULL;
+}
+
+static int eq_pool_used(void) {
+  if (!g_eq_query_pool) return -1;
+  return *(int *)((unsigned char *)g_eq_query_pool + 0x12004);
+}
+
+static void eq_extend_pool(int n) {
+  if (!g_eq_query_pool || n <= 0) return;
+  size_t query_size = sizeof(g_eq_dummy_query);
+  size_t bytes = (size_t)n * query_size;
+  unsigned char *mem = (unsigned char *)mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    debugPrintf("[EQPOOL] mmap extra queries failed n=%d bytes=%zu\n", n, bytes);
+    return;
+  }
+  memset(mem, 0, bytes);
+  void **headp = (void **)((unsigned char *)g_eq_query_pool + 0x12000);
+  void *head = *headp;
+  for (int i = 0; i < n; i++) {
+    unsigned char *q = mem + (size_t)i * query_size;
+    *(void **)q = head;
+    head = q;
+  }
+  *headp = head;
+  g_eq_extra_chunks++;
+  debugPrintf("[EQPOOL] added %d external queries (%zu bytes), chunks=%d used=%d head=%p\n",
+              n, bytes, g_eq_extra_chunks, eq_pool_used(), *headp);
+}
+
+static void *eq_add_query_wrap(void *self, const void *params) {
+  pthread_mutex_lock(&g_eq_mtx);
+  if (eq_pool_empty()) {
+    eq_extend_pool(g_eq_extra_each);
+    if (eq_pool_empty()) {
+      memset(g_eq_dummy_query, 0, sizeof(g_eq_dummy_query));
+      *(unsigned *)(g_eq_dummy_query + 0x78) = 0;
+      if (g_eq_guard_hits++ < 40)
+        fprintf(stderr, "[EQGUARD] wfEntityQuerier pool exhausted frame=%d used=%d self=%p params=%p -> dummy id=0\n",
+                egl_shim_frame_count(), eq_pool_used(), self, params);
+      pthread_mutex_unlock(&g_eq_mtx);
+      return g_eq_dummy_query;
+    }
+  }
+  void *r = g_eq_add_query_tramp(self, params);
+  pthread_mutex_unlock(&g_eq_mtx);
+  return r;
+}
+
+static void install_entity_query_guard(void) {
+  if (getenv("DUCK_NO_EQGUARD")) return;
+  uintptr_t add = so_find_addr_safe("_ZN15wfEntityQuerier15AddPendingQueryERKNS_6ParamsE");
+  g_eq_query_pool = (void *)so_find_addr_safe("_ZN15wfEntityQuerier12s_oQueryPoolE");
+  if (!add || !g_eq_query_pool) {
+    debugPrintf("[EQGUARD] symbols missing AddPendingQuery=%p pool=%p\n",
+                (void *)add, g_eq_query_pool);
+    return;
+  }
+  const char *extra = getenv("DUCK_EQPOOL_EXTRA");
+  if (extra && extra[0]) g_eq_extra_each = atoi(extra);
+  if (g_eq_extra_each < 0) g_eq_extra_each = 0;
+  eq_extend_pool(g_eq_extra_each);
+  g_eq_add_query_tramp = (eq_add_query_fn)make_tramp(add);
+  if (!g_eq_add_query_tramp) return;
+  hook_arm(add, (uintptr_t)eq_add_query_wrap);
+  debugPrintf("[EQGUARD] wfEntityQuerier AddPendingQuery guarded pool=%p extra_each=%d\n",
+              g_eq_query_pool, g_eq_extra_each);
+}
+
+typedef void (*gf_update_end_fn)(void);
+typedef void (*gf_change_cb_fn)(int, int);
+typedef void (*gf_change_name_fn)(void *, const char *);
+typedef void (*gf_change_id_fn)(void *, unsigned);
+typedef void (*gf_register_fn)(void *, const char *, void *);
+typedef unsigned (*gf_get_state_name_fn)(void *, const char *);
+typedef void (*ge_launch_fn)(void *);
+typedef void (*ge_setup_moneybin_fn)(void *, unsigned);
+typedef void (*ge_transition_name_fn)(void *, const char *, void *);
+typedef void (*ge_transition_id_fn)(void *, unsigned, void *);
+typedef void (*ge_updatef_fn)(void *, uint32_t);
+typedef int (*wf_dofile_fn)(void *, const char *);
+typedef int (*wf_loadfile_fn)(void *, const char *);
+typedef void (*frscript_ctor_env_fn)(void *, const char *, int, void *, void *, unsigned);
+typedef void (*frscript_ctor_rp_fn)(void *, const char *, int, void *, void *, void *, unsigned);
+typedef void (*frscript_change_text_fn)(void *, const char *, unsigned);
+typedef void (*frscript_simple_fn)(void *);
+static gf_update_end_fn g_gf_update_end_tramp = NULL;
+static gf_change_cb_fn g_gf_change_cb_tramp = NULL;
+static gf_change_cb_fn g_gf_create_cb_tramp = NULL;
+static gf_change_name_fn g_gf_change_name_tramp = NULL;
+static gf_change_id_fn g_gf_change_id_tramp = NULL;
+static gf_register_fn g_gf_register_tramp = NULL;
+static gf_get_state_name_fn g_gf_get_state_by_name = NULL;
+static ge_launch_fn g_ge_launch_tramp = NULL;
+static ge_setup_moneybin_fn g_ge_setup_moneybin = NULL;
+static ge_setup_moneybin_fn g_ge_setup_moneybin_tramp = NULL;
+static ge_transition_name_fn g_ge_transition_name = NULL;
+static ge_transition_name_fn g_ge_transition_name_tramp = NULL;
+static ge_transition_id_fn g_ge_transition_id_tramp = NULL;
+static ge_updatef_fn g_ge_updatef_tramp = NULL;
+static wf_dofile_fn g_wf_dofile_tramp = NULL;
+static wf_loadfile_fn g_wf_loadfile_tramp = NULL;
+static frscript_ctor_env_fn g_frscript_ctor_env_tramp = NULL;
+static frscript_ctor_rp_fn g_frscript_ctor_rp_tramp = NULL;
+static frscript_change_text_fn g_frscript_change_text_tramp = NULL;
+static frscript_simple_fn g_frscript_run_tramp = NULL;
+static frscript_simple_fn g_frscript_init_tramp = NULL;
+static void *g_gameflow_obj = NULL;
+static void *g_ge_world_last = NULL;
+static int g_gftrace = 0, g_gf_force_done = 0, g_gf_force_frame = 1500;
+static int g_getrace = 0;
+static int g_gf_force_id = -1;
+static int g_ge_force_setup = 0, g_ge_force_setup_done = 0, g_ge_force_setup_frame = 1500;
+static int g_ge_force_state_done = 0, g_ge_force_state_frame = 1500;
+static const char *g_gf_force_name = NULL;
+static const char *g_ge_force_state = NULL;
+
+static void gf_dump_entries(void *gf) {
+  if (!g_gftrace || !gf) return;
+  static int dumped = 0;
+  if (dumped) return;
+  dumped = 1;
+  unsigned char *p = (unsigned char *)gf;
+  int count = *(int *)(p + 0x24);
+  unsigned char *tab = *(unsigned char **)(p + 0x20);
+  fprintf(stderr, "[GFTRACE] entries gf=%p count=%d tab=%p\n", gf, count, tab);
+  if (!tab || count < 0 || count > 128) return;
+  for (int i = 0; i < count; i++) {
+    unsigned char *e = tab + i * 0x14;
+    unsigned id = *(unsigned short *)(e + 0);
+    unsigned type = *(unsigned short *)(e + 2);
+    const char *name = *(const char **)(e + 4);
+    unsigned hash = *(unsigned *)(e + 8);
+    void *creator = *(void **)(e + 0xc);
+    unsigned aux = *(unsigned *)(e + 0x10);
+    fprintf(stderr, "[GFTRACE] entry[%02d] id=%u type=%u hash=0x%08x name=%s creator=%p aux=0x%x\n",
+            i, id, type, hash, name ? name : "(null)", creator, aux);
+  }
+}
+
+static void gf_log_state(const char *tag, void *gf) {
+  if (!g_gftrace || !gf) return;
+  gf_dump_entries(gf);
+  unsigned char *p = (unsigned char *)gf;
+  int cur = *(int *)(p + 0x28);
+  int last = *(int *)(p + 0x2c);
+  int next = *(int *)(p + 0x30);
+  int mode = *(int *)(p + 0x34);
+  int count = *(int *)(p + 0x24);
+  int pending = (next != -1);
+  static int n = 0;
+  if (n++ < 200 || (egl_shim_frame_count() % 300) == 0)
+    fprintf(stderr, "[GFTRACE] %s frame=%d gf=%p count=%d cur=%d last=%d next=%d mode=%d pending=%d\n",
+            tag, egl_shim_frame_count(), gf, count, cur, last, next, mode, pending);
+}
+
+static void gf_register_wrap(void *self, const char *name, void *creator) {
+  if (g_gftrace) {
+    static int n = 0;
+    if (n++ < 80)
+      fprintf(stderr, "[GFTRACE] Register[%d] gf=%p name=%s creator=%p\n",
+              n - 1, self, name ? name : "(null)", creator);
+  }
+  g_gf_register_tramp(self, name, creator);
+}
+
+static void gf_change_name_wrap(void *self, const char *name) {
+  fprintf(stderr, "[GFTRACE] ChangeStateByName frame=%d gf=%p name=%s\n",
+          egl_shim_frame_count(), self, name ? name : "(null)");
+  gf_log_state("before-name", self);
+  g_gf_change_name_tramp(self, name);
+  gf_log_state("after-name", self);
+}
+
+static void gf_change_id_wrap(void *self, unsigned id) {
+  fprintf(stderr, "[GFTRACE] ChangeState frame=%d gf=%p id=%u\n",
+          egl_shim_frame_count(), self, id);
+  gf_log_state("before-id", self);
+  g_gf_change_id_tramp(self, id);
+  gf_log_state("after-id", self);
+}
+
+static void gf_change_cb_wrap(int from, int to) {
+  fprintf(stderr, "[GFTRACE] OnGameflowChange frame=%d %d -> %d\n",
+          egl_shim_frame_count(), from, to);
+  if (g_gf_change_cb_tramp) g_gf_change_cb_tramp(from, to);
+}
+
+static void gf_create_cb_wrap(int from, int to) {
+  fprintf(stderr, "[GFTRACE] OnGameflowCreate frame=%d %d -> %d\n",
+          egl_shim_frame_count(), from, to);
+  if (g_gf_create_cb_tramp) g_gf_create_cb_tramp(from, to);
+}
+
+static void ge_launch_wrap(void *self) {
+  g_ge_world_last = self;
+  fprintf(stderr, "[GEWORLD] Launch frame=%d self=%p\n", egl_shim_frame_count(), self);
+  g_ge_launch_tramp(self);
+}
+
+static void ge_log_world(const char *tag, void *self) {
+  if (!g_getrace || !self) return;
+  unsigned char *p = (unsigned char *)self;
+  fprintf(stderr,
+          "[GETRACE] %s frame=%d world=%p st=%d next=%d script=%p env=%p/%p flags e0=%u e2=%u e3=%u e4=%u e8=%u player=%p cam=%p\n",
+          tag, egl_shim_frame_count(), self,
+          *(int *)(p + 0x17c), *(int *)(p + 0x180),
+          *(void **)(p + 0x19c), *(void **)(p + 0x1a8), *(void **)(p + 0x1ac),
+          p[0x1e0], p[0x1e2], p[0x1e3], p[0x1e4], p[0x1e8],
+          *(void **)(p + 0x1b4), *(void **)(p + 0x1bc));
+}
+
+static void ge_updatef_wrap(void *self, uint32_t dt_bits) {
+  g_ge_world_last = self;
+  int fc = egl_shim_frame_count();
+  if (g_getrace && (fc < 1800 || (fc % 300) == 0) && (fc % 60) == 0)
+    ge_log_world("updatef-before", self);
+  g_ge_updatef_tramp(self, dt_bits);
+  if (g_getrace && (fc < 1800 || (fc % 300) == 0) && (fc % 60) == 0)
+    ge_log_world("updatef-after", self);
+}
+
+static void ge_setup_moneybin_wrap(void *self, unsigned from_title) {
+  fprintf(stderr, "[GETRACE] frame=%d SetUpMoneyBinLevelStart world=%p from_title=%u\n",
+          egl_shim_frame_count(), self, from_title);
+  ge_log_world("setup-before", self);
+  g_ge_setup_moneybin_tramp(self, from_title);
+  ge_log_world("setup-after", self);
+}
+
+static void ge_transition_id_wrap(void *self, unsigned id, void *transition) {
+  fprintf(stderr, "[GETRACE] frame=%d TransitionToGameState world=%p id=%u transition=%p\n",
+          egl_shim_frame_count(), self, id, transition);
+  ge_log_world("transid-before", self);
+  g_ge_transition_id_tramp(self, id, transition);
+  ge_log_world("transid-after", self);
+}
+
+static void ge_transition_name_wrap(void *self, const char *name, void *transition) {
+  fprintf(stderr, "[GETRACE] frame=%d TransitionToGameStateByName world=%p name=%s transition=%p\n",
+          egl_shim_frame_count(), self, name ? name : "(null)", transition);
+  ge_log_world("transname-before", self);
+  g_ge_transition_name_tramp(self, name, transition);
+  ge_log_world("transname-after", self);
+}
+
+static int wf_dofile_wrap(void *lua, const char *path) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 240)
+      fprintf(stderr, "[LUAFILE] frame=%d dofile %s\n",
+              egl_shim_frame_count(), path ? path : "(null)");
+  }
+  return g_wf_dofile_tramp(lua, path);
+}
+
+static int wf_loadfile_wrap(void *lua, const char *path) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 360)
+      fprintf(stderr, "[LUAFILE] frame=%d loadfile %s\n",
+              egl_shim_frame_count(), path ? path : "(null)");
+  }
+  return g_wf_loadfile_tramp(lua, path);
+}
+
+static void frscript_ctor_env_wrap(void *self, const char *path, int mode,
+                                   void *entity, void *env, unsigned flags) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 360)
+      fprintf(stderr, "[FRSCRIPT] frame=%d ctor-env self=%p path=%s mode=%d ent=%p env=%p flags=%u\n",
+              egl_shim_frame_count(), self, path ? path : "(null)", mode,
+              entity, env, flags);
+  }
+  g_frscript_ctor_env_tramp(self, path, mode, entity, env, flags);
+}
+
+static void frscript_ctor_rp_wrap(void *self, const char *path, int mode,
+                                  void *entity, void *rp, void *env, unsigned flags) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 360)
+      fprintf(stderr, "[FRSCRIPT] frame=%d ctor-rp self=%p path=%s mode=%d ent=%p rp=%p env=%p flags=%u\n",
+              egl_shim_frame_count(), self, path ? path : "(null)", mode,
+              entity, rp, env, flags);
+  }
+  g_frscript_ctor_rp_tramp(self, path, mode, entity, rp, env, flags);
+}
+
+static void frscript_change_text_wrap(void *self, const char *path, unsigned flags) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 240)
+      fprintf(stderr, "[FRSCRIPT] frame=%d change self=%p path=%s flags=%u\n",
+              egl_shim_frame_count(), self, path ? path : "(null)", flags);
+  }
+  g_frscript_change_text_tramp(self, path, flags);
+}
+
+static void frscript_run_wrap(void *self) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 240)
+      fprintf(stderr, "[FRSCRIPT] frame=%d run self=%p\n",
+              egl_shim_frame_count(), self);
+  }
+  g_frscript_run_tramp(self);
+}
+
+static void frscript_init_wrap(void *self) {
+  if (g_getrace) {
+    static int n = 0;
+    if (n++ < 240)
+      fprintf(stderr, "[FRSCRIPT] frame=%d init self=%p\n",
+              egl_shim_frame_count(), self);
+  }
+  g_frscript_init_tramp(self);
+}
+
+static void gf_autostart_confirm_from_update_end(int fc) {
+  if (!g_title_autostart_confirm || !g_title_onconfirm || !g_title_last_self) return;
+  if (fc < g_title_autostart_after) return;
+  int step = (fc - g_title_autostart_after) / 150;
+  if (step > g_title_confirm_step && step < 5) {
+    g_title_confirm_step = step;
+    fprintf(stderr, "[TITLEAUTOSTART] frame=%d self=%p OnConfirm(step=%d update-end)\n",
+            fc, g_title_last_self, step);
+    g_title_onconfirm(g_title_last_self);
+  }
+}
+
+static void gf_autostart_prompt_from_update_end(int fc) {
+  if (!g_title_prompt_autostart || g_title_prompt_done || !g_title_prompt_confirm)
+    return;
+  if (fc < g_title_prompt_after || !g_title_prompt_enter)
+    return;
+  g_title_prompt_done = 1;
+  fprintf(stderr, "[TITLEPROMPT] frame=%d self=%p OnConfirm(0) mgr=%p\n",
+          fc, g_title_prompt_enter, g_menu_last_manager);
+  g_title_prompt_confirm(g_title_prompt_enter, 0);
+}
+
+static void gf_autostart_pushframe_from_update_end(int fc) {
+  if (!g_title_pushframe_autostart || g_title_pushframe_done)
+    return;
+  if (fc < g_title_pushframe_after)
+    return;
+  if (!g_menu_last_manager || !g_menu_push_frame_tramp || !g_gf_get_state_by_name || !g_gameflow_obj) {
+    static int n = 0;
+    if (n++ < 20)
+      fprintf(stderr, "[TITLEPUSH] waiting frame=%d mgr=%p push=%p getstate=%p gf=%p\n",
+              fc, g_menu_last_manager, (void *)g_menu_push_frame_tramp,
+              (void *)g_gf_get_state_by_name, g_gameflow_obj);
+    return;
+  }
+  g_title_pushframe_done = 1;
+  unsigned state = g_gf_get_state_by_name(g_gameflow_obj, g_title_pushframe_state);
+  fprintf(stderr, "[TITLEPUSH] frame=%d mgr=%p state=%s id=%u -> PushFrame(44)\n",
+          fc, g_menu_last_manager, g_title_pushframe_state, state);
+  g_menu_push_frame_tramp(g_menu_last_manager, 44, (void *)(uintptr_t)state, 1);
+}
+
+static void gf_force_state_from_update_end(int fc) {
+  if (g_gf_force_done || !g_gameflow_obj)
+    return;
+  if (fc < g_gf_force_frame) return;
+  g_gf_force_done = 1;
+  if (g_gf_force_id >= 0 && g_gf_change_id_tramp) {
+    fprintf(stderr, "[GFFORCE] frame=%d ChangeState(id=%d)\n", fc, g_gf_force_id);
+    gf_log_state("force-before", g_gameflow_obj);
+    g_gf_change_id_tramp(g_gameflow_obj, (unsigned)g_gf_force_id);
+    gf_log_state("force-after", g_gameflow_obj);
+  } else if (g_gf_force_name && g_gf_change_name_tramp) {
+    fprintf(stderr, "[GFFORCE] frame=%d ChangeStateByName(%s)\n", fc, g_gf_force_name);
+    gf_log_state("force-before", g_gameflow_obj);
+    g_gf_change_name_tramp(g_gameflow_obj, g_gf_force_name);
+    gf_log_state("force-after", g_gameflow_obj);
+  }
+}
+
+static void ge_force_moneybin_from_update_end(int fc) {
+  if (!g_ge_force_setup || g_ge_force_setup_done || !g_ge_setup_moneybin || !g_ge_world_last)
+    return;
+  if (fc < g_ge_force_setup_frame) return;
+  g_ge_force_setup_done = 1;
+  fprintf(stderr, "[GEFORCE] frame=%d geWorld::SetUpMoneyBinLevelStart(%p)\n",
+          fc, g_ge_world_last);
+  (g_ge_setup_moneybin_tramp ? g_ge_setup_moneybin_tramp : g_ge_setup_moneybin)(g_ge_world_last, 1);
+}
+
+static void ge_force_state_from_update_end(int fc) {
+  if (g_ge_force_state_done || !g_ge_force_state || !g_ge_transition_name || !g_ge_world_last)
+    return;
+  if (fc < g_ge_force_state_frame) return;
+  g_ge_force_state_done = 1;
+  fprintf(stderr, "[GEFORCE] frame=%d geWorld::TransitionToGameStateByName(%s) world=%p\n",
+          fc, g_ge_force_state, g_ge_world_last);
+  (g_ge_transition_name_tramp ? g_ge_transition_name_tramp : g_ge_transition_name)(g_ge_world_last, g_ge_force_state, NULL);
+}
+
+static void gf_update_end_wrap(void) {
+  if (g_gf_update_end_tramp) g_gf_update_end_tramp();
+  int fc = egl_shim_frame_count();
+  if (g_gftrace && (fc % 300) == 0) gf_log_state("update-end", g_gameflow_obj);
+  gf_autostart_confirm_from_update_end(fc);
+  gf_autostart_prompt_from_update_end(fc);
+  gf_autostart_pushframe_from_update_end(fc);
+  gf_force_state_from_update_end(fc);
+  ge_force_moneybin_from_update_end(fc);
+  ge_force_state_from_update_end(fc);
+}
+
+static void install_gameflow_hooks(void) {
+  if (!getenv("DUCK_GFTRACE") && !getenv("DUCK_FORCE_GAMESTATE") &&
+      !getenv("DUCK_FORCE_GAMESTATE_ID") &&
+      !getenv("DUCK_FORCE_MONEYBIN_SETUP") &&
+      !getenv("DUCK_FORCE_GE_STATE") &&
+      !getenv("DUCK_AUTOSTART_PROMPT") &&
+      !getenv("DUCK_AUTOSTART_PUSHFRAME") &&
+      !getenv("DUCK_GETRACE") &&
+      !(getenv("DUCK_AUTOSTART_TITLE") && getenv("DUCK_AUTOSTART_CONFIRM")))
+    return;
+  g_gftrace = getenv("DUCK_GFTRACE") ? 1 : 0;
+  g_getrace = getenv("DUCK_GETRACE") ? 1 : 0;
+  g_gf_force_name = getenv("DUCK_FORCE_GAMESTATE");
+  const char *fi = getenv("DUCK_FORCE_GAMESTATE_ID");
+  if (fi && fi[0]) g_gf_force_id = atoi(fi);
+  const char *ff = getenv("DUCK_FORCE_GAMESTATE_FRAME");
+  if (ff && ff[0]) g_gf_force_frame = atoi(ff);
+  g_ge_force_setup = getenv("DUCK_FORCE_MONEYBIN_SETUP") ? 1 : 0;
+  const char *sf = getenv("DUCK_FORCE_MONEYBIN_SETUP_FRAME");
+  if (sf && sf[0]) g_ge_force_setup_frame = atoi(sf);
+  g_ge_force_state = getenv("DUCK_FORCE_GE_STATE");
+  const char *gsf = getenv("DUCK_FORCE_GE_STATE_FRAME");
+  if (gsf && gsf[0]) g_ge_force_state_frame = atoi(gsf);
+  g_gameflow_obj = (void *)so_find_addr_safe("g_gameFlow");
+
+  uintptr_t up = so_find_addr_safe("_ZN8GameMain19OnGameflowUpdateEndEv");
+  if (up) {
+    g_gf_update_end_tramp = (gf_update_end_fn)make_tramp(up);
+    if (g_gf_update_end_tramp) hook_arm(up, (uintptr_t)gf_update_end_wrap);
+  }
+
+  uintptr_t cn = so_find_addr_safe("_ZN10wfGameFlow17ChangeStateByNameEPKc");
+  if (cn) {
+    g_gf_change_name_tramp = (gf_change_name_fn)make_tramp(cn);
+    if (g_gf_change_name_tramp && g_gftrace) hook_arm(cn, (uintptr_t)gf_change_name_wrap);
+  }
+
+  uintptr_t ci = so_find_addr_safe("_ZN10wfGameFlow11ChangeStateEj");
+  if (ci && (g_gftrace || g_gf_force_id >= 0)) {
+    g_gf_change_id_tramp = (gf_change_id_fn)make_tramp(ci);
+    if (g_gf_change_id_tramp && g_gftrace) hook_arm(ci, (uintptr_t)gf_change_id_wrap);
+  }
+
+  uintptr_t rg = so_find_addr_safe("_ZN10wfGameFlow8RegisterEPKcPPN9wfFactoryI7wfWorldPvPS3_PS_E11CreatorBaseE");
+  if (rg && g_gftrace) {
+    g_gf_register_tramp = (gf_register_fn)make_tramp(rg);
+    if (g_gf_register_tramp) hook_arm(rg, (uintptr_t)gf_register_wrap);
+  }
+
+  g_gf_get_state_by_name =
+      (gf_get_state_name_fn)so_find_addr_safe("_ZN10wfGameFlow18GetGameStateByNameEPKc");
+
+  uintptr_t cc = so_find_addr_safe("_ZN8GameMain25OnGameflowChangeGamestateEii");
+  if (cc && g_gftrace) {
+    g_gf_change_cb_tramp = (gf_change_cb_fn)make_tramp(cc);
+    if (g_gf_change_cb_tramp) hook_arm(cc, (uintptr_t)gf_change_cb_wrap);
+  }
+
+  uintptr_t cr = so_find_addr_safe("_ZN8GameMain25OnGameflowCreateGamestateEii");
+  if (cr && g_gftrace) {
+    g_gf_create_cb_tramp = (gf_change_cb_fn)make_tramp(cr);
+    if (g_gf_create_cb_tramp) hook_arm(cr, (uintptr_t)gf_create_cb_wrap);
+  }
+
+  uintptr_t gl = so_find_addr_safe("_ZN7geWorld6LaunchEv");
+  if (gl && (g_gftrace || g_ge_force_setup || g_getrace)) {
+    g_ge_launch_tramp = (ge_launch_fn)make_tramp(gl);
+    if (g_ge_launch_tramp) hook_arm(gl, (uintptr_t)ge_launch_wrap);
+  }
+  uintptr_t guf = so_find_addr_safe("_ZN7geWorld6UpdateEf");
+  if (guf && g_getrace) {
+    g_ge_updatef_tramp = (ge_updatef_fn)make_tramp(guf);
+    if (g_ge_updatef_tramp) hook_arm(guf, (uintptr_t)ge_updatef_wrap);
+  }
+  g_ge_setup_moneybin =
+      (ge_setup_moneybin_fn)so_find_addr_safe("_ZN7geWorld23SetUpMoneyBinLevelStartEb");
+  if (g_ge_setup_moneybin && g_getrace) {
+    g_ge_setup_moneybin_tramp = (ge_setup_moneybin_fn)make_tramp((uintptr_t)g_ge_setup_moneybin);
+    if (g_ge_setup_moneybin_tramp)
+      hook_arm((uintptr_t)g_ge_setup_moneybin, (uintptr_t)ge_setup_moneybin_wrap);
+  }
+  g_ge_transition_name =
+      (ge_transition_name_fn)so_find_addr_safe("_ZN7geWorld27TransitionToGameStateByNameEPKcP16wfTransitionBase");
+  if (g_ge_transition_name && g_getrace) {
+    g_ge_transition_name_tramp = (ge_transition_name_fn)make_tramp((uintptr_t)g_ge_transition_name);
+    if (g_ge_transition_name_tramp)
+      hook_arm((uintptr_t)g_ge_transition_name, (uintptr_t)ge_transition_name_wrap);
+  }
+  uintptr_t git = so_find_addr_safe("_ZN7geWorld21TransitionToGameStateEjP16wfTransitionBase");
+  if (git && g_getrace) {
+    g_ge_transition_id_tramp = (ge_transition_id_fn)make_tramp(git);
+    if (g_ge_transition_id_tramp) hook_arm(git, (uintptr_t)ge_transition_id_wrap);
+  }
+  uintptr_t df = so_find_addr_safe("_ZN8wfScript6DoFileEP9lua_StatePKc");
+  if (df && g_getrace) {
+    g_wf_dofile_tramp = (wf_dofile_fn)make_tramp(df);
+    if (g_wf_dofile_tramp) hook_arm(df, (uintptr_t)wf_dofile_wrap);
+  }
+  uintptr_t lf = so_find_addr_safe("_ZN8wfScript8LoadFileEP9lua_StatePKc");
+  if (lf && g_getrace) {
+    g_wf_loadfile_tramp = (wf_loadfile_fn)make_tramp(lf);
+    if (g_wf_loadfile_tramp) hook_arm(lf, (uintptr_t)wf_loadfile_wrap);
+  }
+  uintptr_t fce = so_find_addr_safe("_ZN8frScriptC1EPKciP8wfEntityP13wfEnvironmentj");
+  if (fce && g_getrace) {
+    g_frscript_ctor_env_tramp = (frscript_ctor_env_fn)make_tramp(fce);
+    if (g_frscript_ctor_env_tramp) hook_arm(fce, (uintptr_t)frscript_ctor_env_wrap);
+  }
+  uintptr_t fcr = so_find_addr_safe("_ZN8frScriptC1EPKciP8wfEntityP12wfRenderPassP13wfEnvironmentj");
+  if (fcr && g_getrace) {
+    g_frscript_ctor_rp_tramp = (frscript_ctor_rp_fn)make_tramp(fcr);
+    if (g_frscript_ctor_rp_tramp) hook_arm(fcr, (uintptr_t)frscript_ctor_rp_wrap);
+  }
+  uintptr_t fct = so_find_addr_safe("_ZN8frScript16ChangeScriptTextEPKcj");
+  if (fct && g_getrace) {
+    g_frscript_change_text_tramp = (frscript_change_text_fn)make_tramp(fct);
+    if (g_frscript_change_text_tramp) hook_arm(fct, (uintptr_t)frscript_change_text_wrap);
+  }
+  int fr_runtrace = getenv("DUCK_FRSCRIPT_RUNTRACE") ? 1 : 0;
+  uintptr_t fru = so_find_addr_safe("_ZN8frScript9RunScriptEv");
+  if (fru && g_getrace && fr_runtrace) {
+    g_frscript_run_tramp = (frscript_simple_fn)make_tramp(fru);
+    if (g_frscript_run_tramp) hook_arm(fru, (uintptr_t)frscript_run_wrap);
+  }
+  uintptr_t fri = so_find_addr_safe("_ZN8frScript10InitScriptEv");
+  if (fri && g_getrace && fr_runtrace) {
+    g_frscript_init_tramp = (frscript_simple_fn)make_tramp(fri);
+    if (g_frscript_init_tramp) hook_arm(fri, (uintptr_t)frscript_init_wrap);
+  }
+
+  debugPrintf("[GFTRACE] hooks gf=%p force=%s frame=%d trace=%d getrace=%d ge_setup=%d/%d ge_state=%s/%d\n",
+              g_gameflow_obj,
+              g_gf_force_name ? g_gf_force_name : (g_gf_force_id >= 0 ? "id" : "-"),
+              g_gf_force_frame, g_gftrace, g_getrace, g_ge_force_setup, g_ge_force_setup_frame,
+              g_ge_force_state ? g_ge_force_state : "-", g_ge_force_state_frame);
+}
+
 static void install_ducktales_hooks(void) {
   so_make_text_writable();
   uintptr_t a;
@@ -1529,6 +2785,10 @@ static void install_ducktales_hooks(void) {
   install_inflate_serial();
   if (getenv("DUCK_NO_TEXLOCK")) g_texlock = 0;
   install_tex_serial();
+  install_entity_query_guard();
+  install_title_autostart();
+  install_title_prompt_autostart();
+  install_gameflow_hooks();
   so_make_text_executable();
   so_flush_caches();
 }
@@ -1598,6 +2858,7 @@ static int insn_is_store(uintptr_t pc) {
    the NULL-safe unlink/insert this makes the allocator survive corrupted links
    without crashing or leaking locks (in-place resume, no siglongjmp). DEFAULT ON. */
 static int g_allocrec = 1, g_ar_n = 0;
+static int g_vcallguard = 1, g_vcall_n = 0;
 static void set_reg(ucontext_t *uc, int rd, unsigned long v) {
   switch (rd) {
     case 0: uc->uc_mcontext.arm_r0=v; break; case 1: uc->uc_mcontext.arm_r1=v; break;
@@ -1822,6 +3083,114 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx) {
     }
   }
   /* alloc free-list code range (text-relative): 0x938800 .. 0x93a000 */
+  if (g_vcallguard && (sig == SIGSEGV || sig == SIGBUS) &&
+      pc >= g_main_text && pc < g_main_text + g_main_text_sz) {
+    uintptr_t off = pc - g_main_text;
+    uintptr_t fa = (uintptr_t)info->si_addr;
+    /* duck+0x912a64: ldr ip,[ip,#0x2c] before an optional virtual callback.
+       When prior GFx heap damage leaves a NULL vtable, take the same path the
+       caller uses when the callback returns <=0 (duck+0x912ad0). */
+    if (off == 0x912a64 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null callback @duck+0x912a64 fault=0x%lx -> duck+0x912ad0\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_pc = g_main_text + 0x912ad0;
+      return;
+    }
+    if (fa < 0x1000 && (off == 0x8356b4 || off == 0x8356dc)) {
+      uintptr_t dst = off == 0x8356b4 ? 0x8356bc : 0x8356e4;
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null release vcall @duck+0x%lx fault=0x%lx -> duck+0x%lx\n",
+                (unsigned long)off, (unsigned long)fa, (unsigned long)dst);
+      uc->uc_mcontext.arm_pc = g_main_text + dst;
+      return;
+    }
+    /* duck+0x8bf9fc is a tiny getter: r3 = [r0+0x14], r0 = [r3+0x28].
+       Its caller at duck+0x8c9ba8 immediately calls a virtual method on the
+       returned object and stores the result in fp. If the optional object is
+       NULL, continue as if that callback returned NULL. */
+    if (off == 0x8bf9fc && fa < 0x1000 && lr == g_main_text + 0x8c9bb0) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null optional object @duck+0x8bf9fc fault=0x%lx -> duck+0x8c9bc0\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_fp = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8c9bc0;
+      return;
+    }
+    if (off == 0x8c9bb0 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null optional callback target @duck+0x8c9bb0 fault=0x%lx -> duck+0x8c9bc0\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_fp = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8c9bc0;
+      return;
+    }
+    /* Another optional callback object path reached from duck+0x8c9cxx:
+       duck+0x8d6a98 is `ldr lr, [r1]` before indirect callbacks. A NULL r1
+       means there is no target; return zero through the function epilogue. */
+    if (off == 0x8d6a98 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null optional callback object @duck+0x8d6a98 fault=0x%lx -> r0=0, duck+0x8d6ae0\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r0 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8d6ae0;
+      return;
+    }
+    /* duck+0x8cbecc walks back from an item pointer to a heap/list header and
+       reads [base+0x14]. When prior list damage leaves base NULL, leave the
+       loop with the derived flag clear and continue with the normal epilogue. */
+    if (off == 0x8cbecc && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null list header @duck+0x8cbecc fault=0x%lx -> duck+0x8cbf04\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r4 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8cbf04;
+      return;
+    }
+    if (off == 0x8cbedc) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] invalid list item @duck+0x8cbedc fault=0x%lx -> duck+0x8cbf04\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r4 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8cbf04;
+      return;
+    }
+    if (off == 0x8c0208 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null list next @duck+0x8c0208 fault=0x%lx -> duck+0x8c0220\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8c0220;
+      return;
+    }
+    if (off == 0x8c5764 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null owner data @duck+0x8c5764 fault=0x%lx -> r1=0, duck+0x8c5768\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r1 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8c5768;
+      return;
+    }
+    /* Follow-up from the same optional owner path: duck+0x8b4044 is
+       `ldr r4, [r1,#0x48]`. If the owner was absent, leave the derived
+       pointer NULL and continue through the normal constructor path. */
+    if (off == 0x8b4044 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null owner side data @duck+0x8b4044 fault=0x%lx -> r4=0, duck+0x8b4048\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r4 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x8b4048;
+      return;
+    }
+    if (off == 0x87a6e4 && fa < 0x1000) {
+      if (g_vcall_n++ < 12)
+        fprintf(stderr, "[VCALLGUARD] null find source @duck+0x87a6e4 fault=0x%lx -> duck+0x87a830\n",
+                (unsigned long)fa);
+      uc->uc_mcontext.arm_r0 = 0;
+      uc->uc_mcontext.arm_r3 = 0;
+      uc->uc_mcontext.arm_pc = g_main_text + 0x87a830;
+      return;
+    }
+  }
   if (g_allocrec && (sig == SIGSEGV || sig == SIGBUS)) {
     uintptr_t off = pc - g_main_text;
     if (off >= 0x938800 && off < 0x93a000) {
@@ -1993,6 +3362,7 @@ int main(int argc, char *argv[]) {
   if (getenv("DUCK_NO_QUARANTINE")) g_quarantine = 0;
   if (getenv("DUCK_ZALLOC")) { g_zalloc = 1; debugPrintf("[zalloc] all allocations zeroed (bionic-like)\n"); }
   if (getenv("DUCK_NO_ALLOCREC")) g_allocrec = 0;
+  if (getenv("DUCK_NO_VCALLGUARD")) g_vcallguard = 0;
   if (getenv("DUCK_NO_DEDUP")) g_dedup = 0;
   if (getenv("DUCK_NO_BQ")) g_bq = 0;
   if (getenv("DUCK_BQ")) { g_bq = 1; debugPrintf("[bq] TLSF-free quarantine ENABLED (defer %u frees)\n", QBF); }
@@ -2052,7 +3422,7 @@ int main(int argc, char *argv[]) {
   }
   if (getenv("DUCK_NO_FIXSAMPLERS")) g_fixsamplers = 0;
   if (getenv("DUCK_FIXDBG")) g_fixdbg = 1;
-  if (g_fixsamplers || getenv("DUCK_DRAWLOG") || getenv("DUCK_DRAWSTOP") || getenv("DUCK_DRAWDBG")) {
+  if (g_fixsamplers || getenv("DUCK_DRAWLOG") || getenv("DUCK_DRAWSTOP") || getenv("DUCK_DRAWDBG") || getenv("DUCK_MVPASS")) {
     if (getenv("DUCK_DRAWLOG")) g_drawlog = 1;
     if (getenv("DUCK_DRAWSTOP")) g_drawstop = atoi(getenv("DUCK_DRAWSTOP"));
     if (getenv("DUCK_DRAWDBG")) g_drawdbg = 1;
@@ -2063,6 +3433,16 @@ int main(int argc, char *argv[]) {
     dt_set_import("glUseProgram", (void *)my_glUseProgram);
     dt_set_import("glDrawElements", (void *)my_glDrawElements);
     dt_set_import("glDrawArrays", (void *)my_glDrawArrays);
+    if (getenv("DUCK_MVPASS")) {
+      dt_set_import("glBindBuffer", (void *)my_glBindBuffer);
+      dt_set_import("glBindAttribLocation", (void *)my_glBindAttribLocation);
+      dt_set_import("glEnableVertexAttribArray", (void *)my_glEnableVertexAttribArray);
+      dt_set_import("glDisableVertexAttribArray", (void *)my_glDisableVertexAttribArray);
+      dt_set_import("glVertexAttribPointer", (void *)my_glVertexAttribPointer);
+      dt_set_import("glGetUniformLocation", (void *)my_glGetUniformLocation);
+      dt_set_import("glUniformMatrix4fv", (void *)my_glUniformMatrix4fv);
+      tslog("init", "MVPASS: movie/background passthrough shader available");
+    }
     tslog("init", g_fixsamplers ? "FIXSAMPLERS: sampler units corrected (default ON)" : "DRAWLOG/DRAWSTOP tracer");
   }
   if (getenv("DUCK_NOMIP") || getenv("DUCK_TEXPARLOG")) {

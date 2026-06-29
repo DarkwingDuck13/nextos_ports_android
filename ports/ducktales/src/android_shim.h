@@ -180,6 +180,8 @@ void AInputQueue_finishEvent(void *queue, void *event, int handled);
 
 // Input source constants
 #define AINPUT_SOURCE_TOUCHSCREEN 0x1002
+#define AINPUT_SOURCE_DPAD 0x201
+#define AINPUT_SOURCE_GAMEPAD 0x401
 #define AINPUT_SOURCE_JOYSTICK 0x1000010
 
 // Fake input event structure
@@ -188,6 +190,7 @@ typedef struct {
   int action;        // key or motion action
   int keycode;       // Android keycode (key events)
   int source;        // AINPUT_SOURCE_*
+  int device_id;     // Android input device id
   float x, y;        // Touch coordinates (motion events)
   float axes[AMOTION_EVENT_AXIS_MAX]; // Axis values for joystick motion
   int pointer_count;

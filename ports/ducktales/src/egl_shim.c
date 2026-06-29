@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "egl_shim.h"
 #include "util.h"
@@ -74,6 +75,7 @@ static int real_current_is_window_surface(void) {
 
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 static void egl_shim_texdump(void); /* fwd: dump de textura p/ debug do fundo */
+static int read_env_int(const char *name, int fallback, int min_value, int max_value);
 
 /* ---- on-GL-thread screenshot (DUCK_SHOT=1) ----
    /dev/fb0 reads return 0 bytes while the Mali fbdev is owned by our GL client,
@@ -82,6 +84,28 @@ static void egl_shim_texdump(void); /* fwd: dump de textura p/ debug do fundo */
    /tmp/duck_shot.ppm (overwrite). Also computes a non-black % so the run log
    tells us if the background actually rendered without needing the image. */
 static int g_shot = -1, g_shot_every = 30;
+static int g_hold_black = -1;
+static int g_presented_good_frame = 0;
+static void egl_shim_write_ppm(const char *path, const unsigned char *buf, int w, int h) {
+  char tmp[160];
+  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+  FILE *f = fopen(tmp, "wb");
+  if (!f) return;
+  fprintf(f, "P6\n%d %d\n255\n", w, h);
+  for (int y = h - 1; y >= 0; y--) {
+    const unsigned char *row = buf + y * w * 4;
+    for (int x = 0; x < w; x++) {
+      fputc(row[x*4], f);
+      fputc(row[x*4+1], f);
+      fputc(row[x*4+2], f);
+    }
+  }
+  fflush(f);
+  fsync(fileno(f));
+  fclose(f);
+  rename(tmp, path);
+}
+
 static void egl_shim_maybe_shot(int w, int h) {
   if (g_shot < 0) {
     g_shot = getenv("DUCK_SHOT") ? 1 : 0;
@@ -114,23 +138,121 @@ static void egl_shim_maybe_shot(int w, int h) {
      the MENU phase (frame > 600) separately so we can tell if the menu bg
      rendered this run, independent of the fullscreen intro logos. */
   static int best = -1, menubest = -1;
-  const char *path = "/tmp/duck_shot.ppm";
   /* a "menu with bg" frame = varied content (not a flat logo) and substantial
      coverage. The intro logos are flat single colors -> excluded by `varied`. */
   int is_menu = frame_count > 600 && varied;
-  if (pct > best) { best = pct; path = "/tmp/duck_best.ppm"; }
-  if (is_menu && pct > menubest) { menubest = pct; path = "/tmp/duck_menubest.ppm"; }
-  FILE *f = fopen(path, "wb");
-  if (f) {
-    fprintf(f, "P6\n%d %d\n255\n", w, h);
-    for (int y = h - 1; y >= 0; y--) {
-      unsigned char *row = buf + y * w * 4;
-      for (int x = 0; x < w; x++) { fputc(row[x*4], f); fputc(row[x*4+1], f); fputc(row[x*4+2], f); }
-    }
-    fclose(f);
-  }
+  egl_shim_write_ppm("/tmp/duck_shot.ppm", buf, w, h);
+  if (pct > best) { best = pct; egl_shim_write_ppm("/tmp/duck_best.ppm", buf, w, h); }
+  if (is_menu && pct > menubest) { menubest = pct; egl_shim_write_ppm("/tmp/duck_menubest.ppm", buf, w, h); }
   debugPrintf("[SHOT] frame %d non-black=%d%% flat=%d%% varied=%d (best=%d menubest=%d)\n",
               frame_count, pct, flatpct, varied, best, menubest);
+}
+
+static int egl_shim_frame_is_black(int w, int h) {
+  if (g_hold_black < 0)
+    g_hold_black = getenv("DUCK_HOLD_BLACKFRAMES") ? 1 : 0;
+  if (!g_hold_black || w <= 0 || h <= 0)
+    return 0;
+  int lit = 0, total = 0;
+  unsigned char px[4];
+  for (int gy = 1; gy <= 11; gy++) {
+    for (int gx = 1; gx <= 15; gx++) {
+      int x = (w * gx) / 16;
+      int y = (h * gy) / 12;
+      px[0] = px[1] = px[2] = px[3] = 0;
+      glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+      total++;
+      if (px[0] > 6 || px[1] > 6 || px[2] > 6) {
+        lit++;
+        if (lit * 100 >= total * 8)
+          return 0;
+      }
+    }
+  }
+  static int n = 0;
+  if (n++ < 40)
+    debugPrintf("egl_shim: [HOLDBLACK] black frame %d detected\n", frame_count);
+  return 1;
+}
+
+static unsigned g_hold_tex = 0, g_hold_prog = 0;
+static int g_hold_w = 0, g_hold_h = 0, g_hold_valid = 0;
+static unsigned char *g_hold_pixels = NULL;
+static int g_hold_pixels_cap = 0;
+static void egl_shim_hold_capture(int w, int h) {
+  if (g_hold_black < 0)
+    g_hold_black = getenv("DUCK_HOLD_BLACKFRAMES") ? 1 : 0;
+  if (!g_hold_black || w <= 0 || h <= 0)
+    return;
+  int every = read_env_int("DUCK_HOLD_CAPTURE_EVERY", 4, 1, 120);
+  if (g_hold_valid && (frame_count % every) != 0)
+    return;
+  int need = w * h * 4;
+  if (need > g_hold_pixels_cap) {
+    free(g_hold_pixels);
+    g_hold_pixels = malloc(need);
+    g_hold_pixels_cap = g_hold_pixels ? need : 0;
+  }
+  if (!g_hold_pixels)
+    return;
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g_hold_pixels);
+  if (!g_hold_tex) {
+    glGenTextures(1, &g_hold_tex);
+    glBindTexture(GL_TEXTURE_2D, g_hold_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  } else {
+    glBindTexture(GL_TEXTURE_2D, g_hold_tex);
+  }
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, g_hold_pixels);
+  g_hold_w = w;
+  g_hold_h = h;
+  g_hold_valid = 1;
+}
+
+static void egl_shim_hold_draw(int w, int h) {
+  if (!g_hold_valid || !g_hold_tex || g_hold_w != w || g_hold_h != h)
+    return;
+  if (!g_hold_prog) {
+    const char *vs =
+        "attribute vec2 p; varying vec2 uv;"
+        "void main(){ uv=p*0.5+0.5; gl_Position=vec4(p,0.0,1.0); }";
+    const char *fs =
+        "precision mediump float; uniform sampler2D t; varying vec2 uv;"
+        "void main(){ gl_FragColor=vec4(texture2D(t,uv).rgb,1.0); }";
+    int vl = (int)strlen(vs), fl = (int)strlen(fs);
+    unsigned v = glCreateShader(GL_VERTEX_SHADER);
+    unsigned f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v, 1, &vs, &vl);
+    glCompileShader(v);
+    glShaderSource(f, 1, &fs, &fl);
+    glCompileShader(f);
+    g_hold_prog = glCreateProgram();
+    glAttachShader(g_hold_prog, v);
+    glAttachShader(g_hold_prog, f);
+    glLinkProgram(g_hold_prog);
+  }
+  static const float quad[8] = {-1,-1, 1,-1, -1,1, 1,1};
+  glDisable(GL_BLEND);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glViewport(0, 0, w, h);
+  glUseProgram(g_hold_prog);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  int lp = glGetAttribLocation(g_hold_prog, "p");
+  if (lp >= 0) {
+    glEnableVertexAttribArray((unsigned)lp);
+    glVertexAttribPointer((unsigned)lp, 2, GL_FLOAT, 0, 0, quad);
+  }
+  int lt = glGetUniformLocation(g_hold_prog, "t");
+  if (lt >= 0)
+    glUniform1i(lt, 0);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, g_hold_tex);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
 static int read_env_int(const char *name, int fallback, int min_value, int max_value) {
@@ -505,9 +627,16 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (g_use_real_egl) {
     if (r_swapBuffers && g_real_dpy && g_real_surf && real_current_is_window_surface()) {
+      int w = screen_width(), h = screen_height();
       egl_shim_texdump();
-      egl_shim_maybe_shot(screen_width(), screen_height());
+      int black = egl_shim_frame_is_black(w, h);
+      if (black && g_hold_valid)
+        egl_shim_hold_draw(w, h);
+      else if (!black)
+        egl_shim_hold_capture(w, h);
+      egl_shim_maybe_shot(w, h);
       r_swapBuffers(g_real_dpy, g_real_surf);
+      g_presented_good_frame = 1;
       int fc = ++frame_count; static int sl=0;
       if (sl < 8) { debugPrintf("egl_shim: REAL SwapBuffers #%d [tid=%lx]\n", fc, (unsigned long)pthread_self()); sl++; }
     } else {
@@ -524,8 +653,15 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   if (!egl_window) return EGL_TRUE;
 
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
-    egl_shim_maybe_shot(screen_width(), screen_height());
+    int w = screen_width(), h = screen_height();
+    int black = egl_shim_frame_is_black(w, h);
+    if (black && g_hold_valid)
+      egl_shim_hold_draw(w, h);
+    else if (!black)
+      egl_shim_hold_capture(w, h);
+    egl_shim_maybe_shot(w, h);
     SDL_GL_SwapWindow(egl_window);
+    g_presented_good_frame = 1;
     int fc = ++frame_count;
     if (fc <= 10 || fc % 60 == 0) {
       //debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",

@@ -1,6 +1,56 @@
 # DuckTales: Remastered → Mali-450 — STATUS / HANDOFF
 
 # ═══════════════════════════════════════════════════════════════════
+# 2026-06-29 — PAUSA / HANDOFF — foco atual: flicker preto entre logos e gameplay
+# ═══════════════════════════════════════════════════════════════════
+## Estado no device
+- Device ativo: `root@192.168.31.154` (EMUELEC/NextOS aarch64, Mali-450).
+- Frontend foi confirmado ativo apos os testes.
+- Launcher no device usa o bootstrap que chega no Amazon: `DUCK_FORCE_GAMESTATE=Amazon`,
+  `DUCK_FORCE_GAMESTATE_FRAME=330`, `DUCK_TEXMIRROR_ANY=1`, `DUCK_ETC1RGBA=1`,
+  `DUCK_MVPASS=1`, `DUCK_MVPASS_ALL=1`, `DUCK_MVPASS_AFTER=850`,
+  `DUCK_MVPASS_FORCESTATE=1`, `DUCK_MVPASS_DROPWHITE=1`,
+  `DUCK_MVPASS_REPLACE=1`, `DUCK_MVPASS_KEEPBLEND=1`.
+
+## Resultado visual/diagnostico confirmado hoje
+- O problema principal relatado pelo NextOS e real: a tela pisca preto desde as
+  logos ate gameplay. As capturas internas via `glReadPixels` confirmam que alguns
+  frames chegam ao `eglSwapBuffers` com framebuffer 0% nao-preto, entao nao e
+  apenas captura externa/TV.
+- Run sem `hold-black`: alterna frames bons e pretos. Exemplo do log de 75s:
+  frames 900/1020/1080/1320/1380/1440 com `non-black=86%`, mas frames
+  360/420/480/540/600/660/720/960/1140/1200/1260/1500 com `non-black=0%`.
+- O Disney splash ainda renderiza certo em frames bons (`/tmp/duck_hold_cpu_best.png`
+  no host mostrou logo Disney em fundo branco).
+- O ultimo frame do teste com `hold-black` ainda saiu preto (`/tmp/duck_hold_cpu_last.png`),
+  e o log manteve `frame 360 non-black=0%`. Portanto o remendo de hold texture
+  NAO resolveu e nao deve ser usado como default.
+
+## Codigo deixado salvo
+- `src/egl_shim.c` contem instrumentacao de screenshot robusta (`/tmp/duck_shot.ppm`,
+  `/tmp/duck_best.ppm`, `/tmp/duck_menubest.ppm`) e a tentativa de hold de frame,
+  mas agora o hold e opt-in: ligar apenas com `DUCK_HOLD_BLACKFRAMES=1`.
+- O build local compila antes da pausa. O ultimo build validado antes da inversao
+  do default rodou no device; apos esta nota, rebuildar e redeployar antes de retomar
+  para garantir que o device tambem fique sem hold por default.
+
+## Proximo caminho recomendado
+- Investigar como bug nativo de apresentacao/estado GL, nao como asset faltando:
+  `eglSwapBuffers` pode estar apresentando frames onde FBO0 foi limpo/descartado,
+  ou o swap ocorre em ponto intermediario do frame.
+- Proximos testes leves:
+  1. Logar estado no momento do swap: FBO atual, viewport, scissor, color mask,
+     clear color, current program, blend/depth/stencil e erro GL antes/depois.
+  2. Interceptar `glClear`, `glBindFramebuffer`, `glViewport`, `glScissor`,
+     `glColorMask` sempre, nao so com `DUCK_GLFBLOG`, para achar quem zera FBO0.
+  3. Comparar runs com `DUCK_NO_HOLD_BLACKFRAMES=1` antigo/sem hold, `RE4_NO_PRESERVE=1`,
+     `DUCK_ALLWIN=1` e log de surface atual. O `eglSurfaceAttrib(PRESERVED)` retorna OK,
+     mas o padrao ainda parece descarte/alternancia de buffer.
+  4. Se o preto vier de `glClear` legitimo durante transicao, filtrar apresentacao
+     de frames vazios precisa ser feito sem travar progresso: melhor detectar draw-count
+     de frame completo ou apresentar no fim real do frame, nao apenas desenhar hold.
+
+# ═══════════════════════════════════════════════════════════════════
 # ✅ 2026-06-24 (sessão 5) — UAF CARACTERIZADO + VIRADA: O FUNDO É DESENHADO
 # ═══════════════════════════════════════════════════════════════════
 ## 🎯 ESTADO VISUAL CONFIRMADO (screenshot /tmp/duck_shot.png via glReadPixels):

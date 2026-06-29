@@ -1003,23 +1003,11 @@ static int sa_read_bare_int(const char *f, float *out) {
   *out = (float)v / 100.0f;
   return 1;
 }
-/* Le o volume do sistema (0..1). Ordem: SONIC_VOLUME_FILE (override/teste) ->
-   /var/run/batocera-pending-volume (IMEDIATO, botoes em tempo real) ->
-   /userdata/system/batocera.conf (audio.volume=N, commit ~2s atrasado). */
-static int sa_read_sys_volume(float *out) {
-  const char *ovr = getenv("SONIC_VOLUME_FILE");
-  if (ovr && *ovr) {
-    if (sa_read_bare_int(ovr, out)) return 1;
-    /* tambem aceita key=value no override */
-  }
-  if (sa_read_bare_int("/var/run/batocera-pending-volume", out)) return 1;
-
-  const char *f = (ovr && *ovr) ? ovr : "/userdata/system/batocera.conf";
-  const char *key = getenv("SONIC_VOLUME_KEY");
-  if (!key || !*key) key = "audio.volume";
+/* Le a chave audio.volume=N de UM arquivo de config (batocera.conf / system.cfg). */
+static int sa_read_conf_volume(const char *f, const char *key, float *out) {
   FILE *fp = fopen(f, "r");
   if (!fp) return 0;
-  char line[256]; size_t kl = strlen(key); int got = 0;
+  size_t kl = strlen(key); int got = 0; char line[256];
   while (fgets(line, sizeof line, fp)) {
     char *p = line; while (*p == ' ' || *p == '\t') p++;
     if (*p == '#' || *p == ';') continue;
@@ -1031,6 +1019,54 @@ static int sa_read_sys_volume(float *out) {
   }
   fclose(fp);
   return got;
+}
+/* Fallback DEVICE-AGNOSTICO: le o volume do mixer ALSA Master via amixer.
+   Funciona em QUALQUER CFW com alsa (ROCKNIX/Knulli/muOS/ArchR) quando os paths
+   de config nao existem. Parseia o "[NN%]" da saida de `amixer sget Master`. */
+static int sa_read_amixer_volume(float *out) {
+  FILE *fp = popen("amixer sget Master 2>/dev/null", "r");
+  if (!fp) return 0;
+  char line[256]; int got = 0;
+  while (fgets(line, sizeof line, fp)) {
+    char *b = strchr(line, '[');
+    while (b) {
+      char *pct = strchr(b, '%');
+      if (pct && pct > b) {
+        int v = atoi(b + 1);
+        if (v >= 0 && v <= 100) { *out = (float)v / 100.0f; got = 1; }
+        break;
+      }
+      b = strchr(b + 1, '[');
+    }
+    if (got) break;
+  }
+  pclose(fp);
+  return got;
+}
+/* Le o volume do sistema (0..1). Ordem: SONIC_VOLUME_FILE (override/teste) ->
+   /var/run/batocera-pending-volume (batocera/Knulli, botoes em tempo real) ->
+   configs (batocera.conf E system.cfg do ROCKNIX/ArchR, audio.volume=N) ->
+   amixer Master (fallback device-agnostico p/ qualquer CFW alsa). */
+static int sa_read_sys_volume(float *out) {
+  const char *ovr = getenv("SONIC_VOLUME_FILE");
+  const char *key = getenv("SONIC_VOLUME_KEY");
+  if (!key || !*key) key = "audio.volume";
+  if (ovr && *ovr) {
+    if (sa_read_bare_int(ovr, out)) return 1;
+    if (sa_read_conf_volume(ovr, key, out)) return 1; /* aceita key=value no override */
+  }
+  if (sa_read_bare_int("/var/run/batocera-pending-volume", out)) return 1;
+  /* paths de config por CFW (1o que existir e tiver a chave vence) */
+  static const char *confs[] = {
+    "/userdata/system/batocera.conf",            /* batocera/Knulli */
+    "/storage/.config/system/configs/system.cfg",/* ROCKNIX/ArchR/JELOS */
+    "/storage/.config/distribution/configs/distribution.conf",
+  };
+  for (unsigned i = 0; i < sizeof(confs)/sizeof(confs[0]); i++)
+    if (sa_read_conf_volume(confs[i], key, out)) return 1;
+  /* fallback universal: mixer ALSA (so quando os arquivos nao existem) */
+  if (sa_read_amixer_volume(out)) return 1;
+  return 0;
 }
 static void *sa_sysvol_thread(void *a) {
   (void)a;

@@ -61,6 +61,8 @@ static int g_fake_native_window = 1;
 // Fake input queue handle
 static int g_fake_input_queue = 1;
 
+#define DUCK_PAD_DEVICE_ID 1
+
 /* ---- Input event queue helpers ---- */
 
 static int input_queue_count(void) {
@@ -86,14 +88,27 @@ static FakeInputEvent *input_queue_pop(void) {
 
 /* ---- Push key event ---- */
 
-static void push_key_event(int action, int keycode) {
+static void push_key_event_ex(int action, int keycode, int source, int device_id) {
   FakeInputEvent ev;
   memset(&ev, 0, sizeof(ev));
   ev.type = AINPUT_EVENT_TYPE_KEY;
   ev.action = action;
   ev.keycode = keycode;
-  ev.source = AINPUT_SOURCE_JOYSTICK;
+  ev.source = source;
+  ev.device_id = device_id;
   input_queue_push(&ev);
+}
+
+static void push_key_event(int action, int keycode) {
+  int source = getenv("DUCK_KEY_SOURCE_JOYSTICK")
+                   ? AINPUT_SOURCE_JOYSTICK
+                   : AINPUT_SOURCE_GAMEPAD;
+  push_key_event_ex(action, keycode, source, DUCK_PAD_DEVICE_ID);
+}
+
+static void push_dpad_center_event(int action) {
+  push_key_event_ex(action, AKEYCODE_DPAD_CENTER, AINPUT_SOURCE_DPAD,
+                    DUCK_PAD_DEVICE_ID);
 }
 
 /* ---- Push motion (touch) event ---- */
@@ -104,11 +119,66 @@ static void push_motion_event(int action, float x, float y) {
   ev.type = AINPUT_EVENT_TYPE_MOTION;
   ev.action = action;
   ev.source = AINPUT_SOURCE_TOUCHSCREEN;
+  ev.device_id = 0;
   ev.x = x;
   ev.y = y;
   ev.pointer_count = 1;
   ev.pointer_id = 0;
   input_queue_push(&ev);
+}
+
+static void push_touch_tap(float x, float y) {
+  push_motion_event(AMOTION_EVENT_ACTION_DOWN, x, y);
+  push_motion_event(AMOTION_EVENT_ACTION_UP, x, y);
+}
+
+static const char *touch_button_name(int sdl_button) {
+  switch (sdl_button) {
+  case SDL_CONTROLLER_BUTTON_A:
+    return "A";
+  case SDL_CONTROLLER_BUTTON_B:
+    return "B";
+  case SDL_CONTROLLER_BUTTON_X:
+    return "X";
+  case SDL_CONTROLLER_BUTTON_Y:
+    return "Y";
+  case SDL_CONTROLLER_BUTTON_BACK:
+    return "SELECT";
+  case SDL_CONTROLLER_BUTTON_START:
+    return "START";
+  case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+    return "L1";
+  case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+    return "R1";
+  case SDL_CONTROLLER_BUTTON_DPAD_UP:
+    return "UP";
+  case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+    return "DOWN";
+  case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+    return "LEFT";
+  case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+    return "RIGHT";
+  default:
+    return NULL;
+  }
+}
+
+static int touch_env_tap_for_button(int sdl_button) {
+  const char *name = touch_button_name(sdl_button);
+  if (!name)
+    return 0;
+  char xkey[32], ykey[32];
+  snprintf(xkey, sizeof(xkey), "DUCK_TOUCH_%s_X", name);
+  snprintf(ykey, sizeof(ykey), "DUCK_TOUCH_%s_Y", name);
+  const char *xs = getenv(xkey);
+  const char *ys = getenv(ykey);
+  if (!xs || !ys)
+    return 0;
+  float tx = (float)atof(xs);
+  float ty = (float)atof(ys);
+  push_touch_tap(tx, ty);
+  debugPrintf("android_shim: touch-%s tap %.0f,%.0f\n", name, tx, ty);
+  return 1;
 }
 
 /* ---- Push joystick motion event (axis values) ---- */
@@ -119,12 +189,106 @@ static void push_joystick_event(float lx, float ly, float rx, float ry) {
   ev.type = AINPUT_EVENT_TYPE_MOTION;
   ev.action = AMOTION_EVENT_ACTION_MOVE;
   ev.source = AINPUT_SOURCE_JOYSTICK;
+  ev.device_id = DUCK_PAD_DEVICE_ID;
   ev.pointer_count = 1;
   ev.axes[AMOTION_EVENT_AXIS_X] = lx;
   ev.axes[AMOTION_EVENT_AXIS_Y] = ly;
   ev.axes[AMOTION_EVENT_AXIS_Z] = rx;
   ev.axes[AMOTION_EVENT_AXIS_RZ] = ry;
   input_queue_push(&ev);
+}
+
+typedef struct {
+  double at;
+  float x, y;
+} AutoTap;
+
+#define MAX_AUTOTAPS 32
+static AutoTap g_autotaps[MAX_AUTOTAPS];
+static int g_autotap_n = -1, g_autotap_i = 0;
+static unsigned int g_autotap_start = 0;
+
+static void autotaps_init(void) {
+  if (g_autotap_n >= 0)
+    return;
+  g_autotap_n = 0;
+  g_autotap_start = SDL_GetTicks();
+  const char *s = getenv("DUCK_AUTOTAPS");
+  if (!s || !*s)
+    return;
+  char *tmp = strdup(s);
+  if (!tmp)
+    return;
+  for (char *tok = strtok(tmp, ",;"); tok && g_autotap_n < MAX_AUTOTAPS;
+       tok = strtok(NULL, ",;")) {
+    double at = 0.0;
+    float x = 0.0f, y = 0.0f;
+    if (sscanf(tok, "%lf:%f:%f", &at, &x, &y) == 3 && at >= 0.0) {
+      g_autotaps[g_autotap_n].at = at;
+      g_autotaps[g_autotap_n].x = x;
+      g_autotaps[g_autotap_n].y = y;
+      g_autotap_n++;
+    }
+  }
+  free(tmp);
+  debugPrintf("android_shim: loaded %d DUCK_AUTOTAPS\n", g_autotap_n);
+}
+
+static void autotaps_pump(void) {
+  autotaps_init();
+  if (g_autotap_i >= g_autotap_n)
+    return;
+  double now = (double)(SDL_GetTicks() - g_autotap_start) / 1000.0;
+  while (g_autotap_i < g_autotap_n && now >= g_autotaps[g_autotap_i].at) {
+    float x = g_autotaps[g_autotap_i].x;
+    float y = g_autotaps[g_autotap_i].y;
+    push_touch_tap(x, y);
+    debugPrintf("android_shim: autotap %.1fs %.0f,%.0f\n",
+                g_autotaps[g_autotap_i].at, x, y);
+    g_autotap_i++;
+  }
+}
+
+static int autodpad_keycode(const char *name) {
+  if (!name || !*name) return -1;
+  if (!strcmp(name, "RIGHT") || !strcmp(name, "right")) return AKEYCODE_DPAD_RIGHT;
+  if (!strcmp(name, "LEFT")  || !strcmp(name, "left"))  return AKEYCODE_DPAD_LEFT;
+  if (!strcmp(name, "UP")    || !strcmp(name, "up"))    return AKEYCODE_DPAD_UP;
+  if (!strcmp(name, "DOWN")  || !strcmp(name, "down"))  return AKEYCODE_DPAD_DOWN;
+  if (!strcmp(name, "A")     || !strcmp(name, "a"))     return AKEYCODE_BUTTON_A;
+  if (!strcmp(name, "B")     || !strcmp(name, "b"))     return AKEYCODE_BUTTON_B;
+  if (!strcmp(name, "X")     || !strcmp(name, "x"))     return AKEYCODE_BUTTON_X;
+  if (!strcmp(name, "Y")     || !strcmp(name, "y"))     return AKEYCODE_BUTTON_Y;
+  return -1;
+}
+
+static void autodpad_pump(void) {
+  static int init = 0, state = 0, keycode = -1;
+  static double after = 0.0, duration = 1.0;
+  static unsigned int start = 0;
+  if (!init) {
+    init = 1;
+    start = SDL_GetTicks();
+    keycode = autodpad_keycode(getenv("DUCK_AUTO_DPAD"));
+    if (getenv("DUCK_AUTO_DPAD_AFTER")) after = atof(getenv("DUCK_AUTO_DPAD_AFTER"));
+    if (getenv("DUCK_AUTO_DPAD_FOR")) duration = atof(getenv("DUCK_AUTO_DPAD_FOR"));
+    if (duration < 0.05) duration = 0.05;
+    if (keycode >= 0)
+      debugPrintf("android_shim: DUCK_AUTO_DPAD keycode=%d after=%.2f for=%.2f\n",
+                  keycode, after, duration);
+  }
+  if (keycode < 0 || state >= 2)
+    return;
+  double now = (double)(SDL_GetTicks() - start) / 1000.0;
+  if (state == 0 && now >= after) {
+    push_key_event(AKEY_EVENT_ACTION_DOWN, keycode);
+    debugPrintf("android_shim: autodpad DOWN keycode=%d\n", keycode);
+    state = 1;
+  } else if (state == 1 && now >= after + duration) {
+    push_key_event(AKEY_EVENT_ACTION_UP, keycode);
+    debugPrintf("android_shim: autodpad UP keycode=%d\n", keycode);
+    state = 2;
+  }
 }
 
 /* ---- SDL button → Android keycode mapping ---- */
@@ -263,6 +427,21 @@ static void process_sdl_events(void) {
       if (kc >= 0) {
         push_key_event(AKEY_EVENT_ACTION_DOWN, kc);
         debugPrintf("android_shim: button DOWN keycode=%d\n", kc);
+        if (getenv("DUCK_A_SEND_CENTER") &&
+            e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+          push_dpad_center_event(AKEY_EVENT_ACTION_DOWN);
+          debugPrintf("android_shim: button DOWN extra keycode=%d\n", AKEYCODE_DPAD_CENTER);
+        }
+      }
+      if (touch_env_tap_for_button(e.cbutton.button))
+        break;
+      if (getenv("DUCK_TOUCH_SKIP") &&
+          (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y ||
+           e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)) {
+        float tx = getenv("DUCK_TOUCH_SKIP_X") ? (float)atof(getenv("DUCK_TOUCH_SKIP_X")) : 36.0f;
+        float ty = getenv("DUCK_TOUCH_SKIP_Y") ? (float)atof(getenv("DUCK_TOUCH_SKIP_Y")) : 36.0f;
+        push_touch_tap(tx, ty);
+        debugPrintf("android_shim: touch-skip tap %.0f,%.0f\n", tx, ty);
       }
       // D-pad also sends HAT axis joystick events
       if (e.cbutton.button >= SDL_CONTROLLER_BUTTON_DPAD_UP &&
@@ -277,6 +456,7 @@ static void process_sdl_events(void) {
         ev.type = AINPUT_EVENT_TYPE_MOTION;
         ev.action = AMOTION_EVENT_ACTION_MOVE;
         ev.source = AINPUT_SOURCE_JOYSTICK;
+        ev.device_id = DUCK_PAD_DEVICE_ID;
         ev.pointer_count = 1;
         ev.axes[AMOTION_EVENT_AXIS_HAT_X] = hat_x;
         ev.axes[AMOTION_EVENT_AXIS_HAT_Y] = hat_y;
@@ -289,6 +469,9 @@ static void process_sdl_events(void) {
       int kc = sdl_button_to_keycode(e.cbutton.button);
       if (kc >= 0) {
         push_key_event(AKEY_EVENT_ACTION_UP, kc);
+        if (getenv("DUCK_A_SEND_CENTER") &&
+            e.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+          push_dpad_center_event(AKEY_EVENT_ACTION_UP);
       }
       // D-pad release: reset HAT axes to 0
       if (e.cbutton.button >= SDL_CONTROLLER_BUTTON_DPAD_UP &&
@@ -298,6 +481,7 @@ static void process_sdl_events(void) {
         ev.type = AINPUT_EVENT_TYPE_MOTION;
         ev.action = AMOTION_EVENT_ACTION_MOVE;
         ev.source = AINPUT_SOURCE_JOYSTICK;
+        ev.device_id = DUCK_PAD_DEVICE_ID;
         ev.pointer_count = 1;
         input_queue_push(&ev);
       }
@@ -420,6 +604,8 @@ int ALooper_pollAll(int timeoutMillis, int *outFd, int *outEvents,
 
   // Fire pending audio callbacks first (before any blocking)
   opensles_shim_pump_callbacks();
+  autotaps_pump();
+  autodpad_pump();
 
   // Check for pending commands on the pipe (don't block long)
   struct pollfd pfd;
@@ -576,8 +762,10 @@ int AInputEvent_getSource(void *event) {
 }
 
 int AInputEvent_getDeviceId(void *event) {
-  (void)event;
-  return 0;
+  if (!event)
+    return 0;
+  FakeInputEvent *ev = (FakeInputEvent *)event;
+  return ev->device_id;
 }
 
 int AKeyEvent_getMetaState(void *event) {
@@ -717,11 +905,11 @@ static void process_input(struct android_app *app,
       handled = app->onInputEvent(app, event);
       FakeInputEvent *fe = (FakeInputEvent *)event;
       if (fe->type == AINPUT_EVENT_TYPE_KEY) {
-        debugPrintf("android_shim: KEY type=%d action=%d keycode=%d handled=%d\n",
-                    fe->type, fe->action, fe->keycode, handled);
+        debugPrintf("android_shim: KEY type=%d action=%d keycode=%d source=0x%x dev=%d handled=%d\n",
+                    fe->type, fe->action, fe->keycode, fe->source, fe->device_id, handled);
       } else if (fe->type == AINPUT_EVENT_TYPE_MOTION) {
-        debugPrintf("android_shim: MOTION action=%d x=%.0f y=%.0f handled=%d\n",
-                    fe->action, fe->x, fe->y, handled);
+        debugPrintf("android_shim: MOTION action=%d source=0x%x dev=%d x=%.0f y=%.0f handled=%d\n",
+                    fe->action, fe->source, fe->device_id, fe->x, fe->y, handled);
       }
     }
     AInputQueue_finishEvent(app->inputQueue, event, handled);

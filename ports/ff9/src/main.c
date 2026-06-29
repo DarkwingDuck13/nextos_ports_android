@@ -3621,14 +3621,19 @@ static unsigned my_eglChooseConfig(void *dpy, const int *attribs, void **cfgs, i
       else if (k == 0x3042) v = 0x0004;       /* CONFORMANT -> ES2_BIT */
       else if (k == 0x3027) { continue; }     /* EGL_CONFIG_CAVEAT: dropar */
       else if (k == 0x3028) { continue; }     /* EGL_CONFIG_ID: dropar (não filtrar por id) */
+      else if (k == 0x3033) { continue; }     /* EGL_SURFACE_TYPE: dropar (forçamos WINDOW abaixo) */
       else if (k >= 0x3088) { continue; }     /* attribs EGL>=1.4/ES3/colorspace desconhecidos do Mali: dropar */
       buf[o++] = k; buf[o++] = v; logged = 1;
     }
   }
   if (!logged) { /* sem lista -> ES2 RGBA default */
     buf[o++]=0x3024; buf[o++]=8; buf[o++]=0x3023; buf[o++]=8; buf[o++]=0x3022; buf[o++]=8;
-    buf[o++]=0x3040; buf[o++]=0x0004; buf[o++]=0x3033; buf[o++]=0x0004;
+    buf[o++]=0x3040; buf[o++]=0x0004;
   }
+  /* 🔑 SEMPRE forçar EGL_SURFACE_TYPE=EGL_WINDOW_BIT: sem isto o Mali devolve configs
+     pbuffer-only que o Unity às vezes seleciona -> eglCreateWindowSurface dá EGL_BAD_ALLOC
+     (0x3003) intermitente -> "Unable to initialize Gfx API" -> boot morre. */
+  buf[o++] = 0x3033; buf[o++] = 0x0004;       /* EGL_SURFACE_TYPE = EGL_WINDOW_BIT */
   buf[o++] = 0x3038;  /* EGL_NONE */
   dumped = 1;
   unsigned r = r_real_choosecfg ? r_real_choosecfg(dpy, buf, cfgs, sz, n) : 0;
@@ -4444,9 +4449,72 @@ volatile int g_inject_ctrl = -1;
 int my_GetKeyTrigger(void *thiz, int key, void *mi);
 int my_GetKeyTrigger(void *thiz, int key, void *mi) {
   (void)thiz; (void)mi;
+  /* FF9_KEYLOG: loga (deduped) TODO Control que a UI (disclaimer/menu) pollar via
+     GetKeyTrigger -> revela qual input dispensa o disclaimer. */
+  if (getenv("FF9_KEYLOG")) {
+    static unsigned char seen[256];
+    unsigned idx = (unsigned)(key & 0xff);
+    if (!seen[idx]) { seen[idx] = 1; fprintf(stderr, "[KEYPOLL] UI poll GetKeyTrigger(key=%d)\n", key); fsync(2); }
+  }
   if (key == g_inject_ctrl) { g_inject_ctrl = -1; if (getenv("FF9_INJLOG")) { fprintf(stderr, "[INJECT] GetKeyTrigger(%d)->true\n", key); fsync(2); } return 1; }
   return 0;
 }
+/* ===== FF9_TAP: simular TOQUE (mouse) p/ dispensar o disclaimer NGUI "tap to continue" =====
+ * O disclaimer (Health&Safety) é NGUI/UICamera e lê Unity Input (touch/mouse), NÃO o
+ * GetKeyTrigger do FF9. O so-loader não alimenta o AInputQueue NDK -> Input fica zerado ->
+ * NGUI nunca vê o tap. Hookamos UnityEngine.Input.GetMouseButtonDown/GetMouseButton/
+ * get_anyKeyDown/get_mousePosition p/ injetar um clique no centro (sequência press->hold->
+ * release p/ o NGUI disparar OnClick). g_tap_phase>0 = clique ativo. */
+typedef struct { float x, y, z; } ff9_v3;
+typedef struct { float x, y; } ff9_v2;
+/* UnityEngine.Touch = 68 bytes (0x44); phase TouchPhase @0x24 (Began0 Moved1 Stationary2 Ended3) */
+typedef struct {
+  int fingerId; ff9_v2 position, rawPosition, positionDelta; float timeDelta;
+  int tapCount, phase, type; float pressure, maxPressure, radius, radiusVar, altitude, azimuth;
+} ff9_touch;
+volatile int g_tap_phase = 0;       /* >0: frames restantes do clique (3=down,2=held,1=up,0=idle) */
+static float g_tap_x = 640.0f, g_tap_y = 360.0f;
+int   my_Input_GetMouseButtonDown(int button, void *mi) { (void)mi; return (button == 0 && g_tap_phase == 3) ? 1 : 0; }
+int   my_Input_GetMouseButton(int button, void *mi)     { (void)mi; return (button == 0 && g_tap_phase >= 2) ? 1 : 0; }
+int   my_Input_GetMouseButtonUp(int button, void *mi)   { (void)mi; return (button == 0 && g_tap_phase == 1) ? 1 : 0; }
+int   my_Input_anyKeyDown(void *mi)                     { (void)mi; return g_tap_phase == 3 ? 1 : 0; }
+int   my_Input_anyKey(void *mi)                         { (void)mi; return g_tap_phase >= 2 ? 1 : 0; }
+ff9_v3 my_Input_mousePosition(void *mi)                 { (void)mi; ff9_v3 v; v.x = g_tap_x; v.y = g_tap_y; v.z = 0.0f; return v; }
+int   my_Input_touchCount(void *mi)                    { (void)mi; return g_tap_phase > 0 ? 1 : 0; }
+/* NGUI UICamera submit/nav: GetKeyDown(KeyCode)=GetKeyDownInt, GetButtonDown, GetAxis */
+volatile int g_nav_axis = 0;   /* FF9_NAV: -1/+1 no eixo Vertical por alguns frames */
+int   my_Input_GetKeyDownInt(int kc, void *mi)         { (void)kc; (void)mi; return g_tap_phase == 3 ? 1 : 0; }
+int   my_Input_GetKeyInt(int kc, void *mi)             { (void)kc; (void)mi; return g_tap_phase >= 2 ? 1 : 0; }
+int   my_Input_GetButtonDown(void *nm, void *mi)       { (void)nm; (void)mi; return g_tap_phase == 3 ? 1 : 0; }
+int   my_Input_GetButton(void *nm, void *mi)           { (void)nm; (void)mi; return g_tap_phase >= 2 ? 1 : 0; }
+float my_Input_GetAxis(void *nm, void *mi)             { (void)nm; (void)mi; return (float)g_nav_axis; }
+/* FF9_NEWGAME: a UI do FF9 (NGUI) lê input por rota custom (não Unity Input nem GetKeyTrigger).
+ * Em vez de injetar input, chamamos o handler do botão NEW GAME direto. Precisamos do `this`
+ * do TitleUI -> hookamos TitleUI.Update (0x1348430) DEPOIS do título montado, capturamos this
+ * (x0) e chamamos TitleUI.OnNewGameButtonClick(0x1344634)(this) 1× DO RENDER LOOP (Update
+ * restaurado, senão a transição da cena não roda). */
+volatile void *g_titleui_this = NULL;
+static uint32_t g_titleui_orig[4];
+static int g_newgame_done = 0;
+void my_TitleUI_Update(void *this_, void *mi) {
+  g_titleui_this = this_;
+  /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
+  uintptr_t a = g_il2cpp_base + 0x1348430;
+  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
+  mprotect((void *)(a & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  memcpy((void *)a, g_titleui_orig, 16);
+  __builtin___clear_cache((char *)a, (char *)(a + 16));
+  ((void (*)(void *, void *))a)(this_, mi);   /* roda o Update original deste frame */
+}
+ff9_touch my_Input_GetTouch(int index, void *mi) {
+  (void)index; (void)mi;
+  ff9_touch t; memset(&t, 0, sizeof t);
+  t.fingerId = 0; t.position.x = g_tap_x; t.position.y = g_tap_y; t.rawPosition = t.position;
+  t.tapCount = 1; t.pressure = 1.0f; t.maxPressure = 1.0f;
+  t.phase = (g_tap_phase == 3) ? 0 : (g_tap_phase == 1) ? 3 : 2;  /* Began / Ended / Stationary */
+  return t;
+}
+
 static char g_dl_sl; /* sentinela do handle de libOpenSLES (FMOD → opensles_shim) */
 static void *my_dlopen(const char *nm, int flag) {
   if (g_dllog) fprintf(stderr, "[dlopen] \"%s\"\n", nm ? nm : "(null)");
@@ -5855,6 +5923,8 @@ int main(int argc, char **argv) {
          get_streamingAssetsPath (hookado); o hook de 16B estoura na função seguinte. */
       fprintf(stderr, "[SAPATH] hook get_streamingAssetsPath(0x17C7C1C)\n");
     }
+    /* (FF9_SAPATH redundante removido — o install in-place default-ON já cobre get_streamingAssetsPath
+       no endereço CORRETO 0x2538cc8; dois hooks sobrepostos corrompiam a função → crash no boot.) */
     if (getenv("CUP_TAPINPUT")) {
       if (getenv("CUP_TAPSTART")) g_tap_start = atoi(getenv("CUP_TAPSTART"));
       if (getenv("CUP_TAPPERIOD")) g_tap_period = atoi(getenv("CUP_TAPPERIOD"));
@@ -6269,7 +6339,7 @@ int main(int argc, char **argv) {
   if (!getenv("FF9_NOSAPATH") && g_il2cpp_base) {
     long pgsz = sysconf(_SC_PAGESIZE);
     extern void *my_streamingAssetsPath(void);
-    uintptr_t patch = g_il2cpp_base + 0x2538CC0;       /* get_streamingAssetsPath */
+    uintptr_t patch = g_il2cpp_base + 0x2538cc8;       /* get_streamingAssetsPath (entrada REAL; 0x2538CC0 do dump é o EPÍLOGO da func anterior → corrompia + crash no boot) */
     void *pp = (void *)(patch & ~((uintptr_t)pgsz - 1));
     mprotect(pp, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
     /* tail-call IN-PLACE (sem trampolim, sem alcance de `b`): ldr x16,[pc+8]; br x16; .quad fn */
@@ -6533,6 +6603,75 @@ int main(int argc, char **argv) {
           hook_arm64(g_il2cpp_base + 0x12BF390, (uintptr_t)my_GetKeyTrigger);
           inj_hooked = 1;
           fprintf(stderr, "[INJECT] GetKeyTrigger hook instalado (lazy) @f=%d\n", f); fsync(2);
+          /* FF9_TAP: hooka UnityEngine.Input (touch/mouse) p/ simular tap no NGUI/disclaimer */
+          if (getenv("FF9_TAP")) {
+            if (getenv("FF9_TAPX")) g_tap_x = (float)atoi(getenv("FF9_TAPX"));
+            if (getenv("FF9_TAPY")) g_tap_y = (float)atoi(getenv("FF9_TAPY"));
+            extern int my_Input_GetMouseButtonDown(int, void *), my_Input_GetMouseButton(int, void *),
+                       my_Input_GetMouseButtonUp(int, void *), my_Input_anyKeyDown(void *), my_Input_anyKey(void *),
+                       my_Input_touchCount(void *);
+            extern ff9_v3 my_Input_mousePosition(void *);
+            extern ff9_touch my_Input_GetTouch(int, void *);
+            hook_arm64(g_il2cpp_base + 0x25a16c0, (uintptr_t)my_Input_GetMouseButtonDown);
+            hook_arm64(g_il2cpp_base + 0x25a1684, (uintptr_t)my_Input_GetMouseButton);
+            hook_arm64(g_il2cpp_base + 0x25a16fc, (uintptr_t)my_Input_GetMouseButtonUp);
+            hook_arm64(g_il2cpp_base + 0x25a19e0, (uintptr_t)my_Input_anyKeyDown);
+            hook_arm64(g_il2cpp_base + 0x25a1a30, (uintptr_t)my_Input_mousePosition);
+            hook_arm64(g_il2cpp_base + 0x25a1ce8, (uintptr_t)my_Input_touchCount);
+            hook_arm64(g_il2cpp_base + 0x25a1788, (uintptr_t)my_Input_GetTouch);
+            extern int my_Input_GetKeyDownInt(int, void *), my_Input_GetKeyInt(int, void *),
+                       my_Input_GetButtonDown(void *, void *), my_Input_GetButton(void *, void *);
+            extern float my_Input_GetAxis(void *, void *);
+            hook_arm64(g_il2cpp_base + 0x25a1648, (uintptr_t)my_Input_GetKeyDownInt);
+            hook_arm64(g_il2cpp_base + 0x25a15d0, (uintptr_t)my_Input_GetKeyInt);
+            hook_arm64(g_il2cpp_base + 0x25a14e0, (uintptr_t)my_Input_GetButtonDown);
+            hook_arm64(g_il2cpp_base + 0x25a1468, (uintptr_t)my_Input_GetButton);
+            if (getenv("FF9_NAV")) hook_arm64(g_il2cpp_base + 0x25a1378, (uintptr_t)my_Input_GetAxis);
+            fprintf(stderr, "[FF9_TAP] Input mouse/touch/key/button hooks instalados @f=%d\n", f); fsync(2);
+          }
+        }
+      }
+      /* FF9_NOLOGIN: o boot ESPERA o login social (Play Games) completar (TitleUI.
+         WaitForSocialLoginProcess); o nosso JNI nunca dispara o callback do Task -> trava no
+         disclaimer. Chamamos SiliconStudio.Social.ProcessAuthentication(Canceled=2) algumas
+         vezes p/ completar o auth como guest (ProcessAuthentication null-checa o platform). */
+      if (getenv("FF9_NOLOGIN") && inj_hooked && g_il2cpp_base) {
+        static int nl_done = 0;
+        if (nl_done < 5 && (f % 30 == 0)) {
+          void (*pa)(int, void *) = (void (*)(int, void *))(g_il2cpp_base + 0x14829fc);
+          fprintf(stderr, "[FF9_NOLOGIN] Social.ProcessAuthentication(Canceled) #%d @f=%d\n", nl_done, f); fsync(2);
+          pa(2, NULL);
+          nl_done++;
+        }
+      }
+      /* FF9_NEWGAME: depois do título montado (f>=FF9_NGAT, default 1300), hooka TitleUI.Update
+         p/ chamar OnNewGameButtonClick(this) e iniciar o jogo (a UI não responde a input injetado). */
+      { const char *ng = getenv("FF9_NEWGAME");
+        static int ng_hooked = 0;
+        if (ng && !ng_hooked && g_il2cpp_base) {
+          int ngat = getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300;
+          if (f >= ngat) {
+            memcpy(g_titleui_orig, (void *)(g_il2cpp_base + 0x1348430), 16);  /* salva original */
+            hook_arm64(g_il2cpp_base + 0x1348430, (uintptr_t)my_TitleUI_Update);
+            ng_hooked = 1;
+            fprintf(stderr, "[FF9_NEWGAME] TitleUI.Update hookado @f=%d (captura this)\n", f); fsync(2);
+          }
+        }
+        /* já capturou o this -> chama OnNewGameButtonClick 1× DO render loop (Update intacto) */
+        if (ng && g_titleui_this && !g_newgame_done) {
+          g_newgame_done = 1;
+          void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x134464c);
+          fprintf(stderr, "[FF9_NEWGAME] OnNewGameButtonClick(this=%p) do render loop\n", (void *)g_titleui_this); fsync(2);
+          ong((void *)g_titleui_this, NULL);
+        }
+      }
+      /* FF9_TAP=N: dispara um clique (press->hold->release) a cada N frames p/ dispensar o
+         disclaimer NGUI. g_tap_phase 3=down,2=held,1=up,0=idle (decrementa por frame). */
+      { const char *tp = getenv("FF9_TAP");
+        if (tp && inj_hooked) {
+          int per = atoi(tp); if (per < 8) per = 60;
+          if (g_tap_phase > 0) g_tap_phase--;
+          if (f > 60 && f % per == 0) { g_tap_phase = 3; fprintf(stderr, "[FF9_TAP] click @f=%d\n", f); fsync(2); }
         }
       }
       const char *ac = getenv("FF9_AUTOCONFIRM");

@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <setjmp.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -91,7 +92,7 @@ static int b_dso_handle;                       /* __dso_handle = endereço dummy
 static void *b_cxa_type_match(void *a, void *b, char c) { (void)a; (void)b; (void)c; return (void *)0; }
 static void b_google_blocking_begin(void) {}
 static void b_google_blocking_end(void) {}
-extern int __sigsetjmp(void *, int);           /* glibc; bionic sigsetjmp == isso */
+static int b_sigsetjmp(sigjmp_buf env, int save) { return sigsetjmp(env, save); }
 
 /* ---- allocator isolado para a lib Android ----
  * Marmalade antigo escreve em estruturas assumindo o layout do allocator Android.
@@ -701,7 +702,7 @@ DynLibFunction port_shims[] = {
     {"__cxa_guard_abort", (uintptr_t)b_cxa_guard_abort},
     {"__google_potentially_blocking_region_begin", (uintptr_t)b_google_blocking_begin},
     {"__google_potentially_blocking_region_end", (uintptr_t)b_google_blocking_end},
-    {"sigsetjmp", (uintptr_t)__sigsetjmp},
+    {"sigsetjmp", (uintptr_t)b_sigsetjmp},
     {"malloc", (uintptr_t)w_malloc},
     {"calloc", (uintptr_t)w_calloc},
     {"realloc", (uintptr_t)w_realloc},

@@ -45,6 +45,22 @@ export LD_LIBRARY_PATH="/usr/lib32:${LD_LIBRARY_PATH:-}"
 export MALLOC_CHECK_=0
 export GLIBC_TUNABLES=glibc.malloc.check=0
 
+# SDL precisa de XDG_RUNTIME_DIR/wayland p/ achar o compositor (R36S/ArchR).
+# Auto-detect, NUNCA forcar SDL_VIDEODRIVER/SDL_AUDIODRIVER (regra do sistema).
+# Inofensivo no Amlogic/fbdev (os dirs nao existem -> nada e setado).
+if [ -z "$XDG_RUNTIME_DIR" ]; then
+  for d in /run/0-runtime-dir /var/run/0-runtime-dir "/run/user/$(id -u 2>/dev/null || echo 0)"; do
+    [ -d "$d" ] && { export XDG_RUNTIME_DIR="$d"; break; }
+  done
+fi
+if [ -z "$WAYLAND_DISPLAY" ] && [ -n "$XDG_RUNTIME_DIR" ]; then
+  WD=$(ls "$XDG_RUNTIME_DIR"/ 2>/dev/null | grep -E '^wayland-[0-9]+$' | head -1)
+  [ -n "$WD" ] && export WAYLAND_DISPLAY="$WD"
+fi
+for s in "$XDG_RUNTIME_DIR/pulse/native" /run/pulse/native /var/run/pulse/native; do
+  [ -S "$s" ] && { export PULSE_SERVER="unix:$s"; break; }
+done
+
 # Caminho bom do Codex: runNative do Marmalade/F3 com APK e cwd reais.
 export SONIC4EP1_RUN_NATIVE=1
 export SONIC4EP1_EXIT_AFTER_RUN=1
@@ -58,5 +74,12 @@ export SONIC4EP1_ARG3="$HERE"
 # - SONIC4EP1_IGNORE_REAL_INPUT: so para automacao.
 # - SONIC4EP1_HOOK62D90/NO_CAPFIX/FAKE_FILEREG/DEPLOY_DIR: caminho s3 posterior,
 #   nao pertence ao binario Codex d84c50 validado jogavel.
+
+# R36S (RK3326/ArchR, CP15BEN=0): a engine Marmalade usa barreiras CP15 antigas
+# (mcr p15,c7) que faltam SIGILL nesse kernel. libcp15emul.so (LD_PRELOAD so no
+# processo 32-bit) emula a barreira. Inofensivo no Amlogic (mcr e legal la).
+if [ -f "$HERE/libcp15emul.so" ]; then
+  export LD_PRELOAD="$HERE/libcp15emul.so${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 
 exec ./sonic4ep1 "$@"
