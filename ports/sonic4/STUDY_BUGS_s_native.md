@@ -32,19 +32,21 @@ SE flag `[ptr+4]&0x800`; senão cai em `AoPadDirect` (0x2112f0). `OUYAGetPauseKe
 - push_key_event/AKEYCODE_* (android_shim) NÃO alimentam o engine do EP2 (sem Paddleboat;
   a Java foi substituída pelo nosso shim). Só o FOX mask conta.
 
-### Bug #1 (Y=Left) — análise + TESTE EMPÍRICO no R36S
-DESCARTADO: colisão de bit no gmPad (Y=0x100 ≠ Left=0x4), Paddleboat, gptk (y=v→FOX_Y certo).
-HIPÓTESE de remap de keymap em runtime → **TESTADA E DESCARTADA**: build instrumentado
-(SONIC_KEYDUMP, main.c) rodou no R36S ArchR e os bits ficaram ESTÁVEIS o tempo todo:
-`[keydump] L=0004 R=0008 U=0001 D=0002 decide=0020 cancel=0080` por 1320 frames (~22s). **Sem remap.**
-Mapping SDL do R36S também está CERTO: `r36s_Gamepad ... x:b2, y:b3, dpleft:b15` → Y(b3)→BUTTON_Y,
-não dpleft. Logo **Y=Left NÃO reproduz no R36S** pela teoria FOX/menu.
-CONCLUSÃO: é específico do **device/menu do luis** — provável (a) controller-mapping do device dele
-com Y mal-bindado (gamecontrollerdb diferente), OU (b) o "level select" dele usa um caminho de input
-que não tracei (gmPadRepeat?). PRECISA: qual device o luis usou + qual menu exato (Episode select?
-World map? Extras stage select?) + idealmente o gamecontrollerdb do device dele.
-(Infra de teste validada: launch compat glibc2.27 com timeout duro no R36S = boot→loop→música→kill
-limpo, device não trava. Reusável p/ os próximos testes.)
+### Bug #1 (Y=Left) — ✅ RESOLVIDO (reproduzido + root-caused + fixado + validado no R36S)
+Os bits de menu NORMAL (g_gs_env_key: left=0x4 etc.) estão certos e estáveis (keydump confirmou,
+sem remap). MAS o "level select" do luis = **WORLD MAP** (atrás de Main Menu → Continue), e o
+world map lê input por um caminho DIFERENTE dos menus normais.
+**REPRODUZIDO** com injetor determinístico `SONIC_TESTBIT=0xNNNN` (main.c): no world map, injetar
+`FOX_Y(0x100)` move o mapa IGUAL a `FOX_LEFT(0x004)` — before/after de screenshot idênticos entre
+Left e Y (diff 361; cada um move ~1900 samples vs base). Confirmado visualmente.
+**RAIZ:** `FOX_Y=0x100` (e `FOX_X=0x40`) são bits "provisórios" (chute antigo, ver nota main.c:849)
+que no input-read do world map aliasam pra LEFT. Y/X não são ações no Sonic 4 fora do gameplay.
+**FIX (main.c, commit 529ef91):** suprime `FOX_Y|FOX_X` quando `!sonic_in_gameplay` antes do
+SetPadData. **VALIDADO:** com fix, injetar Y NÃO move o mapa (before==after, ~410=ruído de animação
+vs ~1900 antes); LEFT(0x004) segue navegando (mask preservado no input-change). Regressão zero.
+**Infra reusável:** launch compat glibc2.27 + `timeout -s KILL` no R36S + `SONIC_TESTBIT` (injeta bit
+determinístico) + screenshot via `/dev/shm/sonic_shot` + diff de imagem. AUTOSTART chega ao world map
+(~30s): título→Main Menu→Continue→world map.
 
 ### Bug agente #1 (ALTA): `sonic_game_started` PRESO em 1
 imports.c:59-93. Único reset = log "Create World Map". Game-over→título, "Exit to Title" do pause
