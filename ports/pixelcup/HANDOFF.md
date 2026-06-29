@@ -429,3 +429,37 @@ via sh_key_create/getspecific/setspecific) e desmontei o staller real. Conclusõ
    (0x65b1b0/d6c43c/d5166c) p/ usar o caminho do parallel-for GERAL (que funciona) em vez do thread-local.
 🔧 Novo no tree (env-gated OFF): PC_WREG (captura descritor), PC_MAINREG (+PC_QFIELD/PC_USEWCTX), PC_PADHOOK,
    corestr_get, unity_install_hook4. Default=checkpoint. ⚠️ Limpar /tmp do device antes de rodar.
+
+---
+## SESSÃO 2026-06-27 — reprodução no .154 + AOT REFUTADO + scheduler do singleton desmontado
+⚠️ **DEVICE MUDOU DE IP: agora `192.168.31.154`** (era .164), EmuELEC, senha VAZIA (`sshpass -p ''`).
+Arquivos intactos em /storage/roms/ports/pixelcup (libil2cpp 49MB, libunity.so, datapack.unity3d 383MB, data.unity3d 24.5MB). Binário pixelcup (Jun 23) = checkpoint conhecido.
+
+🟢 **REPRODUZIDO o checkpoint** (run.sh, CUP_FRAMES=1500, env default PC_INLINETASK=1+TER_CHOREO=1):
+render loop roda (`[render 60→240]`, ~30fps), PC_INLINETASK #1 fira, doFrame dispara, 0 crash, teardown OK.
+fb capturado (1ª metade 1280x720) = quase PRETO (9229/921600 nonzero) → falta checar 2ª metade do
+double-buffer (1280x1440, panning estilo LEGO Batman) p/ saber se a loading desenha na metade de baixo.
+
+🔴 **AOT REFUTADO como causa do load** (era "lead secundário"): `ExecutionEngineException ...KeepAliveBehaviour\`1::
+SubsystemRegistration` dispara **EXATAMENTE 7× (só no boot), ZERO durante o render loop** → não é o que
+trava o load. NullRef=3 (Rewired boot, não-fatal). datapack/LoadAsync/Preload/Loaded = **0 ocorrências**
+no run inteiro (1463 linhas) → nenhum async load sequer começa.
+
+🎯 **STALL EXATO (do run.out):** fluxo Play Asset Delivery chega em
+`getAssetPackState(UnityDataAssetPack) → COMPLETED via nativeStatusQueryResult` e **PARA AÍ** — nenhum
+`getAssetPackPath`, nenhum mount (U+0x63f308 nunca chamado, cont.7), nenhum open do datapack. = o job nativo
+que reagiria ao COMPLETED (montar/path) e o áudio Resources.LoadAsync vão pra deque órfã e nunca executam.
+
+🔬 **SCHEDULER DO SINGLETON 0x65140c desmontado (objdump aarch64, offline):** é ScheduleAndWait:
+- 0x651470: aloca node de conclusão (bl 0x10d463c, w0=16) → `[node]=0,[node+8]=1`; guarda em `[x19+88]`.
+- 0x6514ac: pthread_mutex_lock(x23=x19+0x20).
+- 0x6514b4: **bl 0x65b1b0**(x0=x23) = schedule parte 1.
+- 0x6514c0: bl 0xd60490(x0=x19) = monta token (em sp).
+- 0x6514d0: **bl 0x65b140**(x0=x23, ret target em [sp+8]) = schedule parte 2; target salvo em `[x19+0xb8]/[+184]`.
+- wait loop 0x651530: espera `[[x19+88]]!=0` (node[0]) OU `[x19+184]==[sp+8]` (contador de conclusão).
+⟹ **DRENO REAL = achar o "execute one job" da fila que 0x65b1b0/0x65b140 empurram e chamá-lo em loop no
+trampolim 0x651530 (onde hoje PC_INLINETASK só finge node[0]=1) até [x19+184] bater o target.** Próximo:
+desmontar 0x65b140 + 0x65b1b0 (qual fila/ring) e o worker-loop (0x5711d8 entry) p/ achar o pop+execute+signal.
+
+🧱 **VEREDITO honesto:** = MESMO muro RE4-class das 8 sessões (job-system async dispatch p/ thread do loader).
+Reprodução limpa + AOT eliminado + scheduler localizado, MAS o dreno real ainda não implementado.

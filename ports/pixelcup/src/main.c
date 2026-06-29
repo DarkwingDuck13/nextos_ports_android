@@ -613,6 +613,12 @@ static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long o
 static int g_dllog;
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
 static int cmdline_fd(void);   /* fwd: injeta args do Unity em /proc/<pid>/cmdline */
+static int fopen_mode_writes(const char *m) {
+  return m && (strchr(m, 'w') || strchr(m, 'a') || strchr(m, '+'));
+}
+static int open_flags_write(int fl) {
+  return (fl & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
+}
 static FILE *my_fopen(const char *p, const char *m) {
   /* 🔑 Unity 2022 lê /proc/<pid>/cmdline via FOPEN (não open) p/ pegar argv (force-gfx-direct,
      job-worker-count, etc). Sem isto ele lê o argv real "./pixelcup" -> ZERO args -> MT
@@ -627,7 +633,8 @@ static FILE *my_fopen(const char *p, const char *m) {
   if (p && (!strcmp(p, "/sys/devices/system/cpu/possible") || !strcmp(p, "/sys/devices/system/cpu/present") || !strcmp(p, "/sys/devices/system/cpu/online"))) {
     FILE *t = tmpfile(); if (t) { fputs(getenv("CUP_1CORE") ? "0\n" : "0-3\n", t); rewind(t); return t; }
   }
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char rb[512];
+  const char *r = fopen_mode_writes(m) ? NULL : asset_redirect(p, rb, sizeof rb);
   if (r) {
     if (g_dllog) fprintf(stderr, "[fopen-redir] %s -> %s\n", p, r);
     return fopen(r, m);
@@ -664,6 +671,10 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
       return buf;
     }
   }
+  /* Se o caminho ja existe de verdade, usa o arquivo real. Isso evita desviar
+     userdata/il2cpp ja instalado e impede leituras de assets/bin/Data duplicado
+     de dependerem do fallback para bin/Data. */
+  if (access(p, F_OK) == 0) return NULL;
   /* QUALQUER path .../AssetBundles/<nome> -> /storage/cuphead-sa/AssetBundles/<nome>.
      Resolve o load do DLC (base-path vinha lixo: "Шестигранные врата 1/AssetBundles/..")
      e qualquer base estranha; o path correto redireciona p/ si mesmo (anti-loop). */
@@ -752,11 +763,9 @@ static int my_open(const char *p, int fl, ...) {
   }
   if (p && strstr(p, "cmdline") && !getenv("CUP_NOGFXARGS")) return cmdline_fd();
   char rb[512];
-  const char *r = asset_redirect(p, rb, sizeof rb);
+  const char *r = open_flags_write(fl) ? NULL : asset_redirect(p, rb, sizeof rb);
   if (r) {
-    int rmode = 0;
-    if (fl & O_CREAT) { va_list ap; va_start(ap, fl); rmode = va_arg(ap, int); va_end(ap); }
-    int fd = open(r, fl, rmode);
+    int fd = open(r, fl);
     if (g_dllog) fprintf(stderr, "[open-redir%s] %s -> %s\n", fd < 0 ? "-MISS" : "", p, r);
     if (g_guidlog && p && strstr(p, "unity_app_guid")) {
       g_guid_fd = fd;
@@ -767,8 +776,13 @@ static int my_open(const char *p, int fl, ...) {
     }
     return fd;
   }
-  va_list ap; va_start(ap, fl); int mo = va_arg(ap, int); va_end(ap);
-  int fd = open(p, fl, mo);
+  int fd;
+  if (fl & O_CREAT) {
+    va_list ap; va_start(ap, fl); int mo = va_arg(ap, int); va_end(ap);
+    fd = open(p, fl, mo);
+  } else {
+    fd = open(p, fl);
+  }
   if (g_dllog && p) fprintf(stderr, "[open%s] %s\n", fd < 0 ? "-MISS" : "", p);
   if (g_guidlog && p && strstr(p, "unity_app_guid")) {
     g_guid_fd = fd;
@@ -3053,13 +3067,63 @@ static int corestr_get(const void *s, char *out, int max) {
 }
 /* PC_PADHOOK: hook do mount do datapack (libunity+0x63f308). Loga a string que ele busca por
    "UnityDataAssetPack" (String::find @0x417bfc; -1 → não monta → datapack não carrega). */
-static void *(*g_orig_mount)(void *);
-void *my_mount_hook(void *x0) {
+static uintptr_t (*g_orig_mount)(void *);
+uintptr_t my_mount_hook(void *x0) {
   char buf[320]; corestr_get(x0, buf, sizeof buf);
   fprintf(stderr, "[PAD] mount(0x63f308) entrada str='%s'\n", buf); fsync(2);
-  void *r = g_orig_mount(x0);
-  fprintf(stderr, "[PAD] mount retornou %p\n", r); fsync(2);
+  uintptr_t r = g_orig_mount(x0);
+  fprintf(stderr, "[PAD] mount retornou 0x%lx\n", (unsigned long)r); fsync(2);
   return r;
+}
+static void corestr_set_short(void *s, const char *text) {
+  unsigned char *p = (unsigned char *)s;
+  size_t len = text ? strlen(text) : 0;
+  if (len > 23) len = 23;
+  memset(p, 0, 48);
+  if (len) memcpy(p, text, len);
+  p[24] = (unsigned char)(24 - len);
+  p[32] = 1;
+}
+static int g_pc_mount_tries;
+static int g_pc_mount_done;
+static int pc_mount_verbose(void) {
+  return getenv("PC_FORCEMOUNT") || getenv("PC_MOUNTLOG");
+}
+static uintptr_t pc_force_mount_datapack_once(const char *why) {
+  if (!g_unity_base) return 0;
+  unsigned char pack[48];
+  corestr_set_short(pack, "UnityDataAssetPack");
+  uintptr_t (*mount_pack)(void *) = (uintptr_t (*)(void *))(g_unity_base + 0x63f308);
+  if (pc_mount_verbose()) {
+    fprintf(stderr, "[PC_AUTOMOUNT] chamando mount UnityDataAssetPack (%s, f=%d)\n",
+            why ? why : "manual", g_render_frame);
+    fsync(2);
+  }
+  uintptr_t r = mount_pack(pack);
+  if (pc_mount_verbose() || r)
+    fprintf(stderr, "[PC_AUTOMOUNT] mount UnityDataAssetPack -> 0x%lx\n", (unsigned long)r);
+  if (pc_mount_verbose() || r) fsync(2);
+  if (r) g_pc_mount_done = 1;
+  return r;
+}
+static void pc_force_mount_datapack(void) {
+  (void)pc_force_mount_datapack_once("early");
+}
+void pc_asset_pack_completed(const char *pack_name) {
+  if (!pack_name || strcmp(pack_name, "UnityDataAssetPack") != 0) return;
+  if (!getenv("PC_FORCEMOUNT") && !getenv("PC_AUTOMOUNT")) return;
+  if (!g_pc_mount_done && g_pc_mount_tries < 8) g_pc_mount_tries = 8;
+  if (pc_mount_verbose()) {
+    fprintf(stderr, "[PC_AUTOMOUNT] PAD completed para %s; mount pendente=%d f=%d\n",
+            pack_name, g_pc_mount_tries, g_render_frame);
+    fsync(2);
+  }
+  if (!g_pc_mount_done) (void)pc_force_mount_datapack_once("pad-completed");
+}
+static void pc_force_mount_pump(void) {
+  if (g_pc_mount_done || g_pc_mount_tries <= 0) return;
+  g_pc_mount_tries--;
+  (void)pc_force_mount_datapack_once("pump");
 }
 /* PC_WREG: captura o layout do descritor de worker (RegisterWorkerThread @0x63a260) p/ forjar
    o registro da MAIN. Dumpa os 1ºs bytes do descritor + o lock em [+40]. */
@@ -4434,6 +4498,302 @@ static void menuspy_install(uintptr_t base) {
   fprintf(stderr, "[MENUSPY] hooks SlotSelectScreen instalados\n"); fsync(2);
 }
 
+static void pc_i2str(void *s, char *buf, int max) {
+  if (!buf || max <= 0) return;
+  buf[0] = 0;
+  if (!s) return;
+  int len = *(int *)((char *)s + 0x10);
+  if (len < 0) len = 0;
+  if (len > max - 1) len = max - 1;
+  unsigned short *u = (unsigned short *)((char *)s + 0x14);
+  int n = 0;
+  for (int i = 0; i < len && n < max - 1; i++)
+    buf[n++] = (u[i] < 128) ? (char)u[i] : '?';
+  buf[n] = 0;
+}
+
+static void (*ls_orig_init)(void *, void *);
+static void (*ls_orig_update)(void *, float, int, void *);
+static int (*ls_orig_reqended)(void *, void *);
+static void (*ls_orig_startaudio)(void *, void *);
+static void *(*ls_orig_audioasync)(void *, void *, void *);
+static void *(*ls_orig_res_async_internal)(void *, void *, void *);
+static void *(*ls_orig_res_async)(void *, void *, void *);
+static void *(*ls_orig_res_async_gen)(void *, void *);
+static void *(*ls_orig_res_load_gen)(void *, void *);
+static void ls_hook_init(void *self, void *method) {
+  fprintf(stderr, "[LOADSPY] CPCSLoadingState.init self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ls_orig_init(self, method);
+}
+static void ls_hook_update(void *self, float dt, int paused, void *method) {
+  static int n;
+  if (n++ < 12 || (g_render_frame % 120) == 0)
+    fprintf(stderr, "[LOADSPY] CPCSLoadingState.update self=%p dt=%.3f paused=%d list=%p timer=%.3f f=%d\n",
+            self, dt, paused & 1, self ? *(void **)((char *)self + 0x248) : NULL,
+            self ? *(float *)((char *)self + 0x250) : 0.0f, g_render_frame);
+  ls_orig_update(self, dt, paused, method);
+}
+static int ls_hook_reqended(void *self, void *method) {
+  int r = ls_orig_reqended(self, method);
+  static int n;
+  if (n++ < 40 || r)
+    fprintf(stderr, "[LOADSPY] resourceRequestsEnded -> %d self=%p list=%p f=%d\n",
+            r, self, self ? *(void **)((char *)self + 0x248) : NULL, g_render_frame);
+  fsync(2);
+  return r;
+}
+static void ls_hook_startaudio(void *self, void *method) {
+  fprintf(stderr, "[LOADSPY] startLoadingAudioClips self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ls_orig_startaudio(self, method);
+}
+static void *ls_hook_audioasync(void *self, void *path, void *method) {
+  char p[180]; pc_i2str(path, p, sizeof p);
+  fprintf(stderr, "[LOADSPY] CAudioManager.loadAudioClipAsync(\"%s\") self=%p f=%d\n", p, self, g_render_frame); fsync(2);
+  void *r = ls_orig_audioasync(self, path, method);
+  fprintf(stderr, "[LOADSPY]   -> ResourceRequest=%p\n", r); fsync(2);
+  return r;
+}
+static void *ls_hook_res_async_internal(void *path, void *type, void *method) {
+  char p[180]; pc_i2str(path, p, sizeof p);
+  fprintf(stderr, "[LOADSPY] ResourcesAPIInternal.LoadAsyncInternal(\"%s\", type=%p) f=%d\n", p, type, g_render_frame); fsync(2);
+  void *r = ls_orig_res_async_internal(path, type, method);
+  fprintf(stderr, "[LOADSPY]   internal -> %p\n", r); fsync(2);
+  return r;
+}
+static void *ls_hook_res_async(void *path, void *type, void *method) {
+  char p[180]; pc_i2str(path, p, sizeof p);
+  fprintf(stderr, "[LOADSPY] Resources.LoadAsync(\"%s\", type=%p) f=%d\n", p, type, g_render_frame); fsync(2);
+  void *r = ls_orig_res_async(path, type, method);
+  fprintf(stderr, "[LOADSPY]   public -> %p\n", r); fsync(2);
+  return r;
+}
+static void *ls_hook_res_async_gen(void *path, void *method) {
+  char p[180]; pc_i2str(path, p, sizeof p);
+  fprintf(stderr, "[LOADSPY] Resources.LoadAsync<T>(\"%s\") f=%d\n", p, g_render_frame); fsync(2);
+  void *r = ls_orig_res_async_gen(path, method);
+  fprintf(stderr, "[LOADSPY]   generic -> %p\n", r); fsync(2);
+  return r;
+}
+static void *ls_hook_res_load_gen(void *path, void *method) {
+  char p[180]; pc_i2str(path, p, sizeof p);
+  fprintf(stderr, "[LOADSPY] Resources.Load<T>(\"%s\") f=%d\n", p, g_render_frame); fsync(2);
+  void *r = ls_orig_res_load_gen(path, method);
+  fprintf(stderr, "[LOADSPY]   load<T> -> %p\n", r); fsync(2);
+  return r;
+}
+static void loadspy_install(uintptr_t base) {
+  struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
+    {0x1654B28, (void *)ls_hook_init,               (void **)&ls_orig_init,               "CPCSLoadingState.init"},
+    {0x1654DE4, (void *)ls_hook_update,             (void **)&ls_orig_update,             "CPCSLoadingState.update"},
+    {0x16550A0, (void *)ls_hook_reqended,           (void **)&ls_orig_reqended,           "CPCSLoadingState.resourceRequestsEnded"},
+    {0x16552AC, (void *)ls_hook_startaudio,         (void **)&ls_orig_startaudio,         "CPCSLoadingState.startLoadingAudioClips"},
+    {0x16384D4, (void *)ls_hook_audioasync,         (void **)&ls_orig_audioasync,         "CAudioManager.loadAudioClipAsync"},
+    {0x29C7080, (void *)ls_hook_res_async_internal, (void **)&ls_orig_res_async_internal, "ResourcesAPIInternal.LoadAsyncInternal"},
+    {0x29C7468, (void *)ls_hook_res_async,          (void **)&ls_orig_res_async,          "Resources.LoadAsync"},
+    {0x190C064, (void *)ls_hook_res_load_gen,       (void **)&ls_orig_res_load_gen,       "Resources.Load<T>"},
+    {0x190C1A8, (void *)ls_hook_res_async_gen,      (void **)&ls_orig_res_async_gen,      "Resources.LoadAsync<T>"},
+  };
+  for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    void *tr = mk_tramp(base + T[i].rva, T[i].nm);
+    if (!tr) { fprintf(stderr, "[LOADSPY] tramp %s falhou\n", T[i].nm); continue; }
+    *T[i].orig = tr;
+    hook_arm64(base + T[i].rva, (uintptr_t)T[i].hook);
+  }
+  fprintf(stderr, "[LOADSPY] hooks instalados\n"); fsync(2);
+}
+
+/* ===== CUP_STATESPY: estado inicial do Pixel Cup =====
+ * Se CPCSLoadingState nao dispara, o jogo ainda esta preso antes da tela de loading.
+ * Loga a maquina de estados sem alterar fluxo. */
+static void ss_state_line(const char *tag, void *game) {
+  void *st = game ? *(void **)((char *)game + 0x30) : NULL;       /* CGame.mState */
+  void *stage = game ? *(void **)((char *)game + 0x110) : NULL;   /* mCurrentStageState */
+  int state = st ? *(int *)((char *)st + 0x10) : -1;
+  int prev = st ? *(int *)((char *)st + 0x14) : -1;
+  float tm = st ? *(float *)((char *)st + 0x18) : 0.0f;
+  int paused = game ? (*(unsigned char *)((char *)game + 0x139) & 1) : -1;
+  int trans = game ? (*(unsigned char *)((char *)game + 0x13A) & 1) : -1;
+  fprintf(stderr,
+          "[STATESPY] %s game=%p mState=%p/%s state=%d prev=%d t=%.3f stage=%p/%s paused=%d trans=%d f=%d\n",
+          tag, game, st, il2cpp_classname(st), state, prev, tm,
+          stage, il2cpp_classname(stage), paused, trans, g_render_frame);
+  fsync(2);
+}
+
+static void (*ss_orig_cpcs_awake)(void *, void *);
+static void (*ss_orig_cpcs_start)(void *, void *);
+static void (*ss_orig_cpcs_update)(void *, void *);
+static void (*ss_orig_cpcs_upd2)(void *, float, int, void *);
+static void (*ss_orig_cpcs_setstate)(void *, void *, int, void *);
+static void (*ss_orig_cpcs_create_loading)(void *, void *);
+static void (*ss_orig_cpcs_destroy_loading)(void *, void *);
+static void (*ss_orig_game_awake)(void *, void *);
+static void (*ss_orig_init_vc)(void *, void *);
+static void *(*ss_orig_input_inst)(void *);
+static void (*ss_orig_input_postinit)(void *, void *);
+static void (*ss_orig_input_ctor)(void *, void *);
+static void *(*ss_orig_gameobject_find)(void *, void *);
+static void (*ss_orig_game_seteffect)(void *, void *, int, float, int, void *, void *, float, void *, void *);
+static void (*ss_orig_bat_init)(void *, void *);
+static void (*ss_orig_bat_update)(void *, float, int, void *);
+static void (*ss_orig_bat_setstate)(void *, int, void *);
+static void (*ss_orig_bat_goload)(void *, void *);
+static void (*ss_raise_null_real)(void);
+static void ss_hook_nullref(void) {
+  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+  static unsigned n;
+  if (n++ < 96) {
+    if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000)
+      fprintf(stderr, "[STATESPY] NullReference caller=il2cpp+0x%lx f=%d\n", ra - g_il2cpp_base, g_render_frame);
+    else
+      fprintf(stderr, "[STATESPY] NullReference caller=%p f=%d\n", (void *)ra, g_render_frame);
+    fsync(2);
+  }
+  ss_raise_null_real();
+  __builtin_unreachable();
+}
+
+static void ss_hook_cpcs_awake(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CPCSGame.Awake ENTER self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_cpcs_awake(self, method);
+  ss_state_line("CPCSGame.Awake EXIT", self);
+}
+static void ss_hook_cpcs_start(void *self, void *method) {
+  ss_state_line("CPCSGame.Start ENTER", self);
+  ss_orig_cpcs_start(self, method);
+  ss_state_line("CPCSGame.Start EXIT", self);
+}
+static void ss_hook_cpcs_update(void *self, void *method) {
+  static unsigned n;
+  if (n++ < 24 || (g_render_frame % 120) == 0) ss_state_line("CPCSGame.Update ENTER", self);
+  ss_orig_cpcs_update(self, method);
+}
+static void ss_hook_cpcs_upd2(void *self, float dt, int paused, void *method) {
+  static unsigned n;
+  if (n++ < 24 || (g_render_frame % 120) == 0)
+    fprintf(stderr, "[STATESPY] CPCSGame.update dt=%.3f paused=%d f=%d\n", dt, paused & 1, g_render_frame);
+  ss_orig_cpcs_upd2(self, dt, paused, method);
+}
+static void ss_hook_cpcs_setstate(void *self, void *st, int cover, void *method) {
+  fprintf(stderr, "[STATESPY] CPCSGame.setState new=%p/%s cover=%d f=%d\n",
+          st, il2cpp_classname(st), cover & 1, g_render_frame); fsync(2);
+  ss_orig_cpcs_setstate(self, st, cover, method);
+  ss_state_line("CPCSGame.setState EXIT", self);
+}
+static void ss_hook_cpcs_create_loading(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CPCSGame.createLoadingScreen self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_cpcs_create_loading(self, method);
+}
+static void ss_hook_cpcs_destroy_loading(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CPCSGame.destroyLoadingScreen self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_cpcs_destroy_loading(self, method);
+}
+static void ss_hook_game_awake(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CGame.Awake ENTER self=%p/%s f=%d\n", self, il2cpp_classname(self), g_render_frame); fsync(2);
+  ss_orig_game_awake(self, method);
+  ss_state_line("CGame.Awake EXIT", self);
+}
+static void ss_hook_init_vc(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CPCSGame.initVirtualControllers ENTER self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_init_vc(self, method);
+  fprintf(stderr, "[STATESPY] CPCSGame.initVirtualControllers EXIT detected=%d list=%p f=%d\n",
+          self ? (*(unsigned char *)((char *)self + 0x222) & 1) : -1,
+          self ? *(void **)((char *)self + 0x228) : NULL, g_render_frame);
+  fsync(2);
+}
+static void *ss_hook_input_inst(void *method) {
+  fprintf(stderr, "[STATESPY] CInputManager.inst ENTER f=%d\n", g_render_frame); fsync(2);
+  void *r = ss_orig_input_inst(method);
+  fprintf(stderr, "[STATESPY] CInputManager.inst EXIT -> %p f=%d\n", r, g_render_frame); fsync(2);
+  return r;
+}
+static void ss_hook_input_postinit(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CInputManager.postInit ENTER self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_input_postinit(self, method);
+  fprintf(stderr, "[STATESPY] CInputManager.postInit EXIT self=%p f=%d\n", self, g_render_frame); fsync(2);
+}
+static void ss_hook_input_ctor(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] CInput.ctor ENTER self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_input_ctor(self, method);
+  fprintf(stderr, "[STATESPY] CInput.ctor EXIT self=%p f=%d\n", self, g_render_frame); fsync(2);
+}
+static void *ss_hook_gameobject_find(void *name, void *method) {
+  char n[96]; pc_i2str(name, n, sizeof n);
+  fprintf(stderr, "[STATESPY] GameObject.Find(\"%s\") f=%d\n", n, g_render_frame); fsync(2);
+  void *r = ss_orig_gameobject_find(name, method);
+  fprintf(stderr, "[STATESPY] GameObject.Find(\"%s\") -> %p f=%d\n", n, r, g_render_frame); fsync(2);
+  return r;
+}
+static void ss_hook_game_seteffect(void *self, void *st, int effect, float fade, int show,
+                                   void *img, void *spr, float ypos, void *text, void *method) {
+  char s[96]; pc_i2str(text, s, sizeof s);
+  fprintf(stderr,
+          "[STATESPY] CGame.setStateWithEffect new=%p/%s effect=%d fade=%.3f show=%d text=\"%s\" f=%d\n",
+          st, il2cpp_classname(st), effect, fade, show & 1, s, g_render_frame);
+  fsync(2);
+  ss_orig_game_seteffect(self, st, effect, fade, show, img, spr, ypos, text, method);
+}
+static void ss_hook_bat_init(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] Batovi.init self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_bat_init(self, method);
+  fprintf(stderr, "[STATESPY] Batovi.init EXIT state=%d time=%.3f logo=%p f=%d\n",
+          self ? *(int *)((char *)self + 0x10) : -1,
+          self ? *(float *)((char *)self + 0x18) : 0.0f,
+          self ? *(void **)((char *)self + 0x248) : NULL, g_render_frame);
+  fsync(2);
+}
+static void ss_hook_bat_update(void *self, float dt, int paused, void *method) {
+  static unsigned n;
+  if (n++ < 36 || (g_render_frame % 120) == 0)
+    fprintf(stderr, "[STATESPY] Batovi.update state=%d time=%.3f dt=%.3f paused=%d f=%d\n",
+            self ? *(int *)((char *)self + 0x10) : -1,
+            self ? *(float *)((char *)self + 0x18) : 0.0f, dt, paused & 1, g_render_frame);
+  ss_orig_bat_update(self, dt, paused, method);
+}
+static void ss_hook_bat_setstate(void *self, int st, void *method) {
+  fprintf(stderr, "[STATESPY] Batovi.setState(%d) old=%d time=%.3f f=%d\n",
+          st, self ? *(int *)((char *)self + 0x10) : -1,
+          self ? *(float *)((char *)self + 0x18) : 0.0f, g_render_frame);
+  fsync(2);
+  ss_orig_bat_setstate(self, st, method);
+}
+static void ss_hook_bat_goload(void *self, void *method) {
+  fprintf(stderr, "[STATESPY] Batovi.goToLoadingScreen self=%p f=%d\n", self, g_render_frame); fsync(2);
+  ss_orig_bat_goload(self, method);
+}
+static void statespy_install(uintptr_t base) {
+  struct { uintptr_t rva; void *hook; void **orig; const char *nm; } T[] = {
+    {0x14D0C08, (void *)ss_hook_cpcs_awake,           (void **)&ss_orig_cpcs_awake,           "CPCSGame.Awake"},
+    {0x14D1480, (void *)ss_hook_cpcs_start,           (void **)&ss_orig_cpcs_start,           "CPCSGame.Start"},
+    {0x14D154C, (void *)ss_hook_cpcs_update,          (void **)&ss_orig_cpcs_update,          "CPCSGame.Update"},
+    {0x14D1838, (void *)ss_hook_cpcs_upd2,            (void **)&ss_orig_cpcs_upd2,            "CPCSGame.update"},
+    {0x14D19E4, (void *)ss_hook_cpcs_setstate,        (void **)&ss_orig_cpcs_setstate,        "CPCSGame.setState"},
+    {0x14D1F00, (void *)ss_hook_cpcs_create_loading,  (void **)&ss_orig_cpcs_create_loading,  "CPCSGame.createLoadingScreen"},
+    {0x14D1F28, (void *)ss_hook_cpcs_destroy_loading, (void **)&ss_orig_cpcs_destroy_loading, "CPCSGame.destroyLoadingScreen"},
+    {0x1645034, (void *)ss_hook_game_awake,           (void **)&ss_orig_game_awake,           "CGame.Awake"},
+    {0x14D129C, (void *)ss_hook_init_vc,              (void **)&ss_orig_init_vc,              "CPCSGame.initVirtualControllers"},
+    {0x1720278, (void *)ss_hook_input_inst,           (void **)&ss_orig_input_inst,           "CInputManager.inst"},
+    {0x1720C98, (void *)ss_hook_input_postinit,       (void **)&ss_orig_input_postinit,       "CInputManager.postInit"},
+    {0x1800B90, (void *)ss_hook_input_ctor,           (void **)&ss_orig_input_ctor,           "CInput.ctor"},
+    {0x29CBDF0, (void *)ss_hook_gameobject_find,      (void **)&ss_orig_gameobject_find,      "GameObject.Find"},
+    {0x16479FC, (void *)ss_hook_game_seteffect,       (void **)&ss_orig_game_seteffect,       "CGame.setStateWithEffect"},
+    {0x13EF22C, (void *)ss_hook_bat_init,             (void **)&ss_orig_bat_init,             "Batovi.init"},
+    {0x13EF7A0, (void *)ss_hook_bat_update,           (void **)&ss_orig_bat_update,           "Batovi.update"},
+    {0x13EFB34, (void *)ss_hook_bat_setstate,         (void **)&ss_orig_bat_setstate,         "Batovi.setState"},
+    {0x13EF904, (void *)ss_hook_bat_goload,           (void **)&ss_orig_bat_goload,           "Batovi.goToLoadingScreen"},
+  };
+  for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    void *tr = mk_tramp(base + T[i].rva, T[i].nm);
+    if (!tr) { fprintf(stderr, "[STATESPY] tramp %s falhou\n", T[i].nm); continue; }
+    *T[i].orig = tr;
+    hook_arm64(base + T[i].rva, (uintptr_t)T[i].hook);
+  }
+  ss_raise_null_real = (void (*)(void))(base + 0x117ECCC);
+  hook_arm64(base + 0x11E0450, (uintptr_t)ss_hook_nullref);
+  fprintf(stderr, "[STATESPY] NullReference helper hookado\n"); fsync(2);
+  fprintf(stderr, "[STATESPY] hooks instalados\n"); fsync(2);
+}
+
 /* ===== CUP_STAGESPY (s14c): por que o conteúdo da fase (boss/cenário) não aparece? =====
  * Fase: player+chão+céu renderizam, boss+cenário FALTAM; só 29 draws/frame; 1 HIERFIX
  * (≠ problema do mapa). atlas_veggieslevel deployado. Pergunta-chave: os sprites do boss
@@ -5572,17 +5932,17 @@ int main(int argc, char **argv) {
     "__google_potentially_blocking_region_end", NULL };
   for (int i = 0; ndk_noop[i]; i++) patch_got(ndk_noop[i], (void *)ndk_stub0);
 
-  /* TER: bypass do "Not enough storage space to install required resources".
-   * RE (libunity): em 0x2d8fac `tbz w0,#0, 0x2d9068` — se a checagem de espaço/resources
-   * (0x22b7e0) retorna falso, pula pro bloco que monta o AlertDialog (string 0x9288ef).
-   * Esse bloco SÓ é alcançável por esse branch. NOP -> sempre segue o caminho de sucesso
-   * (dados já estão em bin/Data, lidos via AssetManager). */
-  if (!getenv("TER_NOSTORAGEPATCH")) {
+  /* Pixel Cup: bypass do "Not enough storage space to install required resources".
+   * RE (libunity 2022.3.62): 0x64134c `tbz w0,#0,0x641378`. Quando a checagem
+   * de resources/storage falha, o bloco em 0x6413ac monta o AlertDialog usando
+   * a string rodata 0xd38af. NOP -> segue o fluxo de sucesso; os dados ja estao
+   * deployados em bin/Data e assets/bin/Data. */
+  if (getenv("PC_STORAGEPATCH") && !getenv("TER_NOSTORAGEPATCH")) {
     extern void so_make_text_writable(void), so_make_text_executable(void);
     so_make_text_writable();
-    *(uint32_t *)((uintptr_t)text_base + 0x2d8fac) = 0xd503201fu; /* NOP */
+    *(uint32_t *)((uintptr_t)text_base + 0x64134c) = 0xd503201fu; /* NOP */
     so_make_text_executable(); so_flush_caches();
-    fprintf(stderr, "[TER] storage-check 0x2d8fac (tbz->dialog) NOPado\n");
+    fprintf(stderr, "[PC] storage/resources check 0x64134c (tbz->dialog) NOPado\n");
   }
 
   /* O FIX REAL do null-deref do Enlighten é o `memalign` (acima, deixou de ser stub).
@@ -5600,16 +5960,20 @@ int main(int argc, char **argv) {
      Il2CPP"). Mas NOS ja' carregamos libil2cpp.so no F1. Forca retorno 1 (sucesso):
        mov w0,#1 ; ret  */
   if (getenv("CUP_FORCEIL2")) {
+    so_make_text_writable();
     *(uint32_t *)((uintptr_t)text_base + 0x357938) = 0x52800020u; /* mov w0,#1 */
     *(uint32_t *)((uintptr_t)text_base + 0x35793c) = 0xd65f03c0u; /* ret */
+    so_make_text_executable(); so_flush_caches();
     fprintf(stderr, "[FORCEIL2] 0x357938 -> mov w0,#1; ret\n");
   }
   /* CUP_NOEXTRACT: a extracao de recursos do APK (0x94184c) copia de um VFS source
      (o APK) que nao temos -> falha ("Failed to extract resources"). Mas os assets
      JA estao deployados em bin/Data/. Forca a extracao reportar sucesso. */
   if (getenv("CUP_NOEXTRACT")) {
+    so_make_text_writable();
     *(uint32_t *)((uintptr_t)text_base + 0x94184c) = 0x52800020u; /* mov w0,#1 */
     *(uint32_t *)((uintptr_t)text_base + 0x941850) = 0xd65f03c0u; /* ret */
+    so_make_text_executable(); so_flush_caches();
     fprintf(stderr, "[NOEXTRACT] 0x94184c -> mov w0,#1; ret\n");
   }
 
@@ -5911,6 +6275,8 @@ int main(int argc, char **argv) {
       hook_arm64(g_il2cpp_base + 0x9A619C, (uintptr_t)my_inputwait_cr);
       fprintf(stderr, "[CRSPY] hooks start_cr(0x9A58D0 $PC+0xBC) + inputwait(0x9A619C $PC+0x1C)\n");
     }
+    if (getenv("CUP_LOADSPY")) loadspy_install(g_il2cpp_base);
+    if (getenv("CUP_STATESPY")) statespy_install(g_il2cpp_base);
     if (getenv("CUP_BOOTSPY")) bootspy_install(g_il2cpp_base);
     if (getenv("CUP_MENUSPY")) menuspy_install(g_il2cpp_base);
     /* CUP_FORCESTARTCR: CupheadStartScene.Start (0x9A55CC) faz 3 checks
@@ -6227,6 +6593,7 @@ int main(int argc, char **argv) {
     else fprintf(stderr, "[PC_PADHOOK] FALHA hook 0x63f308\n");
     fsync(2);
   }
+  if (getenv("PC_FORCEMOUNT")) pc_force_mount_datapack();
   if (getenv("PC_QREDIR") && g_unity_base) {
     if (unity_install_hook4(0xd6e410, (void *)my_d6e410, (void **)&g_orig_d6e410))
       fprintf(stderr, "[PC_QREDIR] d6e410 hookado (main->fila de worker drenada)\n");
@@ -6320,6 +6687,7 @@ int main(int argc, char **argv) {
   int gc_pending = 0, gc_idle = 0;
   for (int f = 0; render && (max_f <= 0 || f < max_f); f++) {
     g_render_frame = f;  /* CUP_DRAWSPY: amarra os draws ao frame */
+    pc_force_mount_pump();
     if (memlog && f % 150 == 0) {
       static long last_swfree = -1; static int verbose_until = 0;
       long avail = -1, swfree = -1, rss = -1; char ln[128];
@@ -6404,7 +6772,7 @@ int main(int argc, char **argv) {
       if (getenv("CUP_DRAINWAIT_GFX")) *(volatile int *)((char *)g_preload_mgr + 0xE0) = 0;
       wait_all(g_preload_mgr);
     }
-    if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
+    if (getenv("CUP_FRAMELOG") && f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
     if (getenv("TER_GAMEPAD")) ter_gamepad_poll();   /* js0 -> estado lógico (antes do Update); hook é no swap */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
@@ -6419,7 +6787,8 @@ int main(int argc, char **argv) {
     } else {
       ((unsigned char (*)(void *, void *))render)(env, &thiz);
     }
-    if (f < 200) { fprintf(stderr, "<r%d]\n", f); dbg_sync(); }  /* SAIU do render */
+    if (getenv("CUP_FRAMELOG") && f < 200) { fprintf(stderr, "<r%d]\n", f); dbg_sync(); }  /* SAIU do render */
+    { extern void cup_pad_pump(void *env); cup_pad_pump(env); }  /* PAD: status adiado */
     opensles_shim_pump_callbacks();
     /* bombeia eventos SDL (foco/janela) p/ o input do Unity não esfomear */
     SDL_Event ev; while (SDL_PollEvent(&ev)) {}
@@ -6438,7 +6807,7 @@ int main(int argc, char **argv) {
     }
     /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
-    if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
+    if (getenv("CUP_FRAMELOG") && f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
     { /* FPS médio por janela de 600 frames (mede lag do mapa/fases p/ tuning) */
       static struct timespec t0; static int f0 = -1;
       if (f % 600 == 0) {

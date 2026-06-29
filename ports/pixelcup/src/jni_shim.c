@@ -125,6 +125,23 @@ static void *make_jstring(const char *value) {
 static const char *resolve_jstring(void *jstr) {
   return jstr ? (const char *)jstr : "";
 }
+static void *make_asset_pack_path_jstring(const char *pack_name) {
+  const char *base = getenv("CUP_PACKPATH");
+  if (!base || !*base) base = "/storage/roms/ports/pixelcup";
+  char out[512];
+  snprintf(out, sizeof out, "%s", base);
+  size_t n = strlen(out);
+  while (n > 1 && out[n - 1] == '/') out[--n] = 0;
+  if (pack_name &&
+      (!strcmp(pack_name, "UnityDataAssetPack") ||
+       !strcmp(pack_name, "UnityStreamingAssetsPack")) &&
+      !strstr(out, pack_name)) {
+    snprintf(out + n, sizeof out - n, "/%s", pack_name);
+  }
+  debugPrintf("jni_shim: getAssetPackPath(%s) -> %s\n",
+              pack_name ? pack_name : "?", out);
+  return make_jstring(out);
+}
 /* jnibridge proxy: dados no topo (usados cedo), funções definidas abaixo (precisam
    de jni_find_native). Ver bloco "EXECUTA Runnables postados". */
 static struct { void *obj; long handle; } g_proxies[512];
@@ -244,6 +261,11 @@ static void *barr_new(int len) {
   g_barr[i].buf = (unsigned char *)malloc(len > 0 ? len : 1);
   g_barr[i].len = len;
   return &g_barr[i];
+}
+static void *barr_from_bytes(const unsigned char *src, int len) {
+  struct barr *b = (struct barr *)barr_new(len);
+  if (b && src && len > 0) memcpy(b->buf, src, len);
+  return b;
 }
 static struct barr *barr_find(void *h) {
   if ((char *)h >= (char *)g_barr && (char *)h < (char *)(g_barr + MAX_BARR))
@@ -613,9 +635,19 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
                                    va_list ap) {
   (void)env;
   const char *nm = mid_name(methodID);
-  debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
+  if (getenv("JNI_VERBOSE") || !nm || strcmp(nm, "getDevices") != 0)
+    debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
   static int fake_obj;
   if (nm) {
+    if (strcmp(nm, "getBytes") == 0) {
+      const char *s = resolve_jstring(obj);
+      size_t len = s ? strlen(s) : 0;
+      static int gbn;
+      if (gbn++ < 16)
+        debugPrintf("jni_shim: String.getBytes -> %zu bytes (\"%s\")\n",
+                    len, s ? s : "");
+      return barr_from_bytes((const unsigned char *)s, (int)len);
+    }
     if (getenv("TER_KBFIX")) {
       if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
         void *name_j = va_arg(ap, void *);
@@ -659,9 +691,10 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     /* Play Asset Delivery: getAssetPackPath(name) -> dir REAL onde estão os arquivos
        do pack. Nossos dados estão em ASSET_BASE/bin/Data; Unity lê <path>/bin/Data/...
        então o path do pack é o ASSET_BASE (sem barra final). */
-    if (strcmp(nm, "getAssetPackPath") == 0)
-      return make_jstring(getenv("CUP_PACKPATH") ? getenv("CUP_PACKPATH")
-                          : "/storage/roms/ports/pixelcup");
+    if (strcmp(nm, "getAssetPackPath") == 0) {
+      void *name_j = va_arg(ap, void *);
+      return make_asset_pack_path_jstring(resolve_jstring(name_j));
+    }
     /* anti-pirataria: jogo checa se foi instalado da Play Store. "" trava/loopa. */
     if (strcmp(nm, "getInstallerPackageName") == 0)
       return make_jstring("com.android.vending");
@@ -822,6 +855,15 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
 static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (nm && strcmp(nm, "getBytes") == 0) {
+    const char *s = resolve_jstring(obj);
+    size_t len = s ? strlen(s) : 0;
+    return barr_from_bytes((const unsigned char *)s, (int)len);
+  }
+  if (nm && strcmp(nm, "getAssetPackPath") == 0) {
+    const char *pn = args ? resolve_jstring(args[0].l) : "";
+    return make_asset_pack_path_jstring(pn);
+  }
   if (nm && getenv("TER_KBFIX")) {
     if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
       const char *fnm = args ? resolve_jstring(args[0].l) : "";
@@ -989,6 +1031,33 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
   return r;
 }
 
+/* ── Play Asset Delivery: entrega adiada do status (CUP_PADDEFER) ──────────────
+   Numa execução Android real o Play Core entrega nativeStatusQueryResult fora do
+   contexto da chamada getAssetPackState (num frame seguinte, na main thread). Aqui
+   enfileiramos e disparamos da render thread via cup_pad_pump(). */
+#define CUP_PAD_MAX 8
+static struct { void *fn; void *name_j; int delay; } g_pad_q[CUP_PAD_MAX];
+static int g_pad_n;
+void cup_pad_queue(void *fn, void *name_j) {
+  int d = getenv("CUP_PADDELAY") ? atoi(getenv("CUP_PADDELAY")) : 2;
+  if (g_pad_n < CUP_PAD_MAX) {
+    g_pad_q[g_pad_n].fn = fn; g_pad_q[g_pad_n].name_j = name_j; g_pad_q[g_pad_n].delay = d;
+    g_pad_n++;
+  }
+}
+extern void pc_asset_pack_completed(const char *pack_name);
+void cup_pad_pump(void *env) {
+  static int fake_clazz2;
+  for (int i = 0; i < g_pad_n; ) {
+    if (g_pad_q[i].delay > 0) { g_pad_q[i].delay--; i++; continue; }
+    void *fn = g_pad_q[i].fn, *nj = g_pad_q[i].name_j;
+    g_pad_q[i] = g_pad_q[--g_pad_n];   /* remove ANTES de chamar (evita re-fire) */
+    debugPrintf("[PAD] deferred nativeStatusQueryResult COMPLETED (name_j=%p) na render thread\n", nj);
+    ((void (*)(void *, void *, void *, int, int))fn)(env, &fake_clazz2, nj, 4, 0);
+    pc_asset_pack_completed(resolve_jstring(nj));
+  }
+}
+
 /* CallVoidMethod (index 94) */
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
@@ -1044,8 +1113,18 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap
                 pn ? pn : "?", fn);
     if (fn) {
       static int fake_clazz;
-      /* (JNIEnv*, jclass, jstring name, jint status=4 COMPLETED, jint errorCode=0) */
-      ((void (*)(void *, void *, void *, int, int))fn)(env, &fake_clazz, name_j, 4, 0);
+      /* CUP_PADDEFER: numa execução real o Play Core entrega o status DEPOIS, num frame
+         seguinte, na main thread — NÃO re-entrante dentro do getAssetPackState. Entregar
+         síncrono aqui (antes do C# terminar de montar o AsyncOperation) faz o resultado
+         ser descartado → loading congela. Adia p/ a render thread (cup_pad_pump). */
+      if (getenv("CUP_PADDEFER")) {
+        extern void cup_pad_queue(void *fn, void *name_j);
+        cup_pad_queue(fn, name_j);
+      } else {
+        /* (JNIEnv*, jclass, jstring name, jint status=4 COMPLETED, jint errorCode=0) */
+        ((void (*)(void *, void *, void *, int, int))fn)(env, &fake_clazz, name_j, 4, 0);
+        pc_asset_pack_completed(pn);
+      }
     }
     return;
   }

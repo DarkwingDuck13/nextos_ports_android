@@ -53,11 +53,15 @@ fi
 [ -n "${PC_SCREEN_W:-}" ] && export TER_SCREEN_W="$PC_SCREEN_W"
 [ -n "${PC_SCREEN_H:-}" ] && export TER_SCREEN_H="$PC_SCREEN_H"
 
-# bringup: pular o NOP de storage-check (offset da libunity do Terraria, errado aqui).
-export TER_NOSTORAGEPATCH=1 CUP_NOLOGFILE=1
+# bringup: manter logs curtos. O storage/resource check do Pixel Cup e' patchado
+# no binario; TER_NOSTORAGEPATCH fica disponivel apenas para diagnostico.
+export CUP_NOLOGFILE=1
 # PC_INLINETASK = finge a fence per-object (destrava o boot); TER_CHOREO = dispara doFrame
 # (destrava o frame 3 que espera o Choreographer). Config que CHEGA na tela de loading.
 export PC_INLINETASK="${PC_INLINETASK:-1}" TER_CHOREO="${TER_CHOREO:-1}"
+# Monta o UnityDataAssetPack assim que o Play Asset Delivery fake reporta COMPLETED.
+# Sem isso, CBaseDataLoader chama Resources.Load<T> antes do datapack/resources.resource.
+export PC_AUTOMOUNT="${PC_AUTOMOUNT:-1}"
 export CUP_FRAMES="${CUP_FRAMES:-999999999}"
 echo "[run] Pixel Cup Soccer — fbdev Mali-450 ${PC_SCREEN_W:-?}x${PC_SCREEN_H:-?}"
 ./pixelcup > run.out 2>&1
