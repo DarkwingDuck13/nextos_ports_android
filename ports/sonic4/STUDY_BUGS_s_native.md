@@ -92,6 +92,14 @@ Hipótese: camada de UI/efeito do mini-game (contador de score do "press A") nã
 engine OU é agravada pelos nossos patches LOWFX (`SsDrawObjectShadow*`→0, bloom off) que
 desligam draws. Precisa repro on-device pra confirmar. Lead: rodar a fase SEM LOWFX
 (SONIC_LOWFX off) e ver se o score some — isola se é nosso patch ou o engine.
+**Leads de símbolo (libfox) p/ quando houver repro:** o "apertar A pra score" é provável um
+gimmick de SLOT/score — `GmGmkSlotInit`@0x392e28, `GmGmkStopperSlotInit`@0x39f67c,
+`GmPlayerAddScore`@0x3dc7ac, `GmPlayerComboScore`@0x3dc7c0, `OFPostScore`@0x2112ac. A
+persistência = o objeto de display de número do gimmick não é destruído/escondido ao acabar
+(achar o Exit/Release do GmGmk* correspondente e ver se é chamado). Patches suspeitos que
+poderiam pular um cleanup: `videoIsPlaying`→0 / `MediaPlayerisPlaying`→0 / `clMovie::isEnd`→1
+(se o clear do score for disparado por uma transição/movie). Testar 1o com LOWFX off + sem
+esses patches de movie, repro na fase.
 
 ---
 
