@@ -100,6 +100,15 @@ fi
 # achar o audivel: SONIC_AUDIODRIVER=alsa (ou pulseaudio/pipewire). Vazio=auto.
 export SONIC_AUDIOLOG="${SONIC_AUDIOLOG:-1}"
 
+# ======================= AUDIO (opcional) =======================
+# Deixe VAZIO p/ automatico (o jogo escolhe sozinho o driver audivel e ja PULA
+# os mudos "disk"/"dummy"). So mexa aqui se o seu device ficar SEM SOM:
+# escolha um de: alsa  |  pulseaudio  |  pipewire
+#   AUDIO_DRIVER="alsa"
+AUDIO_DRIVER="${AUDIO_DRIVER:-}"
+[ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
+# ================================================================
+
 ./sonic4
 
 pkill -x gptokeyb 2>/dev/null || true
