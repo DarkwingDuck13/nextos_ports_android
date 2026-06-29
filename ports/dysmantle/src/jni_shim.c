@@ -38,6 +38,7 @@ enum {
   MID_AUDIO_STREAM_PARAMS,
   MID_BATTERY_LEVEL,
   MID_BATTERY_STATUS,
+  MID_GET_RENDERER_TYPE,
   MID_GENERIC,
   FID_OBB_VERSIONCODE,
   FID_GENERIC,
@@ -115,6 +116,11 @@ static void *jni_GetMethodID(void *env, void *clazz, const char *name,
     return &g_method_tags[MID_BATTERY_LEVEL];
   if (strcmp(name, "getBatteryStatus") == 0)
     return &g_method_tags[MID_BATTERY_STATUS];
+  /* 🟢 GetRendererType: o motor pergunta ao Java qual renderer usar e compara com
+   * "opengl"; se não casar, tenta VULKAN (que não temos) -> adapter não inicializa
+   * -> "Failed to pre-initialize NEXUS" -> crash. Forçar "opengl" = caminho GL. */
+  if (strcmp(name, "GetRendererType") == 0)
+    return &g_method_tags[MID_GET_RENDERER_TYPE];
   return &g_method_tags[MID_GENERIC];
 }
 
@@ -165,6 +171,10 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
     debugPrintf("jni_shim:   -> AudioStreamParameters jintArray {%d,%d}\n",
                 g_audio_params[0], g_audio_params[1]);
     return g_audio_params;
+  }
+  if (methodID == &g_method_tags[MID_GET_RENDERER_TYPE]) {
+    debugPrintf("jni_shim:   -> GetRendererType = \"opengl\"\n");
+    return make_jstring("opengl");
   }
   static int fake_obj;
   return &fake_obj;

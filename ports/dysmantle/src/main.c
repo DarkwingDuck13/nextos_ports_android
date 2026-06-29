@@ -1129,6 +1129,39 @@ static void hook_getproductvalue(void) {
   fprintf(stderr, "hook: NXI_GetProductValue GOT %p orig=%p\n", (void *)slot, (void *)orig_getprod);
 }
 
+/* DIAG (DYSMANTLE_PREINIT_DIAG=1): loga o retorno de FileSystem::Initialize (×2) e
+   NXI_ReadProgramSettings p/ achar QUAL falha no NXI_PreInit ("Failed to pre-initialize
+   NEXUS"). Wrapper passa x0 (this) e devolve w0 idêntico. */
+static int (*orig_fsinit)(void *) = NULL;
+static int g_fsinit_n = 0;
+static int my_fsinit(void *self) {
+  int r = orig_fsinit ? orig_fsinit(self) : 0;
+  fprintf(stderr, "[PREINIT] FileSystem::Initialize() #%d -> %d\n", ++g_fsinit_n, r);
+  return r;
+}
+static int (*orig_readsettings)(void) = NULL;
+static int my_readsettings(void) {
+  int r = orig_readsettings ? orig_readsettings() : 0;
+  /* 🔑 1ª execução (R36S/devices novos): o settings file ainda não existe ->
+     NXI_ReadProgramSettings devolve 0 e o NXI_PreInit ABORTA ("Failed to
+     pre-initialize NEXUS" -> crash). Forçar 1 deixa o motor seguir com os
+     defaults. DEFAULT-ON (só muda 0->1; quando o settings existe, orig já
+     devolve 1 = sem efeito). Opt-out: DYSMANTLE_REAL_READSETTINGS. */
+  if (!r && !getenv("DYSMANTLE_REAL_READSETTINGS")) r = 1;
+  fprintf(stderr, "[PREINIT] NXI_ReadProgramSettings() -> %d\n", r);
+  return r;
+}
+static void hook_preinit_diag(void) {
+  uintptr_t s1 = so_find_rel_addr_safe("_ZN10FileSystem10InitializeEv");
+  if (s1) { uintptr_t *p = (uintptr_t *)s1; orig_fsinit = (void *)*p; *p = (uintptr_t)my_fsinit;
+            fprintf(stderr, "hook: FileSystem::Initialize GOT %p\n", (void *)s1); }
+  else fprintf(stderr, "hook: FileSystem::Initialize GOT NAO achado\n");
+  uintptr_t s2 = so_find_rel_addr_safe("_Z23NXI_ReadProgramSettingsv");
+  if (s2) { uintptr_t *p = (uintptr_t *)s2; orig_readsettings = (void *)*p; *p = (uintptr_t)my_readsettings;
+            fprintf(stderr, "hook: NXI_ReadProgramSettings GOT %p\n", (void *)s2); }
+  else fprintf(stderr, "hook: NXI_ReadProgramSettings GOT NAO achado\n");
+}
+
 /* 🏎️ RENDER SCALE nativo da engine: "render_scale" é um setting float
  * persistido (default 1.0) que escala o render interno. GOT-hook nos getters
  * do KeyValueStore: DYSMANTLE_RENDERSCALE=0.7 etc. (X5M 1080p GPU-bound). */
@@ -1364,6 +1397,7 @@ int main(int argc, char *argv[]) {
   hook_getproductvalue();
   hook_bitmaploader(); /* caça mundo-branco: nome+resultado de cada bitmap */
   hook_nxfs(); /* rastreia open/read do tile-floor no VFS */
+  hook_preinit_diag(); /* fix NXI_ReadProgramSettings->1 (1ª execução) + log FSinit */
   /* 🎮 Paddleboat MODO CONSOLE: o FrameStart da engine só chama
    * getControllerData quando o flag dirty (impl+64) está setado, e esse
    * flag depende do ciclo de eventos GameActivity (que no nosso shim não

@@ -100,17 +100,24 @@ void egl_shim_create_window(void) {
       SCREEN_WIDTH, SCREEN_HEIGHT,
       SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
   if (!egl_window) {
-    debugPrintf("egl_shim: SDL_CreateWindow FAILED: %s\n", SDL_GetError());
+    fprintf(stderr, "[egl_shim] SDL_CreateWindow FALHOU: %s\n", SDL_GetError());
     return;
   }
-  debugPrintf("egl_shim: Window created %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
+  fprintf(stderr, "[egl_shim] janela %dx%d criada (driver=%s)\n",
+          SCREEN_WIDTH, SCREEN_HEIGHT, SDL_GetCurrentVideoDriver());
 
   egl_share_root = gl_createcontext(egl_window);
   if (!egl_share_root) {
-    debugPrintf("egl_shim: SDL_GL_CreateContext FAILED: %s\n", SDL_GetError());
+    fprintf(stderr, "[egl_shim] SDL_GL_CreateContext FALHOU: %s\n", SDL_GetError());
     return;
   }
-  debugPrintf("egl_shim: GL share-root context created\n");
+  { /* diagnóstico: ES version/renderer REAIS do device (G31 etc) */
+    gl_makecurrent(egl_window, egl_share_root);
+    const GLubyte *(*gs)(unsigned) = (void *)SDL_GL_GetProcAddress("glGetString");
+    if (gs) fprintf(stderr, "[egl_shim] GL_VERSION='%s' RENDERER='%s' VENDOR='%s'\n",
+                    gs(0x1F02), gs(0x1F01), gs(0x1F00));
+  }
+  fprintf(stderr, "[egl_shim] GL share-root context OK\n");
   /* DYSMANTLE_SWAPINT no contexto novo (a engine pode nunca chamar
    * eglSwapInterval; default SDL=vsync 1 + limiter da engine = 30fps). */
   {

@@ -339,7 +339,28 @@ static unsigned egl_releasethread_stub(void) { return 1u; }
  * fixos (engine feita p/ ES3). A lista REAL do Mali Utgard estoura -> stack smash.
  * Retornamos strings curtas/controladas (ES 2.0 + extensões mínimas). */
 static const unsigned char *my_glGetString(unsigned name) {
-  fprintf(stderr, "[my_glGetString] name=0x%x\n", name);
+  /* 🟢 NATIVO ES3 (GLVER=3, ex: R36S/G31): o motor compara o GL_VERSION com o
+   * opengl_version do config; se forçarmos "ES 2.0" aqui com config ES3, o renderer
+   * NÃO inicializa ("Failed to pre-initialize NEXUS"). Devolvemos strings ES3
+   * CURTAS/controladas (sem a lista gigante real que estoura o buffer de pilha do
+   * motor). ETC2 é CORE no ES3 (não precisa estar na string). */
+  static int es3 = -1;
+  if (es3 < 0) { const char *g = getenv("DYSMANTLE_GLVER"); es3 = (g && g[0] == '3') ? 1 : 0; }
+  fprintf(stderr, "[my_glGetString] name=0x%x es3=%d\n", name, es3);
+  if (es3) {
+    switch (name) {
+    case 0x1F00: return (const unsigned char *)"ARM";                    /* GL_VENDOR */
+    case 0x1F01: return (const unsigned char *)"Mali-G31";               /* GL_RENDERER */
+    case 0x1F02: return (const unsigned char *)"OpenGL ES 3.2";          /* GL_VERSION */
+    case 0x8B8C: return (const unsigned char *)"OpenGL ES GLSL ES 3.20"; /* GLSL */
+    case 0x1F03: return (const unsigned char *)                          /* GL_EXTENSIONS (curado) */
+        "GL_OES_texture_npot GL_OES_depth_texture GL_OES_packed_depth_stencil "
+        "GL_OES_rgb8_rgba8 GL_OES_element_index_uint GL_OES_vertex_array_object "
+        "GL_EXT_texture_format_BGRA8888 GL_OES_compressed_ETC1_RGB8_texture "
+        "GL_EXT_color_buffer_half_float GL_OES_texture_half_float";
+    default: break;
+    }
+  }
   switch (name) {
   case 0x1F00: return (const unsigned char *)"NextOS";                 /* GL_VENDOR */
   case 0x1F01: return (const unsigned char *)"Mali-450 (GLES2)";       /* GL_RENDERER */
@@ -402,6 +423,22 @@ static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                       const void *) = NULL;
   rgl("glCompressedTexImage2D", (void **)&real);
   static unsigned (*gerr)(void) = NULL; rgl("glGetError", (void **)&gerr);
+  /* 🟢 ETC2 PASSTHROUGH (GPU ES3 que amostra ETC2 nativo: Mali-G31/R36S, etc): sobe
+   * os blocos ETC2 ORIGINAIS direto — SEM decode, SEM relabel p/ ETC1 — ~8× menos
+   * VRAM e zero CPU. CRUCIAL em device de RAM baixa (R36S 481MB) e o caminho NATIVO
+   * do motor (foi feito p/ ETC2-no-ES3). Decodifica só se o driver recusar. */
+  if (px && ifmt >= 0x9274 && ifmt <= 0x9279 &&
+      getenv("DYSMANTLE_ETC2_PASSTHROUGH")) {
+    if (gerr) while (gerr()) {}
+    if (real) real(tgt, lvl, ifmt, w, h, border, sz, px);
+    unsigned e = gerr ? gerr() : 0;
+    static int dn = 0;
+    if (dn < 8) { fprintf(stderr, "[ETC2PASS] 0x%x %dx%d lvl=%d err=0x%x\n", ifmt, w, h, lvl, e); dn++; }
+    if (!e) return;
+    unsigned char *rgba = etc2_decode_rgba(ifmt, w, h, px, sz); /* fallback */
+    if (rgba) { my_glTexImage2D(tgt, lvl, 0x1908, w, h, border, 0x1908, 0x1401, rgba); free(rgba); }
+    return;
+  }
   /* 🔑 ETC1 DIRETO: nosso .ktx opaco = conteúdo ETC1 rotulado ETC2-RGB (0x9274/75). O
    * Mali-450 AMOSTRA ETC1 nativo (0x8D64) -> sobe DIRETO, sem decodificar em runtime
    * (4bpp, zero CPU). Se o GL recusar (não devia), cai pro decode. As 0x9276-0x9279

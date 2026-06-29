@@ -15,8 +15,20 @@ XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 # (bakeado no cache na 1a vez) -> menos memoria / mais FPS. O fator vale pro cache E pro
 # runtime juntos. Mudar o valor RE-GERA o cache na 1a abertura seguinte (uma vez).
 #   1.0 = qualidade total (mais nitido, mais memoria)
-#   1.2 = leve            |  1.3 = RECOMENDADO (quase imperceptivel)  |  2.0 = max economia (1GB)
-export DYSMANTLE_TEXSCALE="${DYSMANTLE_TEXSCALE:-1.3}"
+#   1.2 = leve            |  1.3 = RECOMENDADO (quase imperceptivel)  |  3.0 = max economia
+# AUTO por RAM: device com POUCA memoria (< 1100 MB de RAM fisica, ex: R36S/RK3326 e
+# todos os 1GB-class -- a maioria reporta < 1.1GB de MemTotal apos a reserva de CMA/GPU)
+# usa 3.0 (senao da OOM ao carregar a fase: o mundo do DYSMANTLE estoura a VRAM/RAM).
+# Device com >= 1100 MB (2GB+) usa 1.3 (qualidade quase total). Override manual: setar
+# DYSMANTLE_TEXSCALE=N no ambiente antes de abrir.
+if [ -z "$DYSMANTLE_TEXSCALE" ]; then
+  _memkb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+  if [ -n "$_memkb" ] && [ "$_memkb" -lt 1126400 ]; then
+    export DYSMANTLE_TEXSCALE="3.0"   # < 1100 MB -> max economia
+  else
+    export DYSMANTLE_TEXSCALE="1.3"   # >= 1100 MB -> qualidade
+  fi
+fi
 # ============================================================
 # DLC (Underworld / Doomsday / Pets and Dungeons) -- automatico e seguro:
 # se voce TEM os DLC na sua copia legal, copie o seu SAVE do Android (com o
@@ -77,6 +89,28 @@ fi
 # um arquivo so. (Build: build_compat_gcc.sh dentro do container.)
 BIN="dysmantle"
 
+# ---------- PERFIL DE GPU/RAM (decide o caminho de textura) ----------
+# GPU moderna (KMSDRM, tem /dev/dri) = ES3 real (R36S Mali-G31, X5M G310, etc): caminho
+# NATIVO -> o motor carrega as .ktx ETC2 nativas e o driver as amostra DIRETO (ETC2
+# passthrough no binario), SEM fixpak/texbake/cache (~8x menos VRAM, zero CPU de decode).
+# Mali-450/Utgard (fbdev, sem /dev/dri) = ES2: caminho ETC1 (fixpak+texbake), como antes.
+DYS_RAM_KB=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
+# Device de POUCA RAM = MemTotal < 1100 MB (R36S/RK3326 ~480MB e todos os 1GB-class apos
+# a reserva de CMA). Nesses o mundo do DYSMANTLE estoura RAM+VRAM ao carregar a fase (OOM).
+DYS_LOWRAM=""
+if [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -lt 1126400 ]; then DYS_LOWRAM=1; fi
+if [ -e /dev/dri/card0 ]; then
+  DYS_NATIVE_ETC2=1
+  # 🚨 R36S (ES3 de POUCA RAM): o caminho ETC2 nativo CRASHA ao carregar a fase
+  # (ground-tiles .ktx: "LoadBitmapInternal -> 0" / "Loading bitmap ...ktx failed")
+  # E nao cabe na RAM. Validado 2026-06-29: cai pro caminho ES2 PROVADO (shader ES2 +
+  # TEXSCALE 3.0 + ISCALE 0.65 da cena) que chega no gameplay a 76fps. Devices ES3 com
+  # RAM folgada (X5M/2GB+) seguem no ETC2 nativo. Forcar ETC2: DYSMANTLE_FORCE_NATIVE_ETC2=1.
+  if [ -n "$DYS_LOWRAM" ] && [ -z "$DYSMANTLE_FORCE_NATIVE_ETC2" ]; then
+    DYS_NATIVE_ETC2=""
+  fi
+fi
+
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
 # Igual ao Bully/TMNT: a logica toda fica no tools/dysmantle_extract.src; aqui so
 # chamamos a JANELA de extracao (progressor). Ela extrai do APK e roda o fixpak
@@ -100,7 +134,7 @@ fi
 # ---------- REDE DE SEGURANCA: conserto de texturas se ainda nao foi feito ----------
 # Se os dados ja existem mas o conserto nunca rodou (ex: assets copiados na mao, ou
 # pacote full-data antigo), conserta agora -> garante que NUNCA fica branco/lavado.
-if [ -x "$GAMEDIR/fixpak" ] && [ ! -f "$GAMEDIR/.textures_fixed" ] && [ -f "$GAMEDIR/assets/data.pak" ]; then
+if [ -z "$DYS_NATIVE_ETC2" ] && [ -x "$GAMEDIR/fixpak" ] && [ ! -f "$GAMEDIR/.textures_fixed" ] && [ -f "$GAMEDIR/assets/data.pak" ]; then
   echo "Consertando texturas (1a vez, ~1-2 min)... nao desligue." > $CUR_TTY
   ( cd "$GAMEDIR" && LD_LIBRARY_PATH="/usr/lib:/lib:$GAMEDIR" $ESUDO ./fixpak assets/data.pak assets/data-gfx1200.pak ) && \
     $ESUDO touch "$GAMEDIR/.textures_fixed"
@@ -113,7 +147,7 @@ fi
 # Se o fator (DYSMANTLE_TEXSCALE) mudou desde o ultimo bake, RE-GERA (uma vez) p/ as dims
 # do cache casarem com o downscale do runtime. So-1x por escala (marcador .etc1_scale).
 BAKED_SCALE=$(cat "$GAMEDIR/.etc1_scale" 2>/dev/null)
-if [ -x "$GAMEDIR/texbake" ] && [ -f "$GAMEDIR/assets/data.pak" ] && \
+if [ -z "$DYS_NATIVE_ETC2" ] && [ -x "$GAMEDIR/texbake" ] && [ -f "$GAMEDIR/assets/data.pak" ] && \
    { [ ! -f "$GAMEDIR/etc1.cache" ] || [ "$BAKED_SCALE" != "$DYSMANTLE_TEXSCALE" ]; }; then
   echo "Convertendo texturas (escala $DYSMANTLE_TEXSCALE, 1a vez)... pode demorar, nao desligue." > $CUR_TTY
   $ESUDO rm -f "$GAMEDIR/etc1.cache" "$GAMEDIR/etc1.cache.tmpdata"*
@@ -133,8 +167,31 @@ export SDL_VIDEO_FULLSCREEN_DESKTOP=1
 # (Mali-450/Amlogic=PulseAudio, X5M=PipeWire, outros=alsa). Forçar alsa quebrava o HDMI
 # do Mali-450 ("Couldn't set audio channels"); deixar auto-detectar pega o pulse sozinho.
 export DYSMANTLE_ASSETS=assets
-# Shader ES2 (vale tb no ES3).
-export DYSMANTLE_GLVER=2.0
+if [ -n "$DYS_NATIVE_ETC2" ]; then
+  # 🟢 NATIVO (ES3): contexto/shaders ES3 reais; o motor carrega .ktx ETC2 nativas e o
+  # shim faz PASSTHROUGH (blocos ETC2 direto pro driver) — sem fixpak/etc1/decode.
+  export DYSMANTLE_GLVER="${DYSMANTLE_GLVER:-3.0}"
+  export DYSMANTLE_ETC2_PASSTHROUGH=1
+  # 🔑 o motor carrega as .ktx ETC2 (FORCE_ETC2 = IsTextureFormatSupported->1) e o
+  # nome do bitmap é redirecionado p/ <nome>.ktx (KTX_REDIRECT) onde o .ktx existe.
+  # Sem isso o mundo (ground-tiles) não carrega as texturas.
+  export DYSMANTLE_FORCE_ETC2=1
+  export DYSMANTLE_KTX_REDIRECT=1
+  # RAM baixa (<=1.25GB, ex: R36S 481MB): downscale interno da CENA (T2) p/ aliviar
+  # fill/VRAM do FBO de cena (~89% dos draws); a UI fica nativa. Override por env.
+  if [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -le 1310720 ]; then
+    export DYSMANTLE_ISCALE="${DYSMANTLE_ISCALE:-0.65}"
+  fi
+else
+  # Mali-450/Utgard (ES2) E R36S-low-RAM (ES3 rodando ES2): shader ES2.
+  export DYSMANTLE_GLVER="${DYSMANTLE_GLVER:-2.0}"
+  # Device de POUCA RAM (R36S etc): downscale interno da CENA (T2) tambem no caminho ES2
+  # -> alivia o FBO de cena (~89% dos draws), abre folga de RAM/VRAM no streaming de zona.
+  # Combina com o TEXSCALE 3.0 (texturas) -> chega no gameplay sem swap-death.
+  if [ -n "$DYS_LOWRAM" ]; then
+    export DYSMANTLE_ISCALE="${DYSMANTLE_ISCALE:-0.65}"
+  fi
+fi
 # 🧊 CACHE ETC1 OFFLINE: o binario sobe a ETC1 ja pronta no upload, VERIFICANDO o
 # conteudo (decodifica uma amostra e compara com o RGBA real) -> nunca sobe a textura
 # errada (anti-magenta); se o nome colide, cai pro RGBA8 correto. ZERO encode em runtime.
