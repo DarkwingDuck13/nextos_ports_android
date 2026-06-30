@@ -705,6 +705,14 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z22amPostEFDistortionDrawmPA16_fS0_");
     fprintf(stderr, "=== SONIC_NOLIGHTMASK: light-mask/distortion post-FX desligados ===\n");
   }
+  /* 💡 SONIC_NOPOSTFX (DIAG do cassino estourado): mata o EXECUTOR de post-effect
+     inteiro (_amPostEFExecEffect + amPostEFUpdate). Se as faixas/blow-up do cassino
+     sumirem -> é o sistema de post-effect (feixe de luz) acumulando. Isola a raiz. */
+  if (getenv("SONIC_NOPOSTFX")) {
+    patch_ret0("_Z19_amPostEFExecEffectl");
+    patch_ret0("_Z14amPostEFUpdatev");
+    fprintf(stderr, "=== SONIC_NOPOSTFX: executor de post-effect desligado ===\n");
+  }
   /* 💧 SONIC_NOWATERFX (opt-in, NÃO no LOWFX por default — mexe mais no visual):
      no-op nos EFEITOS extras de água (ripple/waterfall-split), mantendo a SUPERFÍCIE
      (a água não some). Reduz overdraw de alpha das cenas de água. */

@@ -411,11 +411,21 @@ static void log_draw_call(const char *kind, unsigned mode, int first, int count,
   }
 }
 
+static int g_fbo0clear = -1;
 static void my_glBindFramebuffer(unsigned t, unsigned fb) {
   static void(*r)(unsigned,unsigned); if(!r)r=rgl("glBindFramebuffer");
   if (t == 0x8D40) g_cur_fbo = fb;
   if (gllog_on()) { static int z=0; if(z<60){fprintf(stderr,"[GL] BindFramebuffer(0x%x, fbo=%u)\n",t,fb);z++;} }
   r(t,fb);
+  /* 🔧 SONIC_FBO0CLEAR: limpa o FBO 0 (tela final, que o engine NUNCA limpa -> smear)
+     UMA vez por frame, no exato momento em que o engine o liga (antes de compor nele). */
+  if (g_fbo0clear<0) g_fbo0clear = getenv("SONIC_FBO0CLEAR")?1:0;
+  if (g_fbo0clear && t==0x8D40 && fb==0) {
+    extern volatile unsigned long sonic_frame_for_imports;
+    static unsigned long last=~0UL;
+    if (sonic_frame_for_imports != last) { last = sonic_frame_for_imports;
+      static void(*c)(unsigned); if(!c)c=rgl("glClear"); c(0x4100); }
+  }
 }
 static void my_glClearColor(float a,float b,float c,float d){
   static void(*r)(float,float,float,float); if(!r)r=rgl("glClearColor");
