@@ -297,3 +297,15 @@ Shadows:
   - log confirmou `BULLY2_INPUT=gptk`;
   - log confirmou `AND_TouchEvent` resolvido e taps `next`/`prev` processados;
   - teste fisico do usuario indicou que L2/R2 voltou a trocar item/arma.
+
+## Gamedata / primeira execucao
+
+- O zip do port agora inclui `bully/gamedata/README.txt`, mas nao inclui dados
+  proprietarios.
+- O fluxo esperado e colocar APK/OBB legais em `bully/gamedata/`.
+- `tools/extract-bully-data.sh` procura primeiro em `gamedata/`, aceita APK
+  completo com `libGame.so` e `assets/data_*.zip(+.idx)`, e mantem APK/OBB no
+  lugar por padrao (`BULLY_DELETE_APK_AFTER_EXTRACT=0`).
+- O progressor da primeira execucao cobre a extracao e tambem a geracao de
+  `assets/bully2_patch.zip`; a tela so mostra `EXTRACTION COMPLETE` depois que
+  o patch de menu foi criado.

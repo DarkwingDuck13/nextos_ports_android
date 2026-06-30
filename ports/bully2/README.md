@@ -55,7 +55,12 @@ Escopo inicial:
   `data_4.zip` nem `data_4.zip.idx`. O patch inclui `resource_files.list` e o
   loader registra o zip por `ResourceManager::RegisterPatchZip`.
 
-BYO data: coloque um APK completo do Bully v1.4.311 em `ports/bully2` na primeira execucao. O helper `tools/extract-bully-data.sh` extrai `libGame.so`, `libc++_shared.so` e `assets/data_*.zip(+.idx)`.
+BYO data: coloque o APK/OBB legal do Bully v1.4.311 em
+`ports/bully2/gamedata` na primeira execucao. O helper
+`tools/extract-bully-data.sh` mostra o progressor, extrai `libGame.so`,
+`libc++_shared.so` e `assets/data_*.zip(+.idx)`, gera
+`assets/bully2_patch.zip` e so entao libera o jogo. O zip PortMaster deve
+conter todo o port, mas nunca os dados proprietarios do jogo.
 
 Este port pode usar o `ports/bully` antigo como referencia de fatos, mas a implementacao aqui deve continuar limpa e separada.
 
