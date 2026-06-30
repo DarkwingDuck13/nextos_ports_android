@@ -512,7 +512,8 @@ static void kz_teardown(void) {
   SDL_QuitSubSystem(SDL_INIT_VIDEO);
   SDL_Quit();
 }
-static void kz_term(int s) { (void)s; g_quit = 1; }
+static volatile int g_mus_threads_quit;  /* solta os poll-workers da musica no exit */
+static void kz_term(int s) { (void)s; g_quit = 1; g_mus_threads_quit = 1; }
 
 static int my_fileexists(const char *p) {
   if (!p) return 0;
@@ -769,7 +770,6 @@ static void* my_dthread_fn_noop(void *a) { (void)a; return NULL; }
  * (AddBufferedData splice -> Setup -> CheckSetup -> Run -> DecodeStream). Sem corrida com
  * o main thread (cada thread so mexe na PROPRIA fila, protegida pelo mutex interno). */
 static int (*g_stop_requested)(void*) = NULL;
-static volatile int g_mus_threads_quit = 0;
 static void* my_dthread_fn_poll(void *thread) {
   int log = getenv("HM_MUSLOG") != NULL;
   if (log) fprintf(stderr, "[mus] poll-worker iniciado thread=%p\n", thread);
