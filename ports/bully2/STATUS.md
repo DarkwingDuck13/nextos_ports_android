@@ -204,19 +204,39 @@ Shadows:
 - Padrao: `Off`.
 - Mapeamento:
   - `Off`: carrega todos os mapas;
-  - `Low`: pula mapas `_s.tex` (specular);
-  - `Medium`: pula mapas `_n.tex` (normal);
-  - `High`: pula `_s.tex` e `_n.tex`, equivalente ao `BULLY_TEX_LIGHT=1` antigo.
+  - `Low`: redireciona mapas `_s.tex` (specular) para `bully/blacktexture.tex`;
+  - `Medium`: redireciona mapas `_n.tex` (normal) para `bully/skinbase_n.tex`;
+  - `High`: redireciona `_s.tex` e `_n.tex`, equivalente ao
+    `BULLY_TEX_LIGHT=1` antigo, mas sem deixar asset ausente.
 - Persistencia: `light_profile.cfg`, com override por `BULLY2_TEX_LIGHT`.
 - Menu: o patcher agora gera `Textures` e `Light` no mesmo
-  `assets/bully2_patch.zip`; o binario sincroniza o texto por
-  `MenuSettings::UpdateOption("light", label, id)`.
+  `assets/bully2_patch.zip`; as linhas customizadas nao gravam `string(value)`
+  numerico, para evitar texto visual como `Medium1`/`Low1`.
 - Filtro nativo: em modo `BULLY2_NVAPK_MODE=native`, o port hooka
-  `OS_ZipFileOpen`, `NvAPKOpen` e `NvAPKOpenFromPack` apenas para negar esses
-  assets de detalhe quando o perfil pede. Em modo compat, o mesmo filtro roda em
-  `nv_open`.
-- Runtime: a troca chama `apply_light_profile_runtime()`, persiste o valor e
-  agenda o reload seletivo de texturas residentes com `min_dim=0`, para incluir
-  mapas pequenos de detalhe.
-- Falta validar no device: economia real de RAM por nivel e comportamento visual
-  ao alternar `Off/Low/Medium/High` durante gameplay longo.
+  `OS_ZipFileOpen`, `NvAPKOpen` e `NvAPKOpenFromPack` apenas para redirecionar
+  esses assets de detalhe quando o perfil pede. Em modo compat, o mesmo filtro
+  roda em `nv_open`.
+- O metodo rejeitado foi retornar "arquivo nao existe" para `_s/_n`: no streaming
+  real isso crashou em `sig=11 addr=0x10d5` logo apos a troca para `Low`, porque
+  o jogo espera receber um `Texture2D` valido para o material.
+- Runtime: a troca chama `apply_light_profile_runtime()`, persiste o valor pelo
+  menu e nao forca reload residente por padrao; o novo perfil vale para assets
+  streamados depois da troca. `BULLY2_TEX_LIGHT_RELOAD_ON_CHANGE` fica apenas
+  como diagnostico.
+- Testes Mali-450 com build glibc 2.30 hash
+  `8f2d8526ff34e8133ef5045e0ccb952768dcc4f1f40c66e3026f00d1891ceee0`:
+  - runtime `Off -> Low` no frame 1200: processo vivo ate frame 2100, swap 7 MB,
+    redirects `_s.tex -> bully/blacktexture.tex`;
+  - boot direto em `Low`: processo vivo ate frame 2100, swap 9 MB, redirects
+    especulares no streaming inicial;
+  - boot direto em `High`: processo vivo ate frame 2100, swap 13 MB, redirects
+    `_n.tex -> bully/skinbase_n.tex` e `_s.tex -> bully/blacktexture.tex`;
+  - runtime `Off -> High` no frame 1200: processo vivo ate frame 2100, swap
+    18 MB, redirects de normal/specular apos a troca.
+- Validacao do patch gerado pelo launcher:
+  `SettingRowTextureOption name="textures" ... string(textvalue)="Medium"` e
+  `SettingRowTextureOption name="light" ... string(textvalue)="Off"`, sem
+  `string(value)` nas linhas customizadas.
+- Ainda falta validacao visual longa pelo usuario em gameplay real para comparar
+  a qualidade de `Off/Low/Medium/High`; a estabilidade basica de boot/runtime
+  no Mali-450 ja foi validada.

@@ -4,6 +4,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+if [ -f device-target.env ]; then
+  # shellcheck disable=SC1091
+  source device-target.env
+fi
+
 DEVICE=${DEVICE:-root@192.168.31.154}
 GAMEDIR=${GAMEDIR:-/roms/ports/bully2}
 TEST_NAME=${TEST_NAME:-safe_$(date +%Y%m%d_%H%M%S)}

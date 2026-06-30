@@ -104,7 +104,7 @@ def update_existing_profile_row(xml, name, value, text):
         row = re.sub(r'^<SettingRowOption\b', "<SettingRowTextureOption", row)
         row = re.sub(r'\sstring\(value\)="[^"]*"', "", row)
         row = re.sub(r'\sstring\(textvalue\)="[^"]*"', "", row)
-        return '%s string(value)="%s" string(textvalue)="%s"/>' % (row, value, text)
+        return '%s string(textvalue)="%s"/>' % (row, text)
 
     return re.sub(
         r'(<SettingRow(?:Texture)?Option name="%s"[^>]*)/>' % re.escape(name),
@@ -136,7 +136,7 @@ def ensure_texture_template(xml, value, text):
     )
     texture_template = re.sub(
         r'string\(value\)="[^"]*"',
-        'string(value)="%s"' % value,
+        'string(value)=""',
         texture_template,
         count=1,
     )
@@ -152,9 +152,9 @@ def ensure_texture_template(xml, value, text):
 def profile_row(name, caption, value, text, y1, y2):
     return (
         '    <SettingRowTextureOption name="%s" caption="%s" '
-        'string(value)="%s" string(textvalue)="%s" '
+        'string(textvalue)="%s" '
         'y1="%.2f" y2="%.2f" opacity="1"/>\r\n'
-        % (name, caption, value, text, y1, y2)
+        % (name, caption, text, y1, y2)
     )
 
 

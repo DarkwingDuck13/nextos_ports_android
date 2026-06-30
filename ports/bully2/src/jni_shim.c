@@ -41,6 +41,7 @@ extern int bully_tex_runtime_half_min_dim(void);
 
 static void *make_callthrough(uintptr_t addr);
 static int current_texture_memory_used(void);
+static const char *first_env(const char *a, const char *b);
 
 #define DATA_PATH "."
 
@@ -921,6 +922,7 @@ static int nv_init(void *a, void *b, void *c) {
 }
 
 static volatile int g_tex_light_runtime = -1;
+static volatile int g_tex_resource_reload_active;
 
 static int ends_with_ci(const char *s, const char *suffix) {
   if (!s || !suffix)
@@ -1044,32 +1046,53 @@ static int tex_light_skip_kind(const char *path) {
   return 0;
 }
 
-static int tex_light_should_skip(const char *path, const char *source) {
+static const char *tex_light_redirect_path(const char *path,
+                                           const char *source) {
   int kind = tex_light_skip_kind(path);
   if (!kind)
-    return 0;
+    return NULL;
+  if (__atomic_load_n(&g_tex_resource_reload_active, __ATOMIC_ACQUIRE) > 0) {
+    static int reload_log_count;
+    int n = __atomic_fetch_add(&reload_log_count, 1, __ATOMIC_RELAXED);
+    if (n < 12 && env_enabled("BULLY2_TEX_LIGHT_LOG"))
+      fprintf(stderr,
+              "[light] allow %s during ResourceManager::Reload path=\"%s\"\n",
+              source ? source : "asset", path);
+    return NULL;
+  }
   int profile = current_light_profile_id();
-  int skip = 0;
+  int redirect = 0;
   if (profile == 1)
-    skip = (kind == 1);
+    redirect = (kind == 1);
   else if (profile == 2)
-    skip = (kind == 2);
+    redirect = (kind == 2);
   else if (profile >= 3)
-    skip = 1;
-  if (skip) {
+    redirect = 1;
+  if (redirect) {
+    const char *dummy =
+        (kind == 1)
+            ? first_env("BULLY2_TEX_LIGHT_SPECULAR_DUMMY",
+                        "BULLY_TEX_LIGHT_SPECULAR_DUMMY")
+            : first_env("BULLY2_TEX_LIGHT_NORMAL_DUMMY",
+                        "BULLY_TEX_LIGHT_NORMAL_DUMMY");
+    if (!dummy || !*dummy)
+      dummy = (kind == 1) ? "bully/blacktexture.tex" : "bully/skinbase_n.tex";
     static int log_count;
     int n = __atomic_fetch_add(&log_count, 1, __ATOMIC_RELAXED);
     if (n < 24)
-      fprintf(stderr, "[light] skip %s detail=%s profile=%s path=\"%s\"\n",
+      fprintf(stderr,
+              "[light] redirect %s detail=%s profile=%s path=\"%s\" -> \"%s\"\n",
               source ? source : "asset", kind == 1 ? "specular" : "normal",
-              light_profile_menu_name(profile), path);
+              light_profile_menu_name(profile), path, dummy);
+    return dummy;
   }
-  return skip;
+  return NULL;
 }
 
 static void *nv_open(const char *p) {
-  if (tex_light_should_skip(p, "nvapk"))
-    return NULL;
+  const char *redirect = tex_light_redirect_path(p, "nvapk");
+  if (redirect)
+    p = redirect;
   void *h = asset_open(p);
   if (!h)
     fprintf(stderr, "[nvapk] MISS \"%s\"\n", p ? p : "(null)");
@@ -1646,6 +1669,8 @@ static void apply_texture_profile_runtime(const char *profile,
 static void apply_light_profile_runtime(const char *profile,
                                         const char *why);
 static int current_texture_profile_id(void);
+static void *texture_menu_find_row(void *root);
+static void *light_menu_find_row(void *root);
 
 static void (*g_string8_ctor)(void *, const char *) = NULL;
 static void (*g_string8_dtor)(void *) = NULL;
@@ -1864,21 +1889,17 @@ static void ui_set_custom_literal(void *element, const char *key,
 }
 
 static void texture_menu_update_row(void *row) {
-  char value[8];
   int id = current_texture_profile_id();
-  snprintf(value, sizeof(value), "%d", id);
   ui_set_custom_literal(row, "caption1", "Textures");
   ui_set_custom_literal(row, "textvalue", texture_profile_menu_label(id));
-  ui_set_custom_literal(row, "value", value);
+  ui_set_custom_literal(row, "value", "");
 }
 
 static void light_menu_update_row(void *row) {
-  char value[8];
   int id = current_light_profile_id();
-  snprintf(value, sizeof(value), "%d", id);
   ui_set_custom_literal(row, "caption1", "Light");
   ui_set_custom_literal(row, "textvalue", light_profile_menu_label(id));
-  ui_set_custom_literal(row, "value", value);
+  ui_set_custom_literal(row, "value", "");
 }
 
 static void texture_menu_update_option(void *menu, const char *why) {
@@ -1886,6 +1907,17 @@ static void texture_menu_update_option(void *menu, const char *why) {
   unsigned long long s[4];
   int id = current_texture_profile_id();
   const char *label = texture_profile_menu_label(id);
+  void *root = menu ? *(void **)((char *)menu + 16) : NULL;
+  void *row = texture_menu_find_row(root);
+  if (row)
+    texture_menu_update_row(row);
+
+  if (!env_enabled("BULLY2_MENU_NATIVE_UPDATE")) {
+    if (env_enabled("BULLY2_TEXTURE_MENU_LOG"))
+      fprintf(stderr, "[texmenu] row sync %s value=%s id=%d menu=%p\n",
+              why ? why : "sync", label, id, menu);
+    return;
+  }
 
   resolve_texture_menu_symbols();
   if (!menu || !g_menu_update_option || !g_name8_set ||
@@ -1906,6 +1938,17 @@ static void light_menu_update_option(void *menu, const char *why) {
   unsigned long long s[4];
   int id = current_light_profile_id();
   const char *label = light_profile_menu_label(id);
+  void *root = menu ? *(void **)((char *)menu + 16) : NULL;
+  void *row = light_menu_find_row(root);
+  if (row)
+    light_menu_update_row(row);
+
+  if (!env_enabled("BULLY2_MENU_NATIVE_UPDATE")) {
+    if (env_enabled("BULLY2_TEXTURE_MENU_LOG"))
+      fprintf(stderr, "[lightmenu] row sync %s value=%s id=%d menu=%p\n",
+              why ? why : "sync", label, id, menu);
+    return;
+  }
 
   resolve_texture_menu_symbols();
   if (!menu || !g_menu_update_option || !g_name8_set ||
@@ -2720,7 +2763,9 @@ static void texture_profile_reload_tick(int frame) {
     }
     if (g_tex_reload_queue.pre_unload && g_Texture2D_AttemptUnload)
       g_Texture2D_AttemptUnload(tex);
+    __atomic_fetch_add(&g_tex_resource_reload_active, 1, __ATOMIC_ACQ_REL);
     g_ResourceManager_Reload(rm, tex);
+    __atomic_fetch_sub(&g_tex_resource_reload_active, 1, __ATOMIC_ACQ_REL);
     reloaded++;
     g_tex_reload_queue.attempted++;
   }
@@ -2864,18 +2909,34 @@ static void apply_light_profile_runtime(const char *profile,
   fprintf(stderr, "[light] apply %s old=%s new=%s helper=%dKB gl=%lldMB\n",
           why ? why : "runtime", light_profile_menu_name(old_id), label,
           helper_before / 1024, gl_before / (1024 * 1024));
-  if (!texture_profile_reload_loaded_textures(reason))
+  const char *reload = first_env("BULLY2_TEX_LIGHT_RELOAD_ON_CHANGE",
+                                 "BULLY_TEX_LIGHT_RELOAD_ON_CHANGE");
+  if (reload && *reload && strcmp(reload, "0") && strcmp(reload, "off") &&
+      strcmp(reload, "false") && strcmp(reload, "none")) {
+    if (!texture_profile_reload_loaded_textures(reason))
+      texture_profile_cleanup(reason);
+  } else {
+    fprintf(stderr,
+            "[light] runtime reload disabled; profile applies to new streams\n");
     texture_profile_cleanup(reason);
+  }
 }
 
 static void maybe_runtime_texture_profile(int frame) {
   static int auto_done;
+  static int light_auto_done;
   static int auto_trigger = -2;
+  static int light_auto_trigger = -2;
   static char last_file_profile[32];
+  static char last_light_profile[32];
 
   if (auto_trigger == -2) {
     const char *f = getenv("BULLY2_TEX_AUTO_SET_FRAME");
     auto_trigger = (f && *f) ? atoi(f) : -1;
+  }
+  if (light_auto_trigger == -2) {
+    const char *f = getenv("BULLY2_TEX_LIGHT_AUTO_SET_FRAME");
+    light_auto_trigger = (f && *f) ? atoi(f) : -1;
   }
 
   if (!auto_done && auto_trigger >= 0 && frame >= auto_trigger) {
@@ -2883,30 +2944,58 @@ static void maybe_runtime_texture_profile(int frame) {
     apply_texture_profile_runtime(getenv("BULLY2_TEX_AUTO_SET"),
                                   "auto-frame");
   }
+  if (!light_auto_done && light_auto_trigger >= 0 &&
+      frame >= light_auto_trigger) {
+    light_auto_done = 1;
+    apply_light_profile_runtime(getenv("BULLY2_TEX_LIGHT_AUTO_SET"),
+                                "auto-frame");
+  }
 
   if ((frame % 60) != 0)
     return;
 
   const char *path = getenv("BULLY2_TEX_PROFILE_FILE");
   if (!path || !*path) {
-    if (!env_enabled("BULLY2_TEX_PROFILE_POLL"))
-      return;
-    path = "/tmp/bully_tex_profile";
+    if (env_enabled("BULLY2_TEX_PROFILE_POLL"))
+      path = "/tmp/bully_tex_profile";
   }
-  FILE *f = fopen(path, "rb");
-  if (!f)
-    return;
   char buf[32];
-  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-  fclose(f);
-  buf[n] = 0;
-  for (size_t i = 0; i < n; i++)
-    if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t')
-      buf[i] = ' ';
-  if (!strcmp(buf, last_file_profile))
-    return;
-  snprintf(last_file_profile, sizeof(last_file_profile), "%s", buf);
-  apply_texture_profile_runtime(buf, "file");
+  if (path && *path) {
+    FILE *f = fopen(path, "rb");
+    if (f) {
+      size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      fclose(f);
+      buf[n] = 0;
+      for (size_t i = 0; i < n; i++)
+        if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t')
+          buf[i] = ' ';
+      if (strcmp(buf, last_file_profile)) {
+        snprintf(last_file_profile, sizeof(last_file_profile), "%s", buf);
+        apply_texture_profile_runtime(buf, "file");
+      }
+    }
+  }
+
+  path = getenv("BULLY2_TEX_LIGHT_PROFILE_FILE");
+  if (!path || !*path) {
+    if (env_enabled("BULLY2_TEX_LIGHT_PROFILE_POLL"))
+      path = "/tmp/bully_light_profile";
+  }
+  if (path && *path) {
+    FILE *f = fopen(path, "rb");
+    if (f) {
+      size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      fclose(f);
+      buf[n] = 0;
+      for (size_t i = 0; i < n; i++)
+        if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t')
+          buf[i] = ' ';
+      if (strcmp(buf, last_light_profile)) {
+        snprintf(last_light_profile, sizeof(last_light_profile), "%s", buf);
+        apply_light_profile_runtime(buf, "file");
+      }
+    }
+  }
 }
 
 static int current_texture_memory_used(void) {
@@ -3380,25 +3469,25 @@ static void *(*tramp_nvapk_open_from_pack_light)(const char *) = NULL;
 static int (*tramp_os_zip_file_open_light)(const char *, void **) = NULL;
 
 static void *my_NvAPKOpen_light(const char *path) {
-  if (tex_light_should_skip(path, "NvAPKOpen"))
-    return NULL;
+  const char *redirect = tex_light_redirect_path(path, "NvAPKOpen");
+  if (redirect)
+    path = redirect;
   return tramp_nvapk_open_light ? tramp_nvapk_open_light(path) : NULL;
 }
 
 static void *my_NvAPKOpenFromPack_light(const char *path) {
-  if (tex_light_should_skip(path, "NvAPKOpenFromPack"))
-    return NULL;
+  const char *redirect = tex_light_redirect_path(path, "NvAPKOpenFromPack");
+  if (redirect)
+    path = redirect;
   return tramp_nvapk_open_from_pack_light
              ? tramp_nvapk_open_from_pack_light(path)
              : NULL;
 }
 
 static int my_OS_ZipFileOpen_light(const char *path, void **out) {
-  if (tex_light_should_skip(path, "OS_ZipFileOpen")) {
-    if (out)
-      *out = NULL;
-    return 1;
-  }
+  const char *redirect = tex_light_redirect_path(path, "OS_ZipFileOpen");
+  if (redirect)
+    path = redirect;
   return tramp_os_zip_file_open_light
              ? tramp_os_zip_file_open_light(path, out)
              : 1;
