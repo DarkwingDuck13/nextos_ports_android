@@ -110,14 +110,16 @@ Hipótese: camada de UI/efeito do mini-game (contador de score do "press A") nã
 engine OU é agravada pelos nossos patches LOWFX (`SsDrawObjectShadow*`→0, bloom off) que
 desligam draws. Precisa repro on-device pra confirmar. Lead: rodar a fase SEM LOWFX
 (SONIC_LOWFX off) e ver se o score some — isola se é nosso patch ou o engine.
-**Leads de símbolo (libfox) p/ quando houver repro:** o "apertar A pra score" é provável um
-gimmick de SLOT/score — `GmGmkSlotInit`@0x392e28, `GmGmkStopperSlotInit`@0x39f67c,
-`GmPlayerAddScore`@0x3dc7ac, `GmPlayerComboScore`@0x3dc7c0, `OFPostScore`@0x2112ac. A
-persistência = o objeto de display de número do gimmick não é destruído/escondido ao acabar
-(achar o Exit/Release do GmGmk* correspondente e ver se é chamado). Patches suspeitos que
-poderiam pular um cleanup: `videoIsPlaying`→0 / `MediaPlayerisPlaying`→0 / `clMovie::isEnd`→1
-(se o clear do score for disparado por uma transição/movie). Testar 1o com LOWFX off + sem
-esses patches de movie, repro na fase.
+**Leads de símbolo (libfox) p/ quando houver repro:** o "apertar A pra score" é o gimmick de
+SLOT/reel — `GmGmkSlotInit`@0x392e28, `GmGmkSlotStartRequest`@0x392de4, `GmGmkSlotIsStatus`@0x392e0c,
+`GmGmkSlotBuild`@0x393094, **`GmGmkSlotFlush`@0x3930ec (=limpa/destrói o display)**; +`GmGmkStopper*`,
+`GmPlayerAddScore`@0x3dc7ac, `OFPostScore`@0x2112ac. **Persistência do score = `GmGmkSlotFlush`
+não é chamado ao fim do gimmick** (ou um cleanup pulado). Patches suspeitos: `videoIsPlaying`→0 /
+`MediaPlayerisPlaying`→0 / `clMovie::isEnd`→1 (se o clear for disparado por transição/movie).
+🔑 **HIPÓTESE NOVA (do usuário): pode ter sido o ERRO DE MAPEAMENTO** — se o slot/score espera um
+botão pra dispensar e esse botão tinha bit errado (não registrava), o score ficava preso.
+Com o fix de bits (commit 1b1075e) o botão volta a funcionar → **testar se o score-stuck sumiu junto**.
+Senão: repro on-device, LOWFX off, e checar se GmGmkSlotFlush roda.
 
 ---
 
