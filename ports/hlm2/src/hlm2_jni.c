@@ -589,36 +589,50 @@ double hm_get_control(int id, int slot) {
   SDL_GameController *p = g_sdlpad;
   double v = 0.0;
   if (p) {
-    const int DZ = 11000;
+    /* MAPA DEFINITIVO (do dex: com.dalmac.hotlinemiami2.Vibrate.getControllerValue):
+     * index = INPUT FISICO CRU (layout SDL/Android padrao). O JOGO faz o binding interno.
+     *  0=lx 1=ly 2=rx 3=ry  4=l2 5=r2 6=l1 7=r1  8=a 9=b 10=x 11=y
+     *  12=dpx 13=dpy 14=dpadU 15=dpadD 16=dpadL 17=dpadR  18=menu 19=options 20=l3 21=r3
+     * Passthrough PURO do SDL — sem inventar. */
     int lx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTX);
     int ly = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTY);
     int rx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTX);
     int ry = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTY);
     int lt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
     int rt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+    int du = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_UP);
+    int dd = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+    int dl = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+    int dr = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    #define DZ(a) (((a) > 7000 || (a) < -7000) ? (a) / 32767.0 : 0.0)   /* eixo c/ deadzone */
     #define B(x) (SDL_GameControllerGetButton(p, (x)) ? 1.0 : 0.0)
-    /* BIJETIVO: cada controle fisico -> 1 index (rebind in-game funciona). Direcoes em
-     * dpad+analogico ESQ; LOOK(mira) no analogico DIR; faces/ombros/gatilhos = acoes. */
     switch (id) {
-      case 0:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_UP)    || ly < -DZ) ? 1.0 : 0.0; break; /* UP */
-      case 1:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_DOWN)  || ly >  DZ) ? 1.0 : 0.0; break; /* DOWN */
-      case 2:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_LEFT)  || lx < -DZ) ? 1.0 : 0.0; break; /* LEFT */
-      case 3:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx >  DZ) ? 1.0 : 0.0; break; /* RIGHT */
-      case 18: v = (rx > DZ || rx < -DZ) ? rx / 32767.0 : 0.0; break;                    /* LOOK/aim X */
-      case 19: v = (ry > DZ || ry < -DZ) ? ry / 32767.0 : 0.0; break;                    /* LOOK/aim Y */
-      case 5:  v = B(SDL_CONTROLLER_BUTTON_A); break;            /* ATTACK/confirm (validado: idx5) */
-      case 4:  v = B(SDL_CONTROLLER_BUTTON_B); break;            /* cancel/back */
-      case 6:  v = B(SDL_CONTROLLER_BUTTON_X); break;            /* acao (pickup/finish/lockon) */
-      case 8:  v = B(SDL_CONTROLLER_BUTTON_Y); break;            /* acao */
-      case 9:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER); break; /* acao */
-      case 10: v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break;/* acao */
-      case 20: v = (lt > 6000) ? 1.0 : 0.0; break;              /* LT */
-      case 21: v = (rt > 6000) ? 1.0 : 0.0; break;              /* RT */
-      case 7:  v = B(SDL_CONTROLLER_BUTTON_BACK); break;
-      case 11: v = B(SDL_CONTROLLER_BUTTON_START); break;
+      case 0:  v = DZ(lx); break;                       /* lx */
+      case 1:  v = DZ(ly); break;                       /* ly (SDL: + = baixo) */
+      case 2:  v = DZ(rx); break;                       /* rx */
+      case 3:  v = DZ(ry); break;                       /* ry */
+      case 4:  v = (lt > 3000) ? lt / 32767.0 : 0.0; break;  /* l2 */
+      case 5:  v = (rt > 3000) ? rt / 32767.0 : 0.0; break;  /* r2 */
+      case 6:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);  break; /* l1 */
+      case 7:  v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break; /* r1 */
+      case 8:  v = B(SDL_CONTROLLER_BUTTON_A); break;
+      case 9:  v = B(SDL_CONTROLLER_BUTTON_B); break;
+      case 10: v = B(SDL_CONTROLLER_BUTTON_X); break;
+      case 11: v = B(SDL_CONTROLLER_BUTTON_Y); break;
+      case 12: v = (double)(dr - dl); break;            /* dpx */
+      case 13: v = (double)(dd - du); break;            /* dpy (+ = baixo) */
+      case 14: v = du ? 1.0 : 0.0; break;
+      case 15: v = dd ? 1.0 : 0.0; break;
+      case 16: v = dl ? 1.0 : 0.0; break;
+      case 17: v = dr ? 1.0 : 0.0; break;
+      case 18: v = B(SDL_CONTROLLER_BUTTON_START); break;  /* menu */
+      case 19: v = B(SDL_CONTROLLER_BUTTON_BACK);  break;  /* options */
+      case 20: v = B(SDL_CONTROLLER_BUTTON_LEFTSTICK);  break; /* l3 */
+      case 21: v = B(SDL_CONTROLLER_BUTTON_RIGHTSTICK); break; /* r3 */
       default: v = 0.0; break;
     }
     #undef B
+    #undef DZ
   }
   /* HM_AUTOEXT/HM_SWEEP: injeta valor forcado (autopilot/experimento) */
   if (id >= 0 && id < 256 && g_force[id] != 0.0) v = g_force[id];

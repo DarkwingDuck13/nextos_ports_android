@@ -16,7 +16,7 @@ HLM2 le o controle por uma extensao GML: `gamepad_init`/`isControllerConnected`/
 Implementado via JNI (double-array p/ ler os args). **NAO usar gptokeyb** (converteria p/ teclado e a
 extensao veria "sem controle"). NAO registrar o gamepad NATIVO do GameMaker (conflito = botoes embaralhados).
 
-### Mapa de index descoberto (experimento + observacao + poll-order)
+### Mapa DEFINITIVO (decompilado de com.dalmac.hotlinemiami2.Vibrate.getControllerValue no dex)
 - **0=UP 1=DOWN 2=LEFT 3=RIGHT** (direcoes) → dpad + analogico ESQ. [poll-order f1000: seq0-3 = 2,3,0,1]
 - **18=LOOK X 19=LOOK Y** (mira/cursor) → analogico DIR.
 - **5=ATTACK/confirm** → A. [disclaimer: forcar idx5 avanca a tela = confirmar]
