@@ -372,6 +372,8 @@ static volatile int g_crashing = 0;
 #define ARENA_HI 0x7f10200000UL
 static volatile unsigned long g_skipbad_n = 0;
 static int g_skipbad = 0;  /* lido 1× no startup (getenv não é async-signal-safe) */
+static int g_skiplogcrash = 0;            /* FF9_SKIPLOGCRASH: sobrevive ao log-crash do scene-load */
+static volatile unsigned long g_skiplog_n = 0;
 /* recovery por-frame: sigsetjmp antes de nativeRender; on_crash siglongjmp de volta
    (só se o crash for na THREAD de render — longjmp cross-thread é UB). Pula o frame
    corrompido e continua → renderiza apesar das chamadas de método C# corrompidas. */
@@ -406,6 +408,26 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
   if (g_render_jmp_armed && (int)syscall(SYS_gettid) == g_render_tid) {
     g_recover_n++;
     siglongjmp(g_render_jmp, 1);
+  }
+  /* FF9_SKIPLOGCRASH: o logger nativo do il2cpp (scene-load do conteudo) deref um %s lixo
+     -> strlen/memcpy em libc crasha (fault tagged 0x160f94...). Se o pc cai FORA dos nossos
+     modulos (libc) e o lr volta p/ libil2cpp, pula a chamada: resume no lr com x0=0 (string
+     vazia/null). Deixa o fluxo (slideshow->logo->menu) sobreviver ao erro de log p/ ver ate
+     onde chega. Cap alto p/ nao virar loop infinito. */
+  if (g_skiplogcrash && sig == SIGSEGV && g_il2cpp_base && lr0 && lr0 != pc0
+      && g_skiplog_n < 20000) {
+    uintptr_t tb2 = (uintptr_t)text_base;
+    int pc_in_il2   = (pc0 >= g_il2cpp_base && pc0 < g_il2cpp_base + 0x3000000);
+    int pc_in_unity = (pc0 >= tb2 && pc0 < tb2 + text_size);
+    int lr_in_il2   = (lr0 >= g_il2cpp_base && lr0 < g_il2cpp_base + 0x3000000);
+    if (!pc_in_il2 && !pc_in_unity && lr_in_il2) {
+      if (g_skiplog_n++ < 40)
+        fprintf(stderr, "[SKIPLOG] #%lu pc=0x%lx(libc) -> lr=il2cpp+0x%lx x0=0\n",
+                g_skiplog_n, (unsigned long)pc0, lr0 - g_il2cpp_base);
+      uc0->uc_mcontext.pc = lr0;
+      uc0->uc_mcontext.regs[0] = 0;
+      return;
+    }
   }
   /* skipbad: crash em thread NÃO-render (worker/job) → estaciona a thread em vez de
      matar o processo (mantém o jogo vivo p/ a render continuar). */
@@ -4413,6 +4435,11 @@ float my_get_deltaTime(void) {
   if (getenv("FF9_DTVAL")) dt = atoi(getenv("FF9_DTVAL")) / 1000.0f;
   return dt;
 }
+/* FF9_NOLOGGER: a função de log variádica do il2cpp (0x10a6200) formata um %s com ponteiro
+ * LIXO (0x160f94...) quando o scene-load do conteúdo falha -> vsnprintf->strlen/memcpy crasha.
+ * No-op (ret) suprime o log -> o erro (não-fatal?) é ignorado e o fluxo segue. Experimental. */
+long my_logger_noop(void);
+long my_logger_noop(void) { return 0; }
 static void (*g_uitw_orig)(void *);
 void my_UITweener_Update(void *self);
 void my_UITweener_Update(void *self) {
@@ -5409,6 +5436,7 @@ int main(int argc, char **argv) {
   /* sigaltstack: p/ o handler reportar STACK OVERFLOW (SIGSEGV na guard page →
      sem espaço na pilha normal p/ rodar o handler → morte silenciosa). */
   g_skipbad = getenv("CUP_SKIPBAD") ? 1 : 0;
+  g_skiplogcrash = getenv("FF9_SKIPLOGCRASH") ? 1 : 0;
   /* CUP_GCSIG: Boehm GC suspende threads via SIGPWR(30)/restart SIGXCPU(24) p/
      stop-the-world. Nossas threads (criadas via pthread_create_fake, fora do
      registro do GC) recebem SIGPWR com ação DEFAULT = mata o processo (exit 158).
@@ -6710,6 +6738,15 @@ int main(int argc, char **argv) {
       /* FF9_FADEDONE (default OFF — global demais: zera TODO WaitForSeconds, faz o ExpansionVerifier
          avançar pro scene-load do gameplay PREMATURAMENTE -> crash do logger nativo. A raiz é o pump
          de vsync (Time.time congelado); com o pump correto NÃO precisa. Opt-in só p/ diagnóstico.) */
+      /* FF9_NOLOGGER: no-opa a func de log variádica (0x10a6200) que crasha no %s lixo do
+         scene-load. Experimental — pode quebrar outros usos da func. */
+      static int nl_hooked = 0;
+      if (!nl_hooked && getenv("FF9_NOLOGGER") && g_il2cpp_base && f >= 180) {
+        extern long my_logger_noop(void);
+        hook_arm64(g_il2cpp_base + 0x10a6200, (uintptr_t)my_logger_noop);
+        nl_hooked = 1;
+        fprintf(stderr, "[NOLOGGER] il2cpp logger(0x10a6200) -> ret @f=%d\n", f); fsync(2);
+      }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
         extern void ff9_patch_fadedone(uintptr_t);
