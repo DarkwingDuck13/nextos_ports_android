@@ -1003,9 +1003,9 @@ int main(int argc, char *argv[]) {
       if (ks[SDL_SCANCODE_E])     mask |= FOX_R1;
       if (ks[SDL_SCANCODE_1])     { mask |= FOX_L2; lt = 32767; }
       if (ks[SDL_SCANCODE_3])     { mask |= FOX_R2; rt = 32767; }
-      /* L3/R3 NÃO entram no mask: FOX_L3=0x4000 == FOX_PAUSE e FOX_R3=0x8000 ==
-         confirm/OUYAGetPauseKey -> stick-click causaria pausa/confirm espúrios
-         (mesma classe do bug pulo-pausa). Stick-click não é ação no Sonic 4. */
+      /* L3/R3 (THUMBL/THUMBR) ficam fora do mask: não são ações no Sonic 4.
+         (Com o mapa de bits corrigido já não colidem com pause/confirm; omitir é só
+         pra não injetar input espúrio de stick-click.) */
       (void)0;
       if (ks[SDL_SCANCODE_ESCAPE]) mask |= FOX_BACK;
       if (ks[SDL_SCANCODE_RETURN]) {
@@ -1027,7 +1027,7 @@ int main(int argc, char *argv[]) {
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) mask |= FOX_L1;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= FOX_R1;
       /* LEFTSTICK/RIGHTSTICK (L3/R3) NÃO entram no mask: colidem com PAUSE(0x4000)/
-         confirm(0x8000). Ver nota acima. */
+         não são ações no Sonic 4. Ver nota acima. */
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK)) mask |= FOX_BACK;
       if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START)) {
         start_down = 1;
@@ -1072,7 +1072,7 @@ int main(int argc, char *argv[]) {
     }
     /* 🔎 DIAG Y=Left: SONIC_TESTBIT=0xNNNN injeta esse bit FOX no mask em pulsos
        de 4 frames a cada 60, a partir de SONIC_TESTBIT_AT (default 1500). Determinístico
-       (sem uinput). Ex.: TESTBIT=0x0100 (FOX_Y) vs 0x0004 (FOX_LEFT) no world-map. */
+       (sem uinput). Ex.: TESTBIT=0x0010 (FOX_Y novo) vs 0x0100 (L1, o Y antigo errado). */
     {
       static long testbit = -2; static long testat = 0;
       if (testbit == -2) { const char *e = getenv("SONIC_TESTBIT");
@@ -1122,7 +1122,7 @@ int main(int argc, char *argv[]) {
        p/ confirmar/descartar remap do keymap (bug Y=Left). */
     if (getenv("SONIC_KEYDUMP") && (frame - keydump_last) >= 120) {
       keydump_last = frame;
-      fprintf(stderr, "[keydump f%lu] L=%04x R=%04x U=%04x D=%04x decide=%04x cancel=%04x  (FOX_Y=0100 FOX_LEFT=0004)\n",
+      fprintf(stderr, "[keydump f%lu] L=%04x R=%04x U=%04x D=%04x decide=%04x cancel=%04x  (FOX_Y=0010 FOX_LEFT=0004)\n",
               frame,
               gk_left   ? (*gk_left   & 0xffff) : 0xdead,
               gk_right  ? (*gk_right  & 0xffff) : 0xdead,
