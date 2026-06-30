@@ -389,17 +389,20 @@ static void my_amDrawReleaseTexture(void *node) {
   ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
 }
 
-/* 🔊 MediaPlayerisPlaying — VOLTOU AO ESTADO BOM CONHECIDO (v4.0): retorna SEMPRE 0.
-   O patch ->0 é o que pula o intro/vídeo e mantém o comportamento de áudio validado.
-   A tentativa "cirúrgica" (devolver estado real só p/ canais de jingle, p/ o som do 1up)
-   é suspeita de regressão e foi REVERTIDA — estabilidade de entrar/sair de fase vem 1º.
-   Reativável via SONIC_JINGLE1UP=1 se quisermos reavaliar o som do 1up isoladamente. */
+/* 🔊 FIX som do 1up/jingle (mudo no gameplay) — CIRÚRGICO, DEFAULT ON.
+   A engine poll-a MediaPlayerisPlaying(canal) por frame; quando "não toca" seta bit1=stop
+   na SCB e DmSoundIsStopJingle manda PARAR o jingle. Patchar ->0 fixo (p/ pular o intro)
+   matava TODO jingle na hora (som da caixa de vida/1up, anéis-suficientes, sons da special
+   stage que passam pelo caminho DmSound). SOLUÇÃO: devolver o estado REAL só p/ os canais
+   de JINGLE (key com "_jin_"); os outros mantêm ->0 (preserva o resto + pula o intro via
+   willPlayMovie->0 + videoIsPlaying->0). Isto NÃO tem relação com o crash da fase (era o
+   texmgr) — reabilitado após corrigir o guard do RELSAFE. SONIC_NO_JINGLE1UP=1 reverte. */
 extern int sonic_audio_jingle_playing(int id);
 static int my_MediaPlayerisPlaying(int i) {
-  static int j1up = -1;
-  if (j1up < 0) j1up = getenv("SONIC_JINGLE1UP") ? 1 : 0;
-  if (j1up) return sonic_audio_jingle_playing(i);     /* opt-in: 1 só se canal i for jingle */
-  return 0;                                            /* default v4.0: todo canal "parado" */
+  static int off = -1;
+  if (off < 0) off = getenv("SONIC_NO_JINGLE1UP") ? 1 : 0;
+  if (off) return 0;                                  /* fallback: comportamento v4.0 (mudo) */
+  return sonic_audio_jingle_playing(i);               /* 1 só se canal i for jingle tocando */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
