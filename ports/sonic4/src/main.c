@@ -686,6 +686,14 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z20SsConstBloomIsEnablev"); /* bloom off */
     fprintf(stderr, "=== LOWFX: bloom desligado (perf) ===\n");
   }
+  /* 🌈 SONIC_FORCETONEMAP: força o TONE-MAP (HDR->LDR Reinhard) LIGADO. O tone-map é
+     SEPARADO do bloom (SsConstTonemapIsEnable). Desligar o bloom pode ter matado o
+     tone-map junto -> o HDR das luzes do cassino estoura pra branco. Forçar o tone-map
+     ON (mantendo bloom off) deve corrigir a exposição SEM o blur caro. */
+  if (env_flag_enabled("SONIC_FORCETONEMAP")) {
+    patch_retval("_Z23SsConstTonemapIsEnablev", 1);
+    fprintf(stderr, "=== SONIC_FORCETONEMAP: tone-map HDR->LDR forcado ON ===\n");
+  }
   /* 🌑 no-op nos draws de sombra de objeto/motion: pula o passe de sombra
      (shadow-map / blob) — ganho de fillrate+drawcall no Mali.
      NAO toca em GmShadowBuildCheck (gate de loading -> travaria). */
