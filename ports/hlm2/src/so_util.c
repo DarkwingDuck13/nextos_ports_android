@@ -53,6 +53,53 @@ void hook_arm64(uintptr_t addr, uintptr_t dst) {
   *(uint64_t *)(hook + 2) = dst;
 }
 
+/* Call-through hook: overwrite addr with a jump to dst, but first save addr's
+ * original 4 prologue instructions (16 bytes) into an executable trampoline that
+ * ends by jumping back to addr+16. Returns the trampoline (call it to run the
+ * ORIGINAL function). ONLY safe when the first 16 bytes are PC-independent
+ * (sub sp / stp / str — no ADRP/ADR/B/BL/LDR-literal). Caller must verify. */
+void *hook_arm64_trampoline(uintptr_t addr, uintptr_t dst) {
+  if (addr == 0)
+    return NULL;
+  /* trampoline: 4 saved insns + LDR X17,#8 + BR X17 + .quad (addr+16) = 32 bytes */
+  void *tramp = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tramp == MAP_FAILED)
+    return NULL;
+  uint32_t *orig = (uint32_t *)addr;
+  /* refuse PC-relative insns in the 4 we copy (ADRP/ADR/B/BL/CBZ/CBNZ/TBZ/B.cond/LDR-literal) */
+  for (int i = 0; i < 4; i++) {
+    uint32_t in = orig[i];
+    if ((in & 0x1f000000u) == 0x10000000u ||        /* ADR/ADRP (op 0b1_0000 in bits28-24) */
+        (in & 0x7c000000u) == 0x14000000u ||        /* B / BL */
+        (in & 0x7e000000u) == 0x34000000u ||        /* CBZ / CBNZ */
+        (in & 0x7e000000u) == 0x36000000u ||        /* TBZ / TBNZ */
+        (in & 0xff000010u) == 0x54000000u ||        /* B.cond */
+        (in & 0x3b000000u) == 0x18000000u) {        /* LDR (literal) */
+      debugPrintf("hook_arm64_trampoline: addr 0x%lx insn[%d]=0x%08x is PC-relative, refusing\n",
+                  (unsigned long)addr, i, in);
+      munmap(tramp, 4096);
+      return NULL;
+    }
+  }
+  uint32_t *t = (uint32_t *)tramp;
+  t[0] = orig[0];
+  t[1] = orig[1];
+  t[2] = orig[2];
+  t[3] = orig[3];
+  t[4] = 0x58000051u; // LDR X17, #0x8
+  t[5] = 0xd61f0220u; // BR X17
+  *(uint64_t *)(t + 6) = addr + 16;
+  __builtin___clear_cache((char *)tramp, (char *)tramp + 64);
+  /* now patch the original to jump to dst */
+  uint32_t *hook = (uint32_t *)addr;
+  hook[0] = 0x58000051u; // LDR X17, #0x8
+  hook[1] = 0xd61f0220u; // BR X17
+  *(uint64_t *)(hook + 2) = dst;
+  __builtin___clear_cache((char *)addr, (char *)addr + 16);
+  return tramp;
+}
+
 void so_make_text_writable(void) {
   const size_t text_asize = ALIGN_MEM(text_size, 0x1000);
   if (mprotect(text_virtbase, text_asize,

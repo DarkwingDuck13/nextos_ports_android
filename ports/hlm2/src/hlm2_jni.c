@@ -538,6 +538,304 @@ static int my_bundlefileexists(const char *p) {
   return ex;
 }
 
+/* ===== MUSIC DIAG (HM_MUSLOG): call-through hooks no caminho de decode da musica.
+ * Objetivo: ver se a song e iniciada (scrPlaySong), se o stream abre (Open), e se o
+ * decode produz bytes (DecodeStream/Read) ou retorna 0 (silencio). ===== */
+extern void *hook_arm64_trampoline(uintptr_t, uintptr_t);
+
+typedef void (*scrplaysong_t)(void*, void*, void*, int, void**);
+static scrplaysong_t g_orig_scrplaysong = NULL;
+static void my_scrplaysong(void *self, void *other, void *result, int argc, void **args) {
+  fprintf(stderr, "[mus] >>> scrPlaySong argc=%d\n", argc);
+  if (g_orig_scrplaysong) g_orig_scrplaysong(self, other, result, argc, args);
+}
+
+typedef long (*vmsopen_t)(void*);
+static vmsopen_t g_orig_vmsopen = NULL;
+static long my_vmsopen(void *thiz) {
+  long r = g_orig_vmsopen ? g_orig_vmsopen(thiz) : 0;
+  fprintf(stderr, "[mus] VorbisMemoryStream::Open this=%p -> %ld\n", thiz, r);
+  return r;
+}
+
+typedef long (*decodestream_t)(void*, void*, unsigned);
+static decodestream_t g_orig_decstream = NULL;
+static long my_decstream(void *thiz, void *buf, unsigned len) {
+  long r = g_orig_decstream ? g_orig_decstream(thiz, buf, len) : 0;
+  static int c=0; if (c < 300 || (c%50==0))
+    fprintf(stderr, "[mus] DecodeStream this=%p buf=%p len=%u -> %ld\n", thiz, buf, len, r);
+  c++;
+  return r;
+}
+
+typedef long (*vsread_t)(void*, void*);
+static vsread_t g_orig_vsread = NULL;
+static long my_vsread(void *thiz, void *dbuf) {
+  long r = g_orig_vsread ? g_orig_vsread(thiz, dbuf) : 0;
+  static int c=0; if (c < 300 || (c%50==0))
+    fprintf(stderr, "[mus] VorbisStream::Read this=%p dbuf=%p -> %ld\n", thiz, dbuf, r);
+  c++;
+  return r;
+}
+
+typedef long (*checkstate_t)(void*);
+static checkstate_t g_orig_checkstate = NULL;
+static long my_checkstate(void *thiz) {
+  long r = g_orig_checkstate ? g_orig_checkstate(thiz) : 0;
+  static int c=0; if (c < 150 || (c%100==0))
+    fprintf(stderr, "[mus] CheckState this=%p -> %ld\n", thiz, r);
+  c++;
+  return r;
+}
+
+/* Audio_StartSoundNoise(cAudio_Sound*, CNoise*) */
+typedef long (*startnoise_t)(void*, void*);
+static startnoise_t g_orig_startnoise = NULL;
+static long my_startnoise(void *snd, void *noise) {
+  fprintf(stderr, "[mus] >>> Audio_StartSoundNoise snd=%p noise=%p\n", snd, noise);
+  return g_orig_startnoise ? g_orig_startnoise(snd, noise) : 0;
+}
+
+/* DecodingTask::DecodingTask(cAudio_Sound*, CNoise*) */
+typedef void* (*dtaskctor_t)(void*, void*, void*);
+static dtaskctor_t g_orig_dtaskctor = NULL;
+static void* my_dtaskctor(void *thiz, void *snd, void *noise) {
+  void *r = g_orig_dtaskctor ? g_orig_dtaskctor(thiz, snd, noise) : thiz;
+  int tstate = *(int*)((char*)thiz + 16);
+  void *stream = *(void**)thiz;          /* task[0] = stream */
+  void *bq = *(void**)((char*)thiz + 8); /* task[8] = bufferqueue */
+  int sstate = stream ? *(int*)((char*)stream + 88) : -2;
+  fprintf(stderr, "[mus] >>> DecodingTask ctor this=%p snd=%p -> task_state=%d stream=%p stream_state=%d bq=%p\n",
+          thiz, snd, tstate, stream, sstate, bq);
+  return r;
+}
+
+/* cAudio_Sound::DecodeMemoryStream(this) */
+typedef long (*decmem_t)(void*);
+static decmem_t g_orig_decmem = NULL;
+static long my_decmem(void *thiz) {
+  long r = g_orig_decmem ? g_orig_decmem(thiz) : 0;
+  static int c=0; if (c < 100 || (c%50==0))
+    fprintf(stderr, "[mus] cAudio_Sound::DecodeMemoryStream this=%p -> %ld\n", thiz, r);
+  c++;
+  return r;
+}
+
+/* VorbisFileStream::Open(this) */
+typedef long (*vfsopen_t)(void*);
+static vfsopen_t g_orig_vfsopen = NULL;
+static long my_vfsopen(void *thiz) {
+  long r = g_orig_vfsopen ? g_orig_vfsopen(thiz) : 0;
+  fprintf(stderr, "[mus] VorbisFileStream::Open this=%p -> %ld\n", thiz, r);
+  return r;
+}
+
+/* gml_GlobalScript_sound_play(self,other,&res,argc,args) */
+typedef void (*sndplay_t)(void*, void*, void*, int, void**);
+static sndplay_t g_orig_sndplay = NULL;
+static void my_sndplay(void *self, void *other, void *result, int argc, void **args) {
+  static int c=0; if (c++ < 60) fprintf(stderr, "[mus] >>> sound_play argc=%d\n", argc);
+  if (g_orig_sndplay) g_orig_sndplay(self, other, result, argc, args);
+}
+
+/* generic 1-arg void-ptr return loggers for the thread/task machinery */
+typedef void* (*p1_t)(void*);
+#define MK_P1(NAME, TAG, EVERY) \
+  static p1_t g_orig_##NAME = NULL; \
+  static void* my_##NAME(void *a){ static int c=0; if(c< (EVERY) || c%(EVERY)==0) fprintf(stderr,"[mus] " TAG " a=%p (#%d)\n", a, c); c++; return g_orig_##NAME? g_orig_##NAME(a): a; }
+MK_P1(dtask_run,   ">>> DecodingTask::Run", 20)
+MK_P1(dthread_fn,  ">>> DecodingThread::ThreadFn", 5)
+MK_P1(dpool_init,  ">>> DecodingThreadPool::Init", 5)
+MK_P1(dpool_tickall, "DecodingThreadPool::TickAll", 300)
+MK_P1(dthread_tick, "DecodingThread::Tick", 300)
+MK_P1(dtask_procmsg, ">>> DecodingTask::ProcessMessages", 20)
+
+/* DelegateTask(pool, DecodingTask&& task) e QueueTask(thread, DecodingTask&& task):
+ * task=arg2. Lemos o estado da task (task+16) p/ ver onde 0 vira nao-0. */
+typedef void* (*p2_t)(void*, void*);
+static p2_t g_orig_dpool_deleg = NULL, g_orig_dthread_queue = NULL;
+static void* my_dpool_deleg(void *pool, void *task) {
+  int st = task ? *(int*)((char*)task + 16) : -9;
+  void *stream = task ? *(void**)task : NULL;
+  fprintf(stderr, "[mus] >>> DelegateTask pool=%p task=%p task_state=%d stream=%p\n", pool, task, st, stream);
+  return g_orig_dpool_deleg ? g_orig_dpool_deleg(pool, task) : pool;
+}
+static void* my_dthread_queue(void *thread, void *task) {
+  int st = task ? *(int*)((char*)task + 16) : -9;
+  void *r = g_orig_dthread_queue ? g_orig_dthread_queue(thread, task) : thread;
+  /* apos QueueTask: incoming head em thread+40; node+0x10 = task movida; le o estado real */
+  void *node = *(void**)((char*)thread + 40);
+  int nst = -9; void *nstream = NULL;
+  if (node) { void *ntask = (char*)node + 0x10; nst = *(int*)((char*)ntask + 16); nstream = *(void**)ntask; }
+  fprintf(stderr, "[mus] >>> QueueTask thread=%p src_state=%d | node=%p node_task_state=%d node_stream=%p inc=%lu\n",
+          thread, st, node, nst, nstream, *(unsigned long*)((char*)thread + 56));
+  return r;
+}
+
+/* ===== MUSIC FIX (HM_MUSFIX): force main-thread ticking do decoding pool =====
+ * O pool de decode roda em modo THREADED: 4 worker threads (DecodingThread::ThreadFn)
+ * Tickam 1x no startup e dormem num condvar que nunca acorda (o notify do QueueTask nao
+ * propaga pelo nosso pthread bridge). A task de musica fica QUEUED mas nunca Run -> mudo.
+ * GameMaker tem um modo TICKED (mode==0) onde DecodingThreadPool::TickAll (ja chamado todo
+ * frame pelo main loop) Ticka cada thread no main thread. Aqui SUBSTITUIMOS TickAll por uma
+ * versao que SEMPRE itera as threads e chama o Tick REAL -> a task decoda no main thread. */
+static p1_t g_real_tick = NULL;     /* trampoline p/ DecodingThread::Tick */
+static p1_t g_real_addbuf = NULL;   /* trampoline p/ DecodingThread::AddBufferedData (splice incoming->active) */
+static void* my_tickall_force(void *pool) {
+  void **pp = (void**)pool;
+  char *begin = (char*)pp[0];
+  char *end   = (char*)pp[1];
+  if (!begin || !end || end < begin) return NULL;
+  size_t span = (size_t)(end - begin);
+  if (span > (1u<<20)) return NULL;            /* sanidade: vetor improvavel */
+  static unsigned long ncall = 0; ncall++;
+  int log = getenv("HM_MUSLOG") != NULL;
+  for (char *t = begin; t + 0x90 <= end; t += 0x90) {
+    unsigned long inc_before = *(unsigned long*)(t + 56);
+    void *p16b = *(void**)(t+16), *p24b = *(void**)(t+24);
+    /* splice incoming->active PRIMEIRO, depois inspeciona, depois Tick processa */
+    if (g_real_addbuf) g_real_addbuf(t);
+    if (log) {
+      void *node = *(void**)(t+24);        /* head da lista ativa */
+      void *sent = (void*)(t+16);
+      if (node && node != sent) {
+        void *task = (char*)node + 0x10;
+        int tstate = *(int*)((char*)task + 16);
+        void *stream = *(void**)task;
+        int sstate = stream ? *(int*)((char*)stream + 88) : -2;
+        static int dc = 0; if (dc++ < 30 || dc % 600 == 0)
+          fprintf(stderr, "[mus] FORCE node=%p task=%p task_state=%d stream=%p stream_state=%d (call#%lu)\n",
+                  node, task, tstate, stream, sstate, ncall);
+      }
+    }
+    if (g_real_tick) g_real_tick(t);
+  }
+  if (log) { static int hb = 0; if ((ncall % 600) == 0 && hb++ < 10)
+    fprintf(stderr, "[mus] FORCE heartbeat call#%lu threads=%zu\n", ncall, span/0x90); }
+  return NULL;
+}
+
+/* DecodingTask::CheckSetup(this): le o estado do stream (task[0]+88) p/ ver onde trava */
+typedef void (*checksetup_t)(void*);
+static checksetup_t g_orig_checksetup = NULL;
+static void my_checksetup(void *task) {
+  int before = task ? *(int*)((char*)task + 16) : -1;
+  void *stream = task ? *(void**)task : NULL;
+  int sst_before = stream ? *(int*)((char*)stream + 88) : -1;
+  if (g_orig_checksetup) g_orig_checksetup(task);
+  int after = task ? *(int*)((char*)task + 16) : -1;
+  int sst_after = stream ? *(int*)((char*)stream + 88) : -1;
+  static int c=0; if (c++ < 60 || c%200==0)
+    fprintf(stderr, "[mus] CheckSetup task_state %d->%d stream_state %d->%d\n",
+            before, after, sst_before, sst_after);
+}
+/* DecodingTask::Setup(this) */
+typedef void (*setup_t)(void*);
+static setup_t g_orig_setup = NULL;
+static void my_setup(void *task) {
+  void *stream = task ? *(void**)task : NULL;
+  int sst_before = stream ? *(int*)((char*)stream + 88) : -1;
+  fprintf(stderr, "[mus] >>> Setup ENTER task=%p stream=%p stream_state=%d\n", task, stream, sst_before);
+  if (g_orig_setup) g_orig_setup(task);
+  int sst_after = stream ? *(int*)((char*)stream + 88) : -1;
+  fprintf(stderr, "[mus] >>> Setup EXIT  stream_state=%d\n", sst_after);
+}
+
+/* libc++ __ndk1 std::string -> c-str (SSO: LSB do 1o byte = flag long) */
+static const char* ndk_str_cstr(void *s) {
+  if (!s) return "(null)";
+  unsigned char first = *(unsigned char*)s;
+  if (first & 1) return *(const char**)((char*)s + 16);  /* long */
+  return (const char*)s + 1;                              /* short (SSO) */
+}
+/* VorbisFileStream::C1(this, const string& path) */
+typedef void* (*vfsctor_t)(void*, void*);
+static vfsctor_t g_orig_vfsctor = NULL;
+static void* my_vfsctor(void *thiz, void *path) {
+  fprintf(stderr, "[mus] >>> VorbisFileStream(path='%s')\n", ndk_str_cstr(path));
+  return g_orig_vfsctor ? g_orig_vfsctor(thiz, path) : thiz;
+}
+
+/* worker thread no-op: com HM_MUSFIX as 4 DecodingThread saem na hora -> so o main thread
+ * (via my_tickall_force) mexe nas filas de task. Sem isso os workers acordam de vez em
+ * quando e correm com o nosso tick (drenam a fila antes do Setup) -> task some -> mudo. */
+static void* my_dthread_fn_noop(void *a) { (void)a; return NULL; }
+
+/* === FIX FINAL DA MUSICA: poll loop no lugar do condvar-wait quebrado ===
+ * O ThreadFn original Ticka 1x e dorme num condvar que NUNCA acorda (o notify do QueueTask
+ * nao propaga pelo nosso pthread bridge) -> a task de musica fica presa -> mudo.
+ * Aqui cada DecodingThread vira um POLL: chama o Tick REAL da PROPRIA thread a cada ~3ms.
+ * Quando uma task e enfileirada (QueueTask), a thread dona pega no proximo poll
+ * (AddBufferedData splice -> Setup -> CheckSetup -> Run -> DecodeStream). Sem corrida com
+ * o main thread (cada thread so mexe na PROPRIA fila, protegida pelo mutex interno). */
+static int (*g_stop_requested)(void*) = NULL;
+static volatile int g_mus_threads_quit = 0;
+static void* my_dthread_fn_poll(void *thread) {
+  int log = getenv("HM_MUSLOG") != NULL;
+  if (log) fprintf(stderr, "[mus] poll-worker iniciado thread=%p\n", thread);
+  int dc = 0;
+  while (!g_mus_threads_quit) {
+    if (g_stop_requested && g_stop_requested(thread)) break;
+    (void)dc;
+    if (g_real_tick) g_real_tick(thread);   /* Tick REAL desta thread */
+    usleep(3000);
+  }
+  return NULL;
+}
+
+/* Instala o FIX da musica (poll-worker) + opcionalmente os hooks de diagnostico verbose.
+ * FIX: liga por padrao; desliga com HM_NOMUSFIX. DIAG verbose: so com HM_MUSLOG. */
+static void install_music_diag_hooks(void) {
+  so_make_text_writable();
+  int musfix = getenv("HM_NOMUSFIX") == NULL;   /* default ON */
+  int diag   = getenv("HM_MUSLOG") != NULL;
+  (void)my_dthread_fn_noop; (void)my_tickall_force; (void)my_dpool_tickall;
+
+  /* ---- FIX (minimo): poll-worker no lugar do condvar-wait quebrado ---- */
+  if (musfix) {
+    g_real_addbuf = (p1_t)so_find_addr_safe("_ZN14DecodingThread15AddBufferedDataEv");
+    g_stop_requested = (int(*)(void*))so_find_addr_safe("_ZN4yyal6thread14stop_requestedEv");
+    uintptr_t tick_a0 = so_find_addr_safe("_ZN14DecodingThread4TickEv");
+    if (tick_a0) { g_real_tick = (p1_t)hook_arm64_trampoline(tick_a0, (uintptr_t)my_dthread_tick);
+      g_orig_dthread_tick = g_real_tick; }
+    uintptr_t tf = so_find_addr_safe("_ZN14DecodingThread8ThreadFnEPv");
+    if (tf && g_real_tick) {
+      g_orig_dthread_fn = (p1_t)hook_arm64_trampoline(tf, (uintptr_t)my_dthread_fn_poll);
+      fprintf(stderr, "[mus] FIX poll-worker instalado (ThreadFn@0x%lx tick=%p stop_req=%p)\n",
+              (unsigned long)tf, (void*)g_real_tick, (void*)g_stop_requested);
+    } else fprintf(stderr, "[mus] FIX FALHOU (ThreadFn=%p tick=%p)\n", (void*)tf, (void*)g_real_tick);
+  }
+
+  /* ---- DIAG verbose (so HM_MUSLOG): hooks de log no caminho de decode ---- */
+  if (diag) {
+    if (!g_real_tick) { uintptr_t ta = so_find_addr_safe("_ZN14DecodingThread4TickEv");
+      if (ta) { g_real_tick = (p1_t)hook_arm64_trampoline(ta, (uintptr_t)my_dthread_tick); g_orig_dthread_tick = g_real_tick; } }
+    { uintptr_t vc = so_find_addr_safe("_ZN16VorbisFileStreamC1ERKNSt6__ndk112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE");
+      if (vc) g_orig_vfsctor = (vfsctor_t)hook_arm64_trampoline(vc, (uintptr_t)my_vfsctor); }
+    { uintptr_t a = so_find_addr_safe("_ZN12DecodingTask10CheckSetupEv");
+      if (a) g_orig_checksetup = (checksetup_t)hook_arm64_trampoline(a, (uintptr_t)my_checksetup);
+      uintptr_t s = so_find_addr_safe("_ZN12DecodingTask5SetupEv");
+      if (s) g_orig_setup = (setup_t)hook_arm64_trampoline(s, (uintptr_t)my_setup); }
+    struct { const char *sym; void **orig; void *my; } M[] = {
+      {"_ZN12DecodingTask3RunEv", (void**)&g_orig_dtask_run, (void*)my_dtask_run},
+      {"_ZN18DecodingThreadPool12DelegateTaskEO12DecodingTask", (void**)&g_orig_dpool_deleg, (void*)my_dpool_deleg},
+      {"_ZN14DecodingThread9QueueTaskEO12DecodingTask", (void**)&g_orig_dthread_queue, (void*)my_dthread_queue},
+      {"_Z22gml_Script_scrPlaySongP9CInstanceS0_R8YYRValueiPPS1_", (void**)&g_orig_scrplaysong, (void*)my_scrplaysong},
+      {"_Z21Audio_StartSoundNoiseP12cAudio_SoundP6CNoise", (void**)&g_orig_startnoise, (void*)my_startnoise},
+      {"_ZN12DecodingTaskC1EP12cAudio_SoundP6CNoise", (void**)&g_orig_dtaskctor, (void*)my_dtaskctor},
+      {"_ZN18VorbisMemoryStream12DecodeStreamEPvj", (void**)&g_orig_decstream, (void*)my_decstream},
+      {"_ZN12VorbisStream4ReadEP14DecodingBuffer", (void**)&g_orig_vsread, (void*)my_vsread},
+    };
+    for (unsigned k=0;k<sizeof(M)/sizeof(M[0]);k++){
+      uintptr_t a = so_find_addr_safe(M[k].sym);
+      if (a) *M[k].orig = hook_arm64_trampoline(a, (uintptr_t)M[k].my);
+    }
+    (void)my_dpool_init; (void)my_dtask_procmsg; (void)my_sndplay; (void)my_decmem;
+    (void)my_vfsopen; (void)my_vmsopen; (void)my_checkstate; (void)my_dthread_fn;
+  }
+  so_make_text_executable(); so_flush_caches();
+}
+
 /* postar um async SOCIAL event (subtype 70) com ds_map -> destrava o gate Netflix.
  * Somos o lado-Java: chamamos os JNI exportados dsMapCreate/AddString/AddInt +
  * CreateAsynEventWithDSMap. eventType="Nfx_onPlayerAccessChanged" + access concedido. */
@@ -734,6 +1032,8 @@ void jni_run(void) {
       so_make_text_executable(); so_flush_caches();
       fprintf(stderr, "[hook] getJNIEnv @0x%lx -> fake_env\n", (unsigned long)gje); }
     else fprintf(stderr, "[hook] getJNIEnv NAO achado\n");
+    /* DIAG musica: call-through hooks no decode (HM_MUSLOG) */
+    install_music_diag_hooks();  /* FIX da musica (poll-worker) ON por padrao; HM_NOMUSFIX desliga */
     /* DIAG keyboard: hook keyboard_check p/ logar teclas pollada (so com KZ_KBHOOK) */
     if (getenv("KZ_KBHOOK")) { uintptr_t kc = so_find_addr_safe("_Z20YYGML_keyboard_checki");
       if (kc) { so_make_text_writable(); hook_arm64(kc, (uintptr_t)my_keyboard_check);

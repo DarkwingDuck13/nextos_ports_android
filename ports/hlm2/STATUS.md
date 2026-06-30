@@ -63,23 +63,33 @@ alpha=255) apareciam; menu (alpha=0) preto → falso-correlacionava com o save (
 **Fix:** força alpha=255 no fb antes do swap (glColorMask so-alpha + glClear). HM_NOALPHAFIX desliga.
 🔑 LICAO REUSAVEL p/ qualquer GLES no Amlogic: se renderiza no fb mas TV preta, cheque o ALPHA.
 
-## 🔊 MÚSICA (s5, em aberto) — SFX funciona, música NÃO
-HLM2 usa mecanismo de música DIFERENTE do katanazero:
-- katana (música OK): `OggSyncThread`/`OggAudio` (streaming por thread; o hook `getJNIEnv` herdado e pra isso).
-- **HLM2: `CompressedAudioStream` + `VorbisMemoryStream::DecodeStream`** (decode de Vorbis da MEMORIA, sem thread).
-  HLM2 NAO tem OggSyncThread -> o hook getJNIEnv e irrelevante. Sistema proprio: `hlm2_music_unpack_all`
-  (desempacota o wad->WADTEMP, feito), `hlm2_music_init`, `scrPlaySong`, `hlm2_currentsong`.
-- Diagnostico: OGGs validos (OggS 44100Hz). Jogo ABRE os OGGs mas o PCM mixado enfileirado tem **peak=0
-  (silencio)** no menu (KZ_SNDLOG loga peak). strace no menu = 0 leituras de OGG. SFX (audio_play_sound
-  buffer) entra no mix e funciona. So 1 player (ANDROIDSIMPLEBUFFERQUEUE 0x800007bd), musica mixada nele.
-- **Proximo passo:** hookar `VorbisMemoryStream::DecodeStream` (0x14b487c) e `scrPlaySong` (0x1b7ff78) com
-  CALL-THROUGH p/ ver se o decode e chamado e se produz PCM (buffer de memoria carregado? decode falha?).
-  Instrumentacao pronta: KZ_SNDLOG (peak do enqueue + locatorType), KZ_ASSETLOG (reads do OGG).
+## 🔊 MÚSICA ✅ RESOLVIDA (s6 2026-06-30) — poll-worker no decode thread
+**RAIZ:** a música é STREAMED via um pool de threads de decode da engine (`DecodingThreadPool` /
+`DecodingThread` / `DecodingTask`), NÃO o `VorbisMemoryStream` (esse é o caminho dos SFX, síncrono via
+`cAudio_Sound::DecodeMemoryStream`). Fluxo da música: `scrPlaySong` → `Audio_StartSoundNoise` →
+cria `DecodingTask(VorbisFileStream "WADTEMP/Music/<song>.ogg")` → `DelegateTask` → `QueueTask` na
+fila de uma das 4 `DecodingThread`. As 4 workers (`DecodingThread::ThreadFn`) Tickam 1× no startup e
+**dormem num condvar `yyal` que NUNCA acorda** (o notify do `QueueTask` não propaga pelo nosso
+pthread_bridge) → a task fica QUEUED e nunca roda `Tick`→`Setup`→`Run`→`VorbisStream::Read` → silêncio.
+(`DecodingThreadPool::TickAll` só Ticka no main thread se `mode==0`; o pool roda em modo threaded → no-op.)
+
+**FIX (default ON; desliga com `HM_NOMUSFIX`):** hook `DecodingThread::ThreadFn` → `my_dthread_fn_poll`:
+cada worker vira um POLL que chama o `Tick` REAL da PRÓPRIA thread a cada ~3ms (em vez de dormir no
+condvar). Quando a task é enfileirada, a thread dona pega no próximo poll: `AddBufferedData` (splice
+incoming→active) → `Setup` (abre o stream, state→2) → `CheckSetup` (task→2) → `Run` → `VorbisStream::Read`
+(decode Vorbis real) → enche o `BufferQueue` → a engine mixa música+SFX → enqueue no player OpenSL.
+Sem corrida com o main thread (cada thread só mexe na PRÓPRIA fila, protegida pelo mutex `yyal` interno).
+Validado .79: `DecodingTask::Run` 671×, `VorbisStream::Read` 303× em 70s, bq_Enqueue 9/13 com PCM
+não-zero (peak até 15060), mixpeak não-zero, 0 crash. Título renderiza + música toca.
+
+🔑 **Ferramenta nova reusável: `hook_arm64_trampoline(addr, dst)`** (so_util.c) = hook COM call-through
+(salva os 4 primeiros insns num trampoline executável + jump p/ addr+16; recusa prólogo PC-relativo
+ADRP/ADR/B/BL/LDR-literal). Diag verbose da música: `HM_MUSLOG=1`.
 
 ## ⏳ FALTA
 - Travar qual acao (pickup/finish/lockon) em cada index restante (verificacao no gameplay).
-- Confirmar AUDIO (OpenSLES wired, players ainda nao criados no log; musica wad carrega).
 - Empacotar PortMaster (launcher `Hotline Miami 2.sh` PRONTO, sem gptokeyb, SELECT+START=sair) + R2.
+- (música ✅, SFX ✅, vídeo ✅, controle ✅, save ✅ — port ~95% feature-complete).
 
 ## Build/run
 - `bash build.sh` (toolchain NextOS aarch64) → `hlm2`. Deploy: scp p/ `/storage/roms/ports/hlm2/`.
