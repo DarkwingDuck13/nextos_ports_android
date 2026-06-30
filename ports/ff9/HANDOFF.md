@@ -7,6 +7,28 @@
 
 ---
 
+## s8 2026-06-30 — 🐛 BUG DE ENDEREÇO do New Game CORRIGIDO + muros mapeados (commit a025dc5)
+
+> **Sessão de DIAGNÓSTICO (Alt-D) + 1 bugfix real.** Trabalho non-stop, device .90.
+
+### ✅ Achados/fixes desta sessão
+1. **🐛 BUG: `OnNewGameButtonClick` estava sendo chamado em `0x134464c` (ERRADO).** O RVA correto do dump il2cpp é **`0x1344634`**. A "correção" de uma sessão anterior (0x1344634→0x134464c) caía no **MEIO da função** (pulava o prólogo → x0 lixo → `blr` num ponteiro lixo → SIGSEGV). **Corrigido** (main.c, render loop FF9_NEWGAME). Agora o New Game **EXECUTA de verdade**.
+2. **`currentActivity` NÃO é o bloqueio do New Game** (refutado). Com `FF9_ACTTRACE=1` (loga todo `Call*Method` em `g_current_activity`): **ACTCALL=0 até o crash** — o New Game crashava ANTES de tocar em currentActivity. Hipótese "muro currentActivity" estava errada.
+3. **Onde o New Game crasha AGORA (muro real):** `OnNewGameButtonClick(0x1344634)` → `TitleUI.Hide(0x134384c)` → carrega cena/assets do gameplay → **crash em libc (strlen/memcpy, ponteiro lixo 0x160f940002b)** chamado de `libil2cpp+0x10a629c`. As funcs 0x10a5xxx-0x10bd (crash) **NÃO estão no script.json = runtime/gerado do il2cpp (AssetBundle nativo / Burst)**. Última atividade: abre `bin/Data/boot.config` OK, `getAssetPackState(UnityStreamingAssetsPack)=COMPLETED`, depois **dlopen repetido de `libsdlib_android.so` (×9)** + `libFF9SpecialEffectPlugin.so` + `lib_burst_generated.so` (todos `[GOT] dlopen: 0 slots nao achado`). **Plugins ESTÃO deployados** (não é arquivo faltando) — crash é o pipeline nativo de carregar a cena (asset bundle + plugins SiliconStudio/Burst). = muro multi-sessão de CONTEÚDO/plugin.
+
+### 🟢 FLUXO NATURAL renderiza o DISCLAIMER (imagem confirmada, inglês)
+- Receita: `FF9_OBB=1 FF9_EMPTYPKG=1 FF9_OBBINIT=1 FF9_SPLASHDONE=1` (sem force) → boot saudável render 6000+, 0 crash, OBBs reais resolvidos (main.obb/patch.obb), EGLFIX 15 configs, só 2 NRE → **tela "Health and Safety Notice" RENDERIZA** (scratchpad/ff9_t4.png).
+- **Disclaimer = `TitleUI.SlashScreen : TitleUI.SlideShow`** (campo `spashText` UILabel; `Play(0x1347C9C)`). Avança por **tap em `SlideShowHitArea`** (NGUI UICamera) OU timer. **NÃO poll GetKeyTrigger (KEYPOLL=0), NÃO poll GetAnyButtonDown (`AnyPlayerInput.GetAnyButtonDown`/0xCC2854 NEM existe no FF9 — CUP_TAPINPUT é resíduo do Cuphead), FF9_TAP (Unity Input) não dispara** (rota NGUI). Fica preso (fade dim, ~estático).
+- **`FF9_NOLOGIN` (Social.ProcessAuthentication, agora contínuo N/EVERY/STATE) NÃO destrava** — Play Games re-ativa o auth independente. Disclaimer NÃO é gated pelo login (já está na tela).
+- 🎯 **PRÓXIMO p/ fluxo natural:** dispensar o `SlashScreen`. Opções: (a) NGUI click programático no `SlideShowHitArea`; (b) callback `postSplashScreenFadeOut` (`TitleUI.SlashScreen.<>c__DisplayClass2_0.<Play>b__0` @0x134DDA8, precisa do DisplayClass `this`); (c) setar `TitleUI.SplashScreenEnabled=false` (+0x248) ANTES do Show p/ PULAR o splash; (d) dirigir `TitleUI.PlaySplashScreen` + o método pós-splash. Dump em scratchpad/ff9dump.
+
+### 🧭 Veredito de escopo (s8) — 2 caminhos pro gameplay, ambos com muro restante
+- **A. New Game forçado** (título forçado + OnNewGameButtonClick corrigido): chega no **pipeline nativo de assets do gameplay** → crash runtime. Precisa shim plugins nativos + conteúdo da cena.
+- **B. Fluxo natural** (disclaimer renderiza): precisa **dispensar o slideshow** → logo → título natural → New Game natural (singletons init OK). Mais limpo; slideshow-advance é RE de NGUI.
+Engine (deadlocks/render/OBB/EGL) FEITO. Resta: dispensar slideshow (B) OU shim plugins+conteúdo (A).
+
+---
+
 ## s7 2026-06-25 — 🎮 INPUT INJECTION p/ menu/gameplay; X5M OBSOLETO (título JÁ renderiza sem X5M)
 
 > ⚠️ As seções s2/s3 abaixo estão DESATUALIZADAS no veredito X5M — o **título renderiza** (logo + CONTINUE/NEW GAME/LOAD/CLOUD) via **OBBs REAIS** (fluxo natural) no Mali-450, SEM X5M.
