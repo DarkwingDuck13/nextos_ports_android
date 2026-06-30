@@ -1,0 +1,21 @@
+ALIVE=0
+               total        used        free      shared  buff/cache   available
+Mem:             832         275         363          21         265         557
+Swap:              0           0           0
+[drv] frame 4
+[drv] frame 300
+[drv] frame 600
+[drv] frame 900
+[drv] frame 1200
+[evict] tick mode=onlow tex=125->125 MB helper=125->125 txd=0->0 cache=0->0 gl=125->125 MB glpeak=125 MB gencnt=815 delcnt=1 uploads=6748 lowmem=1 txd_removed=0 memobj=0 stream=0/0 MB observed=125->125 MB budget=128 MB request=64 MB funcs low=0x7f897a10ac app=0x7f88e8cf60 tidytex=0x7f892fcd74 tidymem=0x7f892fc378 drastic=0x7f892fcc58 rm=0x7f8950ead0 island=0x7f8950faf0 msf=0x7f89512230 txdgc=0x7f8952b11c
+[drv] frame 1500
+[evict] tick mode=onlow tex=159->159 MB helper=159->159 txd=0->0 cache=0->0 gl=159->159 MB glpeak=159 MB gencnt=1083 delcnt=1 uploads=9081 lowmem=2 txd_removed=0 memobj=0 stream=0/0 MB observed=159->159 MB budget=128 MB request=64 MB funcs low=0x7f897a10ac app=0x7f88e8cf60 tidytex=0x7f892fcd74 tidymem=0x7f892fc378 drastic=0x7f892fcc58 rm=0x7f8950ead0 island=0x7f8950faf0 msf=0x7f89512230 txdgc=0x7f8952b11c
+[drv] frame 1800
+[evict] tick mode=onlow tex=187->187 MB helper=187->187 txd=0->0 cache=0->0 gl=187->187 MB glpeak=187 MB gencnt=1309 delcnt=14 uploads=11004 lowmem=3 txd_removed=0 memobj=0 stream=0/0 MB observed=187->187 MB budget=128 MB request=64 MB funcs low=0x7f897a10ac app=0x7f88e8cf60 tidytex=0x7f892fcd74 tidymem=0x7f892fc378 drastic=0x7f892fcc58 rm=0x7f8950ead0 island=0x7f8950faf0 msf=0x7f89512230 txdgc=0x7f8952b11c
+[drv] frame 2100
+[loadscene] pre level=1 tex=193->193 MB gl=193->193 MB glpeak=193 MB gen=1354->1354 del=14->14 uploads=11371->11371 stream=0->0 MB txd_nonref=0 txd_ref=0 funcs far=0x7f8950b71c rm=0x7f8950ead0 all=0x7f89507558 island=0x7f8950faf0 msf=0x7f89512230 low=0x7f897a10ac tidytex=0x7f892fcd74
+[loadscene] post level=1 tex=196->196 MB gl=196->196 MB glpeak=196 MB gen=1360->1360 del=14->14 uploads=11431->11431 stream=0->0 MB txd_nonref=0 txd_ref=0 funcs far=0x7f8950b71c rm=0x7f8950ead0 all=0x7f89507558 island=0x7f8950faf0 msf=0x7f89512230 low=0x7f897a10ac tidytex=0x7f892fcd74
+[evict] LoadScene mode=onlow tex=196->196 MB helper=196->196 txd=0->0 cache=0->0 gl=196->196 MB glpeak=196 MB gencnt=1360 delcnt=14 uploads=11431 lowmem=4 txd_removed=0 memobj=0 stream=0/0 MB observed=196->196 MB budget=128 MB request=64 MB funcs low=0x7f897a10ac app=0x7f88e8cf60 tidytex=0x7f892fcd74 tidymem=0x7f892fc378 drastic=0x7f892fcc58 rm=0x7f8950ead0 island=0x7f8950faf0 msf=0x7f89512230 txdgc=0x7f8952b11c
+[watchdog] mem_avail=275MB rss=179MB swap_used=0MB; killing bully2
+=== CRASH sig=11 addr=(nil) ===
+[watchdog-ext] armed exe=/roms/ports/bully2/bully2 log=/roms/ports/bully2/watchdog_ext_smoke.log min_avail=280MB max_rss=520MB max_swap=64MB stall=45s max_runtime=360s

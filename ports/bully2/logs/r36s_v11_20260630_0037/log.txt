@@ -1,0 +1,507 @@
+[settings] resolution=rs_low mem=492444kB force=1
+[profile] mem=492444kB mode=auto downscale=auto selected=256 half=1 min=256 stream=50 loadclean=1 heap=128 backend=wayland
+[audio] ALSOFT_CONF=/roms/ports/bully/alsoft.conf PULSE_SERVER=unix:/run/pulse/native
+=== Bully2 original-first so-loader / NextOS Mali-450 ===
+preload: libSDL2-2.0.so.0 OK
+preload: libGLESv2.so OK
+preload: libEGL.so OK
+preload: libopenal.so.1 OK
+preload: libmpg123.so.0 OK
+preload: libm.so.6 OK
+== loading libc++_shared.so heap=0xffff7a600000 size=48MB ==
+== libc++_shared.so text=0xffff7a69c840+652032 data=0xffff7a600000+1376256 ==
+libc++ exported symbols: 2358
+== loading libGame.so heap=0xffff72400000 size=128MB ==
+[GPTK]: Running in UINPUT output mode.
+so_load: Opening libc++_shared.so
+so_load: File size: 1330832 bytes
+so_load: ELF64 AArch64, 12 program headers, 28 section headers
+so_load: Total load size: 1376256 bytes (max: 50331648)
+so_load: load base = 0xffff7a600000
+so_load:  PT_LOAD vaddr=0x0 file=0x9b838 mem=0x9b838 R--
+so_load:  PT_LOAD vaddr=0x9c840 file=0x9f300 mem=0x9f300 R-X
+so_load:  PT_LOAD vaddr=0x13cb40 file=0x9800 mem=0x9800 RW-
+so_load:  PT_LOAD vaddr=0x147340 file=0x1c8 mem=0x7d80 RW-
+so_load: 2523 dynamic symbols found
+so_execute_init_array: 3 construtores
+  init[0] @ 0xffff7a734764
+  init[1] @ 0xffff7a734c34
+  init[2] @ 0xffff7a6f2480
+so_execute_init_array: concluído (3)
+so_load: Opening libGame.so
+so_load: File size: 19252456 bytes
+so_load: ELF64 AArch64, 9 program headers, 26 section headers
+so_load: Total load size: 22597632 bytes (max: 134217728)
+so_load: load base = 0xffff72400000
+so_load:  PT_LOAD vaddr=0x0 file=0x11a9290 mem=0x11a9290 R-X
+so_load:  PT_LOAD vaddr=0x11aa290 file=0x90a00 mem=0x90a00 RW-
+so_load:  PT_LOAD vaddr=0x123bc90 file=0x22008 mem=0x350ed8 RW-
+so_load: 50356 dynamic symbols found
+so_execute_init_array: 506 construtores
+  init[0] @ 0xffff735744d4
+  init[1] @ 0xffff735749a4
+  init[2] @ 0xffff72c35198
+  init[3] @ 0xffff72c51a94
+  init[4] @ 0xffff72c7455c
+  init[5] @ 0xffff72c9434c
+  init[6] @ 0xffff72c94e58
+  init[7] @ 0xffff72c968dc
+  init[8] @ 0xffff72c99670
+  init[9] @ 0xffff72c9a4d4
+  init[10] @ 0xffff72c9d0fc
+  init[11] @ 0xffff72ca2008
+  init[12] @ 0xffff72ca46cc
+  init[13] @ 0xffff72ca9454
+  init[14] @ 0xffff72cadbf0
+  init[15] @ 0xffff72cb26dc
+  init[16] @ 0xffff72cb63e4
+  init[17] @ 0xffff72d1e4d0
+  init[18] @ 0xffff72d22c90
+  init[19] @ 0xffff72d25ccc
+  init[20] @ 0xffff72d3a608
+  init[21] @ 0xffff72d4c34c
+  init[22] @ 0xffff72d4c62c
+  init[23] @ 0xffff72d542d0
+  init[24] @ 0xffff72d55934
+  init[25] @ 0xffff72d5bd8c
+  init[26] @ 0xffff72d5c84c
+  init[27] @ 0xffff72d628d0
+  init[28] @ 0xffff72d6617c
+  init[29] @ 0xffff72d6662c
+  init[30] @ 0xffff72d66c68
+  init[31] @ 0xffff72d6a264
+  init[32] @ 0xffff72d70570
+  init[33] @ 0xffff72d71c04
+  init[34] @ 0xffff72d73f04
+  init[35] @ 0xffff72d8a034
+  init[36] @ 0xffff72d90498
+  init[37] @ 0xffff72d92d24
+  init[38] @ 0xffff72d9356c
+  init[39] @ 0xffff72d93798
+  init[40] @ 0xffff72d93c44
+  init[41] @ 0xffff72db6660
+  init[42] @ 0xffff72db726c
+  init[43] @ 0xffff72db9130
+  init[44] @ 0xffff72dc9e84
+  init[45] @ 0xffff72dd3138
+  init[46] @ 0xffff72de2af8
+  init[47] @ 0xffff72e1d150
+  init[48] @ 0xffff72e267ac
+  init[49] @ 0xffff72e33aec
+  init[50] @ 0xffff72e53154
+  init[51] @ 0xffff72e533dc
+  init[52] @ 0xffff72e8fc34
+  init[53] @ 0xffff72ecde10
+  init[54] @ 0xffff72ed1058
+  init[55] @ 0xffff72ed5148
+  init[56] @ 0xffff72ee0da4
+  init[57] @ 0xffff72ee76ac
+  init[58] @ 0xffff72eeeab8
+  init[59] @ 0xffff72ef5a90
+  init[60] @ 0xffff72f007f4
+  init[61] @ 0xffff72f1cbfc
+  init[62] @ 0xffff72f374ec
+  init[63] @ 0xffff72f3c96c
+  init[64] @ 0xffff72f47f94
+  init[65] @ 0xffff72f4c8d0
+  init[66] @ 0xffff72f4ea20
+  init[67] @ 0xffff72f4fd30
+  init[68] @ 0xffff72f573a4
+  init[69] @ 0xffff72f58d40
+  init[70] @ 0xffff72f59268
+  init[71] @ 0xffff72f59970
+  init[72] @ 0xffff72f5a108
+  init[73] @ 0xffff72f5a570
+  init[74] @ 0xffff72f5cd90
+  init[75] @ 0xffff72f5eb40
+  init[76] @ 0xffff72f5ec3c
+  init[77] @ 0xffff72f699e0
+  init[78] @ 0xffff72f6a838
+  init[79] @ 0xffff72f6ad70
+  init[80] @ 0xffff72f6c9d8
+  init[81] @ 0xffff72f724b4
+  init[82] @ 0xffff72f7b010
+  init[83] @ 0xffff72f7c16c
+  init[84] @ 0xffff72f80e74
+  init[85] @ 0xffff72f83270
+  init[86] @ 0xffff72f87ae0
+  init[87] @ 0xffff72f89df0
+  init[88] @ 0xffff72f8ae2c
+  init[89] @ 0xffff72f8ff3c
+  init[90] @ 0xffff72f910b4
+  init[91] @ 0xffff72f94170
+  init[92] @ 0xffff72f9e53c
+  init[93] @ 0xffff72fab654
+  init[94] @ 0xffff72fac498
+  init[95] @ 0xffff72fadbac
+  init[96] @ 0xffff72fae4a8
+  init[97] @ 0xffff72fb1550
+  init[98] @ 0xffff72fb2e2c
+  init[99] @ 0xffff72fb31b8
+  init[100] @ 0xffff72fbf1e4
+  init[101] @ 0xffff72fc4010
+  init[102] @ 0xffff72fc462c
+  init[103] @ 0xffff72fc51f8
+  init[104] @ 0xffff72fc7f1c
+  init[105] @ 0xffff72fcb7c0
+  init[106] @ 0xffff72fcca4c
+  init[107] @ 0xffff72fcf898
+  init[108] @ 0xffff72fd520c
+  init[109] @ 0xffff72fd7a3c
+  init[110] @ 0xffff72fd8b54
+  init[111] @ 0xffff72fda3dc
+  init[112] @ 0xffff72fdc3fc
+  init[113] @ 0xffff72fddb1c
+  init[114] @ 0xffff72fe8384
+  init[115] @ 0xffff72fe95f8
+  init[116] @ 0xffff72fed000
+  init[117] @ 0xffff72fed890
+  init[118] @ 0xffff72feec78
+  init[119] @ 0xffff72feeec0
+  init[120] @ 0xffff72feef14
+  init[121] @ 0xffff72fef184
+  init[122] @ 0xffff72ff01c4
+  init[123] @ 0xffff72ff2f2c
+  init[124] @ 0xffff72ff42f4
+  init[125] @ 0xffff72ff919c
+  init[126] @ 0xffff72ffc6f4
+  init[127] @ 0xffff72ffe55c
+  init[128] @ 0xffff72ffe958
+  init[129] @ 0xffff72fffec4
+  init[130] @ 0xffff73000b6c
+  init[131] @ 0xffff73001c6c
+  init[132] @ 0xffff73005b94
+  init[133] @ 0xffff73007338
+  init[134] @ 0xffff730073cc
+  init[135] @ 0xffff7301c804
+  init[136] @ 0xffff7301c868
+  init[137] @ 0xffff7301df50
+  init[138] @ 0xffff73021618
+  init[139] @ 0xffff73022368
+  init[140] @ 0xffff730223dc
+  init[141] @ 0xffff73024270
+  init[142] @ 0xffff7302572c
+  init[143] @ 0xffff73026328
+  init[144] @ 0xffff73027a14
+  init[145] @ 0xffff730286ac
+  init[146] @ 0xffff73028b08
+  init[147] @ 0xffff73028d80
+  init[148] @ 0xffff73029bf8
+  init[149] @ 0xffff73035dac
+  init[150] @ 0xffff73039cdc
+  init[151] @ 0xffff7303ab38
+  init[152] @ 0xffff7303b818
+  init[153] @ 0xffff7303ba38
+  init[154] @ 0xffff7303bd28
+  init[155] @ 0xffff7303e034
+  init[156] @ 0xffff7304717c
+  init[157] @ 0xffff7304a778
+  init[158] @ 0xffff7304c230
+  init[159] @ 0xffff7304e16c
+  init[160] @ 0xffff73050600
+  init[161] @ 0xffff73055c38
+  init[162] @ 0xffff73056dd8
+  init[163] @ 0xffff73058ecc
+  init[164] @ 0xffff7305fe94
+  init[165] @ 0xffff730724e4
+  init[166] @ 0xffff73080a20
+  init[167] @ 0xffff73080dd8
+  init[168] @ 0xffff73083104
+  init[169] @ 0xffff73086834
+  init[170] @ 0xffff730870bc
+  init[171] @ 0xffff7308abec
+  init[172] @ 0xffff7308cc1c
+  init[173] @ 0xffff7308d1b8
+  init[174] @ 0xffff7308f1c8
+  init[175] @ 0xffff7308f77c
+  init[176] @ 0xffff73098db0
+  init[177] @ 0xffff7309ac64
+  init[178] @ 0xffff7309c448
+  init[179] @ 0xffff7309c510
+  init[180] @ 0xffff730aea7c
+  init[181] @ 0xffff730b14dc
+  init[182] @ 0xffff730b4174
+  init[183] @ 0xffff730c01bc
+  init[184] @ 0xffff730c148c
+  init[185] @ 0xffff730c17cc
+  init[186] @ 0xffff730c519c
+  init[187] @ 0xffff730c78fc
+  init[188] @ 0xffff730d0d5c
+  init[189] @ 0xffff730d0dd8
+  init[190] @ 0xffff730d5968
+  init[191] @ 0xffff730d68fc
+  init[192] @ 0xffff730d75c4
+  init[193] @ 0xffff730d91b4
+  init[194] @ 0xffff730dddc0
+  init[195] @ 0xffff730de274
+  init[196] @ 0xffff730e1004
+  init[197] @ 0xffff730e1674
+  init[198] @ 0xffff730e1b78
+  init[199] @ 0xffff730e2580
+  init[200] @ 0xffff730e371c
+  init[201] @ 0xffff730e3b00
+  init[202] @ 0xffff730e4360
+  init[203] @ 0xffff730e7848
+  init[204] @ 0xffff730e81e0
+  init[205] @ 0xffff730e87f0
+  init[206] @ 0xffff730ec7fc
+  init[207] @ 0xffff730ed2d0
+  init[208] @ 0xffff730ed538
+  init[209] @ 0xffff730eeb24
+  init[210] @ 0xffff730efb24
+  init[211] @ 0xffff730efed8
+  init[212] @ 0xffff730f0c88
+  init[213] @ 0xffff730f126c
+  init[214] @ 0xffff730f1f04
+  init[215] @ 0xffff730f3588
+  init[216] @ 0xffff730f402c
+  init[217] @ 0xffff731031e0
+  init[218] @ 0xffff73105214
+  init[219] @ 0xffff7310a798
+  init[220] @ 0xffff7310ac68
+  init[221] @ 0xffff7310ce18
+  init[222] @ 0xffff7310d1c4
+  init[223] @ 0xffff7310eb00
+  init[224] @ 0xffff731107f4
+  init[225] @ 0xffff73112c20
+  init[226] @ 0xffff731131a4
+  init[227] @ 0xffff731132c8
+  init[228] @ 0xffff73115560
+  init[229] @ 0xffff731172b8
+  init[230] @ 0xffff73126aec
+  init[231] @ 0xffff73126dac
+  init[232] @ 0xffff7312c490
+  init[233] @ 0xffff73134d94
+  init[234] @ 0xffff73137414
+  init[235] @ 0xffff73138784
+  init[236] @ 0xffff731390dc
+  init[237] @ 0xffff73139e7c
+  init[238] @ 0xffff7313b8ac
+  init[239] @ 0xffff7313c280
+  init[240] @ 0xffff7313ca58
+  init[241] @ 0xffff7313eb04
+  init[242] @ 0xffff73169fdc
+  init[243] @ 0xffff73171dac
+  init[244] @ 0xffff731745b0
+  init[245] @ 0xffff73178a24
+  init[246] @ 0xffff73179760
+  init[247] @ 0xffff7317b918
+  init[248] @ 0xffff7317d1f8
+  init[249] @ 0xffff731818bc
+  init[250] @ 0xffff73183430
+  init[251] @ 0xffff73186b28
+  init[252] @ 0xffff73187c8c
+  init[253] @ 0xffff7318ca20
+  init[254] @ 0xffff73193904
+  init[255] @ 0xffff73194cac
+  init[256] @ 0xffff731979b0
+  init[257] @ 0xffff7319ca34
+  init[258] @ 0xffff731c25c8
+  init[259] @ 0xffff731c4038
+  init[260] @ 0xffff731c9454
+  init[261] @ 0xffff731d00f4
+  init[262] @ 0xffff731d1b10
+  init[263] @ 0xffff731d1e60
+  init[264] @ 0xffff731d20e8
+  init[265] @ 0xffff731d36e4
+  init[266] @ 0xffff731d3ea0
+  init[267] @ 0xffff731d9ccc
+  init[268] @ 0xffff731da260
+  init[269] @ 0xffff731da30c
+  init[270] @ 0xffff731da48c
+  init[271] @ 0xffff731df4e8
+  init[272] @ 0xffff731e42f8
+  init[273] @ 0xffff731e7e10
+  init[274] @ 0xffff731e8ec4
+  init[275] @ 0xffff731e9ea0
+  init[276] @ 0xffff731eadec
+  init[277] @ 0xffff731ec5a0
+  init[278] @ 0xffff731ed6ec
+  init[279] @ 0xffff731ee998
+  init[280] @ 0xffff731efa60
+  init[281] @ 0xffff731efe10
+  init[282] @ 0xffff731effac
+  init[283] @ 0xffff731f0794
+  init[284] @ 0xffff731f09cc
+  init[285] @ 0xffff731f1554
+  init[286] @ 0xffff731f179c
+  init[287] @ 0xffff731f22d4
+  init[288] @ 0xffff731f2540
+  init[289] @ 0xffff7320064c
+  init[290] @ 0xffff732021a0
+  init[291] @ 0xffff7320890c
+  init[292] @ 0xffff73208e64
+  init[293] @ 0xffff7320ba20
+  init[294] @ 0xffff7320c93c
+  init[295] @ 0xffff73211234
+  init[296] @ 0xffff73211974
+  init[297] @ 0xffff73224e90
+  init[298] @ 0xffff732253d8
+  init[299] @ 0xffff7322a73c
+  init[300] @ 0xffff7322b780
+  init[301] @ 0xffff7322dc18
+  init[302] @ 0xffff7322e3d0
+  init[303] @ 0xffff73230c6c
+  init[304] @ 0xffff73232f80
+  init[305] @ 0xffff73233178
+  init[306] @ 0xffff73233444
+  init[307] @ 0xffff73234314
+  init[308] @ 0xffff7323472c
+  init[309] @ 0xffff73235540
+  init[310] @ 0xffff732356cc
+  init[311] @ 0xffff73235778
+  init[312] @ 0xffff7323a2b4
+  init[313] @ 0xffff7323ce5c
+  init[314] @ 0xffff7323d120
+  init[315] @ 0xffff73247924
+  init[316] @ 0xffff73249b2c
+  init[317] @ 0xffff7324b698
+  init[318] @ 0xffff7324bd20
+  init[319] @ 0xffff73252610
+  init[320] @ 0xffff732563c8
+  init[321] @ 0xffff73257460
+  init[322] @ 0xffff732596b8
+  init[323] @ 0xffff7325c41c
+  init[324] @ 0xffff7325c470
+  init[325] @ 0xffff7325fdac
+  init[326] @ 0xffff73265c80
+  init[327] @ 0xffff73267398
+  init[328] @ 0xffff73269bac
+  init[329] @ 0xffff73273aac
+  init[330] @ 0xffff73275fb8
+  init[331] @ 0xffff7327730c
+  init[332] @ 0xffff7327758c
+  init[333] @ 0xffff73277c68
+  init[334] @ 0xffff7327a750
+  init[335] @ 0xffff7327ab40
+  init[336] @ 0xffff7327ae98
+  init[337] @ 0xffff7327b1c8
+  init[338] @ 0xffff7327bdd0
+  init[339] @ 0xffff7327c94c
+  init[340] @ 0xffff7327cb8c
+  init[341] @ 0xffff7327d4c0
+  init[342] @ 0xffff7327e120
+  init[343] @ 0xffff7327e88c
+  init[344] @ 0xffff7327f364
+  init[345] @ 0xffff73280774
+  init[346] @ 0xffff73280f94
+  init[347] @ 0xffff73281a18
+  init[348] @ 0xffff732822d4
+  init[349] @ 0xffff73282c44
+  init[350] @ 0xffff732832d8
+  init[351] @ 0xffff73286a28
+  init[352] @ 0xffff732875fc
+  init[353] @ 0xffff73292bb8
+  init[354] @ 0xffff73292d34
+  init[355] @ 0xffff73294d54
+  init[356] @ 0xffff7329552c
+  init[357] @ 0xffff7329a1a4
+  init[358] @ 0xffff7329a688
+  init[359] @ 0xffff7329b0b8
+  init[360] @ 0xffff7329e104
+  init[361] @ 0xffff7329f3cc
+  init[362] @ 0xffff7329f644
+  init[363] @ 0xffff732a012c
+  init[364] @ 0xffff732a0650
+  init[365] @ 0xffff732a386c
+  init[366] @ 0xffff732a7d6c
+  init[367] @ 0xffff732acc18
+  init[368] @ 0xffff732ad078
+  init[369] @ 0xffff732afdd0
+  init[370] @ 0xffff732b06e4
+  init[371] @ 0xffff732b0848
+  init[372] @ 0xffff732b3af8
+  init[373] @ 0xffff732b8664
+  init[374] @ 0xffff732ccb9c
+  init[375] @ 0xffff732d2d90
+  init[376] @ 0xffff732d6b30
+  init[377] @ 0xffff732d745c
+  init[378] @ 0xffff732dc1c0
+  init[379] @ 0xffff732e206c
+  init[380] @ 0xffff732e6044
+  init[381] @ 0xffff732e85d0
+  init[382] @ 0xffff732ebaa0
+  init[383] @ 0xffff732f6cb8
+  init[384] @ 0xffff732f9c44
+  init[385] @ 0xffff732fafc8
+  init[386] @ 0xffff732fc42c
+  init[387] @ 0xffff732fd080
+  init[38== libGame.so text=0xffff72400000+18518672 data=0xffff72400000+22597632 ==
+=== entering JNI lifecycle ===
+[drv] NvAPK mode: native-libGame
+[streamdist] AddModelsToRequestList distances patched pct=50 (outer window reduced, native streaming kept)
+[evict] enabled mode=onlow budget=128 MB request=64 MB LoadScene=0xffff732c9cd4 budget_hook=0 tramp=0xffff819ab000 used=0xffff732dde14 low=0xffff735560ac app=0xffff72c41f60 tidytex=0xffff730b1d74 tidymem=0xffff730b1378 process=0xffff730b1d84 drastic=0xffff730b1c58 far=0xffff732c071c rm=0xffff732c3ad0 all=0xffff732bc558 island=0xffff732c4af0 msf=0xffff732c7230 memobj=0xffff732c7290 txd=0xffff732c613c txdref=0xffff732c62cc txdgc=0xffff732e011c txdmem=0xffff7386b808 heapcache=0xffff7386b5d8 stream=0xffff7385f2f4/0xffff7385f3dc
+[drv] impl*: setup=0xffff73555e4c act=0xffff73555f60 surfC=0xffff73553d70 surfCh=0xffff73553d7c draw=0xffff735560b8 resume=0xffff73556020
+[drv] StorageRootPath=0xffff7398ac48
+[drv] JNI_OnLoad => 0x10004
+[drv] implOnInitialSetup...
+[ALOG:3 OSWrapper] AttachCurrentThread: 0, 0x0xaaaad65ea478
+[ALOG:3 OSWrapper] [!!] Storage root is .
+[drv] implOnInitialSetup OK
+[drv] OS_ZipAdd data_0.zip
+[drv] OS_ZipAdd data_1.zip
+[drv] OS_ZipAdd data_2.zip
+[drv] OS_ZipAdd data_3.zip
+[drv] OS_ZipAdd data_4.zip
+[drv] implOnActivityCreated...
+[drv] implOnActivityCreated OK
+[gl] 640x480 driver=wayland | EGL d=0xaaab005b52b0 s=0xaaab00705d70 c=0xaaab007460b0 | Mali-G31 / OpenGL ES 3.2 v1.g24p0-00eac0.dd848fdb82e0136cd83553a1ab355bd6
+[pad] SDL_NumJoysticks=1
+[pad] js0 "r36s_Gamepad" isGameController=1
+[pad] opened: OK
+[drv] OS_EGL globals: d=0xaaab005b52b0 s=0xaaab00705d70 c=0xaaab007460b0
+[drv] implOnSurfaceCreated...
+[drv] implOnSurfaceChanged 640x480...
+[ALOG:3 OSWrapper] [!!] AND_RenderThread_OnDestroyEglSurface: enqueuing for game thread
+[ALOG:3 OSWrapper] [!!] AND_RenderThread_OnCreateEglSurface: enqueuing for game thread
+[drv] OS_EGL globals re-seeded
+[drv] implOnResume...
+[async] AND_FileUpdated=0xffff73554970 firstAsyncFile=0xffff7398a9a0
+[async] worker started
+[drv] -- loop implOnDrawFrame --
+[pad] BULLY2_INPUT=gptk
+[ALOG:3 OSWrapper] [!!] OS_RockstarShowInitial
+[jni] rockstarShowInitial -> pending
+[drv] frame 0
+[drv] frame 1
+[drv] frame 2
+[drv] frame 3
+[drv] frame 4
+[drv] Rockstar complete frame=31 type=0
+[ALOG:3 OSWrapper] [!!] OS_OnRockstarInitialComplete
+[ALOG:3 OSWrapper] [!!] OS_OnRockstarGateComplete: pass
+[ALOG:3 OSWrapper] [!!] OS_ApplicationEvent: OSET_Resume
+[thr] OS_ThreadLaunch 'GameMain' -> 0xaaab00baa410
+[ALOG:3 OSWrapper] AttachCurrentThread: 0, 0x0xaaaad65ea478
+[thr] OS_ThreadLaunch 'Sound' -> 0xffff68e507c0
+[drv] frame 300
+[thr] OS_ThreadLaunch 'RenderThread' -> 0xffff69216a90
+[thr] OS_ThreadLaunch 'SCListener' -> 0xffff69317c10
+[thr] OS_ThreadLaunch 'SCUpdate' -> 0xffff69318460
+[thr] OS_ThreadLaunch 'CDStreamThread' -> 0xffff694716c0
+[drv] frame 600
+[drv] frame 900
+[drv] frame 1200
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::PauseSound
+[drv] frame 1500
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::ContinueSound
+[drv] frame 1800
+[drv] frame 2100
+[drv] frame 2400
+[drv] frame 2700
+[drv] frame 3000
+[drv] frame 3300
+[drv] frame 3600
+[drv] frame 3900
+[drv] frame 4200
+[drv] frame 4500
+[drv] frame 4800
+[drv] frame 5100
+[drv] frame 5400
+[drv] frame 5700
+[drv] frame 6000
+[drv] frame 6300
+[drv] frame 6600
+[drv] frame 6900
+[drv] frame 7200
+[drv] frame 7500

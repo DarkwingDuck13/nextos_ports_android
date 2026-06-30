@@ -1,0 +1,94 @@
+Tue Jun 30 00:39:11 -03 2026
+4124a860fc5a4fbc0dd936a357ccbbab2fbd68f7f63cb69c383c724d261751be  /roms/ports/bully/bully
+4367e19ad008b5c097809f8b4391872cffd28a823082b61a8f150307e97dd370  /roms/ports/Bully.sh
+APK_REMOVED_OK
+-rw-r--r-- 1 root root 168M Jun 30 00:32 /roms/ports/bully/assets/data_0.zip
+-rw-r--r-- 1 root root  24K Jun 30 00:32 /roms/ports/bully/assets/data_0.zip.idx
+-rw-r--r-- 1 root root 825M Jun 30 00:33 /roms/ports/bully/assets/data_1.zip
+-rw-r--r-- 1 root root  15K Jun 30 00:33 /roms/ports/bully/assets/data_1.zip.idx
+-rw-r--r-- 1 root root 513M Jun 30 00:34 /roms/ports/bully/assets/data_2.zip
+-rw-r--r-- 1 root root  29K Jun 30 00:34 /roms/ports/bully/assets/data_2.zip.idx
+-rw-r--r-- 1 root root 513M Jun 30 00:34 /roms/ports/bully/assets/data_3.zip
+-rw-r--r-- 1 root root  69K Jun 30 00:34 /roms/ports/bully/assets/data_3.zip.idx
+-rw-r--r-- 1 root root 739M Jun 30 00:35 /roms/ports/bully/assets/data_4.zip
+-rw-r--r-- 1 root root 917K Jun 30 00:35 /roms/ports/bully/assets/data_4.zip.idx
+               total        used        free      shared  buff/cache   available
+Mem:             480         390          88           2          72          90
+Swap:            511         198         313
+root       23117       1  0 00:32 ?        00:00:00 sh -c systemctl stop essway.service emustation.service 2>/dev/null || true; pkill -9 -x bully 2>/dev/null || true; pkill -9 -x gptokeyb 2>/dev/null || true; sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true; cd /roms/ports && nohup ./Bully.sh >/roms/ports/bully/launch.nohup.log 2>&1 < /dev/null & echo STARTED=$!; free -m
+root       23118   23117  0 00:32 ?        00:00:00 /bin/bash ./Bully.sh
+root       25894   23118  7 00:35 ?        00:00:16 /roms/ports/PortMaster/gptokeyb -1 bully -c /roms/ports/bully/bully.gptk
+root       25895   23118 99 00:35 ?        00:04:51 ./bully
+[thr] OS_ThreadLaunch 'CDStreamThread' -> 0xffff694716c0
+[drv] frame 600
+[drv] frame 900
+[drv] frame 1200
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::PauseSound
+[drv] frame 1500
+[ALOG:3 OSWrapper] [!!] cSCREAMAudioManager::ContinueSound
+[drv] frame 1800
+[drv] frame 2100
+[drv] frame 2400
+[drv] frame 2700
+[drv] frame 3000
+[drv] frame 3300
+[drv] frame 3600
+[drv] frame 3900
+[drv] frame 4200
+[drv] frame 4500
+[drv] frame 4800
+[drv] frame 5100
+[drv] frame 5400
+[drv] frame 5700
+[drv] frame 6000
+[drv] frame 6300
+[drv] frame 6600
+[drv] frame 6900
+[drv] frame 7200
+[drv] frame 7500
+[drv] frame 7800
+[drv] frame 8100
+[drv] frame 8400
+[drv] frame 8700
+[drv] frame 9000
+[drv] frame 9300
+[drv] frame 9600
+[drv] frame 9900
+[drv] frame 10200
+[drv] frame 10500
+[drv] frame 10800
+[drv] frame 11100
+[drv] frame 11400
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
+mali ff400000.gpu: OOM notifier: dev mali0  163588 kB
+mali ff400000.gpu: OOM notifier: tsk bully  tgid (3787)  pid (3787) 153876 kB
+mali ff400000.gpu: OOM notifier: tsk emulationstatio  tgid (2981)  pid (2981) 7880 kB
+mali ff400000.gpu: OOM notifier: tsk sway  tgid (2551)  pid (2551) 1832 kB
