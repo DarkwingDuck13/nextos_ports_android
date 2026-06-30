@@ -4403,6 +4403,16 @@ int my_IsSocialAuth(void) {
  * avança (confirmado pelo usuário: "fade lento/travado, não fica branco"). Aceleramos o mFactor na
  * direção corrente (mAmountPerDelta +0x74, sinal=direção) por frame, independente do deltaTime ruim,
  * e chamamos a Update original (clampa/Sample/detecta fim). Conserta TODAS as animações de UI. */
+/* 🔑 FF9_FIXDT: o deltaTime do Unity é ~0 no so-loader (player-loop mede frame-time errado) ->
+ * TODA lógica baseada em tempo (WaitForSeconds do slideshow, fades, timers) trava. Hookamos
+ * Time.get_deltaTime (0x2567384) p/ retornar um delta fixo (~1/60). Conserta o avanço do slideshow
+ * (hold entre slides), fades, e o jogo todo. FF9_DTVAL=ms (default 16). */
+float my_get_deltaTime(void);
+float my_get_deltaTime(void) {
+  float dt = 0.0166f;
+  if (getenv("FF9_DTVAL")) dt = atoi(getenv("FF9_DTVAL")) / 1000.0f;
+  return dt;
+}
 static void (*g_uitw_orig)(void *);
 void my_UITweener_Update(void *self);
 void my_UITweener_Update(void *self) {
@@ -6642,6 +6652,15 @@ int main(int argc, char **argv) {
           fprintf(stderr, "[FASTTWEEN] UITweener.Update(0x1276804) hookado @f=%d (orig=%p)\n", f, (void *)g_uitw_orig); fsync(2);
         } else fprintf(stderr, "[FASTTWEEN] mk_tramp falhou\n");
         tw_hooked = 1;
+      }
+      /* 🔑 FF9_FIXDT (default ON): Time.get_deltaTime(0x2567384)->~1/60 fixo. Conserta TODA lógica
+         de tempo (slideshow hold/WaitForSeconds, fades, timers). FF9_NOFIXDT desliga. */
+      static int dt_hooked = 0;
+      if (!dt_hooked && !getenv("FF9_NOFIXDT") && g_il2cpp_base && f >= 180) {
+        extern float my_get_deltaTime(void);
+        hook_arm64(g_il2cpp_base + 0x2567384, (uintptr_t)my_get_deltaTime);
+        dt_hooked = 1;
+        fprintf(stderr, "[FIXDT] Time.get_deltaTime(0x2567384) hookado @f=%d\n", f); fsync(2);
       }
     }
     { extern volatile int g_inject_ctrl;
