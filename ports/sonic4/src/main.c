@@ -325,6 +325,15 @@ static void patch_arm_jump(const char *sym, void *target) {
 
 static int sonic_amThreadCheckDraw(long unused) {
   (void)unused;
+  /* SONIC_THREADDRAW: testa o valor. O original retorna 1 se está na thread de draw
+     registrada; single-thread (nossa main = draw thread) => deveria ser 1 SEMPRE.
+     =1 força 1 (execute sempre, sem enfileirar — testa o bug de replicação do cassino);
+     =0 força 0; vazio = sonic_in_draw_frame (comportamento atual). */
+  static int mode = -2;
+  if (mode == -2) { const char *m = getenv("SONIC_THREADDRAW");
+    mode = m ? (m[0]-'0') : -1; }
+  if (mode == 1) return 1;
+  if (mode == 0) return 0;
   return sonic_in_draw_frame ? 1 : 0;
 }
 
