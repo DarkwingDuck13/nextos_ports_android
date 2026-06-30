@@ -1,6 +1,20 @@
-# Sonic 4 EP2 — estudo de 2 bugs de compatibilidade de device (2026-06-30)
+# Sonic 4 EP2 — 2 bugs de compatibilidade de device (2026-06-30)
 
-Só ESTUDO (não aplicar). Logs de testers: ROCKNIX (sem vídeo) e muOS (sem áudio).
+Logs de testers: ROCKNIX (sem vídeo) e muOS (sem áudio).
+
+## ✅ AMBOS IMPLEMENTADOS 2026-06-30 (default ON, defensivos) — PENDENTE teste do tester
+- **BUG A (ROCKNIX sem vídeo):** `egl_shim_create_window` agora seta `SDL_OPENGL_ES_DRIVER=1`
+  + `SDL_VIDEO_X11_FORCE_EGL=1` (escolhe libGLESv2/EGL em vez de desktop-GL/GLX) + detecção:
+  se GL_VERSION não tiver "ES", loga AVISO de tela-preta. Desliga com `SONIC_NO_FORCE_GLES`.
+  Validado no nosso R36S (ArchR/libmali): continua `GL_VERSION=OpenGL ES 3.2`, sem regressão.
+- **BUG B (muOS som no HDMI):** `sa_try_open` agora faz 2 passes — pass 1 IGNORA devices "hdmi"
+  + RETRY (5×400ms) no device "busy" (espera o falante liberar); pass 2 = fallback qualquer
+  (incl. HDMI). Desliga com `SONIC_NO_PREFER_SPEAKER`. Nosso R36S usa "default" → não afetado.
+- Falta: tester rodar em ROCKNIX (mandar GL_VERSION — deve virar "OpenGL ES") e muOS (confirmar
+  som no alto-falante). Não temos esses devices p/ validar local.
+
+---
+## (estudo original abaixo)
 
 ## BUG A — ROCKNIX: áudio OK, SEM VÍDEO (tela preta)
 

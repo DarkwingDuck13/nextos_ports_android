@@ -74,6 +74,19 @@ static int has_real_gl = 0;
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 
 void egl_shim_create_window(void) {
+  /* 🟢 FIX ROCKNIX/Mesa "sem video" (default ON; SONIC_NO_FORCE_GLES desliga):
+     em devices Mesa/Panfrost (ROCKNIX, handhelds RK open-source) o SDL pode devolver
+     um contexto OpenGL DESKTOP (GL_VERSION="3.x Mesa", GLSL "1.40") em vez de GLES ->
+     os shaders GLSL ES do jogo nao compilam -> tela preta (so audio). Isto NAO e
+     forcar SDL_VIDEODRIVER (regra #6) — e escolher a LIB GL (GLES via EGL vs desktop
+     via GLX), que o jogo EXIGE. Lido no load da libGL (1o SDL_CreateWindow OPENGL).
+     Inofensivo em devices que ja usam GLES real (Mali libmali/Utgard). */
+  if (!sonic_env("SONIC_NO_FORCE_GLES")) {
+    SDL_SetHint("SDL_OPENGL_ES_DRIVER", "1");   /* carrega libGLESv2 via EGL */
+    SDL_SetHint("SDL_VIDEO_X11_FORCE_EGL", "1");/* em X11, EGL em vez de GLX */
+    fprintf(stderr, "egl_shim: FORCE_GLES on (SDL_OPENGL_ES_DRIVER=1, X11_FORCE_EGL=1) "
+                    "-> driver GLES/EGL p/ Mesa/Panfrost\n");
+  }
   /* resolucao nativa do device (TV 1080p, handheld 480p...) c/ fallback 720p */
   SDL_DisplayMode dm;
   if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
@@ -166,6 +179,15 @@ void egl_shim_create_window(void) {
       fprintf(stderr, "egl_shim: GL_RENDERER=%s\n", r ? r : "?");
       fprintf(stderr, "egl_shim: GL_VERSION=%s\n", v ? v : "?");
       fprintf(stderr, "egl_shim: GL_GLSL=%s\n", s ? s : "?");
+      /* 🟢 Detecção: um contexto GLES reporta "OpenGL ES x.x". Se vier DESKTOP GL
+         (ex.: "3.1 Mesa", sem "ES"), os shaders GLSL ES nao compilam -> tela preta.
+         Avisa alto (o FORCE_GLES acima deve evitar; se ainda vier desktop, o device
+         nao tem libGLESv2/EGL no caminho do SDL). */
+      if (v && !strstr(v, "ES") && !strstr(v, "es")) {
+        fprintf(stderr, "egl_shim: *** AVISO: contexto e OpenGL DESKTOP, nao GLES! "
+                "(GL_VERSION sem 'ES') -> shaders GLSL ES nao compilam = TELA PRETA. "
+                "Device Mesa precisa de libGLESv2+EGL no SDL. ***\n");
+      }
     } else {
       fprintf(stderr, "egl_shim: glGetString indisponivel (sem identidade GL)\n");
     }

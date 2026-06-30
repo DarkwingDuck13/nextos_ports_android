@@ -975,14 +975,40 @@ static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
   int nd = p_num(0);
   fprintf(stderr, "sonic_audio: default falhou (%s); %d device(s) de saida nomeados\n",
           SDL_GetError(), nd);
-  for (int i = 0; i < nd; i++) {
-    const char *dn = p_name(i, 0);
-    if (!dn || !*dn) continue;
-    g_dev = SDL_OpenAudioDevice(dn, 0, want, have, 0);
-    fprintf(stderr, "sonic_audio:   [%d] \"%s\" -> %s\n", i, dn,
-            g_dev ? "ABRIU" : SDL_GetError());
-    if (g_dev) { g_opened_raw = 1; /* card cru: liga o volume por software (Plano C) */
-                 return 1; }
+  /* 🔊 FIX muOS "som no HDMI" (default ON; SONIC_NO_PREFER_SPEAKER desliga): num
+     handheld o alvo e o ALTO-FALANTE, nao o HDMI. O bug: o alto-falante (audiocodec)
+     dava "Device or resource busy" (o frontend ainda nao soltou o card) -> o loop
+     pegava o PROXIMO que abrisse = ahubhdmi (HDMI) -> som no HDMI.
+     PASS 1: ignora devices com "hdmi" no nome E faz RETRY no que der "busy" (o card
+     do falante costuma liberar 1-2s apos o launch). PASS 2: fallback p/ qualquer um
+     (inclusive HDMI) se nada nao-HDMI abriu. */
+  int prefer_speaker = (getenv("SONIC_NO_PREFER_SPEAKER") == NULL);
+  for (int pass = 0; pass < (prefer_speaker ? 2 : 1); pass++) {
+    for (int i = 0; i < nd; i++) {
+      const char *dn = p_name(i, 0);
+      if (!dn || !*dn) continue;
+      int is_hdmi = (strcasestr(dn, "hdmi") != NULL);
+      if (prefer_speaker && pass == 0 && is_hdmi) {
+        fprintf(stderr, "sonic_audio:   [%d] \"%s\" -> PULADO (HDMI, pass 1)\n", i, dn);
+        continue;
+      }
+      /* retry no "busy" so no pass 1 (esperando o falante liberar) */
+      int tries = (prefer_speaker && pass == 0) ? 5 : 1;
+      for (int t = 0; t < tries; t++) {
+        g_dev = SDL_OpenAudioDevice(dn, 0, want, have, 0);
+        if (g_dev) break;
+        const char *err = SDL_GetError();
+        int busy = err && (strcasestr(err, "busy") != NULL);
+        if (!busy || t + 1 >= tries) break;
+        fprintf(stderr, "sonic_audio:   [%d] \"%s\" busy, retry %d/%d...\n",
+                i, dn, t + 1, tries);
+        usleep(400 * 1000); /* 400ms; ate ~2s no total */
+      }
+      fprintf(stderr, "sonic_audio:   [%d] \"%s\" (pass %d) -> %s\n", i, dn, pass + 1,
+              g_dev ? "ABRIU" : SDL_GetError());
+      if (g_dev) { g_opened_raw = 1; /* card cru: liga o volume por software (Plano C) */
+                   return 1; }
+    }
   }
   return 0;
 }
