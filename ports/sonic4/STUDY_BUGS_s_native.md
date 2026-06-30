@@ -32,7 +32,23 @@ SE flag `[ptr+4]&0x800`; senão cai em `AoPadDirect` (0x2112f0). `OUYAGetPauseKe
 - push_key_event/AKEYCODE_* (android_shim) NÃO alimentam o engine do EP2 (sem Paddleboat;
   a Java foi substituída pelo nosso shim). Só o FOX mask conta.
 
-### Bug #1 (Y=Left) — ✅ RESOLVIDO (reproduzido + root-caused + fixado + validado no R36S)
+### Bug #1 (Y=Left / Y sem função) — ✅ RAIZ REAL ACHADA E CORRIGIDA (commit 1b1075e)
+**RAIZ DEFINITIVA: nosso MAPA DE BITS do pad estava ERRADO.** Decompilei `foxJniLib.s_remapKey`
+(DEX do APK via androguard 4.1.4) = a tabela keycode→bitindex do PRÓPRIO jogo. O input real =
+`foxJniLib.gmPadValue` (máscara) montada por `onKeyEvnet(keycode)`; `gmPadValue=(1<<bitindex)`.
+SetPadData(gmPadValue) é o que o engine lê. **Bits REAIS (Xbox):**
+`Y(kc100)=bit4=0x10`, `A(96)=0x20`, `X(99)=0x40`, `B(97)=0x80`, `L1(102)=0x100`, `L2(104)=0x200`,
+`L3/THUMBL(106)=0x400`, `R1(103)=0x800`, `R2(105)=0x1000`, `R3/THUMBR(107)=0x2000`,
+`SELECT/BACK(109)=0x4000`, `START(108)=0x8000`. Dir: UP=0x1 DOWN=0x2 LEFT=0x4 RIGHT=0x8.
+**O bug:** nosso `FOX_Y=0x100` era na verdade **L1**! Pressionar Y mandava L1 → no world map L1
+rola/pagina (= "Y vira Left") e a função PRÓPRIA do Y (bit4=0x10) nunca disparava (= "Y sem função
+no jogo inteiro", reportado pelo usuário). **FIX:** corrigi o mapa inteiro pros valores reais de
+s_remapKey; removi o hack de supressão de Y/X. **VALIDADO no R36S:** injetar 0x10 (Y novo) NÃO
+rola o mapa (dispara a função do Y, HUD muda); antes 0x100 rolava ~1900 samples.
+`isPadConfirmButton`=ENTER/START/A, `isPadCancelButton`=BACK/SELECT/ESC/B (Java foxJniLib).
+Ferramenta: androguard no DEX (`dex/`, scratchpad). 
+
+#### (histórico) tentativa anterior — supressão (substituída pelo fix de raiz acima)
 Os bits de menu NORMAL (g_gs_env_key: left=0x4 etc.) estão certos e estáveis (keydump confirmou,
 sem remap). MAS o "level select" do luis = **WORLD MAP** (atrás de Main Menu → Continue), e o
 world map lê input por um caminho DIFERENTE dos menus normais.
