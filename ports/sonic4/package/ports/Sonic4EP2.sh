@@ -67,7 +67,10 @@ if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.2
   exit 1
 fi
 
-export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/armeabi-v7a:/usr/lib32:/lib32:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/lib:$LD_LIBRARY_PATH"
+# /usr/local/lib/arm-linux-gnueabihf = onde o ArkOS poe libmali/libGLESv2/libEGL armhf
+# (em outros sistemas esses paths nao existem -> inofensivos). Sem isso o binario nao
+# acha libGLESv2.so no load nesse device.
+export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/armeabi-v7a:/usr/lib32:/lib32:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/local/lib/arm-linux-gnueabihf:/usr/local/lib32:/usr/local/lib:/usr/lib:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 # Display/áudio/single-instance/hints de SDL: TUDO no binário agora. O sistema/SDL
 # detectam wayland/kmsdrm/fbdev e pulse/alsa/pipewire automaticamente (nada forçado).
@@ -129,6 +132,11 @@ if [ -z "$SONIC_KEEP_HOME" ]; then
   fi
   echo "sonic: asoundrc candidatos: $(ls -1 /userdata/system/.asoundrc /storage/.config/.asoundrc /root/.asoundrc /etc/asound.conf 2>/dev/null | tr '\n' ' ')"
 fi
+
+# Fix de render da fase Electric Road (Episode Metal/cassino): limpa cada FBO
+# off-screen 1x por frame (o engine espera isso; sem isso o fundo acumula e
+# estoura). Inofensivo nas outras fases. Desliga com SONIC_NO_CLEARALL.
+[ -z "$SONIC_NO_CLEARALL" ] && export SONIC_CLEARALL=1
 
 ./sonic4
 
