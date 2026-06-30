@@ -35,6 +35,8 @@ static double g_ext_pending = 1.0;
 static SDL_GameController *g_sdlpad = NULL;
 static int g_ctrl_seen[256];   /* p/ logar cada controlId polado 1x (mapeamento) */
 static double g_force[256];    /* HM_AUTOEXT: injeta valor num controlId (autopilot/teste) */
+static volatile long g_frame = 0;  /* frame atual (p/ logar ordem de polling) */
+static int g_pollseq = 0;          /* contador de getControllerValue dentro do frame */
 /* le o estado SDL do controle p/ o controlId da extensao (mapeado por observacao) */
 double hm_get_control(int id, int slot);
 static char fake_env[0x1000];
@@ -129,6 +131,13 @@ static void *j_CallObjectMethod(void *e, void *o, int id, ...) {
       g_ext_pending = hm_get_control(a0, a1);
       if (a0 >= 0 && a0 < 256 && !g_ctrl_seen[a0]) { g_ctrl_seen[a0] = 1;
         fprintf(stderr, "[ctrl] getControllerValue id=%d slot=%d nargs=%d -> %f\n", a0, a1, nargs, g_ext_pending); }
+      /* HM_POLLORDER: loga a ORDEM de polling dentro do frame alvo -> revela a estrutura
+       * dos bindings (UP,DOWN,LEFT,RIGHT,ATTACK,PICKUP,FINISH,LOOK,LOCKON em ordem de codigo) */
+      if (getenv("HM_POLLORDER")) {
+        long tgt = atol(getenv("HM_POLLORDER"));
+        if (g_frame == tgt) fprintf(stderr, "[poll] f=%ld seq=%d index=%d\n", g_frame, g_pollseq, a0);
+        g_pollseq++;
+      }
       return EXT_DOUBLE_SENTINEL;
     }
     static int c = 0; if (c++ < 200)
@@ -580,7 +589,7 @@ double hm_get_control(int id, int slot) {
   SDL_GameController *p = g_sdlpad;
   double v = 0.0;
   if (p) {
-    const int DZ = 12000;
+    const int DZ = 11000;
     int lx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTX);
     int ly = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTY);
     int rx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTX);
@@ -588,22 +597,25 @@ double hm_get_control(int id, int slot) {
     int lt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
     int rt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
     #define B(x) (SDL_GameControllerGetButton(p, (x)) ? 1.0 : 0.0)
+    /* BIJETIVO: cada controle fisico -> 1 index (rebind in-game funciona). Direcoes em
+     * dpad+analogico ESQ; LOOK(mira) no analogico DIR; faces/ombros/gatilhos = acoes. */
     switch (id) {
       case 0:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_UP)    || ly < -DZ) ? 1.0 : 0.0; break; /* UP */
       case 1:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_DOWN)  || ly >  DZ) ? 1.0 : 0.0; break; /* DOWN */
       case 2:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_LEFT)  || lx < -DZ) ? 1.0 : 0.0; break; /* LEFT */
       case 3:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx >  DZ) ? 1.0 : 0.0; break; /* RIGHT */
-      case 5:  v = (B(SDL_CONTROLLER_BUTTON_A) || rt > 6000) ? 1.0 : 0.0; break;         /* ATTACK/confirm */
-      case 18: v = (rx > DZ || rx < -DZ) ? rx / 32767.0 : 0.0; break;                    /* LOOK X */
-      case 19: v = (ry > DZ || ry < -DZ) ? ry / 32767.0 : 0.0; break;                    /* LOOK Y */
-      /* acoes restantes (refinar): faces/ombros/gatilhos */
-      case 4:  v = B(SDL_CONTROLLER_BUTTON_B); break;                                     /* cancel/back */
-      case 6:  v = B(SDL_CONTROLLER_BUTTON_X); break;                                     /* PICKUP? */
-      case 8:  v = B(SDL_CONTROLLER_BUTTON_Y); break;                                     /* FINISH? */
-      case 9:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER); break;                          /* LOCKON? */
-      case 10: v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break;
-      case 20: v = (lt > 6000) ? 1.0 : 0.0; break;
-      case 21: v = (rt > 6000) ? 1.0 : 0.0; break;
+      case 18: v = (rx > DZ || rx < -DZ) ? rx / 32767.0 : 0.0; break;                    /* LOOK/aim X */
+      case 19: v = (ry > DZ || ry < -DZ) ? ry / 32767.0 : 0.0; break;                    /* LOOK/aim Y */
+      case 5:  v = B(SDL_CONTROLLER_BUTTON_A); break;            /* ATTACK/confirm (validado: idx5) */
+      case 4:  v = B(SDL_CONTROLLER_BUTTON_B); break;            /* cancel/back */
+      case 6:  v = B(SDL_CONTROLLER_BUTTON_X); break;            /* acao (pickup/finish/lockon) */
+      case 8:  v = B(SDL_CONTROLLER_BUTTON_Y); break;            /* acao */
+      case 9:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER); break; /* acao */
+      case 10: v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break;/* acao */
+      case 20: v = (lt > 6000) ? 1.0 : 0.0; break;              /* LT */
+      case 21: v = (rt > 6000) ? 1.0 : 0.0; break;              /* RT */
+      case 7:  v = B(SDL_CONTROLLER_BUTTON_BACK); break;
+      case 11: v = B(SDL_CONTROLLER_BUTTON_START); break;
       default: v = 0.0; break;
     }
     #undef B
@@ -776,6 +788,7 @@ void jni_run(void) {
   signal(SIGTERM, kz_term); signal(SIGINT, kz_term);
   fprintf(stderr, "[drv] entrando no loop Process\n");
   for (long f = 0;; f++) {
+    g_frame = f; g_pollseq = 0;   /* p/ HM_POLLORDER */
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
       if (inlog && ev.type != SDL_MOUSEMOTION) fprintf(stderr, "[ev] type=0x%x\n", ev.type);
@@ -818,16 +831,18 @@ void jni_run(void) {
      * index por vez (lista candidata), HM_SWEEPHOLD frames cada, logando. Com HM_SHOTSEQ+
      * KZ_SHOTEVERY=hold => 1 screenshot por index => leio o efeito (cursor/confirma). */
     if (getenv("HM_SWEEP")) {
-      static const int cand[] = {0,1,2,3,4,5,6,8,9,10,11,12,13,14};
+      static const int cand[] = {0,1,2,3};   /* direcoes: UP DOWN LEFT RIGHT */
       long start = getenv("HM_SWEEPSTART") ? atol(getenv("HM_SWEEPSTART")) : 1500;
       long hold = getenv("HM_SWEEPHOLD") ? atol(getenv("HM_SWEEPHOLD")) : 90;
       memset(g_force, 0, sizeof(g_force));
       if (f < start && !getenv("HM_NOMASH")) {  /* mashea CONFIRM (idx5) p/ passar menus/intro */
         if ((f % 60) < 10) g_force[5] = 1.0;
       } else if (f >= start) {
-        long k = ((f - start) / hold) % (long)(sizeof(cand)/sizeof(cand[0]));
-        g_force[cand[k]] = 1.0;
-        if ((f - start) % hold == 0) fprintf(stderr, "[sweep] f=%ld forcando index=%d\n", f, cand[k]);
+        long rel = f - start;
+        long k = (rel / hold) % (long)(sizeof(cand)/sizeof(cand[0]));
+        long ph = rel % hold;
+        if (ph < hold/2) g_force[cand[k]] = 1.0;   /* 1a metade forca, 2a metade neutro (volta ao repouso) */
+        if (ph == 0) fprintf(stderr, "[sweep] f=%ld forcando index=%d\n", f, cand[k]);
       }
     }
     if (getenv("HM_AUTOEXT")) {
