@@ -62,9 +62,15 @@ static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
   int n = backtrace(bt, 48);
   /* PC/LR exatos do ucontext (armhf) — a instrução do crash mesmo sem unwind da libfox. */
   unsigned long pc = 0, lr = 0, sp = 0;
+  unsigned long R[13] = {0};
 #if defined(__arm__)
   if (uc) { ucontext_t *u = (ucontext_t *)uc;
-    pc = u->uc_mcontext.arm_pc; lr = u->uc_mcontext.arm_lr; sp = u->uc_mcontext.arm_sp; }
+    pc = u->uc_mcontext.arm_pc; lr = u->uc_mcontext.arm_lr; sp = u->uc_mcontext.arm_sp;
+    R[0]=u->uc_mcontext.arm_r0; R[1]=u->uc_mcontext.arm_r1; R[2]=u->uc_mcontext.arm_r2;
+    R[3]=u->uc_mcontext.arm_r3; R[4]=u->uc_mcontext.arm_r4; R[5]=u->uc_mcontext.arm_r5;
+    R[6]=u->uc_mcontext.arm_r6; R[7]=u->uc_mcontext.arm_r7; R[8]=u->uc_mcontext.arm_r8;
+    R[9]=u->uc_mcontext.arm_r9; R[10]=u->uc_mcontext.arm_r10; R[11]=u->uc_mcontext.arm_fp;
+    R[12]=u->uc_mcontext.arm_ip; }
 #endif
   uintptr_t tb = (uintptr_t)text_base;
   FILE *fs[2]; fs[0] = stderr; fs[1] = fopen("crash.log", "a");
@@ -75,6 +81,10 @@ static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
             sonic_frame_for_imports, sonic_in_draw_frame);
     fprintf(o, "  PC=0x%lx libfox+0x%lx   LR=0x%lx libfox+0x%lx   SP=0x%lx\n",
             pc, pc - tb, lr, lr - tb, sp);
+    fprintf(o, "  r0=0x%lx r1=0x%lx r2=0x%lx r3=0x%lx r4=0x%lx r5=0x%lx r6=0x%lx\n",
+            R[0],R[1],R[2],R[3],R[4],R[5],R[6]);
+    fprintf(o, "  r7=0x%lx r8=0x%lx r9=0x%lx r10=0x%lx fp=0x%lx ip=0x%lx\n",
+            R[7],R[8],R[9],R[10],R[11],R[12]);
     for (int i = 0; i < n; i++) {
       long off = (long)((uintptr_t)bt[i] - tb);
       fprintf(o, "  #%-2d %p  libfox+0x%lx\n", i, bt[i], off);
@@ -321,6 +331,45 @@ static void patch_arm_jump(const char *sym, void *target) {
   mprotect((void *)pg, 0x2000, PROT_READ | PROT_EXEC);
   fprintf(stderr, "patch_jump: %s -> %p @0x%lx\n", sym, target,
           (unsigned long)a);
+}
+
+/* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
+   _amDrawReleaseTexture(node) libera a lista de texturas da cena de forma DIFERIDA
+   (enfileirada por GameProcess, executada por DrawFrame via amDrawExecRegist). Na saída,
+   o GameProcess enfileira o release E libera os dados da cena na MESMA passada (loop
+   single-thread GameProcess->DrawFrame), então quando o DrawFrame drena a fila o ponteiro
+   da lista (node+4 = P = {count,array}) já aponta pra memória LIBERADA -> count lixo
+   (ex.: 0xfbfd18f0) -> indexa array fora -> SIGSEGV (e às vezes vira corrupção/OOM).
+   Nossa versão VALIDA o count/ponteiros antes de iterar: lista válida = libera normal
+   (sem vazar); lista corrompida = pula com segurança (os dados já foram liberados pela
+   destruição da cena, então não há o que liberar). Idêntica ao original no caminho bom. */
+static void (*g_real_TexMgrDecRef)(unsigned) = 0;
+static unsigned long g_relsafe_ok = 0, g_relsafe_skip = 0;
+static void my_amDrawReleaseTexture(void *node) {
+  if (!node) return;
+  unsigned *P = ((unsigned **)node)[1];           /* P = [node+4] = lista {count,array} */
+  long count = -1; unsigned *array = 0;
+  if (P && (uintptr_t)P > 0x10000UL && (uintptr_t)P < 0xfffff000UL) {
+    count = (long)P[0];                            /* P->count */
+    array = (unsigned *)(uintptr_t)P[1];           /* P->array de handles */
+  }
+  if (count > 0 && count <= 65536 && array &&
+      (uintptr_t)array > 0x10000UL && (uintptr_t)array < 0xfffff000UL) {
+    if (!g_real_TexMgrDecRef)
+      g_real_TexMgrDecRef = (void (*)(unsigned))so_find_addr_safe("amTexMgrDecRef");
+    for (long i = 0; i < count; i++) {
+      unsigned h = array[i];
+      if (h && h < 1000000u && g_real_TexMgrDecRef) g_real_TexMgrDecRef(h);
+    }
+    g_relsafe_ok++;
+  } else {
+    g_relsafe_skip++;
+    if (g_relsafe_skip <= 20)
+      fprintf(stderr, "[RELSAFE] release de textura com lista CORROMPIDA pulado "
+              "(count=%ld P=%p array=%p) skip#%lu\n", count, (void *)P,
+              (void *)array, g_relsafe_skip);
+  }
+  ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
@@ -702,6 +751,13 @@ int main(int argc, char *argv[]) {
   if (env_flag_enabled("SONIC_FORCETONEMAP")) {
     patch_retval("_Z23SsConstTonemapIsEnablev", 1);
     fprintf(stderr, "=== SONIC_FORCETONEMAP: tone-map HDR->LDR forcado ON ===\n");
+  }
+  /* 🛡️ FIX crash ao sair da fase (default ON; SONIC_NO_RELSAFE desliga): redireciona
+     _amDrawReleaseTexture pra nossa versão que valida a lista antes de liberar. */
+  if (!getenv("SONIC_NO_RELSAFE")) {
+    patch_arm_jump("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST",
+                   (void *)my_amDrawReleaseTexture);
+    fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (anti-crash de saida) ===\n");
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
      AUTO-EXPOSIÇÃO. ChangeToneMapParam(midgray,lwhite) é chamado por frame pela
