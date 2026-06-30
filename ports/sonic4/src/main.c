@@ -1226,12 +1226,15 @@ int main(int argc, char *argv[]) {
       }
     }
     sonic_in_draw_frame = 1;
-    /* 🔧 SONIC_FBCLEAR: limpa o back-buffer ANTES do jogo desenhar. Fix candidato dos
-       RASTROS (o jogo conta com o pass full-screen do bloom p/ reescrever a tela; sem
-       bloom e sem clear, o double-buffer retém frames antigos). Independente de FX. */
+    /* 🔧 FIX RASTROS (confirmado por FBO-STATS): o FBO 0 (tela final) é desenhado mas
+       NUNCA limpo pelo engine (só FBO 2 é) -> a composição acumula -> smear. Ligamos
+       o FBO 0 EXPLICITAMENTE e limpamos antes do DrawFrame (o engine recompõe a cena
+       fresca por cima). O clear antigo (sem bind) pegava o FBO errado e não resolvia. */
     if (g_fbclear) {
+      extern void glBindFramebuffer(unsigned int, unsigned int);
       extern void glClear(unsigned int);
-      glClear(0x4000 /* GL_COLOR_BUFFER_BIT */);
+      glBindFramebuffer(0x8D40 /* GL_FRAMEBUFFER */, 0); /* FBO 0 = tela */
+      glClear(0x4100 /* COLOR | DEPTH */);
     }
     if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
     sonic_in_draw_frame = 0;
