@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <signal.h>
+#include <math.h>
 #include "so_util.h"
 #include "util.h" /* ret0 */
 #include "opensles_shim.h"
@@ -570,34 +571,52 @@ static void post_social_event(const char *eventType) {
 /* ---- EXTENSAO DE CONTROLE do HLM2: le o estado SDL do controle p/ o controlId pedido ----
  * Mapeamento DESCOBERTO por observacao (HM_CTRLLOG loga cada id polado). 1a versao = neutro
  * (0) p/ destravar o boot; depois mapeia id->SDL button/axis. */
+/* MAPA da extensao getControllerValue do HLM2 (descoberto por experimento+observacao):
+ *  0=UP 1=DOWN 2=LEFT 3=RIGHT (direcoes: dpad + analogico ESQ)  5=ATTACK/confirm (A/RT)
+ *  18/19=LOOK (analogico DIR, aim)  + acoes (PICKUP/FINISH/LOCKON) em 4/6/8/9/10/20/21.
+ * O jogo aplica seu proprio binding Xbox; aqui devolvemos o estado fisico SDL p/ cada index. */
 double hm_get_control(int id, int slot) {
   (void)slot;
   SDL_GameController *p = g_sdlpad;
-  if (!p) return 0.0;
   double v = 0.0;
-  /* PALPITE: ids 0..14 = SDL_GameControllerButton enum (A=0,B=1,X=2,Y=3,BACK=4,
-   * GUIDE=5,START=6,LSTICK=7,RSTICK=8,LSHLDR=9,RSHLDR=10,DPUP=11,DPDN=12,DPL=13,DPR=14). */
-  if (id >= 0 && id <= 14) v = SDL_GameControllerGetButton(p, (SDL_GameControllerButton)id) ? 1.0 : 0.0;
-  else {                                              /* eixos (range -1..1 / 0..1) */
-    int axraw = 0; int trig = 0;
+  if (p) {
+    const int DZ = 12000;
+    int lx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTX);
+    int ly = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTY);
+    int rx = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTX);
+    int ry = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTY);
+    int lt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+    int rt = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+    #define B(x) (SDL_GameControllerGetButton(p, (x)) ? 1.0 : 0.0)
     switch (id) {
-      case 16: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTX);  break;
-      case 17: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTY);  break;
-      case 18: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTX); break;
-      case 19: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTY); break;
-      case 20: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT);  trig = 1; break;
-      case 21: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT); trig = 1; break;
-      default: return 0.0;
+      case 0:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_UP)    || ly < -DZ) ? 1.0 : 0.0; break; /* UP */
+      case 1:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_DOWN)  || ly >  DZ) ? 1.0 : 0.0; break; /* DOWN */
+      case 2:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_LEFT)  || lx < -DZ) ? 1.0 : 0.0; break; /* LEFT */
+      case 3:  v = (B(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || lx >  DZ) ? 1.0 : 0.0; break; /* RIGHT */
+      case 5:  v = (B(SDL_CONTROLLER_BUTTON_A) || rt > 6000) ? 1.0 : 0.0; break;         /* ATTACK/confirm */
+      case 18: v = (rx > DZ || rx < -DZ) ? rx / 32767.0 : 0.0; break;                    /* LOOK X */
+      case 19: v = (ry > DZ || ry < -DZ) ? ry / 32767.0 : 0.0; break;                    /* LOOK Y */
+      /* acoes restantes (refinar): faces/ombros/gatilhos */
+      case 4:  v = B(SDL_CONTROLLER_BUTTON_B); break;                                     /* cancel/back */
+      case 6:  v = B(SDL_CONTROLLER_BUTTON_X); break;                                     /* PICKUP? */
+      case 8:  v = B(SDL_CONTROLLER_BUTTON_Y); break;                                     /* FINISH? */
+      case 9:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER); break;                          /* LOCKON? */
+      case 10: v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break;
+      case 20: v = (lt > 6000) ? 1.0 : 0.0; break;
+      case 21: v = (rt > 6000) ? 1.0 : 0.0; break;
+      default: v = 0.0; break;
     }
-    if (trig) { v = (axraw > 6000) ? (axraw / 32767.0) : 0.0; }   /* trigger: deadzone baixa */
-    else { v = (axraw > 8000 || axraw < -8000) ? (axraw / 32767.0) : 0.0; }  /* stick: deadzone ~25% */
+    #undef B
   }
-  /* HM_AUTOEXT: injeta valor forcado (autopilot p/ achar o botao de confirmar do menu) */
+  /* HM_AUTOEXT/HM_SWEEP: injeta valor forcado (autopilot/experimento) */
   if (id >= 0 && id < 256 && g_force[id] != 0.0) v = g_force[id];
-  /* HM_CTRLLIVE: loga QUANDO algo e pressionado -> revela qual id casa com cada botao */
-  if (getenv("HM_CTRLLIVE") && v != 0.0) {
-    static Uint32 last = 0; Uint32 now = SDL_GetTicks();
-    if (now - last > 60) { last = now; fprintf(stderr, "[ctrl-live] id=%d -> %f\n", id, v); }
+  /* HM_CTRLLIVE: loga cada id ATIVO com seu valor -> revela id<->controle fisico.
+   * Throttle por-id (250ms) p/ nao floodar mas mostrar cada controle distinto. */
+  if (getenv("HM_CTRLLIVE") && v != 0.0 && id >= 0 && id < 256) {
+    static Uint32 lastid[256]; Uint32 now = SDL_GetTicks();
+    if (now - lastid[id] > 250) { lastid[id] = now;
+      fprintf(stderr, "[ctrl-live] id=%2d val=%+.2f  %s\n", id, v,
+        id<=14 ? "(botao)" : "(eixo)"); }
   }
   return v;
 }
@@ -728,7 +747,10 @@ void jni_run(void) {
   { int nj = SDL_NumJoysticks(); fprintf(stderr, "[input] %d joysticks\n", nj);
     for (int i = 0; i < nj; i++) { if (SDL_IsGameController(i)) { SDL_GameController *gc = SDL_GameControllerOpen(i); if (gc && !g_sdlpad) g_sdlpad = gc; fprintf(stderr, "[input] gamecontroller %d aberto\n", i); }
       else { SDL_JoystickOpen(i); fprintf(stderr, "[input] joystick RAW %d (%s)\n", i, SDL_JoystickNameForIndex(i)); } } }
-  gp_register(); /* registra gamepad nativo (id 0) -> menu do titulo responde */
+  /* HLM2 NAO usa o gamepad nativo do GameMaker (usa a extensao getControllerValue).
+   * Registrar o nativo (gp_register) criava uma 2a fonte de input -> conflito (botoes
+   * embaralhados no menu). So registra com HM_NATIVEPAD p/ debug. */
+  if (getenv("HM_NATIVEPAD")) gp_register();
   /* HLM2 (runner vanilla, NAO Netflix): sem o gate social/cloud do Katana. O
    * cloud_resolve usa offset KZ-especifico (0x14fb2ec) -> base errada no HLM2.
    * Save do HLM2 = GetSaveFileName normal (filesystem). Cloud desativado. */
@@ -740,6 +762,12 @@ void jni_run(void) {
    * que usam _pressed nao disparam (menu usa _check/held, por isso funcionava). Chamar por frame. */
   void (*io_update)(void) = (void (*)(void))so_find_addr_safe("_Z9IO_Updatev");
   fprintf(stderr, "[drv] IO_Update=%p (pressed/released por frame)\n", (void *)io_update);
+
+  /* binding globals (RValue: double@0, int kind@8) -> p/ dump dos indices default */
+  static const char *g_bindnames[] = {"g_VAR_attack_controller","g_VAR_finish_controller",
+    "g_VAR_pickup_controller","g_VAR_look_controller","g_VAR_lockon_controller"};
+  uintptr_t g_bindaddr[5];
+  for (int i = 0; i < 5; i++) g_bindaddr[i] = so_find_addr_safe(g_bindnames[i]);
 
   long maxf = getenv("KZ_MAXFRAMES") ? atol(getenv("KZ_MAXFRAMES")) : 0;
   long maxs = getenv("KZ_MAXSECONDS") ? atol(getenv("KZ_MAXSECONDS")) : 0;
@@ -759,41 +787,17 @@ void jni_run(void) {
       } else if (ev.type == SDL_CONTROLLERBUTTONDOWN || ev.type == SDL_CONTROLLERBUTTONUP) {
         int down = (ev.type == SDL_CONTROLLERBUTTONDOWN);
         if (inlog) fprintf(stderr, "[ev] CBUTTON %d %s\n", ev.cbutton.button, down ? "down" : "up");
-        gp_button(ev.cbutton.button, down);            /* path NATIVO de gamepad (UNICO por padrao) */
-        /* KeyEvent (teclado) so com KZ_KBDFEED -> por padrao input LIMPO so do gamepad nativo
-         * (evita conflito: feed duplo confundia o input do gameplay). */
+        /* INPUT do HLM2 = SO a extensao getControllerValue (le o estado SDL direto).
+         * NAO alimentamos o gamepad NATIVO do GameMaker aqui (conflito: o engine lia as
+         * DUAS fontes -> botoes embaralhados). So tratamos SELECT+START p/ sair. */
+        if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)  g_sel_held = down;
+        if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_START) g_start_held = down;
+        if (g_sel_held && g_start_held) { fprintf(stderr, "[drv] SELECT+START -> sair\n"); g_exit_combo = 1; }
         if (getenv("KZ_KBDFEED")) { int kc = sdl_btn_to_android(ev.cbutton.button); if (kc) key(kc, down); }
-      } else if (ev.type == SDL_CONTROLLERAXISMOTION) {
-        /* eixos analogicos -> path nativo (axis 0=LX 1=LY 2=RX 3=RY 4=LT 5=RT) */
-        if (g_gp_axis && g_gp_ready) g_gp_axis(g_gp_id, ev.caxis.axis, ev.caxis.value / 32767.0f);
-        /* L2/R2 (triggers) tambem como BOTAO: histerese 50%/30% p/ o jogo (gp_shoulderlb/rb) */
-        if (ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
-          if (!g_lt_down && ev.caxis.value > 16000) { g_lt_down = 1; gp_trigger(0, 1); }
-          else if (g_lt_down && ev.caxis.value < 10000) { g_lt_down = 0; gp_trigger(0, 0); }
-        } else if (ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
-          if (!g_rt_down && ev.caxis.value > 16000) { g_rt_down = 1; gp_trigger(1, 1); }
-          else if (g_rt_down && ev.caxis.value < 10000) { g_rt_down = 0; gp_trigger(1, 0); }
-        }
-      } else if (ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) {
-        int jdown = (ev.type == SDL_JOYBUTTONDOWN);
-        if (inlog) fprintf(stderr, "[ev] JOYBUTTON %d %s\n", ev.jbutton.button, jdown ? "down" : "up");
-        /* 🎮 L1/R1 (ombros): neste controle vem como JOYBUTTON 4/5 e o SDL NAO mapeia p/
-         * SDL_CONTROLLER_BUTTON_LEFT/RIGHTSHOULDER -> caia fora -> o ROLL (R1=gp_shoulderrb)
-         * nunca chegava no gameplay. Alimenta NATIVO direto: joy4=L1(kc102), joy5=R1(kc103).
-         * (As faces A/B/X/Y JA vem como CONTROLLERBUTTON, entao nao mexemos nelas aqui.) */
-        int jkc = 0;
-        if (ev.jbutton.button == 4) jkc = 102;       /* L1 */
-        else if (ev.jbutton.button == 5) jkc = 103;  /* R1 */
-        if (jkc && g_gp_ready) {
-          if (jdown) { if (g_gp_btndown) g_gp_btndown(g_gp_id, jkc); }
-          else       { if (g_gp_btnup)   g_gp_btnup(g_gp_id, jkc); }
-          if (g_gp_change) g_gp_change();
-        }
-        if (getenv("KZ_JOYFEED")) {
-          int kc = 0; switch (ev.jbutton.button) { case 0: kc = 96; break; case 1: kc = 97; break; case 2: kc = 99; break; case 3: kc = 100; break; case 9: case 6: kc = 108; break; case 8: case 4: kc = 109; break; }
-          if (kc) key(kc, jdown);
-        }
-      } else if (ev.type == SDL_CONTROLLERDEVICEADDED) SDL_GameControllerOpen(ev.cdevice.which);
+      } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
+        SDL_GameController *gc = SDL_GameControllerOpen(ev.cdevice.which);
+        if (gc && !g_sdlpad) g_sdlpad = gc;
+      }
     }
     if (getenv("HM_CLOUD")) cloud_drain(); /* desativado p/ HLM2 (offset KZ) */
     { extern void opensles_shim_pump_callbacks(void); opensles_shim_pump_callbacks(); }
@@ -809,20 +813,63 @@ void jni_run(void) {
     /* HM_AUTOEXT: autopilot p/ achar o botao de confirmar do menu. Varre os ids de botao
      * (0=A,1=B,2=X,3=Y,4=BACK,5=GUIDE,6=START) segurando cada um ~12 frames a cada 48,
      * logando + marcando. Combinado com KZ_SHOTEVERY revela qual avanca a tela. */
-    if (getenv("HM_AUTOEXT")) {
-      static const int seq[] = {0, 2, 1, 3, 6, 4, 5};
-      long blk = 48, hold = 12;
-      long idx = (f / blk) % (long)(sizeof(seq) / sizeof(seq[0]));
-      long ph = f % blk;
+    /* HM_SWEEP: experimento p/ descobrir o que cada index da extensao faz. Mashea A
+     * (index 0) ate HM_SWEEPSTART (passar disclaimer/chegar num menu), depois FORCA um
+     * index por vez (lista candidata), HM_SWEEPHOLD frames cada, logando. Com HM_SHOTSEQ+
+     * KZ_SHOTEVERY=hold => 1 screenshot por index => leio o efeito (cursor/confirma). */
+    if (getenv("HM_SWEEP")) {
+      static const int cand[] = {0,1,2,3,4,5,6,8,9,10,11,12,13,14};
+      long start = getenv("HM_SWEEPSTART") ? atol(getenv("HM_SWEEPSTART")) : 1500;
+      long hold = getenv("HM_SWEEPHOLD") ? atol(getenv("HM_SWEEPHOLD")) : 90;
       memset(g_force, 0, sizeof(g_force));
-      if (ph < hold) { g_force[seq[idx]] = 1.0;
-        if (ph == 0) fprintf(stderr, "[auto] f=%ld pressionando botao id=%d\n", f, seq[idx]); }
+      if (f < start && !getenv("HM_NOMASH")) {  /* mashea CONFIRM (idx5) p/ passar menus/intro */
+        if ((f % 60) < 10) g_force[5] = 1.0;
+      } else if (f >= start) {
+        long k = ((f - start) / hold) % (long)(sizeof(cand)/sizeof(cand[0]));
+        g_force[cand[k]] = 1.0;
+        if ((f - start) % hold == 0) fprintf(stderr, "[sweep] f=%ld forcando index=%d\n", f, cand[k]);
+      }
+    }
+    if (getenv("HM_AUTOEXT")) {
+      long thr = getenv("HM_WALKAT") ? atol(getenv("HM_WALKAT")) : 1400;
+      memset(g_force, 0, sizeof(g_force));
+      if (f < thr) {                                 /* fase 1: mashea confirm p/ chegar no gameplay */
+        static const int seq[] = {0, 2, 1, 3, 6, 4, 5};
+        long blk = 48, hold = 12;
+        long idx = (f / blk) % (long)(sizeof(seq) / sizeof(seq[0]));
+        long ph = f % blk;
+        if (ph < hold) { g_force[seq[idx]] = 1.0;
+          if (ph == 0) fprintf(stderr, "[auto] f=%ld botao id=%d\n", f, seq[idx]); }
+      } else {                                       /* fase 2: anda em circulo (testa movimento) */
+        double ang = (double)((f - thr) % 240) / 240.0 * 6.2831853;
+        g_force[16] = 0.9 * cos(ang); g_force[17] = 0.9 * sin(ang);
+        if ((f - thr) % 60 == 0) fprintf(stderr, "[autowalk] f=%ld LX=%.2f LY=%.2f\n", f, g_force[16], g_force[17]);
+      }
+    }
+    /* HM_AUTOWALK: testa o MOVIMENTO no gameplay -> forca o analogico esquerdo (id 16/17)
+     * em circulo p/ ver o personagem andar / a cena rolar. Confirma o path de movimento. */
+    if (getenv("HM_AUTOWALK")) {
+      memset(g_force, 0, sizeof(g_force));
+      double ang = (double)(f % 240) / 240.0 * 6.2831853;
+      g_force[16] = 0.9 * cos(ang);   /* LEFTX */
+      g_force[17] = 0.9 * sin(ang);   /* LEFTY */
+      if (f % 60 == 0) fprintf(stderr, "[autowalk] f=%ld LX=%.2f LY=%.2f\n", f, g_force[16], g_force[17]);
     }
     /* Process(env, clazz, w, h, p2, p3, fa, fb, fc, fd) */
     ((void (*)(void *, void *, int, int, int, int, float, float, float, float))process)(
         fake_env, fake_thiz, W, H, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
 
     if (io_update) io_update(); /* avanca pressed/released DEPOIS do Process ler (prev=current p/ proximo frame) */
+
+    /* DUMP dos indices default dos bindings (quando ja inicializados != 0) */
+    if (getenv("HM_DUMPBIND") && (f == 120 || f == 600 || f == 1500 || f == 2400)) {
+      for (int i = 0; i < 5; i++) {
+        if (!g_bindaddr[i]) { fprintf(stderr, "[bind] %s: addr=0\n", g_bindnames[i]); continue; }
+        double val = *(double *)g_bindaddr[i];
+        int kind = *(int *)(g_bindaddr[i] + 8);
+        fprintf(stderr, "[bind] f=%ld %s = %.3f (kind=%d)\n", f, g_bindnames[i], val, kind);
+      }
+    }
 
     /* HM_AUTOCONFIRM: teste autonomo (sem controle fisico na mao) -> pulsa A e START
      * pelo path NATIVO de gamepad a cada ~75 frames p/ passar disclaimer->menu->New Game.
