@@ -16,6 +16,9 @@
 #include <unistd.h>
 #include <signal.h>
 #include <math.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/fb.h>
 #include "so_util.h"
 #include "util.h" /* ret0 */
 #include "opensles_shim.h"
@@ -808,6 +811,21 @@ void jni_run(void) {
   int inlog = getenv("KZ_INLOG") != NULL;
   Uint32 t0 = SDL_GetTicks();
   signal(SIGTERM, kz_term); signal(SIGINT, kz_term);
+
+  /* FBPAN0: no fbdev Amlogic deste device, scanear o yoffset=720 (metade de baixo do fb
+   * double-buffer 1280x1440) sai PRETO no HDMI, mesmo com conteudo. O eglSwapBuffers alterna
+   * pan 0<->720; quando settla em 720 -> tela preta (so a metade de cima exibe). Fix: apos
+   * cada swap, FORCA o display p/ yoffset=0 (sempre exibe a metade de cima, que tem o frame).
+   * Desliga com HM_NOPAN0. */
+  int fbfd = -1; struct fb_var_screeninfo vinfo;
+  if (!getenv("HM_NOPAN0")) {
+    fbfd = open("/dev/fb0", O_RDWR);
+    if (fbfd >= 0 && ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo) == 0)
+      fprintf(stderr, "[fbpan0] fb0 %ux%u virtual %ux%u yoff=%u -> forcando yoffset=0 pos-swap\n",
+              vinfo.xres, vinfo.yres, vinfo.xres_virtual, vinfo.yres_virtual, vinfo.yoffset);
+    else { if (fbfd >= 0) close(fbfd); fbfd = -1; fprintf(stderr, "[fbpan0] fb0 indisponivel\n"); }
+  }
+
   fprintf(stderr, "[drv] entrando no loop Process\n");
   for (long f = 0;; f++) {
     g_frame = f; g_pollseq = 0;   /* p/ HM_POLLORDER */
@@ -972,8 +990,36 @@ void jni_run(void) {
           else snprintf(path, sizeof(path), "/tmp/kz_shot.raw");
           FILE *fp = fopen(path, "wb"); if (fp) { fwrite(&dw, 4, 1, fp); fwrite(&dh, 4, 1, fp); fwrite(px, (size_t)dw * dh * 4, 1, fp); fclose(fp); }
           fprintf(stderr, "[shot] frame %ld %dx%d -> %s\n", f, dw, dh, path); free(px); } } }
+    /* ALPHAFIX: o jogo renderiza varias telas (ex.: o MENU) com alpha=0 no framebuffer.
+     * O OSD do Amlogic COMPOSITA usando o alpha por-pixel -> alpha=0 = transparente =
+     * mostra o preto atras = TELA PRETA no HDMI (mesmo com RGB certo no fb). Fix: forca
+     * alpha=255 (opaco) no framebuffer SEM tocar no RGB, via colorMask so-alpha + clear.
+     * (descoberto comparando o alpha do fb: NOTICE=opaco/funciona, MENU=alpha0/preto).
+     * Desliga com HM_NOALPHAFIX. */
+    if (!getenv("HM_NOALPHAFIX")) {
+      glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
     if (f % 30 == 0) fprintf(stderr, "[loop] frame %ld glErr=0x%x\n", f, glGetError());
     SDL_GL_SwapWindow(g_win);
+    /* FBPAN0: forca o display p/ a metade de CIMA (yoffset=0) — o swap acima pode ter
+     * panado p/ 720 (que sai preto no HDMI deste device). O jogo renderiza em ambas as
+     * metades (animacao redesenha), entao a de cima sempre tem um frame recente. */
+    if (fbfd >= 0) {
+      vinfo.yoffset = 0;            /* sempre exibe a metade de cima (yoffset=720 sai preto) */
+      ioctl(fbfd, FBIOPAN_DISPLAY, &vinfo);
+    }
+    /* FRAME-CAP (~60fps por padrao): sem vsync (que BLOQUEIA no Mali fbdev), o menu roda
+     * a >100fps e o page-flip (pan 0<->720) corre rapido demais -> o display pega a metade
+     * preta no meio do scanout -> tela preta/flicker. Limitar o fps espaca os flips e o
+     * display pega frames completos. HM_FPSCAP=0 desliga; default 60. */
+    { int cap = getenv("HM_FPSCAP") ? atoi(getenv("HM_FPSCAP")) : 60;
+      if (cap > 0) { static Uint32 last_swap = 0; Uint32 now = SDL_GetTicks();
+        Uint32 frame_ms = 1000 / (Uint32)cap;
+        if (last_swap && now - last_swap < frame_ms) SDL_Delay(frame_ms - (now - last_swap));
+        last_swap = SDL_GetTicks(); } }
     if (maxf && f >= maxf) { fprintf(stderr, "[drv] KZ_MAXFRAMES atingido\n"); break; }
     if (maxs && (SDL_GetTicks() - t0) / 1000 >= (Uint32)maxs) { fprintf(stderr, "[drv] KZ_MAXSECONDS atingido\n"); break; }
     if (g_quit) { fprintf(stderr, "[drv] SIGTERM -> teardown\n"); break; }
