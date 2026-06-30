@@ -58,17 +58,25 @@ extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim
    readelf) num `crash.log` PERSISTENTE (append; o log.txt é truncado no relaunch
    pelo launcher, por isso o crash some). Inclui frame atual e se estava no DrawFrame. */
 static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
-  (void)uc;
   void *bt[48];
   int n = backtrace(bt, 48);
+  /* PC/LR exatos do ucontext (armhf) — a instrução do crash mesmo sem unwind da libfox. */
+  unsigned long pc = 0, lr = 0, sp = 0;
+#if defined(__arm__)
+  if (uc) { ucontext_t *u = (ucontext_t *)uc;
+    pc = u->uc_mcontext.arm_pc; lr = u->uc_mcontext.arm_lr; sp = u->uc_mcontext.arm_sp; }
+#endif
+  uintptr_t tb = (uintptr_t)text_base;
   FILE *fs[2]; fs[0] = stderr; fs[1] = fopen("crash.log", "a");
   for (int k = 0; k < 2; k++) {
     FILE *o = fs[k]; if (!o) continue;
-    fprintf(o, "\n==== CRASH sig=%d addr=%p text_base=%p frame=%lu in_draw=%d ====\n",
-            sig, si ? si->si_addr : NULL, (void *)text_base,
+    fprintf(o, "\n==== CRASH sig=%d addr=%p text_base=0x%lx frame=%lu in_draw=%d ====\n",
+            sig, si ? si->si_addr : NULL, (unsigned long)tb,
             sonic_frame_for_imports, sonic_in_draw_frame);
+    fprintf(o, "  PC=0x%lx libfox+0x%lx   LR=0x%lx libfox+0x%lx   SP=0x%lx\n",
+            pc, pc - tb, lr, lr - tb, sp);
     for (int i = 0; i < n; i++) {
-      long off = (long)((uintptr_t)bt[i] - (uintptr_t)text_base);
+      long off = (long)((uintptr_t)bt[i] - tb);
       fprintf(o, "  #%-2d %p  libfox+0x%lx\n", i, bt[i], off);
     }
     fflush(o);
@@ -598,6 +606,16 @@ int main(int argc, char *argv[]) {
        disparamos o callback no loop via callbackInterstitialAds. */
     patch_ret0("_ZN12F2FExtension15isUserRemoveAdsEv");      /* ads NÃO removidos */
     patch_retval("_ZN12F2FExtension16getInternetStateEv", 1); /* internet "ON" */
+  }
+  /* 🔓 SONIC_UNLOCK_ALL (debug/teste): libera TODAS as fases independente do save —
+     IsStageUnlocked/IsStageClear -> 1 (gate per-stage que o world map/stage-select usa).
+     Pra reproduzir bugs em qualquer fase (ex.: Metal Sonic/Episode Metal) sem precisar
+     do save certo. GetEpMetalUnlockState -> alto destrava as fases do Episode Metal. */
+  if (getenv("SONIC_UNLOCK_ALL")) {
+    patch_retval("_ZN2gs6backup7utility15IsStageUnlockedEm21tag_GSE_MAIN_STAGE_ID", 1);
+    patch_retval("_ZN2gs6backup7utility12IsStageClearEm21tag_GSE_MAIN_STAGE_ID", 1);
+    patch_retval("_ZN2gs6backup9SProgress21GetEpMetalUnlockStateEv", 8);
+    fprintf(stderr, "=== SONIC_UNLOCK_ALL: todas as fases liberadas (IsStageUnlocked/Clear->1, EpMetal->8) ===\n");
   }
   /* 🔑 menu Finalize trava: `CMainMenuStateFinalize::Next` espera o demo manager
      terminar o teardown (vtbl[20]/IsClean), mas nosso fake (dmSoundEffectIsSetUpEnd
