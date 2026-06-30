@@ -1,5 +1,23 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-06-29 (noite) — RELEASE v4.0 + fixes de raiz validados no R36S
+- **Y / mapa de botoes (RAIZ, commit 1b1075e):** o input real do engine = `gmPadValue`
+  montado por `onKeyEvnet(keycode)` via tabela `s_remapKey` do jogo (decompilada com
+  androguard no DEX). Nosso mapa de bits FOX estava ERRADO: `FOX_Y=0x100` era na verdade
+  **L1** -> Y rolava o world map ("Y vira Left") e a funcao propria do Y (bit4=0x10) nunca
+  disparava. Corrigido o mapa inteiro pros valores reais (Y=0x10, A=0x20, X=0x40, B=0x80,
+  L1=0x100, L2=0x200, L3=0x400, R1=0x800, R2=0x1000, R3=0x2000, SELECT=0x4000, START=0x8000).
+  VALIDADO no R36S por injecao deterministica (SONIC_TESTBIT) + screenshot: 0x10 nao rola o
+  mapa, antes 0x100 rolava. Usuario confirmou "y funcionando".
+- **Volume Knulli/ROCKNIX (commit 72f8fb5):** card-cru -> le system.cfg/batocera.conf + fallback
+  `amixer Master`. Validado no R36S (sys volume -> 0.30).
+- **L3/R3 (commit f978087):** nao colidem mais com pause/confirm.
+- **RELEASE: `Sonic4EP2 PortMaster v4.0.zip`** (Area de trabalho, md5 2d9721e9, 3.8M): binario
+  novo compat glibc2.27 (md5 470d7680) + cover novo (sonic_4ep2.png) + README v4.0. Layout
+  PortMaster classico, sem lixo. Backup do binario original preservado no device.
+- Bug ABERTO: score preso no Oil Desert Act3 (pode ter sido resolvido pelo fix de mapeamento;
+  lead = GmGmkSlotFlush). Aguardando confirmacao do usuario.
+
 ## Sessao 2026-06-29 (FIX: pulo PAUSA no Special Stage)
 - **Bug (reportado pelo luis, v3.3 nao corrigia):** no Special Stage o PULO (A) tambem pausa.
   Nos atos normais o pulo funciona. Causa-raiz por disasm do libfox.so:
