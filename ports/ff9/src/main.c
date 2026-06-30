@@ -6656,8 +6656,9 @@ int main(int argc, char **argv) {
       /* FF9_NEWGAME: depois do título montado (f>=FF9_NGAT, default 1300), hooka TitleUI.Update
          p/ chamar OnNewGameButtonClick(this) e iniciar o jogo (a UI não responde a input injetado). */
       { const char *ng = getenv("FF9_NEWGAME");
+        const char *sm = getenv("FF9_SHOWMENU");  /* fluxo natural: pula o SlashScreen slideshow chamando ShowMenuPanel direto */
         static int ng_hooked = 0;
-        if (ng && !ng_hooked && g_il2cpp_base) {
+        if ((ng || sm) && !ng_hooked && g_il2cpp_base) {
           int ngat = getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300;
           if (f >= ngat) {
             memcpy(g_titleui_orig, (void *)(g_il2cpp_base + 0x1348430), 16);  /* salva original */
@@ -6666,8 +6667,36 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[FF9_NEWGAME] TitleUI.Update hookado @f=%d (captura this)\n", f); fsync(2);
           }
         }
-        /* já capturou o this -> chama OnNewGameButtonClick 1× DO render loop (Update intacto) */
-        if (ng && g_titleui_this && !g_newgame_done) {
+        /* FF9_SHOWMENU: fluxo natural — com TitleUI this capturado, chama ShowMenuPanel(0x134346C)
+           direto p/ PULAR o SlashScreen slideshow (disclaimer/logo) e mostrar o menu de título.
+           FF9_SHOWMENUAT=frame mínimo (default = NGAT). */
+        if (sm && g_titleui_this) {
+          static int sm_done = 0;
+          int smat = getenv("FF9_SHOWMENUAT") ? atoi(getenv("FF9_SHOWMENUAT")) : (getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300);
+          if (!sm_done && f >= smat) {
+            sm_done = 1;
+            void *slash = *(void **)((char *)g_titleui_this + 0x260);
+            fprintf(stderr, "[FF9_SHOWMENU] slashScreen=%p\n", slash); fsync(2);
+            /* FF9_STOPSPLASH (opt-in): SlideShow.Stop faz fade-to-black (apaga tudo) — não usar por default. */
+            if (getenv("FF9_STOPSPLASH") && slash && ((uintptr_t)slash >> 40) == 0) {
+              ((void (*)(void *))(g_il2cpp_base + 0x1345C00))(slash);
+              fprintf(stderr, "[FF9_SHOWMENU] SlideShow.Stop(slashScreen) chamado\n"); fsync(2);
+            }
+            /* FF9_NULLSPLASH (opt-in): zera TitleUI.slashScreen (+0x260) p/ limpar o guard
+               "splash ativo" (IsSplashTextActive) sem fade-to-black -> New Game deve prosseguir. */
+            if (getenv("FF9_NULLSPLASH")) {
+              *(void **)((char *)g_titleui_this + 0x260) = NULL;
+              fprintf(stderr, "[FF9_SHOWMENU] slashScreen NULLADO (limpa guard)\n"); fsync(2);
+            }
+            void (*shm)(void *) = (void (*)(void *))(g_il2cpp_base + 0x134346C);
+            fprintf(stderr, "[FF9_SHOWMENU] ShowMenuPanel(this=%p) @f=%d\n", (void *)g_titleui_this, f); fsync(2);
+            shm((void *)g_titleui_this);
+          }
+        }
+        /* já capturou o this -> chama OnNewGameButtonClick 1× DO render loop (Update intacto).
+           FF9_NEWGAMEAT=frame mínimo (default=NGAT) p/ dar tempo do menu montar antes do click. */
+        int ngameat = getenv("FF9_NEWGAMEAT") ? atoi(getenv("FF9_NEWGAMEAT")) : (getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300);
+        if (ng && g_titleui_this && !g_newgame_done && f >= ngameat) {
           g_newgame_done = 1;
           /* RVA do dump il2cpp: OnNewGameButtonClick = 0x1344634 (a "correção" p/ 0x134464c era
              ERRADA — caía no MEIO da função, pulando o prólogo -> x0 lixo -> SIGSEGV no New Game). */
