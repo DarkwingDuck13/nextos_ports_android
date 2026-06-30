@@ -43,6 +43,17 @@ packed-switch index→campo (parser DEX em python, ver historico).
 - `HM_AUTOEXT` autopilot (mash→walk). `HM_DUMPBIND` (g_VAR aponta p/ descritor, valor nao-direto).
 - `KZ_SHOTEVERY=N` + `HM_SHOTSEQ=1` screenshots em `/tmp/kz_shot_FRAME.raw` (glReadPixels).
 
+## 💾 SAVE / CONTINUE (investigado s4)
+- **Salva OK**: `save.dat` (JSON: hardlevels/scores globais) + `tempsave` (43KB checkpoint, room rmTutorialFloor1).
+  Log `СОХРАНЕН ... tempsave`. PERSISTE apos kill/reopen. Zero corrupcao. `GetSaveFileName` (RunnerJNILib)
+  resolve pro cwd (=port dir, launcher faz cd) -> mesmo path salvar/ler.
+- **CONTINUE APARECE** no menu (confirmado por captura do fb0: NEW GAME/**CONTINUE**/EDITOR/OPTIONS/QUIT).
+  Binario tem `[LOAD TEMPSAVE]`. WADTEMP/Music (62MB) extraido 1x e PERSISTE (nao re-extrai).
+- 🔑 **"tela preta" = LOAD SINCRONO**, NAO bug de shader/textura/save: durante o load de nivel o render loop
+  fica preso em Process() (nao retorna) -> tela congela na ultima frame (preta na transicao). Lento no Mali-450.
+  fb0 SEMPRE tem o conteudo certo (menu/gameplay renderizam cor cheia). Captura: `dd if=/dev/fb0` (fb e 1280x**1440**
+  double-buffer; metade de cima [0:720] = display).
+
 ## ⏳ FALTA
 - Travar qual acao (pickup/finish/lockon) em cada index restante (verificacao no gameplay).
 - Confirmar AUDIO (OpenSLES wired, players ainda nao criados no log; musica wad carrega).

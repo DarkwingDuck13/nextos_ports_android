@@ -822,6 +822,8 @@ void jni_run(void) {
       } else if (ev.type == SDL_CONTROLLERBUTTONDOWN || ev.type == SDL_CONTROLLERBUTTONUP) {
         int down = (ev.type == SDL_CONTROLLERBUTTONDOWN);
         if (inlog) fprintf(stderr, "[ev] CBUTTON %d %s\n", ev.cbutton.button, down ? "down" : "up");
+        if (getenv("HM_JOYLOG") && down) fprintf(stderr, "[joylog] CONTROLLERBUTTON sdl=%d (%s)\n",
+            ev.cbutton.button, SDL_GameControllerGetStringForButton(ev.cbutton.button));
         /* INPUT do HLM2 = SO a extensao getControllerValue (le o estado SDL direto).
          * NAO alimentamos o gamepad NATIVO do GameMaker aqui (conflito: o engine lia as
          * DUAS fontes -> botoes embaralhados). So tratamos SELECT+START p/ sair. */
@@ -829,6 +831,13 @@ void jni_run(void) {
         if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_START) g_start_held = down;
         if (g_sel_held && g_start_held) { fprintf(stderr, "[drv] SELECT+START -> sair\n"); g_exit_combo = 1; }
         if (getenv("KZ_KBDFEED")) { int kc = sdl_btn_to_android(ev.cbutton.button); if (kc) key(kc, down); }
+      } else if ((ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) && getenv("HM_JOYLOG")) {
+        if (ev.type == SDL_JOYBUTTONDOWN) fprintf(stderr, "[joylog] JOYBUTTON cru=%d down\n", ev.jbutton.button);
+      } else if (ev.type == SDL_JOYAXISMOTION && getenv("HM_JOYLOG")) {
+        if (ev.jaxis.value > 16000 || ev.jaxis.value < -16000) {
+          static int seen[32]; int ax = ev.jaxis.axis & 31;
+          if (!seen[ax]) { seen[ax] = 1; fprintf(stderr, "[joylog] JOYAXIS cru=%d val=%d\n", ev.jaxis.axis, ev.jaxis.value); }
+        }
       } else if (ev.type == SDL_CONTROLLERDEVICEADDED) {
         SDL_GameController *gc = SDL_GameControllerOpen(ev.cdevice.which);
         if (gc && !g_sdlpad) g_sdlpad = gc;
@@ -891,6 +900,20 @@ void jni_run(void) {
       g_force[16] = 0.9 * cos(ang);   /* LEFTX */
       g_force[17] = 0.9 * sin(ang);   /* LEFTY */
       if (f % 60 == 0) fprintf(stderr, "[autowalk] f=%ld LX=%.2f LY=%.2f\n", f, g_force[16], g_force[17]);
+    }
+    /* HM_DRIVE: leva o jogo do boot ATE o gameplay sozinho (mapa CORRETO). Mashea CONFIRM
+     * (A = idx8) p/ passar logos/NOTICE/intro/transicoes; de vez em quando dpadDown (idx15)
+     * p/ navegar menu, e um nudge de movimento (lx idx0) caso o tutorial precise andar.
+     * HM_DRIVEOFF=N frames: para o autopilot (deixa o usuario assumir no gameplay). */
+    if (getenv("HM_DRIVE")) {
+      long off = getenv("HM_DRIVEOFF") ? atol(getenv("HM_DRIVEOFF")) : 0;
+      memset(g_force, 0, sizeof(g_force));
+      if (!off || f < off) {
+        long ph = f % 50;
+        if (ph < 10) g_force[8] = 1.0;          /* A = confirmar (a cada 50f) */
+        else if (ph >= 20 && ph < 26) g_force[15] = 1.0;  /* dpadDown p/ navegar se precisar */
+        if (f % 50 == 0) fprintf(stderr, "[drive] f=%ld mash A(confirm)\n", f);
+      }
     }
     /* Process(env, clazz, w, h, p2, p3, fa, fb, fc, fd) */
     ((void (*)(void *, void *, int, int, int, int, float, float, float, float))process)(
