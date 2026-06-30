@@ -54,6 +54,15 @@ packed-switch index→campo (parser DEX em python, ver historico).
   fb0 SEMPRE tem o conteudo certo (menu/gameplay renderizam cor cheia). Captura: `dd if=/dev/fb0` (fb e 1280x**1440**
   double-buffer; metade de cima [0:720] = display).
 
+## 🖤 RAIZ DA "TELA PRETA" RESOLVIDA (s5) — alpha=0 no OSD Amlogic
+A tela preta (que parecia ser save/shader/blank/pan) era o **canal ALPHA=0**: certas telas
+(o MENU) renderizam no fb com alpha=0 (transparente); o **OSD do Amlogic composita usando o
+alpha** → transparente → preto no HDMI (RGB estava certo no fb!). Telas opacas (NOTICE/gameplay,
+alpha=255) apareciam; menu (alpha=0) preto → falso-correlacionava com o save (save→menu).
+**Diagnostico:** `dd if=/dev/fb0` + comparar o byte alpha (NOTICE 86% opaco vs MENU 94% alpha-0).
+**Fix:** força alpha=255 no fb antes do swap (glColorMask so-alpha + glClear). HM_NOALPHAFIX desliga.
+🔑 LICAO REUSAVEL p/ qualquer GLES no Amlogic: se renderiza no fb mas TV preta, cheque o ALPHA.
+
 ## ⏳ FALTA
 - Travar qual acao (pickup/finish/lockon) em cada index restante (verificacao no gameplay).
 - Confirmar AUDIO (OpenSLES wired, players ainda nao criados no log; musica wad carrega).
