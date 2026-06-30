@@ -730,6 +730,13 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z14amPostEFUpdatev");
     fprintf(stderr, "=== SONIC_NOPOSTFX: executor de post-effect desligado ===\n");
   }
+  /* 🌟 SONIC_NOGODRAY: desliga o GOD RAY (raios de luz do fundo, gm::mapfar::C_MGR).
+     O cassino tem god-ray com radial blur que está ESTOURANDO em faixas brancas gigantes
+     (gsGxGetGodRayRadialBlur). Pular o draw remove as faixas. Se sumir, é o god-ray. */
+  if (getenv("SONIC_NOGODRAY")) {
+    patch_ret0("_ZN2gm6mapfar5C_MGR14FuncDrawGodrayEP16_OBS_OBJECT_WORK");
+    fprintf(stderr, "=== SONIC_NOGODRAY: god-ray (faixas de luz do fundo) desligado ===\n");
+  }
   /* 💧 SONIC_NOWATERFX (opt-in, NÃO no LOWFX por default — mexe mais no visual):
      no-op nos EFEITOS extras de água (ripple/waterfall-split), mantendo a SUPERFÍCIE
      (a água não some). Reduz overdraw de alpha das cenas de água. */
