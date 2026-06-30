@@ -4430,6 +4430,27 @@ void my_UITweener_Update(void *self) {
   }
   if (g_uitw_orig) g_uitw_orig(self);
 }
+
+/* 🔑 FF9_FADEDONE (default ON): RAIZ do disclaimer/New Game travados.
+ * HonoFading.Fade() inicia um tween (alpha) + a coroutine WaitForAnimation(callback). O MoveNext
+ * (0x1285A14) NÃO faz poll do tween: no estado 0 ele yielda `new WaitForSeconds(duration+delay)` e SÓ
+ * invoca o callback (avança o slideshow / executa o New Game) DEPOIS desse tempo passar. No so-loader
+ * o relógio/scheduler do Unity não avança o WaitForSeconds -> o callback NUNCA dispara -> disclaimer
+ * preso + New Game no-op (FASTTWEEN conserta o visual do tween mas NÃO o gate, que é o WaitForSeconds).
+ * FIX (in-place, SEM re-entrância): a instrução `fadd s0,s8,s9` (0x1285A80) calcula o argumento
+ * (duration+delay) do `new WaitForSeconds(...)` logo abaixo (0x1285A8C). Patch -> `fmov s0,wzr` =>
+ * WaitForSeconds(0): a própria máquina de coroutine do Unity invoca o callback no PRÓXIMO pump (0>=0
+ * sempre verdadeiro, robusto a clock travado), sem o invoke síncrono que arriscava crash de boot.
+ * Aplica em g_il2cpp_base+0x1285A80. */
+static void ff9_patch_fadedone(uintptr_t il2cpp_base) {
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t w = il2cpp_base + 0x1285A80;
+  void *pw = (void *)(w & ~((uintptr_t)pgsz - 1));
+  mprotect(pw, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)w = 0x1e2703e0u;   /* fmov s0, wzr  (WaitForSeconds(0)) */
+  mprotect(pw, pgsz * 2, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)pw, (char *)pw + pgsz * 2);
+}
 /* GooglePlayDownloader.GetExpansionFilePath / GetPatchOBBPath: no Android real montam o
  * path do .obb a partir de currentActivity (reflection). No so-loader a cadeia de delegate
  * interna lança NRE/bad_function_call por frame (RA=Initialize+0xa8) ABORTANDO Initialize
@@ -5037,12 +5058,25 @@ void *(*il2_thread_attach)(void *);
    trava no frame 3 (1º frame com pacing real). FIX: a NOSSA driver-thread vira a FONTE de vsync —
    a cada ~60Hz incrementa o contador (sob o mutex do engine, slot 0x1078590) e faz broadcast no
    cond (slot 0x10785b8), replicando o efeito de 0x61f2d4. Default ON; FF9_NOVSYNC desliga. */
-static void ff9_vsync_tick(void) {
+/* 🔑 ff9_vsync_pump: replica o pump NATIVO do Choreographer (libunity 0x61f2d4) por COMPLETO.
+ * RAIZ do "Time.time congelado": o struct vsync@0x1078590 tem 3 campos que get-now(0x61c62c) usa:
+ *   +0x5e8 = counter (frame#), +0x5f0 = frameTimeNanos ATUAL, +0x5f8 = frameTimeNanos ANTERIOR.
+ * get-now calcula deltaTime = (nanos[+0x5f0] - nanos[+0x5f8]) * period. O ff9_vsync_tick ANTIGO só
+ * fazia counter++ -> +0x5f0/+0x5f8 ficavam 0 -> deltaTime=0 -> Time.time NÃO avança (WaitForSeconds
+ * nunca expira, disclaimer/fades/New Game travam). FIX: escrever os nanos REAIS (mesmos do doFrame)
+ * em +0x5f0, shiftar o antigo p/ +0x5f8, counter++ — IGUAL ao 0x61f2d4 (x21=nanos; x10=[+0x5f0];
+ * [+0x5f0]=x21; [+0x5f8]=x10; [+0x5e8]++). Assim deltaTime = intervalo real (~16ms) e Time.time anda. */
+static void ff9_vsync_pump(long nanos) {
   if (!g_unity_base) return;
   void **mtx  = (void **)(g_unity_base + 0x1078590);
   void **cond = (void **)(g_unity_base + 0x10785b8);
-  volatile long *ctr = (volatile long *)(g_unity_base + 0x10785e8);
+  volatile long *ctr  = (volatile long *)(g_unity_base + 0x10785e8);  /* counter */
+  volatile long *cur  = (volatile long *)(g_unity_base + 0x10785f0);  /* frameTimeNanos atual */
+  volatile long *prev = (volatile long *)(g_unity_base + 0x10785f8);  /* frameTimeNanos anterior */
+  static int first = 1;
   ((int (*)(void **))pthread_mutex_lock_fake)(mtx);
+  if (first) { *cur = nanos; *prev = nanos; first = 0; }  /* 1º frame: delta=0 (evita spike de 88s) */
+  else { *prev = *cur; *cur = nanos; }
   (*ctr)++;
   ((int (*)(void **))pthread_mutex_unlock_fake)(mtx);
   ((int (*)(void **))pthread_cond_broadcast_fake)(cond);
@@ -5077,7 +5111,10 @@ static void *choreo_driver_thread(void *arg) {
     long nanos = (long)ts.tv_sec * 1000000000L + ts.tv_nsec;
     int r = jni_choreo_doframe(g_choreo_env, nanos);
     if (r && !started) { started = 1; fprintf(stderr, "[CHOREO] doFrame começou a disparar\n"); fsync(2); }
-    if (getenv("FF9_VSYNCTICK")) ff9_vsync_tick();   /* (alt) FONTE de vsync via contador global */
+    /* 🔑 pump nativo do vsync (default ON): atualiza counter+nanos do struct vsync (0x1078590) p/
+       o deltaTime do Unity ser real -> Time.time avança -> WaitForSeconds/fades/disclaimer destravam.
+       FF9_NOVSYNCPUMP desliga. */
+    if (!getenv("FF9_NOVSYNCPUMP")) ff9_vsync_pump(nanos);
     usleep(16000);  /* ~60Hz */
   }
   return NULL;
@@ -6667,6 +6704,29 @@ int main(int argc, char **argv) {
         dt_hooked = 1;
         fprintf(stderr, "[FIXDT] Time.get_deltaTime(0x2567384) hookado @f=%d\n", f); fsync(2);
       }
+      /* 🔑 FF9_FADEDONE (default ON): substitui HonoFading.<WaitForAnimation>d__25.MoveNext(0x1285A14)
+         p/ completar o fade na hora (invoca o callback). Destrava disclaimer->logo->menu E New Game
+         (ambos dependem do callback pós-WaitForSeconds que nunca dispara no so-loader). FF9_NOFADEDONE desliga. */
+      /* FF9_FADEDONE (default OFF — global demais: zera TODO WaitForSeconds, faz o ExpansionVerifier
+         avançar pro scene-load do gameplay PREMATURAMENTE -> crash do logger nativo. A raiz é o pump
+         de vsync (Time.time congelado); com o pump correto NÃO precisa. Opt-in só p/ diagnóstico.) */
+      static int fd_hooked = 0;
+      if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
+        extern void ff9_patch_fadedone(uintptr_t);
+        ff9_patch_fadedone(g_il2cpp_base);
+        fd_hooked = 1;
+        fprintf(stderr, "[FADEDONE] WaitForAnimation WaitForSeconds(0x1285A80) -> 0 @f=%d\n", f); fsync(2);
+      }
+    }
+    /* FF9_TIMELOG: diagnóstico do relógio do Unity (confirma se time/scale/frameCount avançam) —
+       informa se o muro é clock-stuck (time parado) ou player-loop-stuck (frameCount parado). */
+    if (getenv("FF9_TIMELOG") && g_il2cpp_base && f >= 180 && f % 120 == 0) {
+      float (*gt)(void)  = (float (*)(void))(g_il2cpp_base + 0x256735C);  /* get_time */
+      float (*gts)(void) = (float (*)(void))(g_il2cpp_base + 0x2567424); /* get_timeScale */
+      float (*grt)(void) = (float (*)(void))(g_il2cpp_base + 0x2565DFC); /* get_realtimeSinceStartup */
+      int   (*gfc)(void) = (int   (*)(void))(g_il2cpp_base + 0x2567484); /* get_frameCount */
+      fprintf(stderr, "[TIMELOG] f=%d time=%.3f scale=%.3f realtime=%.3f frameCount=%d\n",
+              f, gt(), gts(), grt(), gfc()); fsync(2);
     }
     { extern volatile int g_inject_ctrl;
       /* lazy install do hook GetKeyTrigger: SÓ depois do boot estabilizar (default f>=180),
