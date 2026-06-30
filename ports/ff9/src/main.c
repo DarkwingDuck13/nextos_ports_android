@@ -4386,6 +4386,17 @@ void *my_streamingAssetsPath(void) {
   }
   return g_sa_string;
 }
+/* 🔑 FF9_FAKEAUTH: TitleUI.WaitForSocialLoginProcess (coroutine de boot) fica YIELDando até
+ * SiliconStudio.Social.IsSocialPlatformAuthenticated() (0x1482d30) retornar true. No so-loader
+ * o login Play Games nunca completa (callback do Task não dispara) -> a coroutine ESPERA p/
+ * sempre -> o disclaimer/SlashScreen NUNCA avança pro título. Hookamos IsSocialPlatformAuthenticated
+ * p/ retornar true -> a coroutine prossegue (CheckCloudAvalability) -> splash avança -> menu. */
+int my_IsSocialAuth(void);
+int my_IsSocialAuth(void) {
+  static int n = 0;
+  if (n++ < 3) { fprintf(stderr, "[FAKEAUTH] IsSocialPlatformAuthenticated -> true\n"); fsync(2); }
+  return 1;
+}
 /* GooglePlayDownloader.GetExpansionFilePath / GetPatchOBBPath: no Android real montam o
  * path do .obb a partir de currentActivity (reflection). No so-loader a cadeia de delegate
  * interna lança NRE/bad_function_call por frame (RA=Initialize+0xa8) ABORTANDO Initialize
@@ -6592,6 +6603,16 @@ int main(int argc, char **argv) {
     /* 🎮 input driver: FF9_AUTOCONFIRM=N → injeta Confirm(0) a cada N frames (dispensa disclaimer
        + telas "press to continue" até o menu). FF9_INPUTSEQ="ctrl@frame,..." p/ sequência precisa
        (ex.: 11@X=Down, 0@Y=Confirm p/ New Game). Control: Confirm0 Cancel1 Up10 Down11 Left12 Right13. */
+    { /* 🔑 FF9_FAKEAUTH (default ON): hooka IsSocialPlatformAuthenticated(0x1482d30)->true p/
+         destravar WaitForSocialLoginProcess -> disclaimer avança pro título naturalmente.
+         Lazy (f>=180) p/ não travar o boot. FF9_NOFAKEAUTH desliga. */
+      static int fauth_hooked = 0;
+      if (!fauth_hooked && !getenv("FF9_NOFAKEAUTH") && g_il2cpp_base && f >= 180) {
+        hook_arm64(g_il2cpp_base + 0x1482d30, (uintptr_t)my_IsSocialAuth);
+        fauth_hooked = 1;
+        fprintf(stderr, "[FAKEAUTH] IsSocialPlatformAuthenticated(0x1482d30) hookado @f=%d\n", f); fsync(2);
+      }
+    }
     { extern volatile int g_inject_ctrl;
       /* lazy install do hook GetKeyTrigger: SÓ depois do boot estabilizar (default f>=180),
          senão trava o boot. Instala 1× e só se FF9_NOINJECT off. */
@@ -6657,8 +6678,9 @@ int main(int argc, char **argv) {
          p/ chamar OnNewGameButtonClick(this) e iniciar o jogo (a UI não responde a input injetado). */
       { const char *ng = getenv("FF9_NEWGAME");
         const char *sm = getenv("FF9_SHOWMENU");  /* fluxo natural: pula o SlashScreen slideshow chamando ShowMenuPanel direto */
+        const char *nc = getenv("FF9_NOTIFYCLICK");  /* dispensa o slideshow via UICamera.Notify(SlideShowHitArea,"OnClick") */
         static int ng_hooked = 0;
-        if ((ng || sm) && !ng_hooked && g_il2cpp_base) {
+        if ((ng || sm || nc) && !ng_hooked && g_il2cpp_base) {
           int ngat = getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300;
           if (f >= ngat) {
             memcpy(g_titleui_orig, (void *)(g_il2cpp_base + 0x1348430), 16);  /* salva original */
@@ -6701,6 +6723,32 @@ int main(int argc, char **argv) {
             void (*shm)(void *) = (void (*)(void *))(g_il2cpp_base + 0x134346C);
             fprintf(stderr, "[FF9_SHOWMENU] ShowMenuPanel(this=%p) @f=%d\n", (void *)g_titleui_this, f); fsync(2);
             shm((void *)g_titleui_this);
+          }
+        }
+        /* 🔑 FF9_NOTIFYCLICK: dispensa o SlashScreen slideshow pela ROTA NGUI CORRETA. A UICamera
+           do FF9 lê touch por delegates custom (GetInputTouch/GetInputTouchCount) que o so-loader
+           não alimenta -> tap nunca chega. UICamera.Notify(go,"OnClick",null) (0x14271F4) dispara
+           a mensagem DIRETO no GameObject. Chamamos no SlideShowHitArea (TitleUI+0xB0) a cada N
+           frames p/ avançar TODOS os slides (disclaimer->logo->menu) naturalmente. FF9_NCEVERY=N,
+           FF9_NCFUNC=mensagem (default OnClick), FF9_NCAT=frame inicial. */
+        if (nc && g_titleui_this) {
+          int ncevery = getenv("FF9_NCEVERY") ? atoi(getenv("FF9_NCEVERY")) : 90;
+          int ncat = getenv("FF9_NCAT") ? atoi(getenv("FF9_NCAT")) : (getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300);
+          if (ncevery < 1) ncevery = 90;
+          if (f >= ncat && f % ncevery == 0) {
+            static void *nc_str = NULL;
+            if (!nc_str && g_m_il2cpp) {
+              so_module *c = so_save(); so_use(g_m_il2cpp);
+              void *(*isn)(const char *) = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new");
+              so_use(c); free(c);
+              const char *fn = getenv("FF9_NCFUNC"); if (!fn) fn = "OnClick";
+              if (isn) nc_str = isn(fn);
+            }
+            void *hit = *(void **)((char *)g_titleui_this + 0xB0);  /* SlideShowHitArea */
+            if (hit && ((uintptr_t)hit >> 40) == 0 && nc_str) {
+              fprintf(stderr, "[FF9_NOTIFYCLICK] UICamera.Notify(SlideShowHitArea=%p,\"%s\") @f=%d\n", hit, getenv("FF9_NCFUNC")?getenv("FF9_NCFUNC"):"OnClick", f); fsync(2);
+              ((void (*)(void *, void *, void *))(g_il2cpp_base + 0x14271F4))(hit, nc_str, NULL);
+            }
           }
         }
         /* já capturou o this -> chama OnNewGameButtonClick 1× DO render loop (Update intacto).
