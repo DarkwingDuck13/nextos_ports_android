@@ -1179,9 +1179,12 @@ int main(int argc, char *argv[]) {
        (FOX_A_MENU) numa janela -> carrega a fase N direto. */
     if (warp_stage >= 0 && !sonic_game_started) {
       if (wm_sel_id) *wm_sel_id = (int)warp_stage;
-      if (frame >= 1150 && frame < 1158) {
-        if (frame == 1150) fprintf(stderr, "=== WARP confirm stage=%ld @frame %lu ===\n", warp_stage, frame);
-        mask |= FOX_A_MENU;
+      /* confirm pra ENTRAR na fase = decide (A=0x20), NÃO FOX_A_MENU (0x8020 tem START
+         0x8000 que pode pausar). Pulsos espaçados (borda) p/ disparar o decide 1x. */
+      if ((frame >= 1150 && frame < 1154) || (frame >= 1180 && frame < 1184) ||
+          (frame >= 1210 && frame < 1214)) {
+        if (frame == 1150) fprintf(stderr, "=== WARP confirm stage=%ld (decide 0x20) @frame %lu ===\n", warp_stage, frame);
+        mask |= FOX_A_GAME;
       }
     }
     /* 🔎 DIAG Y=Left: SONIC_TESTBIT=0xNNNN injeta esse bit FOX no mask em pulsos

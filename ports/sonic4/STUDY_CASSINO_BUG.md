@@ -55,8 +55,12 @@ máximo -> tudo branco. No pause a adaptação para -> correto.
 ## FERRAMENTAS PRONTAS (flags de debug no binário, gated)
 - `SONIC_UNLOCK_ALL=1` — libera todas as fases (FUNCIONA, validado).
 - `SONIC_WARP_STAGE=N` — TENTATIVA de warp (força sm_select_stage_id + confirm); **NÃO funcionou**
-  (Episode Metal parece modo separado; A no world map EP2 não entra na fase). Refinar: achar como
-  entrar no modo Episode Metal, ou hookar GmGameDatLoadInit direto.
+  com NENHUM confirm (testei FOX_A_MENU 0x8020 E decide FOX_A_GAME 0x20; IDs 0/3/8 ficam todos no
+  `ep2_sng_worldmap`, started=0). CONCLUSÃO: Episode Metal é **modo separado** — não basta forçar
+  o stage_id no world map do EP2. O load entra por outro caminho (provável `GmGameDatLoadInit`/
+  troca de mode global). BECO: abandonar warp por enquanto; usuário navega manual com UNLOCK_ALL.
+  Próxima ideia (se retomar warp): achar o global de "game mode"/"episode" e setar p/ Episode Metal
+  ANTES de forçar o stage, ou hookar o stage-load direto.
 - `SONIC_CLEARLOG` — FBO-STATS (draws/clears por FBO).
 - `SONIC_FBCLEAR / FBO0CLEAR / NOLIGHTMASK / NOPOSTFX / NOGODRAY / FULLFX / FORCETONEMAP / THREADDRAW` — testes.
 - Screenshot ao vivo: `touch /dev/shm/sonic_shot` -> /dev/shm/sonic_shot.raw (640x480 RGBA, flip V).
