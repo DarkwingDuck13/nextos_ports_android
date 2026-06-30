@@ -279,3 +279,21 @@ Shadows:
   - `medium/off`: boot pelo `/roms/ports_scripts/Bully.sh`, vivo ate frame 1200;
   - `high/high`: boot sem env de perfil, binario leu os arquivos salvos, redirecionou
     `_n/_s` e ficou vivo ate frame 1200.
+
+## V11 final zip
+
+- Zip final atualizado em `/home/nextos/Área de trabalho/Bully v11.zip`.
+- Tamanho: `2,000,264` bytes, 19 arquivos.
+- SHA256 do zip: `c754a171b44f65691b58d54903c9d323cb5ed2b873bee7f4289edced29bca91d`.
+- SHA256 do binario `bully`: `c03bb5c34a7168bbb79effeb30ed2ce203a34ccfabb96c6fa38e3446f1e6e6de`.
+- Conteudo validado: sem `runtime/`, sem `__pycache__`, sem binario v10.
+- O launcher interno do zip usa `/roms/ports/bully`, executa `./bully` e chama
+  `gptokeyb -1 bully -c bully.gptk`.
+- Teste Mali-450 final:
+  - `/roms/ports_scripts/Bully.sh` hash
+    `18efbe1684b00c5b42e71c5f896e9fdc65c5f82d0b6203ba1c3b20234875dd44`;
+  - binario no device hash igual ao zip;
+  - boot vivo ate frame 2400 em `Textures=Medium`, `Light=Off`;
+  - log confirmou `BULLY2_INPUT=gptk`;
+  - log confirmou `AND_TouchEvent` resolvido e taps `next`/`prev` processados;
+  - teste fisico do usuario indicou que L2/R2 voltou a trocar item/arma.
