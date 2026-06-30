@@ -342,9 +342,17 @@ static int sane_engine_ptr(const void *p) {
   return g_engine_heap_base && v >= g_engine_heap_base && v < g_engine_heap_end &&
          (v & 3) == 0; /* alinhado a 4 */
 }
-/* endereco de runtime de uma func interna da libfox a partir do VMA (== heap_base+VMA) */
+/* endereco de runtime de uma func interna (sem simbolo) da libfox a partir do VMA.
+   load_bias = runtime - VMA de UM simbolo conhecido (_amDrawReleaseTexture @VMA 0x1f0e44).
+   NAO usar heap_base do mmap: a lib NAO carrega no inicio do heap -> base != heap_base. */
 static void *vma_addr(uintptr_t vma) {
-  return g_engine_heap_base ? (void *)(g_engine_heap_base + vma) : NULL;
+  static intptr_t bias = 0; static int done = 0;
+  if (!done) {
+    uintptr_t k = so_find_addr_safe("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST");
+    if (k) bias = (intptr_t)(k & ~(uintptr_t)1) - (intptr_t)0x1f0e44;
+    done = 1;
+  }
+  return bias ? (void *)((intptr_t)vma + bias) : NULL;
 }
 
 /* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
@@ -848,6 +856,12 @@ int main(int argc, char *argv[]) {
                    (void *)my_amDrawDeleteVertexObject);
     patch_arm_jump("_Z26_amDrawReleaseTextureImageP14AMS_REGISTLIST",
                    (void *)my_amDrawReleaseTextureImage);
+    /* sanity: vma_addr(VMA) deve casar com o endereco real de um 2o simbolo conhecido
+       (amTexMgrDecRef @VMA 0x205f20) -> garante que o load_bias dos calls internos esta certo */
+    { uintptr_t want = so_find_addr_safe("amTexMgrDecRef") & ~(uintptr_t)1;
+      void *got = vma_addr(0x205f20);
+      fprintf(stderr, "=== RELSAFE vma_addr check: DecRef want=%p got=%p %s ===\n",
+              (void *)want, got, (want == (uintptr_t)got) ? "OK" : "MISMATCH!!!"); }
     fprintf(stderr, "=== RELSAFE: release handlers protegidos (texture/shader/RT/vertex/teximg) ===\n");
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
