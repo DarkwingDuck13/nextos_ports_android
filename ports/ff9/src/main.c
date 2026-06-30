@@ -4397,6 +4397,24 @@ int my_IsSocialAuth(void) {
   if (n++ < 3) { fprintf(stderr, "[FAKEAUTH] IsSocialPlatformAuthenticated -> true\n"); fsync(2); }
   return 1;
 }
+/* 🔑 FF9_FASTTWEEN: os fades NGUI (NGUI UITweener/TweenAlpha) avançam por Time.deltaTime, mas no
+ * so-loader o deltaTime do Unity é ~0 -> o tween (mFactor 0->1) engatinha e NUNCA completa -> o
+ * HonoFading.WaitForAnimation nunca chama o callback -> o SlashScreen slideshow do disclaimer NUNCA
+ * avança (confirmado pelo usuário: "fade lento/travado, não fica branco"). Aceleramos o mFactor na
+ * direção corrente (mAmountPerDelta +0x74, sinal=direção) por frame, independente do deltaTime ruim,
+ * e chamamos a Update original (clampa/Sample/detecta fim). Conserta TODAS as animações de UI. */
+static void (*g_uitw_orig)(void *);
+void my_UITweener_Update(void *self);
+void my_UITweener_Update(void *self) {
+  if (self && ((uintptr_t)self >> 40) == 0) {
+    float *mf  = (float *)((char *)self + 0x78);   /* mFactor */
+    float *apd = (float *)((char *)self + 0x74);   /* mAmountPerDelta (signed) */
+    float boost = 0.05f;
+    if (getenv("FF9_TWEENBOOST")) boost = atoi(getenv("FF9_TWEENBOOST")) / 1000.0f;
+    *mf += (*apd) * boost;
+  }
+  if (g_uitw_orig) g_uitw_orig(self);
+}
 /* GooglePlayDownloader.GetExpansionFilePath / GetPatchOBBPath: no Android real montam o
  * path do .obb a partir de currentActivity (reflection). No so-loader a cadeia de delegate
  * interna lança NRE/bad_function_call por frame (RA=Initialize+0xa8) ABORTANDO Initialize
@@ -6611,6 +6629,19 @@ int main(int argc, char **argv) {
         hook_arm64(g_il2cpp_base + 0x1482d30, (uintptr_t)my_IsSocialAuth);
         fauth_hooked = 1;
         fprintf(stderr, "[FAKEAUTH] IsSocialPlatformAuthenticated(0x1482d30) hookado @f=%d\n", f); fsync(2);
+      }
+      /* 🔑 FF9_FASTTWEEN (default ON): acelera os tweens NGUI (deltaTime do Unity ~0 no so-loader)
+         p/ os fades completarem -> disclaimer/slideshow avança. UITweener.Update=0x1276804. */
+      static int tw_hooked = 0;
+      if (!tw_hooked && !getenv("FF9_NOFASTTWEEN") && g_il2cpp_base && f >= 180) {
+        extern void my_UITweener_Update(void *);
+        /* 0x1276804 é `b 0x1276808` (stub hot-patch) -> mk_tramp não relocata; hookar o prólogo REAL 0x1276808. */
+        g_uitw_orig = (void (*)(void *))mk_tramp(g_il2cpp_base + 0x1276808, "UITweener.Update");
+        if (g_uitw_orig) {
+          hook_arm64(g_il2cpp_base + 0x1276808, (uintptr_t)my_UITweener_Update);
+          fprintf(stderr, "[FASTTWEEN] UITweener.Update(0x1276804) hookado @f=%d (orig=%p)\n", f, (void *)g_uitw_orig); fsync(2);
+        } else fprintf(stderr, "[FASTTWEEN] mk_tramp falhou\n");
+        tw_hooked = 1;
       }
     }
     { extern volatile int g_inject_ctrl;
