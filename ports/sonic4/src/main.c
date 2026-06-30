@@ -1034,6 +1034,12 @@ int main(int argc, char *argv[]) {
   { const char *cm = getenv("SONIC_CONTINUE_MODE"); if (cm && *cm) sonic_continue_mode = atoi(cm); }
   int sonic_continue_disabled = getenv("SONIC_NO_CONTINUE_DRIVE") != NULL;
   long sonic_continue_log_n = 0;
+  /* 🗺️ SONIC_WARP_STAGE=N: warp direto pra fase N. Força sm_select_stage_id=N (o ID
+     que o world map carrega no confirm) + injeta confirm no world map. Enumerar N até
+     cair na Electric Road (Episode Metal). Debug only. */
+  int *wm_sel_id = (int *)so_find_addr_safe("_ZN2dm9world_map4CFix18sm_select_stage_idE");
+  long warp_stage = getenv("SONIC_WARP_STAGE") ? atol(getenv("SONIC_WARP_STAGE")) : -1;
+  if (warp_stage >= 0) fprintf(stderr, "=== SONIC_WARP_STAGE=%ld (sel_id=%p) ===\n", warp_stage, (void*)wm_sel_id);
   short *gm_direct = (short *)so_find_addr_safe("gmPaddirectFromPlayer0");
   short *gm_lx = (short *)so_find_addr_safe("gmPadAnalogLXFromPlayer0");
   short *gm_ly = (short *)so_find_addr_safe("gmPadAnalogLYFromPlayer0");
@@ -1166,6 +1172,15 @@ int main(int argc, char *argv[]) {
       if (autopulse) {
         if (frame == 600 || frame == 900 || frame == 1300 || frame == 1700)
           fprintf(stderr, "=== AUTOSTART A pulse @frame %lu ===\n", frame);
+        mask |= FOX_A_MENU;
+      }
+    }
+    /* 🗺️ WARP: no world map, força o stage-id selecionado = warp_stage e injeta confirm
+       (FOX_A_MENU) numa janela -> carrega a fase N direto. */
+    if (warp_stage >= 0 && !sonic_game_started) {
+      if (wm_sel_id) *wm_sel_id = (int)warp_stage;
+      if (frame >= 1150 && frame < 1158) {
+        if (frame == 1150) fprintf(stderr, "=== WARP confirm stage=%ld @frame %lu ===\n", warp_stage, frame);
         mask |= FOX_A_MENU;
       }
     }
