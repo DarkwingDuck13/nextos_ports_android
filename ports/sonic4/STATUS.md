@@ -1,5 +1,39 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-06-30 (tarde) — 2 fixes: fundo do cassino + crash ao sair da fase
+
+### 1. FIX fundo estourado/duplicado da Electric Road (Episode Metal) — VALIDADO (usuario: "ficou perfeita")
+- **Sintoma:** so na Electric Road (Casino Street c/ Metal Sonic), no GAMEPLAY o fundo (feixes
+  de holofote + reflexo) estourava pra BRANCO e os objetos (moedas/molas/Sonic no pulo) DUPLICAVAM
+  no fundo. No PAUSE ficava correto (preto, feixes finos). So essa fase; as outras OK.
+- **RAIZ:** essa fase usa um FBO off-screen de fundo que o engine espera LIMPO a cada frame. No
+  nosso port esse FBO nao era limpo no gameplay -> acumulava (feixes aditivos -> branco; objetos
+  -> copias). Pause congela a logica -> para de acumular -> correto.
+- **FIX `SONIC_CLEARALL`** (imports.c, em my_glBindFramebuffer): limpa cada FBO 1x/frame no 1o
+  bind, preservando passes dentro do mesmo frame (binds seguintes nao re-limpam) e a cor de clear
+  do engine (salva/restaura via glGetFloatv). **Validado no R36S: fase perfeita.**
+- ⚠️ CLEARALL e GLOBAL. As outras fases ja eram OK; FALTA confirmar que com CLEARALL ligado elas
+  NAO regridem. Se alguma quebrar -> estreitar o clear so pro FBO do cassino. Hipoteses
+  descartadas antes (NAO eram a raiz): FBO0CLEAR, NOLIGHTMASK, NOPOSTFX, NOGODRAY, FULLFX,
+  FREEZETONEMAP(auto-exposicao). Ver STUDY_CASSINO_BUG.md.
+
+### 2. FIX crash ao SAIR da fase ("Return to Stage Select" fechava o jogo) — PENDENTE VALIDACAO
+- **Sintoma:** START -> Return to Stage Select fechava o jogo (em todas as fases). As vezes SIGSEGV,
+  as vezes OOM-kill no R36S.
+- **RAIZ (RE + registradores do crash):** `_amDrawReleaseTexture` libera a lista de texturas da
+  cena DIFERIDO (GameProcess enfileira via amDrawRegistCommand, DrawFrame executa via
+  amDrawExecRegist). Na saida o GameProcess enfileira o release E libera os dados da cena na MESMA
+  passada (loop single-thread GameProcess->DrawFrame) -> quando DrawFrame drena a fila, o ponteiro
+  da lista (node+4 = P = {count,array}) ja aponta pra memoria LIBERADA -> count lixo (0xfbfd18f0)
+  -> indexa array fora -> SIGSEGV. Crash: PC=_amDrawReleaseTexture+0x38, r5(count)=0xfbfd18f0.
+- **FIX `RELSAFE`** (main.c my_amDrawReleaseTexture via patch_arm_jump, DEFAULT ON, SONIC_NO_RELSAFE
+  desliga): valida count(0<n<=65536)+ponteiros antes de iterar. Lista valida = libera igual ao
+  original (sem vazar); lista corrompida = pula com seguranca (dados ja liberados pela destruicao
+  da cena). Crash handler agora loga r0-r12. Builda/instala/boota OK no R36S.
+- **PENDENTE:** usuario testar entrar na fase + Return to Stage Select (esperado: volta pro menu
+  sem fechar). Logs [RELSAFE] mostram quantas listas foram puladas (se 0 puladas e ainda fecha ->
+  outra causa; se pula e volta OK -> resolvido).
+
 ## Sessao 2026-06-30 — v4.0 FULLFX default + fix dos RASTROS (Metal Sonic)
 - **FULLFX agora e DEFAULT (commit a3d1fda):** bloom + sombras LIGADOS. LOWFX virou opt-in
   (`SONIC_LOWFX=1`); o launcher NAO seta -> LOWFX nunca ativa. Validado no R36S (title limpo, 0 crash).
