@@ -703,6 +703,17 @@ int main(int argc, char *argv[]) {
     patch_retval("_Z23SsConstTonemapIsEnablev", 1);
     fprintf(stderr, "=== SONIC_FORCETONEMAP: tone-map HDR->LDR forcado ON ===\n");
   }
+  /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
+     AUTO-EXPOSIÇÃO. ChangeToneMapParam(midgray,lwhite) é chamado por frame pela
+     adaptação de exposição — seta os destinos s_tonemap_*_dst+flags. No gameplay essa
+     adaptação dispara e a exposição vai pro errado -> fundo ESTOURA pra branco; no
+     PAUSE a lógica congela -> exposição para -> correto (fundo preto, luzes finas).
+     No-opar ChangeToneMapParam congela a exposição no valor de Reset (fixo) = igual
+     ao pause durante o gameplay. Se o cassino ficar correto -> era a auto-exposição. */
+  if (env_flag_enabled("SONIC_FREEZETONEMAP")) {
+    patch_ret0("_ZN2gm3pfx7CPfxSys18ChangeToneMapParamEff");
+    fprintf(stderr, "=== SONIC_FREEZETONEMAP: auto-exposicao CONGELADA (exposicao fixa) ===\n");
+  }
   /* 🌑 no-op nos draws de sombra de objeto/motion: pula o passe de sombra
      (shadow-map / blob) — ganho de fillrate+drawcall no Mali.
      NAO toca em GmShadowBuildCheck (gate de loading -> travaria). */
