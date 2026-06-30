@@ -18,6 +18,7 @@
 #include "so_util.h"
 #include "util.h" /* ret0 */
 #include "opensles_shim.h"
+#include "shims.h" /* hlm2_find_asset */
 
 #define JNI_PKG "Java_com_yoyogames_runner_RunnerJNILib_"
 
@@ -26,6 +27,15 @@
 #define EXT_STRING_SENTINEL ((void *)0x22220001)
 static void *g_double_class = 0, *g_string_class = 0;
 static int g_showui_called = 0;
+/* HLM2 usa uma EXTENSAO de controle (gamepad_init/isControllerConnected/getControllerValue)
+ * via CallExtensionFunction, NAO o gamepad nativo do GameMaker. g_ext_pending guarda o
+ * valor que o proximo doubleValue() retorna (engine chama CallExt -> doubleValue em seq). */
+static double g_ext_pending = 1.0;
+static SDL_GameController *g_sdlpad = NULL;
+static int g_ctrl_seen[256];   /* p/ logar cada controlId polado 1x (mapeamento) */
+static double g_force[256];    /* HM_AUTOEXT: injeta valor num controlId (autopilot/teste) */
+/* le o estado SDL do controle p/ o controlId da extensao (mapeado por observacao) */
+double hm_get_control(int id, int slot);
 static char fake_env[0x1000];
 static char fake_vm[0x100];
 static SDL_Window *g_win;
@@ -104,18 +114,29 @@ static void *j_CallObjectMethod(void *e, void *o, int id, ...) {
     va_list ap; va_start(ap, id);
     const char *ext = va_arg(ap, const char *);
     const char *fn = va_arg(ap, const char *);
+    int nargs = va_arg(ap, int);
+    double *dargs = va_arg(ap, double *);
     va_end(ap);
-    static int c = 0; if (c++ < 400)
-      fprintf(stderr, "[ext] CallExtensionFunction ext='%s' fn='%s'\n",
-              ((uintptr_t)ext > 0x100000) ? ext : "?", ((uintptr_t)fn > 0x100000) ? fn : "?");
-    if ((uintptr_t)fn > 0x100000 && strstr(fn, "ShowUI")) g_showui_called = 1;
-    if ((uintptr_t)fn > 0x100000) {
-      if (strstr(fn, "PlayerID") || strstr(fn, "Profile") || strstr(fn, "Token") ||
-          strstr(fn, "Locale") || strstr(fn, "Name"))
-        return EXT_STRING_SENTINEL;                                /* string valida */
-      /* resto das Nfxa* -> double sucesso (!=0) p/ qualquer check de retorno */
+    (void)ext;
+    int fnok = ((uintptr_t)fn > 0x100000);
+    /* ---- EXTENSAO DE CONTROLE do HLM2 (path de input REAL) ---- */
+    if (fnok && strstr(fn, "isControllerConnected")) { g_ext_pending = g_sdlpad ? 1.0 : 0.0; return EXT_DOUBLE_SENTINEL; }
+    if (fnok && strstr(fn, "gamepad_init"))           { g_ext_pending = 0.0; return EXT_DOUBLE_SENTINEL; }
+    if (fnok && strstr(fn, "getControllerValue")) {
+      int a0 = (nargs > 0 && (uintptr_t)dargs > 0x10000) ? (int)dargs[0] : -1;
+      int a1 = (nargs > 1 && (uintptr_t)dargs > 0x10000) ? (int)dargs[1] : 0;
+      g_ext_pending = hm_get_control(a0, a1);
+      if (a0 >= 0 && a0 < 256 && !g_ctrl_seen[a0]) { g_ctrl_seen[a0] = 1;
+        fprintf(stderr, "[ctrl] getControllerValue id=%d slot=%d nargs=%d -> %f\n", a0, a1, nargs, g_ext_pending); }
       return EXT_DOUBLE_SENTINEL;
     }
+    static int c = 0; if (c++ < 200)
+      fprintf(stderr, "[ext] CallExtensionFunction ext='%s' fn='%s' nargs=%d\n",
+              ((uintptr_t)ext > 0x100000) ? ext : "?", fnok ? fn : "?", nargs);
+    if (fnok && strstr(fn, "ShowUI")) g_showui_called = 1;
+    /* outras extensoes desconhecidas -> double neutro 0.0 (NAO 1.0: evita travar loops
+     * que esperam "ainda nao pronto"/"sem dado"). */
+    if (fnok) { g_ext_pending = 0.0; return EXT_DOUBLE_SENTINEL; }
     return (void *)0x1;
   }
   static int c = 0; if (c++ < 200) fprintf(stderr, "[jni] CallObject %s\n", n);
@@ -132,7 +153,7 @@ static int j_IsInstanceOf(void *e, void *obj, void *cls) {
 }
 static double j_CallDoubleMethod(void *e, void *o, int id, ...) {
   (void)e; const char *n = method_name(id);
-  if (o == EXT_DOUBLE_SENTINEL) { fprintf(stderr, "[ext] doubleValue() -> %f\n", g_ext_double); return g_ext_double; }
+  if (o == EXT_DOUBLE_SENTINEL) { return g_ext_pending; }
   (void)n; return 0.0;
 }
 static const char *j_GetStringUTFChars(void *e, void *str, void *isCopy) {
@@ -159,6 +180,18 @@ static int j_GetArrayLength(void *e, void *arr) { (void)e; (void)arr; return 0; 
 static int j_ExceptionCheck(void *e) { (void)e; return 0; }
 static int j_RegisterNatives(void *e, void *c, const void *m, int n) {
   (void)e; (void)c; (void)m; fprintf(stderr, "[jni] RegisterNatives n=%d\n", n); return 0;
+}
+/* ---- double arrays: a extensao de controle passa os args (controlId/slot) num
+ * double[] criado por NewDoubleArray + preenchido por SetDoubleArrayRegion. Implementamos
+ * de verdade p/ poder LER o controlId em CallExtensionFunction (senao dargs = lixo). ---- */
+static void *j_NewDoubleArray(void *e, int len) { (void)e; return calloc(len > 0 ? (size_t)len : 1, sizeof(double)); }
+static void j_SetDoubleArrayRegion(void *e, void *arr, int start, int len, const double *buf) {
+  (void)e; if (arr && buf && len > 0) memcpy((char *)arr + (size_t)start * sizeof(double), buf, (size_t)len * sizeof(double));
+}
+static double *j_GetDoubleArrayElements(void *e, void *arr, void *isCopy) { (void)e; if (isCopy) *(char *)isCopy = 0; return (double *)arr; }
+static void j_ReleaseDoubleArrayElements(void *e, void *arr, double *p, int mode) { (void)e; (void)arr; (void)p; (void)mode; }
+static void j_GetDoubleArrayRegion(void *e, void *arr, int start, int len, double *buf) {
+  (void)e; if (arr && buf && len > 0) memcpy(buf, (char *)arr + (size_t)start * sizeof(double), (size_t)len * sizeof(double));
 }
 
 static void build_env(void) {
@@ -204,9 +237,13 @@ static void build_env(void) {
   SET(0x548, j_GetStringUTFChars);   /* idx 169 GetStringUTFChars */
   SET(0x550, j_ReleaseStringUTFChars);/* idx 170 ReleaseStringUTFChars */
   SET(0x558, j_GetArrayLength);      /* idx 171 GetArrayLength */
+  SET(0x5B0, j_NewDoubleArray);      /* idx 182 NewDoubleArray (args da extensao de controle) */
+  SET(0x5F0, j_GetDoubleArrayElements);   /* idx 190 */
+  SET(0x630, j_ReleaseDoubleArrayElements);/* idx 198 */
+  SET(0x670, j_GetDoubleArrayRegion);/* idx 206 */
+  SET(0x6B0, j_SetDoubleArrayRegion);/* idx 214 SetDoubleArrayRegion (preenche os args) */
   SET(0x6A0, j_RegisterNatives);     /* idx 215 RegisterNatives */
   SET(0x6D8, j_GetJavaVM);           /* idx 219 GetJavaVM -> *vm = fake_vm (thread OGG) */
-  SET(0x6B0, j_DetachCurrentThread); /* aprox */
 #undef SET
 }
 
@@ -469,7 +506,8 @@ static int my_fileexists(const char *p) {
   /* opcoes (.ini): forca existir p/ o IniFile SER construido (vazio = seguro).
    * resto (game.droid externo, saves, etc): check real -> nao inventa arquivos. */
   int forced = (strstr(p, ".ini") != NULL);
-  int r = forced ? 1 : (access(p, F_OK) == 0);
+  char real[1280];
+  int r = forced ? 1 : (access(p, F_OK) == 0 || hlm2_find_asset(p, real, sizeof real));
   static int c = 0; if (c++ < 80) fprintf(stderr, "[FileExists] '%s' -> %d%s\n", p, r, forced ? " (forcado .ini)" : "");
   return r;
 }
@@ -481,10 +519,9 @@ static int my_fileexists(const char *p) {
  * strip "assets/" + basename. Existe no disco -> 1 (depois AAssetManager_open abre). */
 static int my_bundlefileexists(const char *p) {
   if (!p) return 0;
-  int ex = (access(p, F_OK) == 0);
-  if (!ex && strncmp(p, "assets/", 7) == 0) ex = (access(p + 7, F_OK) == 0);
-  if (!ex) { const char *b = strrchr(p, '/'); if (b) ex = (access(b + 1, F_OK) == 0); }
-  static int c = 0; if (c++ < 80) fprintf(stderr, "[BundleExists] '%s' -> %d\n", p, ex);
+  char real[1280];
+  int ex = hlm2_find_asset(p, real, sizeof real);   /* cwd + assets/ + case-insensitive */
+  static int c = 0; if (c++ < 120) fprintf(stderr, "[BundleExists] '%s' -> %d\n", p, ex);
   return ex;
 }
 
@@ -528,6 +565,41 @@ static void post_social_event(const char *eventType) {
   int evidx = getenv("KZ_NFXEVIDX") ? atoi(getenv("KZ_NFXEVIDX")) : 70;
   ((void (*)(void *, void *, int, int))f_async)(fake_env, fake_thiz, map, evidx);
   fprintf(stderr, "[nfx] posted social '%s' map=%d evidx=%d\n", eventType, map, evidx);
+}
+
+/* ---- EXTENSAO DE CONTROLE do HLM2: le o estado SDL do controle p/ o controlId pedido ----
+ * Mapeamento DESCOBERTO por observacao (HM_CTRLLOG loga cada id polado). 1a versao = neutro
+ * (0) p/ destravar o boot; depois mapeia id->SDL button/axis. */
+double hm_get_control(int id, int slot) {
+  (void)slot;
+  SDL_GameController *p = g_sdlpad;
+  if (!p) return 0.0;
+  double v = 0.0;
+  /* PALPITE: ids 0..14 = SDL_GameControllerButton enum (A=0,B=1,X=2,Y=3,BACK=4,
+   * GUIDE=5,START=6,LSTICK=7,RSTICK=8,LSHLDR=9,RSHLDR=10,DPUP=11,DPDN=12,DPL=13,DPR=14). */
+  if (id >= 0 && id <= 14) v = SDL_GameControllerGetButton(p, (SDL_GameControllerButton)id) ? 1.0 : 0.0;
+  else {                                              /* eixos (range -1..1 / 0..1) */
+    int axraw = 0; int trig = 0;
+    switch (id) {
+      case 16: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTX);  break;
+      case 17: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_LEFTY);  break;
+      case 18: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTX); break;
+      case 19: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_RIGHTY); break;
+      case 20: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERLEFT);  trig = 1; break;
+      case 21: axraw = SDL_GameControllerGetAxis(p, SDL_CONTROLLER_AXIS_TRIGGERRIGHT); trig = 1; break;
+      default: return 0.0;
+    }
+    if (trig) { v = (axraw > 6000) ? (axraw / 32767.0) : 0.0; }   /* trigger: deadzone baixa */
+    else { v = (axraw > 8000 || axraw < -8000) ? (axraw / 32767.0) : 0.0; }  /* stick: deadzone ~25% */
+  }
+  /* HM_AUTOEXT: injeta valor forcado (autopilot p/ achar o botao de confirmar do menu) */
+  if (id >= 0 && id < 256 && g_force[id] != 0.0) v = g_force[id];
+  /* HM_CTRLLIVE: loga QUANDO algo e pressionado -> revela qual id casa com cada botao */
+  if (getenv("HM_CTRLLIVE") && v != 0.0) {
+    static Uint32 last = 0; Uint32 now = SDL_GetTicks();
+    if (now - last > 60) { last = now; fprintf(stderr, "[ctrl-live] id=%d -> %f\n", id, v); }
+  }
+  return v;
 }
 
 void jni_run(void) {
@@ -654,7 +726,7 @@ void jni_run(void) {
   if (resume) { fprintf(stderr, "[drv] Resume()\n"); ((void (*)(void *, void *))resume)(fake_env, fake_thiz); }
 
   { int nj = SDL_NumJoysticks(); fprintf(stderr, "[input] %d joysticks\n", nj);
-    for (int i = 0; i < nj; i++) { if (SDL_IsGameController(i)) { SDL_GameControllerOpen(i); fprintf(stderr, "[input] gamecontroller %d aberto\n", i); }
+    for (int i = 0; i < nj; i++) { if (SDL_IsGameController(i)) { SDL_GameController *gc = SDL_GameControllerOpen(i); if (gc && !g_sdlpad) g_sdlpad = gc; fprintf(stderr, "[input] gamecontroller %d aberto\n", i); }
       else { SDL_JoystickOpen(i); fprintf(stderr, "[input] joystick RAW %d (%s)\n", i, SDL_JoystickNameForIndex(i)); } } }
   gp_register(); /* registra gamepad nativo (id 0) -> menu do titulo responde */
   /* HLM2 (runner vanilla, NAO Netflix): sem o gate social/cloud do Katana. O
@@ -734,11 +806,35 @@ void jni_run(void) {
       fprintf(stderr, "[kcdump] g_AndroidKeyCode:");
       for (int k = 19; k <= 56; k++) fprintf(stderr, " [%d]=%d", k, tbl[k]);
       fprintf(stderr, "\n"); }
+    /* HM_AUTOEXT: autopilot p/ achar o botao de confirmar do menu. Varre os ids de botao
+     * (0=A,1=B,2=X,3=Y,4=BACK,5=GUIDE,6=START) segurando cada um ~12 frames a cada 48,
+     * logando + marcando. Combinado com KZ_SHOTEVERY revela qual avanca a tela. */
+    if (getenv("HM_AUTOEXT")) {
+      static const int seq[] = {0, 2, 1, 3, 6, 4, 5};
+      long blk = 48, hold = 12;
+      long idx = (f / blk) % (long)(sizeof(seq) / sizeof(seq[0]));
+      long ph = f % blk;
+      memset(g_force, 0, sizeof(g_force));
+      if (ph < hold) { g_force[seq[idx]] = 1.0;
+        if (ph == 0) fprintf(stderr, "[auto] f=%ld pressionando botao id=%d\n", f, seq[idx]); }
+    }
     /* Process(env, clazz, w, h, p2, p3, fa, fb, fc, fd) */
     ((void (*)(void *, void *, int, int, int, int, float, float, float, float))process)(
         fake_env, fake_thiz, W, H, 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
 
     if (io_update) io_update(); /* avanca pressed/released DEPOIS do Process ler (prev=current p/ proximo frame) */
+
+    /* HM_AUTOCONFIRM: teste autonomo (sem controle fisico na mao) -> pulsa A e START
+     * pelo path NATIVO de gamepad a cada ~75 frames p/ passar disclaimer->menu->New Game.
+     * Valida o caminho de input real (gp_btndown/up) + permite screenshot do gameplay. */
+    if (getenv("HM_AUTOCONFIRM") && g_gp_ready) {
+      long period = getenv("HM_ACPERIOD") ? atol(getenv("HM_ACPERIOD")) : 75;
+      long ph = f % period;
+      if (ph == 0)  { g_gp_btndown(g_gp_id, 96); if (g_gp_change) g_gp_change(); }   /* A down (kc96) */
+      if (ph == 6)  { g_gp_btnup(g_gp_id, 96);   if (g_gp_change) g_gp_change(); }   /* A up */
+      if (ph == 30) { g_gp_btndown(g_gp_id, 108); if (g_gp_change) g_gp_change(); }  /* START down (kc108) */
+      if (ph == 36) { g_gp_btnup(g_gp_id, 108);   if (g_gp_change) g_gp_change(); }  /* START up */
+    }
 
     /* gate Netflix: SO no Katano (edicao Netflix). HLM2 = runner vanilla -> nunca
      * chama ShowUI, entao g_showui_called fica 0. Mantido atras de HM_NFX por seguranca. */
@@ -764,7 +860,9 @@ void jni_run(void) {
         int dw = W, dh = H; SDL_GL_GetDrawableSize(g_win, &dw, &dh);
         unsigned char *px = malloc((size_t)dw * dh * 4);
         if (px) { glReadPixels(0, 0, dw, dh, GL_RGBA, GL_UNSIGNED_BYTE, px);
-          char path[64]; snprintf(path, sizeof(path), "/tmp/kz_shot.raw");
+          char path[64];
+          if (getenv("HM_SHOTSEQ")) snprintf(path, sizeof(path), "/tmp/kz_shot_%04ld.raw", f);
+          else snprintf(path, sizeof(path), "/tmp/kz_shot.raw");
           FILE *fp = fopen(path, "wb"); if (fp) { fwrite(&dw, 4, 1, fp); fwrite(&dh, 4, 1, fp); fwrite(px, (size_t)dw * dh * 4, 1, fp); fclose(fp); }
           fprintf(stderr, "[shot] frame %ld %dx%d -> %s\n", f, dw, dh, path); free(px); } } }
     if (f % 30 == 0) fprintf(stderr, "[loop] frame %ld glErr=0x%x\n", f, glGetError());

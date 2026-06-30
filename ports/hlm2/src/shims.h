@@ -82,4 +82,5 @@ int my_raise(int);
 void my_abort(void);
 long my_syscall(long,long,long,long,long,long,long);
 void *my_signal(int, void *);
+int hlm2_find_asset(const char *name, char *out, size_t n);
 #endif

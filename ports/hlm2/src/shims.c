@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include "shims.h"
 #include <dlfcn.h>
 #include "opensles_shim.h"
@@ -66,18 +67,65 @@ void *SL_IID_BUFFERQUEUE_shim = 0;
 void *SL_IID_ANDROIDSIMPLEBUFFERQUEUE_shim = 0;
 void *SL_IID_ANDROIDCONFIGURATION_shim = 0;
 
-/* ---- AAssetManager -> abre Data.rsdk e outros via fopen do cwd ---- */
+/* ---- AAssetManager -> abre game.droid e outros via fopen ---- */
 #include <string.h>
+#include <strings.h>
+#include <dirent.h>
+
+/* Resolve UM componente de path dentro de 'dir' de forma CASE-INSENSITIVE.
+ * Preenche 'out' com "dir/<match>" (mantendo o case REAL do disco). 1 se achou. */
+static int ci_component(const char *dir, const char *comp, char *out, size_t n) {
+  char exact[1280]; snprintf(exact, sizeof exact, "%s/%s", dir, comp);
+  if (access(exact, F_OK) == 0) { snprintf(out, n, "%s", exact); return 1; }
+  DIR *d = opendir(dir[0] ? dir : ".");
+  if (!d) return 0;
+  struct dirent *e; int found = 0;
+  while ((e = readdir(d))) {
+    if (strcasecmp(e->d_name, comp) == 0) { snprintf(out, n, "%s/%s", dir, e->d_name); found = 1; break; }
+  }
+  closedir(d);
+  return found;
+}
+/* Resolve 'rel' (path com '/') a partir de 'base', case-insensitive por componente. */
+static int ci_walk(const char *base, const char *rel, char *out, size_t n) {
+  char cur[1280]; snprintf(cur, sizeof cur, "%s", base[0] ? base : ".");
+  const char *p = rel;
+  while (*p) {
+    while (*p == '/') p++;
+    if (!*p) break;
+    const char *slash = strchr(p, '/');
+    size_t len = slash ? (size_t)(slash - p) : strlen(p);
+    char comp[256]; if (len >= sizeof comp) return 0;
+    memcpy(comp, p, len); comp[len] = 0;
+    char next[1280];
+    if (!ci_component(cur, comp, next, sizeof next)) return 0;
+    snprintf(cur, sizeof cur, "%s", next);
+    p = slash ? slash + 1 : p + len;
+  }
+  snprintf(out, n, "%s", cur);
+  return access(out, F_OK) == 0;
+}
+/* Acha o arquivo de asset 'name' (como o engine pede): tenta cwd e assets/,
+ * case-insensitive, com fallback no basename. Preenche 'out'. 1 se achou. */
+int hlm2_find_asset(const char *name, char *out, size_t n) {
+  if (!name || !*name) return 0;
+  const char *rel = name;
+  if (strncmp(rel, "assets/", 7) == 0) rel += 7;
+  if (ci_walk(".", rel, out, n)) return 1;
+  if (ci_walk("assets", rel, out, n)) return 1;
+  const char *b = strrchr(rel, '/');
+  if (b) { if (ci_walk(".", b + 1, out, n)) return 1; if (ci_walk("assets", b + 1, out, n)) return 1; }
+  return 0;
+}
 void *AAssetManager_fromJava(void *env, void *mgr) { (void)env; (void)mgr; return (void *)0x1; }
 void *AAssetManager_open(void *mgr, const char *name, int mode) {
   (void)mgr; (void)mode;
   if (!name) return NULL;
-  FILE *f = fopen(name, "rb");
-  /* GameMaker abre "assets/audiogroupN.dat" etc.; nossos arquivos estao no root
-   * do port dir -> tenta tambem sem o prefixo "assets/" e o basename. */
-  if (!f && strncmp(name, "assets/", 7) == 0) f = fopen(name + 7, "rb");
-  if (!f) { const char *b = strrchr(name, '/'); if (b) f = fopen(b + 1, "rb"); }
-  fprintf(stderr, "[asset] open %s -> %p\n", name, (void *)f);
+  char real[1280];
+  FILE *f = NULL;
+  if (hlm2_find_asset(name, real, sizeof real)) f = fopen(real, "rb");
+  if (!f) f = fopen(name, "rb");
+  static int c = 0; if (c++ < 60) fprintf(stderr, "[asset] open %s -> %p\n", name, (void *)f);
   return f;
 }
 long AAsset_getLength(void *a) { FILE *f = a; long c = ftell(f); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, c, SEEK_SET); return n; }
