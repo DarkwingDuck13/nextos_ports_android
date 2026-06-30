@@ -1453,3 +1453,14 @@ int sonic_audio_music_state(int id) {
   pthread_mutex_unlock(&g_lock);
   return playing ? 0 : 1;
 }
+
+/* 1 se o canal `id` for um JINGLE e estiver tocando; senão 0. Usado pelo
+   my_MediaPlayerisPlaying p/ consertar o jingle do 1up SEM mudar os outros canais
+   (canais não-jingle mantêm o comportamento antigo, preservando os SFX/BGM). */
+int sonic_audio_jingle_playing(int id) {
+  if (id < 0 || id >= MUSIC_SLOTS) return 0;
+  pthread_mutex_lock(&g_lock);
+  int r = g_music[id].active && !g_music[id].paused && g_music[id].jingle;
+  pthread_mutex_unlock(&g_lock);
+  return r ? 1 : 0;
+}

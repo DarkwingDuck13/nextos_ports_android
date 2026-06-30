@@ -342,19 +342,6 @@ static int sane_engine_ptr(const void *p) {
   return g_engine_heap_base && v >= g_engine_heap_base && v < g_engine_heap_end &&
          (v & 3) == 0; /* alinhado a 4 */
 }
-/* endereco de runtime de uma func interna (sem simbolo) da libfox a partir do VMA.
-   load_bias = runtime - VMA de UM simbolo conhecido (_amDrawReleaseTexture @VMA 0x1f0e44).
-   NAO usar heap_base do mmap: a lib NAO carrega no inicio do heap -> base != heap_base. */
-static void *vma_addr(uintptr_t vma) {
-  static intptr_t bias = 0; static int done = 0;
-  if (!done) {
-    uintptr_t k = so_find_addr_safe("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST");
-    if (k) bias = (intptr_t)(k & ~(uintptr_t)1) - (intptr_t)0x1f0e44;
-    done = 1;
-  }
-  return bias ? (void *)((intptr_t)vma + bias) : NULL;
-}
-
 /* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
    _amDrawReleaseTexture(node) libera a lista de texturas da cena de forma DIFERIDA
    (enfileirada por GameProcess, executada por DrawFrame via amDrawExecRegist). Na saída,
@@ -369,19 +356,23 @@ static void (*g_real_TexMgrDecRef)(unsigned) = 0;
 static unsigned long g_relsafe_ok = 0, g_relsafe_skip = 0;
 static void my_amDrawReleaseTexture(void *node) {
   if (!node) return;
-  unsigned *P = ((unsigned **)node)[1];           /* P = [node+4] = lista {count,array} */
-  long count = -1; unsigned *array = 0;
-  if (P && (uintptr_t)P > 0x10000UL && (uintptr_t)P < 0xfffff000UL) {
-    count = (long)P[0];                            /* P->count */
-    array = (unsigned *)(uintptr_t)P[1];           /* P->array de handles */
+  void *P = ((void **)node)[1];                    /* P = [node+4] = lista {count, array} */
+  long count = -1; void *array = 0;
+  if (P && sane_engine_ptr(P)) {
+    count = (long)((unsigned *)P)[0];              /* [P+0] = count */
+    array = ((void **)P)[1];                       /* [P+4] = array de elementos de 8 BYTES */
   }
-  if (count > 0 && count <= 65536 && array &&
-      (uintptr_t)array > 0x10000UL && (uintptr_t)array < 0xfffff000UL) {
+  if (count > 0 && count <= 65536 && array && sane_engine_ptr(array)) {
     if (!g_real_TexMgrDecRef)
       g_real_TexMgrDecRef = (void (*)(unsigned))so_find_addr_safe("amTexMgrDecRef");
+    /* 🔑 STRIDE 8 BYTES (igual ao original `ldr [r6, r4, lsl #3]`): cada entrada do array
+       e {u32 handle, u32 outro}; o handle e os 4 bytes baixos. Ler como u32[] (passo 4)
+       pegava handles ERRADOS -> DecRef em slots errados -> corrompia o texmgr (free-list)
+       -> crash em amTexMgrCreateTexId (special stage/transicoes). */
+    const unsigned char *a = (const unsigned char *)array;
     for (long i = 0; i < count; i++) {
-      unsigned h = array[i];
-      if (h && h < 1000000u && g_real_TexMgrDecRef) g_real_TexMgrDecRef(h);
+      unsigned h = *(const unsigned *)(a + (size_t)i * 8);
+      if (h && g_real_TexMgrDecRef) g_real_TexMgrDecRef(h);  /* qualquer handle != 0, igual orig */
     }
     g_relsafe_ok++;
   } else {
@@ -394,63 +385,16 @@ static void my_amDrawReleaseTexture(void *node) {
   ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
 }
 
-/* 🛡️ Irmãos do _amDrawReleaseTexture: MESMO bug (deref de [node+4]=P que pode estar
-   stale ao sair de uma cena, ex.: FIM DO SPECIAL STAGE -> crash que o RELSAFE de textura
-   NÃO cobre). Cada um valida P (e ponteiros aninhados) dentro do heap da engine antes de
-   liberar; P corrompido (fora do heap) = pula seguro (a cena já liberou o recurso).
-   Replicam o original chamando as funcs internas da libfox por VMA (heap_base+VMA). */
-static void my_amDrawReleaseShader(void *node) {       /* orig @0x1f118c */
-  void **pn = (void **)node; if (!pn) return;
-  void *P = pn[1];
-  if (P && sane_engine_ptr(P)) {
-    void *f0 = ((void **)P)[0];
-    if (f0 && sane_engine_ptr(f0)) {
-      void *inner = ((void **)f0)[0];
-      void (*rel)(void *) = (void (*)(void *))vma_addr(0x1dbfac);   /* libera shader GL */
-      void (*fre)(void *) = (void (*)(void *))vma_addr(0x1ff994);   /* free do struct */
-      if (rel) rel(inner);
-      if (fre) fre(f0);
-    }
-    ((void **)P)[0] = 0;
-  }
-  pn[0] = 0;
-}
-static void my_amDrawDeleteRenderTarget(void *node) {  /* orig @0x1f128c */
-  void **pn = (void **)node; if (!pn) return;
-  void *P = pn[1];
-  if (P && sane_engine_ptr(P)) {
-    void (*del)(void *) = (void (*)(void *))vma_addr(0x20400c);
-    if (del) del(P);
-  }
-  pn[0] = 0;
-}
-static void my_amDrawDeleteVertexObject(void *node) {  /* orig @0x1f0ec0 */
-  void **pn = (void **)node; if (!pn) return;
-  void *P = pn[1];
-  if (P && sane_engine_ptr(P)) {
-    void (*del)(void *) = (void (*)(void *))vma_addr(0x438ddc);
-    if (del) del(P);
-  }
-  pn[0] = 0;
-}
-static void my_amDrawReleaseTextureImage(void *node) { /* orig @0x1f11ec */
-  void **pn = (void **)node; if (!pn) return;
-  void *P = pn[1];
-  if (P && sane_engine_ptr(P)) {
-    void (*rel)(int, void *) = (void (*)(int, void *))vma_addr(0x45546c);
-    if (rel) rel(1, (void *)&pn[1]);   /* original passa (1, &P) */
-  }
-  pn[0] = 0;
-}
-
-/* 🔊 FIX som do 1up (jingle mudo no gameplay): a engine poll-a MediaPlayerisPlaying(canal)
-   por frame e seta bit1=stop na SCB quando "não toca"; DmSoundIsStopJingle então manda parar
-   o jingle. Nós patchávamos MediaPlayerisPlaying->0 (pro skip do vídeo de intro) => TODO canal
-   sempre "parado" => jingle do 1up morto na hora. Agora devolvemos o estado REAL do mixer
-   (intro continua pulado via willPlayMovie->0 + videoIsPlaying->0, que não dependem disto). */
-extern int sonic_audio_music_state(int id);
+/* 🔊 FIX som do 1up (jingle mudo no gameplay) — CIRÚRGICO: a engine poll-a
+   MediaPlayerisPlaying(canal) por frame e seta bit1=stop na SCB quando "não toca";
+   DmSoundIsStopJingle então manda parar o jingle. Nós patchávamos isto ->0 (pro skip do
+   intro) => TODO canal sempre "parado" => jingle do 1up morto na hora. Mas devolver o estado
+   real de TODOS os canais mudava o comportamento de SFX/BGM (sumiu som da special stage).
+   SOLUÇÃO: só os canais de JINGLE devolvem o estado real; os outros mantêm ->0 (comportamento
+   antigo, preserva os demais sons). Intro segue pulado por willPlayMovie->0 + videoIsPlaying->0. */
+extern int sonic_audio_jingle_playing(int id);
 static int my_MediaPlayerisPlaying(int i) {
-  return sonic_audio_music_state(i) == 0 ? 1 : 0;     /* 1 = tocando */
+  return sonic_audio_jingle_playing(i);               /* 1 só se canal i for jingle tocando */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
@@ -847,22 +791,7 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NO_RELSAFE")) {
     patch_arm_jump("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST",
                    (void *)my_amDrawReleaseTexture);
-    /* irmãos com a MESMA vulnerabilidade (crash ao terminar o special stage etc.) */
-    patch_arm_jump("_Z20_amDrawReleaseShaderP14AMS_REGISTLIST",
-                   (void *)my_amDrawReleaseShader);
-    patch_arm_jump("_Z25_amDrawDeleteRenderTargetP14AMS_REGISTLIST",
-                   (void *)my_amDrawDeleteRenderTarget);
-    patch_arm_jump("_Z25_amDrawDeleteVertexObjectP14AMS_REGISTLIST",
-                   (void *)my_amDrawDeleteVertexObject);
-    patch_arm_jump("_Z26_amDrawReleaseTextureImageP14AMS_REGISTLIST",
-                   (void *)my_amDrawReleaseTextureImage);
-    /* sanity: vma_addr(VMA) deve casar com o endereco real de um 2o simbolo conhecido
-       (amTexMgrDecRef @VMA 0x205f20) -> garante que o load_bias dos calls internos esta certo */
-    { uintptr_t want = so_find_addr_safe("amTexMgrDecRef") & ~(uintptr_t)1;
-      void *got = vma_addr(0x205f20);
-      fprintf(stderr, "=== RELSAFE vma_addr check: DecRef want=%p got=%p %s ===\n",
-              (void *)want, got, (want == (uintptr_t)got) ? "OK" : "MISMATCH!!!"); }
-    fprintf(stderr, "=== RELSAFE: release handlers protegidos (texture/shader/RT/vertex/teximg) ===\n");
+    fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (stale-P do exit) ===\n");
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
      AUTO-EXPOSIÇÃO. ChangeToneMapParam(midgray,lwhite) é chamado por frame pela
