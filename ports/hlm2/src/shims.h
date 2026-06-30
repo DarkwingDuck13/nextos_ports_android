@@ -83,4 +83,11 @@ void my_abort(void);
 long my_syscall(long,long,long,long,long,long,long);
 void *my_signal(int, void *);
 int hlm2_find_asset(const char *name, char *out, size_t n);
+int my_stat(const char *, void *);
+int my_lstat(const char *, void *);
+int my_fstat(int, void *);
+int my_fstatat(int, const char *, void *, int);
+unsigned long long hm_canary_save(void);
+void hm_canary_restore(unsigned long long);
+void hm_set_bionic_canary(void);
 #endif

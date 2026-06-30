@@ -121,11 +121,13 @@ void *AAssetManager_fromJava(void *env, void *mgr) { (void)env; (void)mgr; retur
 void *AAssetManager_open(void *mgr, const char *name, int mode) {
   (void)mgr; (void)mode;
   if (!name) return NULL;
+  unsigned long long cy = hm_canary_save();   /* fopen/access setam errno (=tpidr+0x28) */
   char real[1280];
   FILE *f = NULL;
   if (hlm2_find_asset(name, real, sizeof real)) f = fopen(real, "rb");
   if (!f) f = fopen(name, "rb");
   static int c = 0; if (c++ < 60) fprintf(stderr, "[asset] open %s -> %p\n", name, (void *)f);
+  hm_canary_restore(cy);
   return f;
 }
 long AAsset_getLength(void *a) { FILE *f = a; long c = ftell(f); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, c, SEEK_SET); return n; }
@@ -290,3 +292,16 @@ void *my_signal(int sig, void *h) {
   }
   return (void *)signal(sig, (void (*)(int))h);
 }
+
+/* stat/fstat/lstat: na glibc ANTIGA (buster 2.28) sao inline (__xstat/__fxstat) -> NAO ha
+ * simbolo real 'stat'/'fstat' p/ o so-loader resolver p/ a libyoyo (Android/bionic) -> import
+ * UNRESOLVED -> SIGSEGV quando a libyoyo chama stat(). Fix: shim via SYSCALL CRU. A struct stat
+ * do kernel arm64 (preenchida pelo syscall) == layout da struct stat do BIONIC -> a libyoyo le
+ * st_size/st_mode corretos sem traducao. arm64: __NR_fstatat=79, __NR_fstat=80. */
+#include <sys/syscall.h>
+#include <fcntl.h>
+/* syscall() seta errno (= tpidr+0x28 no glibc) -> preserva o slot p/ o canary do caller libyoyo */
+int my_stat(const char *path, void *buf)  { unsigned long long cy=hm_canary_save(); int r=syscall(79, AT_FDCWD, path, buf, 0); hm_canary_restore(cy); return r; }
+int my_lstat(const char *path, void *buf) { unsigned long long cy=hm_canary_save(); int r=syscall(79, AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW); hm_canary_restore(cy); return r; }
+int my_fstat(int fd, void *buf)           { unsigned long long cy=hm_canary_save(); int r=syscall(80, fd, buf); hm_canary_restore(cy); return r; }
+int my_fstatat(int dfd, const char *path, void *buf, int flags) { unsigned long long cy=hm_canary_save(); int r=syscall(79, dfd, path, buf, flags); hm_canary_restore(cy); return r; }

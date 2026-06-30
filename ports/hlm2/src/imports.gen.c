@@ -70,6 +70,12 @@ DynLibFunction dynlib_functions[] = {
   {"__FD_CLR_chk", (uintptr_t)&__FD_CLR_chk_shim},
   {"__FD_ISSET_chk", (uintptr_t)&__FD_ISSET_chk_shim},
 
+  // ---- stat/fstat: glibc antiga (compat) nao exporta -> shim via syscall cru (layout bionic) ----
+  {"stat", (uintptr_t)&my_stat},
+  {"lstat", (uintptr_t)&my_lstat},
+  {"fstat", (uintptr_t)&my_fstat},
+  {"fstatat", (uintptr_t)&my_fstatat},
+
   // ---- AAssetManager -> fopen (game.droid + audiogroups) ----
   {"AAssetManager_fromJava", (uintptr_t)&AAssetManager_fromJava},
   {"AAssetManager_open", (uintptr_t)&AAssetManager_open},

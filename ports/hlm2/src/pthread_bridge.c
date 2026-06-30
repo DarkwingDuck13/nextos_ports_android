@@ -16,10 +16,36 @@
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "so_util.h"
+
+/* === CANARIO BIONIC (tpidr_el0+0x28) ===
+ * A libyoyo (NDK/bionic) le o stack-canary do slot TLS bionic tpidr_el0+0x28
+ * (TLS_SLOT_STACK_GUARD). No glibc esse offset NAO e o canary (glibc usa o global
+ * __stack_chk_guard) -> o slot guarda lixo que muda entre o prologo (store) e o
+ * epilogo (check) -> __stack_chk_fail -> abort (nao-skipavel). Fix: fixamos um valor
+ * ESTAVEL nesse slot no inicio de CADA thread que roda codigo da libyoyo (main + as
+ * threads criadas via pthread_create). store==check sempre -> passa. */
+#define HM_CANARY 0x2b7c91f3a4e6d508ULL
+void hm_set_bionic_canary(void) {
+  uintptr_t tp;
+  __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+  *(volatile uint64_t *)(tp + 0x28) = HM_CANARY;
+}
+/* save/restore do slot: shims que chamam glibc (access/syscall setam errno, que NO GLIBC
+ * mora exatamente em tpidr+0x28) precisam preservar o slot p/ o canary do CALLER libyoyo
+ * (store no prologo == check no epilogo). Salva na entrada, restaura antes de retornar. */
+uint64_t hm_canary_save(void) {
+  uintptr_t tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+  return *(volatile uint64_t *)(tp + 0x28);
+}
+void hm_canary_restore(uint64_t v) {
+  uintptr_t tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+  *(volatile uint64_t *)(tp + 0x28) = v;
+}
 
 // lock global (recursivo) p/ serializar lazy-init sem corrida
 static pthread_mutex_t g_lock;
@@ -186,7 +212,24 @@ int b_once(void *once_ctl, void (*init)(void)) {
   return 0;
 }
 
+// ---------------- pthread_create: seta o canario bionic no inicio da thread ----------------
+struct hm_thread_arg { void *(*fn)(void *); void *arg; };
+static void *hm_thread_tramp(void *a) {
+  struct hm_thread_arg *t = (struct hm_thread_arg *)a;
+  void *(*fn)(void *) = t->fn; void *arg = t->arg; free(t);
+  hm_set_bionic_canary();   /* canario estavel ANTES de qualquer codigo libyoyo */
+  return fn(arg);
+}
+int b_pthread_create(pthread_t *th, const pthread_attr_t *attr,
+                     void *(*fn)(void *), void *arg) {
+  struct hm_thread_arg *t = (struct hm_thread_arg *)malloc(sizeof(*t));
+  if (!t) return pthread_create(th, attr, fn, arg);
+  t->fn = fn; t->arg = arg;
+  return pthread_create(th, attr, hm_thread_tramp, t);
+}
+
 DynLibFunction revc_pthread_table[] = {
+    {"pthread_create", (uintptr_t)&b_pthread_create},
     {"pthread_mutexattr_init", (uintptr_t)&b_mutexattr_init},
     {"pthread_mutexattr_destroy", (uintptr_t)&b_mutexattr_destroy},
     {"pthread_mutexattr_settype", (uintptr_t)&b_mutexattr_settype},

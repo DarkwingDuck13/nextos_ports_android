@@ -142,10 +142,32 @@ int main(int argc, char *argv[]) {
   if (so_relocate() < 0) fatal_error("Failed to relocate %s", SO_NAME);
 
   debugPrintf("Resolving %zu imports...\n", dynlib_numfunctions);
-  if (so_resolve(dynlib_functions, dynlib_numfunctions, 0) < 0) fatal_error("Failed to resolve imports");
+  /* mescla os wrappers errno-preserving (compat glibc 2.30: errno mora em tpidr+0x28 =
+   * slot do canary bionic; os wrappers salvam/restauram o slot). */
+  extern DynLibFunction errno_compat_table[]; extern const int errno_compat_count;
+  size_t total = dynlib_numfunctions + (size_t)errno_compat_count;
+  DynLibFunction *merged = malloc(total * sizeof(DynLibFunction));
+  memcpy(merged, dynlib_functions, dynlib_numfunctions * sizeof(DynLibFunction));
+  memcpy(merged + dynlib_numfunctions, errno_compat_table, errno_compat_count * sizeof(DynLibFunction));
+  if (so_resolve(merged, (int)total, 0) < 0) fatal_error("Failed to resolve imports");
 
   so_finalize();
   so_flush_caches();
+
+  /* canario bionic estavel em tpidr+0x28 ANTES de rodar codigo da libyoyo (init_array
+   * ja roda construtores C++ da libyoyo que checam canary em glibc antigo do R36S). */
+  extern void hm_set_bionic_canary(void);
+  hm_set_bionic_canary();
+  if (getenv("HM_CANDIAG")) {
+    extern int *__errno_location(void);
+    uintptr_t tp; __asm__ volatile("mrs %0, tpidr_el0":"=r"(tp));
+    int *ep = __errno_location();
+    fprintf(stderr, "[candiag] tpidr=%p [+0x28]=%llx &errno=%p errno_off=%ld\n",
+            (void*)tp, *(unsigned long long*)(tp+0x28), (void*)ep, (long)((char*)ep-(char*)tp));
+    access("/nao_existe_xyz123", 0);
+    fprintf(stderr, "[candiag] apos access: [+0x28]=%llx errno=%d (off &errno-tpidr=%ld)\n",
+            *(unsigned long long*)(tp+0x28), *ep, (long)((char*)ep-(char*)tp));
+  }
 
   debugPrintf("Running init array...\n");
   so_execute_init_array();
