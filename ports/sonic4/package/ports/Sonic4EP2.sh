@@ -138,6 +138,12 @@ fi
 # estoura). Inofensivo nas outras fases. Desliga com SONIC_NO_CLEARALL.
 [ -z "$SONIC_NO_CLEARALL" ] && export SONIC_CLEARALL=1
 
+# 🔓 DESBLOQUEAR TODAS AS FASES (p/ teste): crie o marcador `unlock_all` no gamedir
+#   ->  touch "$GAMEDIR/unlock_all"
+# Libera IsStageUnlocked/IsStageClear e o Episode Metal sem precisar do save. Remova o
+# arquivo p/ voltar ao progresso normal do save (release NÃO vem com o marcador).
+[ -f "$GAMEDIR/unlock_all" ] && export SONIC_UNLOCK_ALL=1
+
 ./sonic4
 
 pkill -x gptokeyb 2>/dev/null || true
