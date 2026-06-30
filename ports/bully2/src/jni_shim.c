@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -37,6 +38,9 @@ extern void bully_tex_set_runtime_profile(int half, int min_dim,
                                           const char *why);
 extern int bully_tex_runtime_half_enabled(void);
 extern int bully_tex_runtime_half_min_dim(void);
+
+static void *make_callthrough(uintptr_t addr);
+static int current_texture_memory_used(void);
 
 #define DATA_PATH "."
 
@@ -916,7 +920,156 @@ static int nv_init(void *a, void *b, void *c) {
   return 0;
 }
 
+static volatile int g_tex_light_runtime = -1;
+
+static int ends_with_ci(const char *s, const char *suffix) {
+  if (!s || !suffix)
+    return 0;
+  size_t ls = strlen(s);
+  size_t lf = strlen(suffix);
+  return ls >= lf && strcasecmp(s + ls - lf, suffix) == 0;
+}
+
+static int parse_light_profile_value(const char *e, int *id,
+                                     const char **label) {
+  if (!e)
+    return 0;
+  while (*e == ' ' || *e == '\t' || *e == '\n' || *e == '\r')
+    e++;
+  if (!*e)
+    return 0;
+  if (!strncasecmp(e, "off", 3) || !strncasecmp(e, "none", 4) ||
+      !strncasecmp(e, "false", 5) || !strncasecmp(e, "no", 2) ||
+      !strcmp(e, "0")) {
+    *id = 0;
+    *label = "off";
+    return 1;
+  }
+  if (!strncasecmp(e, "low", 3) || !strncasecmp(e, "spec", 4) ||
+      !strcasecmp(e, "s")) {
+    *id = 1;
+    *label = "low";
+    return 1;
+  }
+  if (!strncasecmp(e, "medium", 6) || !strncasecmp(e, "med", 3) ||
+      !strncasecmp(e, "normal", 6) || !strcasecmp(e, "n")) {
+    *id = 2;
+    *label = "medium";
+    return 1;
+  }
+  if (!strncasecmp(e, "high", 4) || !strncasecmp(e, "both", 4) ||
+      !strncasecmp(e, "on", 2) || !strncasecmp(e, "true", 4) ||
+      !strncasecmp(e, "yes", 3) || !strcmp(e, "1")) {
+    *id = 3;
+    *label = "high";
+    return 1;
+  }
+  return 0;
+}
+
+static const char *light_profile_menu_label(int id) {
+  if (id <= 0)
+    return "Off";
+  if (id == 1)
+    return "Low";
+  if (id == 2)
+    return "Medium";
+  return "High";
+}
+
+static const char *light_profile_menu_name(int id) {
+  if (id <= 0)
+    return "off";
+  if (id == 1)
+    return "low";
+  if (id == 2)
+    return "medium";
+  return "high";
+}
+
+static const char *light_profile_env(void) {
+  const char *e = getenv("BULLY2_TEX_LIGHT");
+  if (e && *e)
+    return e;
+  e = getenv("BULLY2_LIGHT_PROFILE");
+  if (e && *e)
+    return e;
+  e = getenv("BULLY2_TEX_LIGHT_PROFILE");
+  if (e && *e)
+    return e;
+  e = getenv("BULLY_TEX_LIGHT");
+  return (e && *e) ? e : NULL;
+}
+
+static void tex_light_runtime_init(void) {
+  if (__atomic_load_n(&g_tex_light_runtime, __ATOMIC_RELAXED) >= 0)
+    return;
+
+  int id = 0;
+  const char *label = "off";
+  const char *e = light_profile_env();
+  if (e && !parse_light_profile_value(e, &id, &label)) {
+    fprintf(stderr, "[light] unsupported profile=%s; using off\n", e);
+    id = 0;
+    label = "off";
+  }
+  __atomic_store_n(&g_tex_light_runtime, id, __ATOMIC_RELEASE);
+  fprintf(stderr, "[light] initial profile=%s id=%d\n", label, id);
+}
+
+static int current_light_profile_id(void) {
+  tex_light_runtime_init();
+  int id = __atomic_load_n(&g_tex_light_runtime, __ATOMIC_ACQUIRE);
+  return (id < 0 || id > 3) ? 0 : id;
+}
+
+static void tex_light_set_runtime_profile(int id, const char *why) {
+  if (id < 0)
+    id = 0;
+  if (id > 3)
+    id = 3;
+  tex_light_runtime_init();
+  __atomic_store_n(&g_tex_light_runtime, id, __ATOMIC_RELEASE);
+  fprintf(stderr, "[light] %s profile=%s id=%d\n",
+          why ? why : "runtime", light_profile_menu_name(id), id);
+}
+
+static int tex_light_skip_kind(const char *path) {
+  if (!path || !ends_with_ci(path, ".tex"))
+    return 0;
+  if (ends_with_ci(path, "_s.tex"))
+    return 1;
+  if (ends_with_ci(path, "_n.tex"))
+    return 2;
+  return 0;
+}
+
+static int tex_light_should_skip(const char *path, const char *source) {
+  int kind = tex_light_skip_kind(path);
+  if (!kind)
+    return 0;
+  int profile = current_light_profile_id();
+  int skip = 0;
+  if (profile == 1)
+    skip = (kind == 1);
+  else if (profile == 2)
+    skip = (kind == 2);
+  else if (profile >= 3)
+    skip = 1;
+  if (skip) {
+    static int log_count;
+    int n = __atomic_fetch_add(&log_count, 1, __ATOMIC_RELAXED);
+    if (n < 24)
+      fprintf(stderr, "[light] skip %s detail=%s profile=%s path=\"%s\"\n",
+              source ? source : "asset", kind == 1 ? "specular" : "normal",
+              light_profile_menu_name(profile), path);
+  }
+  return skip;
+}
+
 static void *nv_open(const char *p) {
+  if (tex_light_should_skip(p, "nvapk"))
+    return NULL;
   void *h = asset_open(p);
   if (!h)
     fprintf(stderr, "[nvapk] MISS \"%s\"\n", p ? p : "(null)");
@@ -1490,6 +1643,8 @@ static void wait_for_renderer_idle(const char *why) {
 
 static void apply_texture_profile_runtime(const char *profile,
                                           const char *why);
+static void apply_light_profile_runtime(const char *profile,
+                                        const char *why);
 static int current_texture_profile_id(void);
 
 static void (*g_string8_ctor)(void *, const char *) = NULL;
@@ -1669,6 +1824,32 @@ static void texture_profile_persist(const char *profile) {
           profile ? profile : "medium", path);
 }
 
+static const char *light_profile_save_path(void) {
+  const char *path = first_env("BULLY2_TEX_LIGHT_SAVE",
+                               "BULLY_TEX_LIGHT_SAVE");
+  return (path && *path) ? path : "light_profile.cfg";
+}
+
+static void light_profile_persist(const char *profile) {
+  if (!env_flag_default_on("BULLY2_TEX_LIGHT_PERSIST",
+                           "BULLY_TEX_LIGHT_PERSIST"))
+    return;
+  const char *path = light_profile_save_path();
+  if (!strcmp(path, "0") || !strcmp(path, "off") || !strcmp(path, "false"))
+    return;
+
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    fprintf(stderr, "[lightmenu] persist failed path=%s profile=%s\n", path,
+            profile ? profile : "");
+    return;
+  }
+  fprintf(f, "%s\n", profile ? profile : "off");
+  fclose(f);
+  fprintf(stderr, "[lightmenu] persisted profile=%s path=%s\n",
+          profile ? profile : "off", path);
+}
+
 static void ui_set_custom_literal(void *element, const char *key,
                                   const char *value) {
   unsigned name = 0;
@@ -1688,6 +1869,15 @@ static void texture_menu_update_row(void *row) {
   snprintf(value, sizeof(value), "%d", id);
   ui_set_custom_literal(row, "caption1", "Textures");
   ui_set_custom_literal(row, "textvalue", texture_profile_menu_label(id));
+  ui_set_custom_literal(row, "value", value);
+}
+
+static void light_menu_update_row(void *row) {
+  char value[8];
+  int id = current_light_profile_id();
+  snprintf(value, sizeof(value), "%d", id);
+  ui_set_custom_literal(row, "caption1", "Light");
+  ui_set_custom_literal(row, "textvalue", light_profile_menu_label(id));
   ui_set_custom_literal(row, "value", value);
 }
 
@@ -1711,6 +1901,26 @@ static void texture_menu_update_option(void *menu, const char *why) {
             why ? why : "sync", label, id, menu);
 }
 
+static void light_menu_update_option(void *menu, const char *why) {
+  unsigned name = 0;
+  unsigned long long s[4];
+  int id = current_light_profile_id();
+  const char *label = light_profile_menu_label(id);
+
+  resolve_texture_menu_symbols();
+  if (!menu || !g_menu_update_option || !g_name8_set ||
+      !string8_make(s, label))
+    return;
+
+  g_name8_set(&name, "light");
+  g_menu_update_option(menu, &name, s, id);
+  string8_drop(s);
+
+  if (env_enabled("BULLY2_TEXTURE_MENU_LOG"))
+    fprintf(stderr, "[lightmenu] UpdateOption %s value=%s id=%d menu=%p\n",
+            why ? why : "sync", label, id, menu);
+}
+
 static void *texture_menu_find_row(void *root) {
   void *row = ui_get_path(root, "main.content.textures");
   if (row)
@@ -1719,15 +1929,26 @@ static void *texture_menu_find_row(void *root) {
   return ui_find_child_by_hash(content, texture_menu_hash("textures"));
 }
 
+static void *light_menu_find_row(void *root) {
+  void *row = ui_get_path(root, "main.content.light");
+  if (row)
+    return row;
+  void *content = ui_get_path(root, "main.content");
+  return ui_find_child_by_hash(content, texture_menu_hash("light"));
+}
+
 static void texture_menu_ensure(void *root) {
   if (!texture_menu_enabled() || !root)
     return;
   resolve_texture_menu_symbols();
   void *existing = texture_menu_find_row(root);
-  if (existing) {
+  void *light = light_menu_find_row(root);
+  if (existing)
     texture_menu_update_row(existing);
+  if (light)
+    light_menu_update_row(light);
+  if (existing && light)
     return;
-  }
   if (!texture_menu_clone_enabled())
     return;
   if (!g_ui_create_copy || !g_ui_list_add_child_at_index) {
@@ -1748,48 +1969,88 @@ static void texture_menu_ensure(void *root) {
   if (!shadow)
     return;
 
-  void *copy = g_ui_create_copy(shadow);
-  if (!copy)
-    return;
-  *(unsigned *)((char *)copy + 48) = textures_hash;
-  if (g_ui_set_selectable)
-    g_ui_set_selectable(copy, 1);
-
   void *parent = *(void **)((char *)shadow + 104);
   if (!parent)
     parent = content;
   int shadow_index = ui_find_child_index(parent, shadow);
-  g_ui_list_add_child_at_index(parent, shadow_index >= 0 ? shadow_index + 1 : -1,
-                               copy);
-  texture_menu_update_row(copy);
-  fprintf(stderr,
-          "[texmenu] inserted Textures row root=%p content=%p shadow=%p copy=%p "
-          "index=%d profile=%s\n",
-          root, content, shadow, copy, shadow_index + 1,
-          texture_profile_menu_label(current_texture_profile_id()));
+  void *textures_row = existing;
+  if (!textures_row) {
+    void *copy = g_ui_create_copy(shadow);
+    if (!copy)
+      return;
+    *(unsigned *)((char *)copy + 48) = textures_hash;
+    if (g_ui_set_selectable)
+      g_ui_set_selectable(copy, 1);
+    g_ui_list_add_child_at_index(parent,
+                                 shadow_index >= 0 ? shadow_index + 1 : -1,
+                                 copy);
+    texture_menu_update_row(copy);
+    textures_row = copy;
+    fprintf(stderr,
+            "[texmenu] inserted Textures row root=%p content=%p shadow=%p copy=%p "
+            "index=%d profile=%s\n",
+            root, content, shadow, copy, shadow_index + 1,
+            texture_profile_menu_label(current_texture_profile_id()));
+  }
+  if (!light) {
+    void *copy = g_ui_create_copy(textures_row ? textures_row : shadow);
+    if (!copy)
+      return;
+    *(unsigned *)((char *)copy + 48) = texture_menu_hash("light");
+    if (g_ui_set_selectable)
+      g_ui_set_selectable(copy, 1);
+    int textures_index = ui_find_child_index(parent, textures_row);
+    g_ui_list_add_child_at_index(parent,
+                                 textures_index >= 0 ? textures_index + 1 : -1,
+                                 copy);
+    light_menu_update_row(copy);
+    fprintf(stderr,
+            "[lightmenu] inserted Light row root=%p content=%p copy=%p "
+            "index=%d profile=%s\n",
+            root, content, copy, textures_index + 1,
+            light_profile_menu_label(current_light_profile_id()));
+  }
 }
 
 static int texture_menu_handle_rotate(void *self, void *element) {
   if (!texture_menu_enabled() || !element)
     return 0;
-  if (*(unsigned *)((char *)element + 48) != texture_menu_hash("textures"))
+  unsigned hash = *(unsigned *)((char *)element + 48);
+  int is_textures = hash == texture_menu_hash("textures");
+  int is_light = hash == texture_menu_hash("light");
+  if (!is_textures && !is_light)
     return 0;
 
   if (g_menu_sound_select)
     g_menu_sound_select(self);
-  int next = (current_texture_profile_id() + 1) % 3;
-  const char *next_profile = texture_profile_menu_name(next);
-  apply_texture_profile_runtime(next_profile, "menu");
-  texture_profile_persist(next_profile);
-  texture_menu_update_row(element);
-  texture_menu_update_option(self, "rotate");
+  if (is_textures) {
+    int next = (current_texture_profile_id() + 1) % 3;
+    const char *next_profile = texture_profile_menu_name(next);
+    apply_texture_profile_runtime(next_profile, "menu");
+    texture_profile_persist(next_profile);
+    texture_menu_update_row(element);
+    texture_menu_update_option(self, "rotate");
+    fprintf(stderr, "[texmenu] menu selected %s (%d)\n",
+            texture_profile_menu_label(current_texture_profile_id()),
+            current_texture_profile_id());
+  } else {
+    int next = (current_light_profile_id() + 1) % 4;
+    const char *next_profile = light_profile_menu_name(next);
+    apply_light_profile_runtime(next_profile, "menu");
+    light_profile_persist(next_profile);
+    light_menu_update_row(element);
+    light_menu_update_option(self, "rotate");
+    fprintf(stderr, "[lightmenu] menu selected %s (%d)\n",
+            light_profile_menu_label(current_light_profile_id()),
+            current_light_profile_id());
+  }
   void *root = self ? *(void **)((char *)self + 16) : NULL;
   void *row = texture_menu_find_row(root);
   if (row && row != element)
     texture_menu_update_row(row);
-  fprintf(stderr, "[texmenu] menu selected %s (%d)\n",
-          texture_profile_menu_label(current_texture_profile_id()),
-          current_texture_profile_id());
+  row = light_menu_find_row(root);
+  if (row && row != element)
+    light_menu_update_row(row);
   return 1;
 }
 
@@ -1800,6 +2061,7 @@ static int my_MenuSettings_InitWithScene(void *self, void *scene, void *params) 
   if (ret) {
     texture_menu_ensure(scene);
     texture_menu_update_option(self, "init");
+    light_menu_update_option(self, "init");
   }
   return ret;
 }
@@ -1808,8 +2070,10 @@ static void my_MenuSettings_Update(void *self, float dt) {
   if (tramp_menu_settings_update)
     tramp_menu_settings_update(self, dt);
   static unsigned tick;
-  if ((++tick % 15) == 0)
+  if ((++tick % 15) == 0) {
     texture_menu_update_option(self, "update");
+    light_menu_update_option(self, "update");
+  }
 }
 
 static int material_vector_count(void *mat) {
@@ -2354,7 +2618,9 @@ static int texture_profile_queue_reload(const char *why) {
   TexturePtrArray arr;
   unsigned count;
   int id = current_texture_profile_id();
-  unsigned default_min_dim = (id <= 0) ? 256 : 512;
+  unsigned default_min_dim = (why && !strncmp(why, "light:", 6))
+                                 ? 0
+                                 : ((id <= 0) ? 256 : 512);
 
   resolve_texture_reload_symbols();
   if (!g_ResourceManager_Reload) {
@@ -2572,6 +2838,32 @@ static void apply_texture_profile_runtime(const char *profile,
   char reason[96];
   snprintf(reason, sizeof(reason), "%s:%s", why ? why : "runtime", label);
   bully_tex_set_runtime_profile(half, min_dim, reason);
+  if (!texture_profile_reload_loaded_textures(reason))
+    texture_profile_cleanup(reason);
+}
+
+static void apply_light_profile_runtime(const char *profile,
+                                        const char *why) {
+  int id = 0;
+  const char *label = "off";
+  if (!parse_light_profile_value(profile, &id, &label)) {
+    fprintf(stderr, "[light] ignored invalid profile '%s'\n",
+            profile ? profile : "");
+    return;
+  }
+
+  int old_id = current_light_profile_id();
+  if (old_id == id)
+    return;
+
+  char reason[96];
+  snprintf(reason, sizeof(reason), "light:%s", label);
+  long long gl_before = bully_glmem_live_bytes();
+  int helper_before = current_texture_memory_used();
+  tex_light_set_runtime_profile(id, reason);
+  fprintf(stderr, "[light] apply %s old=%s new=%s helper=%dKB gl=%lldMB\n",
+          why ? why : "runtime", light_profile_menu_name(old_id), label,
+          helper_before / 1024, gl_before / (1024 * 1024));
   if (!texture_profile_reload_loaded_textures(reason))
     texture_profile_cleanup(reason);
 }
@@ -3083,6 +3375,71 @@ static void hook_threads(void) {
            (uintptr_t)my_NVThreadSpawnJNIThread);
 }
 
+static void *(*tramp_nvapk_open_light)(const char *) = NULL;
+static void *(*tramp_nvapk_open_from_pack_light)(const char *) = NULL;
+static int (*tramp_os_zip_file_open_light)(const char *, void **) = NULL;
+
+static void *my_NvAPKOpen_light(const char *path) {
+  if (tex_light_should_skip(path, "NvAPKOpen"))
+    return NULL;
+  return tramp_nvapk_open_light ? tramp_nvapk_open_light(path) : NULL;
+}
+
+static void *my_NvAPKOpenFromPack_light(const char *path) {
+  if (tex_light_should_skip(path, "NvAPKOpenFromPack"))
+    return NULL;
+  return tramp_nvapk_open_from_pack_light
+             ? tramp_nvapk_open_from_pack_light(path)
+             : NULL;
+}
+
+static int my_OS_ZipFileOpen_light(const char *path, void **out) {
+  if (tex_light_should_skip(path, "OS_ZipFileOpen")) {
+    if (out)
+      *out = NULL;
+    return 1;
+  }
+  return tramp_os_zip_file_open_light
+             ? tramp_os_zip_file_open_light(path, out)
+             : 1;
+}
+
+static void hook_light_asset_filter(void) {
+  uintptr_t zip = so_symbol(&mod_game, "_Z14OS_ZipFileOpenPKcPPv");
+  if (zip) {
+    tramp_os_zip_file_open_light =
+        (int (*)(const char *, void **))make_callthrough(zip);
+    if (tramp_os_zip_file_open_light)
+      hook_x64(zip, (uintptr_t)my_OS_ZipFileOpen_light);
+  }
+
+  uintptr_t open = 0;
+  uintptr_t open_pack = 0;
+  if (use_native_nvapk()) {
+    open = so_symbol(&mod_game, "_Z9NvAPKOpenPKc");
+    open_pack = so_symbol(&mod_game, "_Z17NvAPKOpenFromPackPKc");
+    if (open) {
+      tramp_nvapk_open_light =
+          (void *(*)(const char *))make_callthrough(open);
+      if (tramp_nvapk_open_light)
+        hook_x64(open, (uintptr_t)my_NvAPKOpen_light);
+    }
+    if (open_pack) {
+      tramp_nvapk_open_from_pack_light =
+          (void *(*)(const char *))make_callthrough(open_pack);
+      if (tramp_nvapk_open_from_pack_light)
+        hook_x64(open_pack, (uintptr_t)my_NvAPKOpenFromPack_light);
+    }
+  }
+
+  fprintf(stderr,
+          "[light] filter hooks zip=%p/%p nvapk=%p/%p pack=%p/%p profile=%s\n",
+          (void *)zip, (void *)tramp_os_zip_file_open_light,
+          (void *)open, (void *)tramp_nvapk_open_light,
+          (void *)open_pack, (void *)tramp_nvapk_open_from_pack_light,
+          light_profile_menu_name(current_light_profile_id()));
+}
+
 static void hook_nvapk(void) {
   if (use_native_nvapk())
     return;
@@ -3104,6 +3461,7 @@ static void hook_nvapk(void) {
 static void install_hooks(void) {
   so_make_text_writable();
   hook_nvapk();
+  hook_light_asset_filter();
   hook_egl();
   hook_threads();
   hook_screen();

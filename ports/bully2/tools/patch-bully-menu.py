@@ -87,7 +87,18 @@ def menu_profile(profile):
     return "1", "Medium"
 
 
-def update_existing_texture_row(xml, value, text):
+def light_profile(profile):
+    profile = (profile or "off").strip().lower()
+    if profile in ("low", "spec", "specular", "s"):
+        return "1", "Low"
+    if profile in ("medium", "med", "normal", "n"):
+        return "2", "Medium"
+    if profile in ("high", "full", "both", "on", "1", "true", "yes"):
+        return "3", "High"
+    return "0", "Off"
+
+
+def update_existing_profile_row(xml, name, value, text):
     def replace(match):
         row = match.group(1)
         row = re.sub(r'^<SettingRowOption\b', "<SettingRowTextureOption", row)
@@ -95,7 +106,12 @@ def update_existing_texture_row(xml, value, text):
         row = re.sub(r'\sstring\(textvalue\)="[^"]*"', "", row)
         return '%s string(value)="%s" string(textvalue)="%s"/>' % (row, value, text)
 
-    return re.sub(r'(<SettingRow(?:Texture)?Option name="textures"[^>]*)/>', replace, xml, count=1)
+    return re.sub(
+        r'(<SettingRow(?:Texture)?Option name="%s"[^>]*)/>' % re.escape(name),
+        replace,
+        xml,
+        count=1,
+    )
 
 
 def ensure_texture_template(xml, value, text):
@@ -133,50 +149,83 @@ def ensure_texture_template(xml, value, text):
     return xml[:match.end()] + texture_template + xml[match.end():]
 
 
-def patch_xml(xml, profile):
-    value, text = menu_profile(profile)
-    xml = ensure_texture_template(xml, value, text)
-    if '<SettingRowOption name="textures"' in xml:
-        return update_existing_texture_row(xml, value, text)
-    if '<SettingRowTextureOption name="textures"' in xml:
-        return update_existing_texture_row(xml, value, text)
+def profile_row(name, caption, value, text, y1, y2):
+    return (
+        '    <SettingRowTextureOption name="%s" caption="%s" '
+        'string(value)="%s" string(textvalue)="%s" '
+        'y1="%.2f" y2="%.2f" opacity="1"/>\r\n'
+        % (name, caption, value, text, y1, y2)
+    )
 
-    xml = xml.replace(
-        "        \\main.content.shadow.opacity.set(1)\r\n",
-        "        \\main.content.shadow.opacity.set(1)\r\n"
-        "        \\main.content.textures.opacity.set(1)\r\n",
-        1,
+
+def ensure_opacity_line(xml, name, anchor):
+    line = "        \\main.content.%s.opacity.set(1)\r\n" % name
+    if line in xml:
+        return xml
+    anchor_line = "        \\main.content.%s.opacity.set(1)\r\n" % anchor
+    if anchor_line in xml:
+        return xml.replace(anchor_line, anchor_line + line, 1)
+    return xml
+
+
+def ensure_profile_row(xml, name, caption, value, text, y1, y2, anchor_name):
+    if '<SettingRowOption name="%s"' in xml or '<SettingRowTextureOption name="%s"' in xml:
+        return update_existing_profile_row(xml, name, value, text)
+
+    row = profile_row(name, caption, value, text, y1, y2)
+    anchor_re = re.compile(
+        r'(    <SettingRow(?:Texture)?Option name="%s" [^\r\n]*/>\r\n)'
+        % re.escape(anchor_name)
     )
-    shadow_row = (
-        '    <SettingRowOption name="shadow" caption="FEDS_SHADOWS" '
-        'y1="0.46" y2="0.54" opacity="1"/>\r\n'
-    )
-    textures_row = (
-        shadow_row
-        + (
-            '    <SettingRowTextureOption name="textures" caption="Textures" '
-            'string(value)="%s" string(textvalue)="%s" '
-            'y1="0.55" y2="0.63" opacity="1"/>\r\n'
-            % (value, text)
+    match = anchor_re.search(xml)
+    if not match:
+        raise SystemExit("%s row pattern not found" % anchor_name)
+    return xml[:match.end()] + row + xml[match.end():]
+
+
+def patch_xml(xml, texture, light):
+    tex_value, tex_text = menu_profile(texture)
+    light_value, light_text = light_profile(light)
+    xml = ensure_texture_template(xml, tex_value, tex_text)
+
+    xml = ensure_opacity_line(xml, "textures", "shadow")
+    xml = ensure_opacity_line(xml, "light", "textures")
+
+    if '<SettingRowOption name="textures"' in xml:
+        xml = update_existing_profile_row(xml, "textures", tex_value, tex_text)
+    if '<SettingRowTextureOption name="textures"' in xml:
+        xml = update_existing_profile_row(xml, "textures", tex_value, tex_text)
+    else:
+        shadow_row = (
+            '    <SettingRowOption name="shadow" caption="FEDS_SHADOWS" '
+            'y1="0.46" y2="0.54" opacity="1"/>\r\n'
         )
+        textures_row = profile_row(
+            "textures", "Textures", tex_value, tex_text, 0.55, 0.63
+        )
+        if shadow_row not in xml:
+            raise SystemExit("shadow row pattern not found")
+        xml = xml.replace(shadow_row, shadow_row + textures_row, 1)
+
+    xml = ensure_profile_row(
+        xml, "light", "Light", light_value, light_text, 0.64, 0.72, "textures"
     )
-    if shadow_row not in xml:
-        raise SystemExit("shadow row pattern not found")
-    return xml.replace(shadow_row, textures_row, 1)
+    return xml
 
 
 def main():
-    if len(sys.argv) not in (3, 4):
-        raise SystemExit("usage: patch-bully-menu.py /path/to/data_4.zip /path/to/bully2_patch.zip [low|medium|high]")
+    if len(sys.argv) not in (3, 4, 5):
+        raise SystemExit("usage: patch-bully-menu.py /path/to/data_4.zip /path/to/bully2_patch.zip [low|medium|high] [off|low|medium|high]")
 
     data_zip = Path(sys.argv[1])
     patch_zip = Path(sys.argv[2])
-    profile = sys.argv[3] if len(sys.argv) == 4 else "medium"
+    profile = sys.argv[3] if len(sys.argv) >= 4 else "medium"
+    light = sys.argv[4] if len(sys.argv) == 5 else "off"
     with zipfile.ZipFile(data_zip, "r") as zf:
         original = zf.read(ENTRY)
 
     xml = decode(original)
-    patched = patch_xml(xml, profile)
+    patched = patch_xml(xml, profile, light)
     encoded = encode(patched)
 
     patch_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -192,7 +241,15 @@ def main():
         info.compress_type = zipfile.ZIP_STORED
         zf.writestr(info, encoded)
     os.replace(tmp, patch_zip)
-    print("wrote %s (%d bytes, profile=%s)" % (patch_zip, patch_zip.stat().st_size, menu_profile(profile)[1]))
+    print(
+        "wrote %s (%d bytes, textures=%s light=%s)"
+        % (
+            patch_zip,
+            patch_zip.stat().st_size,
+            menu_profile(profile)[1],
+            light_profile(light)[1],
+        )
+    )
 
 
 if __name__ == "__main__":

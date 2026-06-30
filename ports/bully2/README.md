@@ -31,6 +31,10 @@ Escopo inicial:
 - O menu de Settings ganha a opcao `Textures`, abaixo de `Shadows`:
   `Low` = 256, `Medium` = 512, `High` = full. A troca chama o mesmo perfil GL em
   runtime, sem cache, texswap ou conversao offline.
+- Abaixo de `Textures`, o menu ganha `Light`: `Off` carrega tudo, `Low` pula
+  mapas `_s.tex`, `Medium` pula mapas `_n.tex` e `High` pula `_s.tex` + `_n.tex`.
+  O padrao e `Off`; a escolha fica em `light_profile.cfg` e o filtro atua no
+  caminho nativo de abertura de assets.
 - Ao trocar `Textures` durante o jogo, o perfil GL muda em runtime e a limpeza
   nativa roda, mas o unload total de `Texture2D` fica desligado por padrao. O
   teste com `ResourceManager::GetAllLoaded<Texture2D>()` +
@@ -39,6 +43,8 @@ Escopo inicial:
 - A escolha de `Textures` fica salva em `texture_profile.cfg`. No proximo boot,
   o launcher le esse arquivo antes do automatico e recria o patch do menu ja com
   `Low`, `Medium` ou `High` como valor inicial correto.
+- A escolha de `Light` fica salva em `light_profile.cfg` e tambem e sincronizada
+  no menu por `MenuSettings::UpdateOption`.
 - O valor visual da linha tambem e sincronizado em runtime pelo metodo nativo
   `MenuSettings::UpdateOption`, para nao voltar para o valor do template quando
   o menu de Settings atualiza ou e reconstruido.

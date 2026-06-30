@@ -197,3 +197,26 @@ Shadows:
   `MenuSettings::UpdateOption("textures", label, id)` depois da troca e durante
   a tela de Settings. O arquivo salvo ja mudava para `high`; o bug restante era
   apenas o texto da UI voltando para `Medium`.
+
+## Menu Light
+
+- `Light` e uma opcao separada de `Textures`; nao faz downscale e nao cria cache.
+- Padrao: `Off`.
+- Mapeamento:
+  - `Off`: carrega todos os mapas;
+  - `Low`: pula mapas `_s.tex` (specular);
+  - `Medium`: pula mapas `_n.tex` (normal);
+  - `High`: pula `_s.tex` e `_n.tex`, equivalente ao `BULLY_TEX_LIGHT=1` antigo.
+- Persistencia: `light_profile.cfg`, com override por `BULLY2_TEX_LIGHT`.
+- Menu: o patcher agora gera `Textures` e `Light` no mesmo
+  `assets/bully2_patch.zip`; o binario sincroniza o texto por
+  `MenuSettings::UpdateOption("light", label, id)`.
+- Filtro nativo: em modo `BULLY2_NVAPK_MODE=native`, o port hooka
+  `OS_ZipFileOpen`, `NvAPKOpen` e `NvAPKOpenFromPack` apenas para negar esses
+  assets de detalhe quando o perfil pede. Em modo compat, o mesmo filtro roda em
+  `nv_open`.
+- Runtime: a troca chama `apply_light_profile_runtime()`, persiste o valor e
+  agenda o reload seletivo de texturas residentes com `min_dim=0`, para incluir
+  mapas pequenos de detalhe.
+- Falta validar no device: economia real de RAM por nivel e comportamento visual
+  ao alternar `Off/Low/Medium/High` durante gameplay longo.

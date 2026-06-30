@@ -59,8 +59,11 @@ bully2_pids() {
 
 configure_start_profile() {
   profile_save="${BULLY2_TEX_PROFILE_SAVE:-$GAMEDIR/texture_profile.cfg}"
+  light_save="${BULLY2_TEX_LIGHT_SAVE:-$GAMEDIR/light_profile.cfg}"
   requested="${BULLY2_TEXTURE_PROFILE:-${BULLY2_TEX_HALF_MODE:-}}"
+  requested_light="${BULLY2_TEX_LIGHT:-${BULLY2_LIGHT_PROFILE:-}}"
   saved_profile=""
+  saved_light=""
 
   if [ -z "$requested" ] && [ -s "$profile_save" ]; then
     saved_profile=$(head -n 1 "$profile_save" 2>/dev/null | tr -d '\r\n\t ')
@@ -72,7 +75,19 @@ configure_start_profile() {
     esac
   fi
 
+  if [ -z "$requested_light" ] && [ -s "$light_save" ]; then
+    saved_light=$(head -n 1 "$light_save" 2>/dev/null | tr -d '\r\n\t ')
+    case "$saved_light" in
+      off|Off|0|false|False|no|No) requested_light="off";;
+      low|Low) requested_light="low";;
+      medium|Medium|med|Med) requested_light="medium";;
+      high|High|on|On|1|true|True|yes|Yes) requested_light="high";;
+      *) requested_light=""; saved_light="";;
+    esac
+  fi
+
   requested=$(printf '%s' "${requested:-medium}" | tr 'A-Z' 'a-z')
+  requested_light=$(printf '%s' "${requested_light:-off}" | tr 'A-Z' 'a-z')
   case "$requested" in
     low|256|extreme)
       start_profile="low"
@@ -109,6 +124,25 @@ configure_start_profile() {
       ;;
   esac
 
+  case "$requested_light" in
+    low|spec|specular|s)
+      start_light="low"
+      ;;
+    medium|med|normal|n)
+      start_light="medium"
+      ;;
+    high|on|1|true|yes|both)
+      start_light="high"
+      ;;
+    off|0|false|no|"")
+      start_light="off"
+      ;;
+    *)
+      echo "[light] unknown profile=$requested_light; using off"
+      start_light="off"
+      ;;
+  esac
+
   [ -z "${BULLY2_TEX_HALF+x}" ] && [ -n "${BULLY_TEX_HALF+x}" ] && BULLY2_TEX_HALF="$BULLY_TEX_HALF"
   [ -z "${BULLY2_TEX_HALF+x}" ] && BULLY2_TEX_HALF="$auto_half"
 
@@ -130,6 +164,8 @@ configure_start_profile() {
   [ -z "${BULLY2_MALLOC_TRIM+x}" ] && BULLY2_MALLOC_TRIM=1
   [ -z "${BULLY2_WATCHDOG_MIN_AVAIL_MB+x}" ] && BULLY2_WATCHDOG_MIN_AVAIL_MB="$auto_watchdog"
   [ -z "${BULLY2_TEX_PROFILE_SAVE+x}" ] && BULLY2_TEX_PROFILE_SAVE="$profile_save"
+  [ -z "${BULLY2_TEX_LIGHT+x}" ] && BULLY2_TEX_LIGHT="$start_light"
+  [ -z "${BULLY2_TEX_LIGHT_SAVE+x}" ] && BULLY2_TEX_LIGHT_SAVE="$light_save"
   [ -z "${BULLY2_CLARITY+x}" ] && BULLY2_CLARITY=high
   [ -z "${BULLY2_SHADOWS_MENU+x}" ] && BULLY2_SHADOWS_MENU=1
   [ -z "${BULLY2_SHADOWS_MAX+x}" ] && BULLY2_SHADOWS_MAX=auto
@@ -148,10 +184,11 @@ configure_start_profile() {
   export BULLY2_TEX_RELOAD_ON_CHANGE BULLY2_TEX_RELOAD_BATCH
   export BULLY2_TEX_RELOAD_PRE_UNLOAD
   export BULLY2_WATCHDOG_MIN_AVAIL_MB BULLY2_TEX_PROFILE_SAVE
+  export BULLY2_TEX_LIGHT BULLY2_TEX_LIGHT_SAVE
   export BULLY2_CLARITY BULLY2_SHADOWS_MENU BULLY2_SHADOWS_MAX
   export BULLY2_SHADOW_DEFAULT BULLY2_SHADOW_SSAO
   unset BULLY2_MEMORY_PROFILE BULLY2_TEX_HALF_MODE BULLY2_TEX_DOWNSCALE_PCT
-  echo "[profile] saved=${saved_profile:-none} selected=$start_profile half=$BULLY2_TEX_HALF min=$BULLY2_TEX_HALF_MIN stream=$BULLY2_STREAM_DISTANCE_PCT loadclean=$BULLY2_LOADSCENE_CLEAN watchdog_min=$BULLY2_WATCHDOG_MIN_AVAIL_MB clarity=$BULLY2_CLARITY shadows=$BULLY2_SHADOW_DEFAULT/$BULLY2_SHADOWS_MAX ssao=$BULLY2_SHADOW_SSAO"
+  echo "[profile] saved=${saved_profile:-none} selected=$start_profile half=$BULLY2_TEX_HALF min=$BULLY2_TEX_HALF_MIN light_saved=${saved_light:-none} light=$BULLY2_TEX_LIGHT stream=$BULLY2_STREAM_DISTANCE_PCT loadclean=$BULLY2_LOADSCENE_CLEAN watchdog_min=$BULLY2_WATCHDOG_MIN_AVAIL_MB clarity=$BULLY2_CLARITY shadows=$BULLY2_SHADOW_DEFAULT/$BULLY2_SHADOWS_MAX ssao=$BULLY2_SHADOW_SSAO"
 }
 
 kill_stale_bully2
@@ -239,12 +276,21 @@ ensure_texture_menu_patch() {
     return 0
   fi
 
-  if "$pybin" "$patch_script" "$data_zip" "$patch_zip" "$menu_profile"; then
-    echo "[texmenu] patch ready: $patch_zip profile=$menu_profile"
+  menu_light="${2:-off}"
+  if "$pybin" "$patch_script" "$data_zip" "$patch_zip" "$menu_profile" "$menu_light"; then
+    echo "[texmenu] patch ready: $patch_zip profile=$menu_profile light=$menu_light"
   else
     echo "[texmenu] patch generation failed; continuing without Textures row"
     rm -f "$patch_zip.tmp" 2>/dev/null || true
   fi
+}
+
+light_menu_patch_profile() {
+  case "${BULLY2_TEX_LIGHT:-off}" in
+    low|medium|high) printf '%s\n' "$BULLY2_TEX_LIGHT";;
+    on|1|true|yes) printf '%s\n' high;;
+    *) printf '%s\n' off;;
+  esac
 }
 
 texture_menu_patch_profile() {
@@ -287,7 +333,7 @@ export BULLY2_EVICT="${BULLY2_EVICT:-onlow}"
 export BULLY2_LOWMEM_TIDYTEX="${BULLY2_LOWMEM_TIDYTEX:-1}"
 export BULLY2_LOWMEM_TIDYTEX_FORCE="${BULLY2_LOWMEM_TIDYTEX_FORCE:-1}"
 configure_start_profile
-ensure_texture_menu_patch "$(texture_menu_patch_profile)"
+ensure_texture_menu_patch "$(texture_menu_patch_profile)" "$(light_menu_patch_profile)"
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
