@@ -4417,10 +4417,15 @@ static void (*g_uitw_orig)(void *);
 void my_UITweener_Update(void *self);
 void my_UITweener_Update(void *self) {
   if (self && ((uintptr_t)self >> 40) == 0) {
-    float *mf  = (float *)((char *)self + 0x78);   /* mFactor */
+    float *delay = (float *)((char *)self + 0x3C);  /* delay (hold antes do tween começar) */
     float *apd = (float *)((char *)self + 0x74);   /* mAmountPerDelta (signed) */
+    float *mf  = (float *)((char *)self + 0x78);   /* mFactor */
     float boost = 0.05f;
     if (getenv("FF9_TWEENBOOST")) boost = atoi(getenv("FF9_TWEENBOOST")) / 1000.0f;
+    /* FF9_TWEENNODELAY (opt-in, NÃO-confirmado): zera o delay do tween. Hipótese: o HOLD do
+       slideshow (disclaimer) é o delay do tween de fade-out -> sem delay começaria já. Opt-in
+       p/ não arriscar o FASTTWEEN default (que JÁ conserta o fade-in do disclaimer). */
+    if (getenv("FF9_TWEENNODELAY") && *delay > 0.0f) *delay = 0.0f;
     *mf += (*apd) * boost;
   }
   if (g_uitw_orig) g_uitw_orig(self);
