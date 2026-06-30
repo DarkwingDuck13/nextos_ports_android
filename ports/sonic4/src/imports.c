@@ -426,6 +426,31 @@ static void my_glBindFramebuffer(unsigned t, unsigned fb) {
     if (sonic_frame_for_imports != last) { last = sonic_frame_for_imports;
       static void(*c)(unsigned); if(!c)c=rgl("glClear"); c(0x4100); }
   }
+  /* 🧹 SONIC_CLEARALL: limpa CADA FBO (inclusive offscreen) UMA vez por frame, no 1º
+     bind do frame. Testa a teoria do bug do cassino: o buffer dos feixes de luz é
+     desenhado ADITIVO e não é limpo pro preto a cada frame no gameplay -> acumula ->
+     estoura branco. Limpar no 1º bind/frame remove o acúmulo CROSS-FRAME preservando
+     os passes DENTRO do mesmo frame (binds seguintes do mesmo fb não re-limpam).
+     SONIC_CLEARALL_RGB=R,G,B opcional define a cor (default preto). */
+  static int g_clearall = -1;
+  if (g_clearall < 0) g_clearall = getenv("SONIC_CLEARALL") ? 1 : 0;
+  if (g_clearall && t==0x8D40 && fb < 64) {
+    extern volatile unsigned long sonic_frame_for_imports;
+    static unsigned long fb_last[64]; static int init=0;
+    if (!init){ for(int i=0;i<64;i++) fb_last[i]=~0UL; init=1; }
+    if (fb_last[fb] != sonic_frame_for_imports) {
+      fb_last[fb] = sonic_frame_for_imports;
+      static void(*cc)(float,float,float,float); static void(*c)(unsigned);
+      if(!cc)cc=rgl("glClearColor"); if(!c)c=rgl("glClear");
+      float cr=0,cg=0,cb=0; const char*e=getenv("SONIC_CLEARALL_RGB");
+      if(e) sscanf(e,"%f,%f,%f",&cr,&cg,&cb);
+      /* preserva a cor de clear do engine: salva via glGetFloatv e restaura */
+      static void(*gf)(unsigned,float*); if(!gf)gf=rgl("glGetFloatv");
+      float save[4]={0,0,0,0}; if(gf) gf(0x0C22,save); /* GL_COLOR_CLEAR_VALUE */
+      cc(cr,cg,cb,1.0f); c(0x4100); /* COLOR|DEPTH */
+      cc(save[0],save[1],save[2],save[3]);
+    }
+  }
 }
 static void my_glClearColor(float a,float b,float c,float d){
   static void(*r)(float,float,float,float); if(!r)r=rgl("glClearColor");
