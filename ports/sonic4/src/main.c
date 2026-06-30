@@ -333,6 +333,20 @@ static void patch_arm_jump(const char *sym, void *target) {
           (unsigned long)a);
 }
 
+/* base/fim do heap da engine (onde libfox e suas alocacoes vivem) — usado p/ validar
+   ponteiros de registlist nos handlers de release diferido (anti-crash de saida).
+   Setado em load_module. */
+static uintptr_t g_engine_heap_base = 0, g_engine_heap_end = 0;
+static int sane_engine_ptr(const void *p) {
+  uintptr_t v = (uintptr_t)p;
+  return g_engine_heap_base && v >= g_engine_heap_base && v < g_engine_heap_end &&
+         (v & 3) == 0; /* alinhado a 4 */
+}
+/* endereco de runtime de uma func interna da libfox a partir do VMA (== heap_base+VMA) */
+static void *vma_addr(uintptr_t vma) {
+  return g_engine_heap_base ? (void *)(g_engine_heap_base + vma) : NULL;
+}
+
 /* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
    _amDrawReleaseTexture(node) libera a lista de texturas da cena de forma DIFERIDA
    (enfileirada por GameProcess, executada por DrawFrame via amDrawExecRegist). Na saída,
@@ -370,6 +384,65 @@ static void my_amDrawReleaseTexture(void *node) {
               (void *)array, g_relsafe_skip);
   }
   ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
+}
+
+/* 🛡️ Irmãos do _amDrawReleaseTexture: MESMO bug (deref de [node+4]=P que pode estar
+   stale ao sair de uma cena, ex.: FIM DO SPECIAL STAGE -> crash que o RELSAFE de textura
+   NÃO cobre). Cada um valida P (e ponteiros aninhados) dentro do heap da engine antes de
+   liberar; P corrompido (fora do heap) = pula seguro (a cena já liberou o recurso).
+   Replicam o original chamando as funcs internas da libfox por VMA (heap_base+VMA). */
+static void my_amDrawReleaseShader(void *node) {       /* orig @0x1f118c */
+  void **pn = (void **)node; if (!pn) return;
+  void *P = pn[1];
+  if (P && sane_engine_ptr(P)) {
+    void *f0 = ((void **)P)[0];
+    if (f0 && sane_engine_ptr(f0)) {
+      void *inner = ((void **)f0)[0];
+      void (*rel)(void *) = (void (*)(void *))vma_addr(0x1dbfac);   /* libera shader GL */
+      void (*fre)(void *) = (void (*)(void *))vma_addr(0x1ff994);   /* free do struct */
+      if (rel) rel(inner);
+      if (fre) fre(f0);
+    }
+    ((void **)P)[0] = 0;
+  }
+  pn[0] = 0;
+}
+static void my_amDrawDeleteRenderTarget(void *node) {  /* orig @0x1f128c */
+  void **pn = (void **)node; if (!pn) return;
+  void *P = pn[1];
+  if (P && sane_engine_ptr(P)) {
+    void (*del)(void *) = (void (*)(void *))vma_addr(0x20400c);
+    if (del) del(P);
+  }
+  pn[0] = 0;
+}
+static void my_amDrawDeleteVertexObject(void *node) {  /* orig @0x1f0ec0 */
+  void **pn = (void **)node; if (!pn) return;
+  void *P = pn[1];
+  if (P && sane_engine_ptr(P)) {
+    void (*del)(void *) = (void (*)(void *))vma_addr(0x438ddc);
+    if (del) del(P);
+  }
+  pn[0] = 0;
+}
+static void my_amDrawReleaseTextureImage(void *node) { /* orig @0x1f11ec */
+  void **pn = (void **)node; if (!pn) return;
+  void *P = pn[1];
+  if (P && sane_engine_ptr(P)) {
+    void (*rel)(int, void *) = (void (*)(int, void *))vma_addr(0x45546c);
+    if (rel) rel(1, (void *)&pn[1]);   /* original passa (1, &P) */
+  }
+  pn[0] = 0;
+}
+
+/* 🔊 FIX som do 1up (jingle mudo no gameplay): a engine poll-a MediaPlayerisPlaying(canal)
+   por frame e seta bit1=stop na SCB quando "não toca"; DmSoundIsStopJingle então manda parar
+   o jingle. Nós patchávamos MediaPlayerisPlaying->0 (pro skip do vídeo de intro) => TODO canal
+   sempre "parado" => jingle do 1up morto na hora. Agora devolvemos o estado REAL do mixer
+   (intro continua pulado via willPlayMovie->0 + videoIsPlaying->0, que não dependem disto). */
+extern int sonic_audio_music_state(int id);
+static int my_MediaPlayerisPlaying(int i) {
+  return sonic_audio_music_state(i) == 0 ? 1 : 0;     /* 1 = tocando */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
@@ -550,6 +623,8 @@ static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int 
   void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (heap == MAP_FAILED) { fprintf(stderr, "mmap %d MB falhou\n", heap_mb); exit(1); }
+  g_engine_heap_base = (uintptr_t)heap;
+  g_engine_heap_end = (uintptr_t)heap + hs;
   fprintf(stderr, "== carregando %s (heap %p, %d MB) ==\n", name, heap, heap_mb);
   if (so_load(name, heap, hs) < 0) { fprintf(stderr, "so_load(%s) falhou\n", name); exit(1); }
   if (so_relocate() < 0) { fprintf(stderr, "so_relocate falhou\n"); exit(1); }
@@ -625,13 +700,20 @@ int main(int argc, char *argv[]) {
      intro (clMovie poll videoIsPlaying/MediaPlayerisPlaying espera o fim). */
   if (!getenv("SONIC_KEEPVIDEO")) {
     patch_ret0("_Z14videoIsPlayingv");
-    patch_ret0("_Z20MediaPlayerisPlayingi");
     /* clMovie::willPlayMovieBeforeGameStart(int) -> 0: pula o movie de intro
        (SEGA logo) de vez, sem precisar da camada de vídeo. */
     patch_ret0("_ZNK2gm5movie7clMovie28willPlayMovieBeforeGameStartEi");
     /* clMovie::isEnd() -> 1: o game espera o movie de intro "terminar". */
     patch_retval("_ZN2gm5movie7clMovie5isEndEv", 1);
   }
+  /* 🔊 MediaPlayerisPlaying: estado REAL da música (não mais ->0). Conserta o jingle do
+     1up (o poll de estado da BGM usava isto; ->0 matava o jingle no gameplay). O intro já
+     é pulado por willPlayMovie->0 + videoIsPlaying->0. SONIC_MP_PLAYING_ZERO=1 volta ao ->0
+     antigo (fallback se algum device travar no intro). */
+  if (getenv("SONIC_MP_PLAYING_ZERO"))
+    patch_ret0("_Z20MediaPlayerisPlayingi");
+  else
+    patch_arm_jump("_Z20MediaPlayerisPlayingi", (void *)my_MediaPlayerisPlaying);
   /* Sonic4F2F::isGamePause -> 0: o F2F pausa o jogo (ads/consent que não temos)
      e fox_FrameUpdate pula amTaskExecute (state machine) qdo pausado -> preto. */
   if (!getenv("SONIC_KEEPPAUSE"))
@@ -757,7 +839,16 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NO_RELSAFE")) {
     patch_arm_jump("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST",
                    (void *)my_amDrawReleaseTexture);
-    fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (anti-crash de saida) ===\n");
+    /* irmãos com a MESMA vulnerabilidade (crash ao terminar o special stage etc.) */
+    patch_arm_jump("_Z20_amDrawReleaseShaderP14AMS_REGISTLIST",
+                   (void *)my_amDrawReleaseShader);
+    patch_arm_jump("_Z25_amDrawDeleteRenderTargetP14AMS_REGISTLIST",
+                   (void *)my_amDrawDeleteRenderTarget);
+    patch_arm_jump("_Z25_amDrawDeleteVertexObjectP14AMS_REGISTLIST",
+                   (void *)my_amDrawDeleteVertexObject);
+    patch_arm_jump("_Z26_amDrawReleaseTextureImageP14AMS_REGISTLIST",
+                   (void *)my_amDrawReleaseTextureImage);
+    fprintf(stderr, "=== RELSAFE: release handlers protegidos (texture/shader/RT/vertex/teximg) ===\n");
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
      AUTO-EXPOSIÇÃO. ChangeToneMapParam(midgray,lwhite) é chamado por frame pela
