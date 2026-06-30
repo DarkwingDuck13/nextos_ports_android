@@ -13,6 +13,36 @@ Logs de testers: ROCKNIX (sem vídeo) e muOS (sem áudio).
 - Falta: tester rodar em ROCKNIX (mandar GL_VERSION — deve virar "OpenGL ES") e muOS (confirmar
   som no alto-falante). Não temos esses devices p/ validar local.
 
+## 📚 PESQUISA do stack de vídeo da ROCKNIX (2026-06-30, valida o fix A)
+Fontes: github.com/ROCKNIX/distribution (release notes 20241029), rocknix.org/systems/ports,
+portmaster.games/porting.html, docs.mesa3d.org/drivers/panfrost.html, Collabora Panfrost blogs,
+SDL2 wiki (hints OPENGL_ES_DRIVER / VIDEO_X11_FORCE_EGL), SDL issue #5386, gamescope #1245.
+- **Display:** ROCKNIX roda os ports sob **Wayland (compositor `sway`)** → SDL driver `wayland`
+  (EGL). Sem suporte Wayland no SDL do app → cai pro **Xwayland → driver `x11` → GLX**.
+  (release 20241029: "fixed fullscreen rendering of PortMaster ports with sway".)
+- **GPU RK3326/Mali-G31 = Mesa/PANFROST** (open-source), NÃO libmali. 🔑Panfrost expõe **OS DOIS**:
+  OpenGL DESKTOP 3.1 **E** OpenGL ES 3.1 no mesmo device. (libmali só dá GLES → por isso o bug
+  só aparece em Mesa/Panfrost; Mali-450 Utgard/.79 e R36S-libmali nunca pegam isso.)
+- **RAIZ do desktop-GL:** com os 2 APIs disponíveis, o caminho **X11/GLX entrega desktop GL por
+  default** se não forçar EGL. Sem profile-ES (ou sem EGL no X11) → contexto desktop 3.1, GLSL
+  1.40 → shaders GLSL ES não compilam → tela preta (áudio independe de GL).
+- **VEREDITO do nosso fix = CORRETO E SUFICIENTE:**
+  - `SDL_GL_CONTEXT_PROFILE_ES` (já tínhamos, setado ANTES do SDL_CreateWindow ✓) → resolve o
+    caminho Wayland. 🔑GOTCHA confirmado OK no código: no Wayland a EGLConfig/EGLSurface é
+    criada no SDL_CreateWindow (não no CreateContext, SDL #5386) → profile-ES TEM que vir antes
+    da janela; o nosso vem (no loop, antes do CreateWindow).
+  - `SDL_VIDEO_X11_FORCE_EGL=1` (fix novo) → resolve o caminho Xwayland/X11: força EGL no lugar
+    do GLX, daí o profile-ES entrega GLES. **Era o que faltava.** No-op no Wayland.
+  - `SDL_OPENGL_ES_DRIVER=1` (fix novo) → carrega libGLESv2 por nome em vez de puxar de libGL
+    desktop. Reforço do caminho X11; inerte onde GLES é nativo.
+  - NÃO forçar `SDL_VIDEODRIVER` (sway auto-seleciona `wayland`; hardcodar quebraria Xwayland +
+    viola regra #6). gl4es NÃO serve aqui (ele é desktop-GL→GLES; nosso problema é o inverso).
+- **Opção de robustez (não aplicada, não-necessária):** setar as 2 hints ANTES de
+  SDL_Init(VIDEO) garante ordenação; hoje setamos antes do 1º SDL_CreateWindow OPENGL, que é
+  quando o SDL lê essas hints (no GL load) — também em tempo. Mali-450/R36S validados sem regressão.
+- **Pendente:** confirmar no device do tester (GL_VERSION deve virar "OpenGL ES x.x" e o vídeo
+  aparecer). Aguardando teste antes de fechar o v4.1.
+
 ---
 ## (estudo original abaixo)
 
