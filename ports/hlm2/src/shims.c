@@ -15,10 +15,23 @@
 #include <dlfcn.h>
 #include "opensles_shim.h"
 
-/* ---- pthread bionic->glibc (tipos compativeis: passthrough) ---- */
+/* ---- pthread bionic->glibc (tipos compativeis: passthrough) ----
+ * Seta o CANARIO bionic (tpidr+0x28) no inicio de CADA thread do libyoyo: sem isso o slot
+ * (=errno no glibc antigo) fica nao-inicializado -> __stack_chk_fail na thread (ex: decode
+ * da musica) -> abort. Trampolim como o main thread. */
+struct hm_cthread { void *(*f)(void *); void *arg; };
+static void *hm_cthread_tramp(void *a) {
+  struct hm_cthread *c = (struct hm_cthread *)a;
+  void *(*f)(void *) = c->f; void *arg = c->arg; free(c);
+  hm_set_bionic_canary();
+  return f(arg);
+}
 int pthread_create_fake(pthread_t *t, const void *attr, void *(*f)(void *), void *arg) {
   (void)attr;
-  return pthread_create(t, NULL, f, arg);
+  struct hm_cthread *c = (struct hm_cthread *)malloc(sizeof(*c));
+  if (!c) return pthread_create(t, NULL, f, arg);
+  c->f = f; c->arg = arg;
+  return pthread_create(t, NULL, hm_cthread_tramp, c);
 }
 int pthread_rwlock_rdlock_fake(pthread_rwlock_t *l) { return pthread_rwlock_rdlock(l); }
 int pthread_rwlock_wrlock_fake(pthread_rwlock_t *l) { return pthread_rwlock_wrlock(l); }
@@ -46,7 +59,15 @@ void __cxa_end_catch(void) {}
 void __cxa_pure_virtual(void) { fprintf(stderr, "[shim] pure_virtual -> abort\n"); abort(); }
 int __gxx_personality_v0(int a, int b, unsigned long c, void *d, void *e) { (void)a; (void)b; (void)c; (void)d; (void)e; return 0; }
 
-void __stack_chk_fail(void) { fprintf(stderr, "[shim] stack_chk_fail\n"); abort(); }
+void __stack_chk_fail(void) {
+  extern void *text_base;
+  void *ra = __builtin_return_address(0);
+  unsigned long off = (unsigned long)ra - (unsigned long)text_base;
+  static int c = 0; if (c++ < 30)
+    fprintf(stderr, "[shim] stack_chk_fail caller=libyoyo+0x%lx (no-abort)\n", off);
+  if (getenv("HM_CANABORT")) abort();
+  /* FALSO-positivo do canary (errno colide com tpidr+0x28 no glibc antigo). NAO aborta. */
+}
 
 /* ---- liblog ---- */
 int __android_log_print(int prio, const char *tag, const char *fmt, ...) {

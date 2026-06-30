@@ -411,10 +411,17 @@ static void *my_getjnienv(void) { return fake_env; }
 
 /* DIAG (KZ_KBHOOK): hook YYGML_keyboard_check(int key) p/ logar quais teclas o jogo polla.
  * Revela a tecla do ataque + se o keyboard e lido no gameplay. Retorna 0 (nao temos call-through). */
+static int (*g_orig_kbcheck)(int) = NULL;
 static int my_keyboard_check(int key) {
-  static char seen[1024]; if (key >= 0 && key < 1024 && !seen[key]) { seen[key] = 1;
-    fprintf(stderr, "[kbcheck] poll vk=%d\n", key); }
-  return 0;
+  int r = g_orig_kbcheck ? g_orig_kbcheck(key) : 0;   /* call-through: nao quebra o teclado */
+  static int *cur_room = (int *)-1;
+  if (cur_room == (int *)-1) cur_room = (int *)so_find_addr_safe("Current_Room");
+  int room = cur_room ? *cur_room : -1;
+  static unsigned char seen[8192];
+  unsigned h = ((unsigned)room * 131 + (unsigned)key) & 8191;
+  if (!seen[h] || r) { seen[h] = 1;
+    fprintf(stderr, "[kbcheck] room=%d vk=%d r=%d\n", room, key, r); }
+  return r;
 }
 /* DIAG (KZ_GPHOOK): hook F_GamepadButtonCheckPressed p/ LOGAR qual gp_button o jogo polla
  * (revela o botao do ataque) E reimplementar o check real (sem quebrar menu/gameplay). */
@@ -422,25 +429,21 @@ extern void *text_base;
 static int (*g_yygetint32)(const void *, int);
 static int (*g_translate_gp)(int, int);
 static int (*g_gmgp_pressed)(void *, int);
+static void (*g_orig_gp_check)(void *, void *, void *, int, void *) = NULL;
 static void my_gp_check_pressed(void *result, void *self, void *other, int argc, void *args) {
-  (void)self; (void)other; (void)argc;
-  int device = g_yygetint32 ? g_yygetint32(args, 0) : 0;
-  int button = g_yygetint32 ? g_yygetint32(args, 1) : 0;
-  int r = 0; int bi = -1; void *gp = NULL;
-  if (g_translate_gp && g_gmgp_pressed) {
-    bi = g_translate_gp(device, button);
-    uintptr_t p1 = *(uintptr_t *)((char *)text_base + 0x47cf590);
-    if (p1) { uintptr_t p2 = *(uintptr_t *)p1;
-      if (p2) { gp = *(void **)(p2 + (uintptr_t)device * 8); if (gp) r = g_gmgp_pressed(gp, bi); } }
-  }
-  static char seen[131072]; unsigned k = (unsigned)button & 0x1FFFF;
-  if (!seen[k]) { seen[k] = 1; fprintf(stderr, "[gpcheck] dev=%d btn=0x%x bi=%d gp=%p r=%d\n", device, button, bi, gp, r); }
-  /* KZ_GPFORCE: forca TRUE p/ o botao indicado (testar se o prompt e gamepad-pressed) */
-  { const char *fb = getenv("KZ_GPFORCE"); if (fb && button == atoi(fb)) r = 1; }
-  if (result) { /* RValue real: value@0, kind@8, type@12 = 0 (como o original inicializa) */
-    *(double *)result = r ? 1.0 : 0.0;
-    *(int *)((char *)result + 8) = 0;
-    *(int *)((char *)result + 12) = 0; }
+  int button = g_yygetint32 ? g_yygetint32(args, 1) : -1;
+  /* CALL-THROUGH: roda o check REAL (acha o gamepad que registramos) e so LOGA o botao
+   * + resultado. Revela qual gp_button cada room (disclaimer/NOTICE/menu) consulta. */
+  if (g_orig_gp_check) g_orig_gp_check(result, self, other, argc, args);
+  double rv = result ? *(double *)result : -1.0;
+  static int *cur_room = (int *)-1;
+  if (cur_room == (int *)-1) cur_room = (int *)so_find_addr_safe("Current_Room");
+  int room = cur_room ? *cur_room : -1;
+  /* loga 1x por (room,btn) — throttle simples por hash */
+  static unsigned char seen[4096];
+  unsigned h = ((unsigned)room * 131 + (unsigned)button) & 4095;
+  if (!seen[h] || rv > 0.5) { seen[h] = 1;
+    fprintf(stderr, "[gpcheck] room=%d btn=0x%x r=%.0f\n", room, button, rv); }
 }
 
 /* ---- YYError NAO-FATAL ----
@@ -517,12 +520,14 @@ static void kz_term(int s) { (void)s; g_quit = 1; g_mus_threads_quit = 1; }
 
 static int my_fileexists(const char *p) {
   if (!p) return 0;
+  unsigned long long cy = hm_canary_save();   /* access() seta errno=tpidr+0x28 -> preserva p/ o canary do caller */
   /* opcoes (.ini): forca existir p/ o IniFile SER construido (vazio = seguro).
    * resto (game.droid externo, saves, etc): check real -> nao inventa arquivos. */
   int forced = (strstr(p, ".ini") != NULL);
   char real[1280];
   int r = forced ? 1 : (access(p, F_OK) == 0 || hlm2_find_asset(p, real, sizeof real));
   static int c = 0; if (c++ < 80) fprintf(stderr, "[FileExists] '%s' -> %d%s\n", p, r, forced ? " (forcado .ini)" : "");
+  hm_canary_restore(cy);
   return r;
 }
 
@@ -533,9 +538,11 @@ static int my_fileexists(const char *p) {
  * strip "assets/" + basename. Existe no disco -> 1 (depois AAssetManager_open abre). */
 static int my_bundlefileexists(const char *p) {
   if (!p) return 0;
+  unsigned long long cy = hm_canary_save();
   char real[1280];
   int ex = hlm2_find_asset(p, real, sizeof real);   /* cwd + assets/ + case-insensitive */
   static int c = 0; if (c++ < 120) fprintf(stderr, "[BundleExists] '%s' -> %d\n", p, ex);
+  hm_canary_restore(cy);
   return ex;
 }
 
@@ -1036,19 +1043,18 @@ void jni_run(void) {
     install_music_diag_hooks();  /* FIX da musica (poll-worker) ON por padrao; HM_NOMUSFIX desliga */
     /* DIAG keyboard: hook keyboard_check p/ logar teclas pollada (so com KZ_KBHOOK) */
     if (getenv("KZ_KBHOOK")) { uintptr_t kc = so_find_addr_safe("_Z20YYGML_keyboard_checki");
-      if (kc) { so_make_text_writable(); hook_arm64(kc, (uintptr_t)my_keyboard_check);
+      if (kc) { so_make_text_writable(); g_orig_kbcheck = (int(*)(int))hook_arm64_trampoline(kc, (uintptr_t)my_keyboard_check);
         so_make_text_executable(); so_flush_caches();
         fprintf(stderr, "[hook] keyboard_check @0x%lx -> DIAG\n", (unsigned long)kc); } }
     /* DIAG gamepad: hook F_GamepadButtonCheckPressed p/ logar gp_button do prompt (KZ_GPHOOK) */
     if (getenv("KZ_GPHOOK")) {
       g_yygetint32 = (int (*)(const void *, int))so_find_addr_safe("_Z10YYGetInt32PK6RValuei");
-      g_translate_gp = (int (*)(int, int))so_find_addr_safe("_Z23TranslateGamepadButtonMii");
-      g_gmgp_pressed = (int (*)(void *, int))so_find_addr_safe("_ZNK9GMGamePad13ButtonPressedEi");
       uintptr_t gpc = so_find_addr_safe("_Z27F_GamepadButtonCheckPressedR6RValueP9CInstanceS2_iPS_");
-      if (gpc && g_yygetint32 && g_translate_gp && g_gmgp_pressed) {
-        so_make_text_writable(); hook_arm64(gpc, (uintptr_t)my_gp_check_pressed);
+      if (gpc && g_yygetint32) {
+        so_make_text_writable();
+        g_orig_gp_check = (void(*)(void*,void*,void*,int,void*))hook_arm64_trampoline(gpc, (uintptr_t)my_gp_check_pressed);
         so_make_text_executable(); so_flush_caches();
-        fprintf(stderr, "[hook] GamepadButtonCheckPressed @0x%lx -> DIAG\n", (unsigned long)gpc); }
+        fprintf(stderr, "[hook] GamepadButtonCheckPressed @0x%lx -> DIAG call-through (orig=%p)\n", (unsigned long)gpc, (void*)g_orig_gp_check); }
     } }
 
   uintptr_t onload = so_find_addr_safe("JNI_OnLoad");
@@ -1081,13 +1087,48 @@ void jni_run(void) {
   if (initgl) { fprintf(stderr, "[drv] initGLFuncs()\n"); ((void (*)(void *, void *))initgl)(fake_env, fake_thiz); }
   if (resume) { fprintf(stderr, "[drv] Resume()\n"); ((void (*)(void *, void *))resume)(fake_env, fake_thiz); }
 
+  /* carrega o gamecontrollerdb (PortMaster) p/ o pad do device (ex: R36S "GO-Super Gamepad")
+   * virar GameController. Sem mapping -> g_sdlpad=NULL -> hm_get_control devolve 0 -> SEM controle.
+   * (o launcher PortMaster tambem seta SDL_GAMECONTROLLERCONFIG; isto e um superset robusto.) */
+  { const char *gcdb[] = {
+      "/opt/system/Tools/PortMaster/gamecontrollerdb.txt",
+      "/opt/tools/PortMaster/gamecontrollerdb.txt",
+      "/roms/ports/PortMaster/gamecontrollerdb.txt",
+      "gamecontrollerdb.txt", NULL };
+    for (int i = 0; gcdb[i]; i++) { int n = SDL_GameControllerAddMappingsFromFile(gcdb[i]);
+      if (n > 0) { fprintf(stderr, "[input] %d mapeamentos carregados de %s\n", n, gcdb[i]); break; } } }
   { int nj = SDL_NumJoysticks(); fprintf(stderr, "[input] %d joysticks\n", nj);
-    for (int i = 0; i < nj; i++) { if (SDL_IsGameController(i)) { SDL_GameController *gc = SDL_GameControllerOpen(i); if (gc && !g_sdlpad) g_sdlpad = gc; fprintf(stderr, "[input] gamecontroller %d aberto\n", i); }
-      else { SDL_JoystickOpen(i); fprintf(stderr, "[input] joystick RAW %d (%s)\n", i, SDL_JoystickNameForIndex(i)); } } }
+    for (int i = 0; i < nj; i++) {
+      fprintf(stderr, "[input] js%d '%s' isGC=%d\n", i, SDL_JoystickNameForIndex(i), SDL_IsGameController(i));
+      if (SDL_IsGameController(i)) { SDL_GameController *gc = SDL_GameControllerOpen(i);
+        if (gc && !g_sdlpad) { g_sdlpad = gc; fprintf(stderr, "[input] -> usando GameController '%s'\n", SDL_GameControllerName(gc)); } }
+      else { SDL_JoystickOpen(i); } }
+    /* fallback: NENHUM GameController reconhecido mas HA joystick -> cria mapping generico
+     * (layout padrao) p/ o 1o joystick virar GameController (R36S/Anbernic tipico). */
+    if (!g_sdlpad && nj > 0) {
+      for (int i = 0; i < nj; i++) {
+        SDL_Joystick *j = SDL_JoystickOpen(i);
+        if (!j) continue;
+        char guid[64]; SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(j), guid, sizeof guid);
+        char map[512];
+        snprintf(map, sizeof map, "%s,%s,a:b0,b:b1,x:b2,y:b3,back:b8,start:b9,"
+          "leftshoulder:b4,rightshoulder:b5,leftstick:b10,rightstick:b11,"
+          "dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,"
+          "leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,platform:Linux,",
+          guid, SDL_JoystickName(j) ? SDL_JoystickName(j) : "Gamepad");
+        SDL_GameControllerAddMapping(map);
+        if (SDL_IsGameController(i)) { SDL_GameController *gc = SDL_GameControllerOpen(i);
+          if (gc) { g_sdlpad = gc; fprintf(stderr, "[input] fallback mapping -> GameController '%s' (guid %s)\n", SDL_JoystickName(j), guid); break; } }
+      }
+    }
+    if (!g_sdlpad) fprintf(stderr, "[input] AVISO: nenhum GameController -> SEM controle\n"); }
   /* HLM2 NAO usa o gamepad nativo do GameMaker (usa a extensao getControllerValue).
    * Registrar o nativo (gp_register) criava uma 2a fonte de input -> conflito (botoes
    * embaralhados no menu). So registra com HM_NATIVEPAD p/ debug. */
-  if (getenv("HM_NATIVEPAD")) gp_register();
+  /* registra o gamepad NATIVO por padrao: os menus do jogo (disclaimer/NOTICE/titulo) leem
+   * o gamepad nativo do GameMaker (nao a extensao). Sem isso = travado no disclaimer ("Continue").
+   * O gameplay continua pela extensao getControllerValue. HM_NONATIVE desliga. */
+  if (!getenv("HM_NONATIVE")) gp_register();
   /* HLM2 (runner vanilla, NAO Netflix): sem o gate social/cloud do Katana. O
    * cloud_resolve usa offset KZ-especifico (0x14fb2ec) -> base errada no HLM2.
    * Save do HLM2 = GetSaveFileName normal (filesystem). Cloud desativado. */
@@ -1142,12 +1183,17 @@ void jni_run(void) {
         if (inlog) fprintf(stderr, "[ev] CBUTTON %d %s\n", ev.cbutton.button, down ? "down" : "up");
         if (getenv("HM_JOYLOG") && down) fprintf(stderr, "[joylog] CONTROLLERBUTTON sdl=%d (%s)\n",
             ev.cbutton.button, SDL_GameControllerGetStringForButton(ev.cbutton.button));
-        /* INPUT do HLM2 = SO a extensao getControllerValue (le o estado SDL direto).
-         * NAO alimentamos o gamepad NATIVO do GameMaker aqui (conflito: o engine lia as
-         * DUAS fontes -> botoes embaralhados). So tratamos SELECT+START p/ sair. */
-        if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)  g_sel_held = down;
-        if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_START) g_start_held = down;
-        if (g_sel_held && g_start_held) { fprintf(stderr, "[drv] SELECT+START -> sair\n"); g_exit_combo = 1; }
+        /* DUAS fontes de input (design do jogo):
+         *  - MENUS (disclaimer/NOTICE/titulo): gamepad NATIVO do GameMaker -> gp_button().
+         *  - GAMEPLAY: a extensao getControllerValue (le o estado SDL direto).
+         * gp_button ja trata SELECT+START (sair) + alimenta o nativo (dpad=hat, faces=keycode).
+         * HM_NONATIVE desliga o nativo (se algum dia embaralhar o gameplay). */
+        if (g_gp_ready && !getenv("HM_NONATIVE")) gp_button(ev.cbutton.button, down);
+        else {
+          if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)  g_sel_held = down;
+          if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_START) g_start_held = down;
+          if (g_sel_held && g_start_held) { fprintf(stderr, "[drv] SELECT+START -> sair\n"); g_exit_combo = 1; }
+        }
         if (getenv("KZ_KBDFEED")) { int kc = sdl_btn_to_android(ev.cbutton.button); if (kc) key(kc, down); }
       } else if ((ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) && getenv("HM_JOYLOG")) {
         if (ev.type == SDL_JOYBUTTONDOWN) fprintf(stderr, "[joylog] JOYBUTTON cru=%d down\n", ev.jbutton.button);
@@ -1255,10 +1301,26 @@ void jni_run(void) {
     if (getenv("HM_AUTOCONFIRM") && g_gp_ready) {
       long period = getenv("HM_ACPERIOD") ? atol(getenv("HM_ACPERIOD")) : 75;
       long ph = f % period;
+      int nav = getenv("HM_ACNAV") != NULL;   /* HM_ACNAV: tambem manda hat p/ navegar YES/NO/menu */
       if (ph == 0)  { g_gp_btndown(g_gp_id, 96); if (g_gp_change) g_gp_change(); }   /* A down (kc96) */
       if (ph == 6)  { g_gp_btnup(g_gp_id, 96);   if (g_gp_change) g_gp_change(); }   /* A up */
       if (ph == 30) { g_gp_btndown(g_gp_id, 108); if (g_gp_change) g_gp_change(); }  /* START down (kc108) */
       if (ph == 36) { g_gp_btnup(g_gp_id, 108);   if (g_gp_change) g_gp_change(); }  /* START up */
+      if (nav && g_gp_hat) {
+        if (ph == 50) { g_gp_hat(g_gp_id, 0, -1.0f, 0.0f); if (g_gp_change) g_gp_change(); } /* LEFT (YES) */
+        if (ph == 56) { g_gp_hat(g_gp_id, 0, 0.0f, 0.0f);  if (g_gp_change) g_gp_change(); }
+        if (ph == 62) { g_gp_hat(g_gp_id, 0, 0.0f, 1.0f);  if (g_gp_change) g_gp_change(); } /* DOWN (menu) */
+        if (ph == 68) { g_gp_hat(g_gp_id, 0, 0.0f, 0.0f);  if (g_gp_change) g_gp_change(); }
+      }
+    }
+    /* HM_KBDMASH: masha TECLADO (NOTICE/menus leem WASD+acao). Android keycodes:
+     * A=29 D=32 W=51 S=47 Enter=66 Space=62 X=52(attack) Z=54 C=31. Cicla. */
+    if (getenv("HM_KBDMASH")) {
+      static const int kks[] = {29, 32, 51, 47, 66, 62, 52, 54};  /* A D W S Enter Space X Z */
+      long blk = 24; long idx = (f / blk) % (long)(sizeof(kks)/sizeof(kks[0]));
+      long ph = f % blk;
+      if (ph == 0) { key(kks[idx], 1); if (f % 96 == 0) fprintf(stderr, "[kbdmash] f=%ld akc=%d\n", f, kks[idx]); }
+      if (ph == 10) { key(kks[idx], 0); }
     }
 
     /* gate Netflix: SO no Katano (edicao Netflix). HLM2 = runner vanilla -> nunca
@@ -1302,7 +1364,12 @@ void jni_run(void) {
       glClear(GL_COLOR_BUFFER_BIT);
       glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     }
-    if (f % 30 == 0) fprintf(stderr, "[loop] frame %ld glErr=0x%x\n", f, glGetError());
+    if (f % 30 == 0) {
+      static int *cur_room = (int *)-1;
+      if (cur_room == (int *)-1) cur_room = (int *)so_find_addr_safe("Current_Room");
+      fprintf(stderr, "[loop] frame %ld glErr=0x%x room=%d\n", f, glGetError(),
+              cur_room ? *cur_room : -1);
+    }
     SDL_GL_SwapWindow(g_win);
     /* FBPAN0: forca o display p/ a metade de CIMA (yoffset=0) — o swap acima pode ter
      * panado p/ 720 (que sai preto no HDMI deste device). O jogo renderiza em ambas as

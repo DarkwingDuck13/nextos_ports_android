@@ -1,7 +1,29 @@
-# HLM2 → R36S — plano de adaptação (próxima sessão)
+# HLM2 → R36S — plano de adaptação
 
-Estado: **adiado pelo usuário** ("deixo pra depois") + R36S offline agora (cabo desconectado,
-`169.254.170.2` sem ping). Mali-450/.79 está 100% (vídeo+gameplay+SFX+música+controle+save).
+✅ **RESOLVIDO (2026-06-30, R36S ArkOS 192.168.31.150, rg351mp, Mali-G31 Bifrost real driver,
+glibc 2.30):** rodando via `hlm2.compat` (build_compat.sh, Docker buster). Boot→disclaimer
+(cores cheias, sem bug de alpha)→logos→NOTICE→menu→gameplay, controle nativo OK (Xbox 360
+mapping via GO-Super Gamepad), GL ES3.2 real detectado (driver Mali Bifrost genuíno).
+
+🔑 **Causa raiz do crash+mudo (SIGSEGV ao tocar `Detection.ogg`):** `b_pthread_create` em
+`pthread_bridge.c` repassava o `pthread_attr_t*` do JOGO (layout BIONIC) direto pro
+`pthread_create` do HOST (glibc) — campos como stacksize/guardsize lidos como lixo. As 4
+`DecodingThread` workers nasciam com stack possivelmente pequena demais; só estourava quando
+de fato decodificava um OGG real (call-stack fundo do Vorbis) → canary dispara →
+`__stack_chk_fail` (capturado, não-abort) → SIGSEGV real logo em seguida. MESMO bug class já
+resolvido no Shantae ("pthread_create ignora attr bionic"); aqui só `shims.c::pthread_create_fake`
+tinha o fix, faltava em `pthread_bridge.c::b_pthread_create` (implementação duplicada). FIX =
+ignorar `attr` sempre, usar default do host. Validado: sem crash, áudio confirmado pelo usuário
+("tem som agora viu").
+
+Captura de tela neste device: `/dev/fb0` é só o CONSOLE de texto (fbcon), NÃO o scanout real —
+o jogo renderiza via DRM/KMS direto (sem compositor rodando). Screenshot real:
+`sudo ffmpeg -f kmsgrab -i - -vf "hwdownload,format=bgr0" -frames:v 1 out.png`.
+
+---
+
+Estado anterior (histórico): adiado + R36S cabeado offline (`169.254.170.2`, ArchR, cabo
+desconectado). Mali-450/.79 está 100% (vídeo+gameplay+SFX+música+controle+save).
 
 ## Device R36S (do memory)
 - IP cabeado `169.254.170.2`, user **root**, sem senha (chave id_ed25519). `ssh root@169.254.170.2`.

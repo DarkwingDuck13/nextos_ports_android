@@ -222,10 +222,15 @@ static void *hm_thread_tramp(void *a) {
 }
 int b_pthread_create(pthread_t *th, const pthread_attr_t *attr,
                      void *(*fn)(void *), void *arg) {
+  // attr vem do jogo no layout bionic (struct opaca diferente da glibc) ->
+  // repassar pro pthread_create do host le campos (stacksize/guardsize) como
+  // lixo, podendo dar stack pequena demais (canario dispara/SIGSEGV em uso
+  // profundo, ex.: decode Vorbis). Ignorar sempre e usar attrs default do host.
+  (void)attr;
   struct hm_thread_arg *t = (struct hm_thread_arg *)malloc(sizeof(*t));
-  if (!t) return pthread_create(th, attr, fn, arg);
+  if (!t) return pthread_create(th, NULL, fn, arg);
   t->fn = fn; t->arg = arg;
-  return pthread_create(th, attr, hm_thread_tramp, t);
+  return pthread_create(th, NULL, hm_thread_tramp, t);
 }
 
 DynLibFunction revc_pthread_table[] = {
