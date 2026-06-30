@@ -846,26 +846,28 @@ int main(int argc, char *argv[]) {
       if (SDL_IsGameController(i)) { pad = SDL_GameControllerOpen(i); if (pad) break; }
     fprintf(stderr, "=== gamepad: %s ===\n", pad ? "aberto" : "nenhum");
   }
-  /* fox pad bits (descobertos do disasm): 0x8000=confirm/A. Direções a refinar.
-     Provisório: D-pad/analog -> direções; A/START -> 0x8000 (confirm). */
-  #define FOX_UP     0x0001
-  #define FOX_DOWN   0x0002
-  #define FOX_LEFT   0x0004
-  #define FOX_RIGHT  0x0008
-  #define FOX_A_GAME 0x0020
-  #define FOX_A_MENU 0x8020  /* 0x8000=confirm título(AoPadSomeoneStand) | 0x20=decide menu(IsPressedDecide) */
-  #define FOX_X      0x0040
-  #define FOX_B      0x0080
-  #define FOX_Y      0x0100
-  #define FOX_L1     0x0200
-  #define FOX_R1     0x0400
-  #define FOX_L2     0x0800
-  #define FOX_R2     0x1000
-  #define FOX_BACK   0x2000
-  #define FOX_L3     0x4000
-  #define FOX_R3     0x8000
-  #define FOX_START  0x0010
-  #define FOX_PAUSE  0x4000  /* GmMainStartDemoEndCheck testa OUYAGetPauseKey()|0x4000. */
+  /* 🔧 fox pad bits = MAPA REAL do jogo (decompilado de foxJniLib.s_remapKey, o keycode->bit
+     do próprio jogo). gmPadValue = (1<<bitindex). Antes os bits de Y e ombros estavam ERRADOS
+     (Y=0x100 era na verdade L1 -> Y "virava left" no world map e sua função nunca disparava).
+     Xbox: A=96 X=99 B=97 Y=100 START=108 SELECT=109 L1=102 L2=104 R1=103 R2=105 L3=106 R3=107. */
+  #define FOX_UP     0x0001  /* bit0  DPAD_UP   19 */
+  #define FOX_DOWN   0x0002  /* bit1  DPAD_DOWN 20 */
+  #define FOX_LEFT   0x0004  /* bit2  DPAD_LEFT 21 */
+  #define FOX_RIGHT  0x0008  /* bit3  DPAD_RIGHT 22 */
+  #define FOX_Y      0x0010  /* bit4  BUTTON_Y  100  (era 0x100 = L1, ERRADO) */
+  #define FOX_A_GAME 0x0020  /* bit5  BUTTON_A  96  (decide/jump) */
+  #define FOX_X      0x0040  /* bit6  BUTTON_X  99 */
+  #define FOX_B      0x0080  /* bit7  BUTTON_B  97  (cancel) */
+  #define FOX_L1     0x0100  /* bit8  BUTTON_L1 102 */
+  #define FOX_L2     0x0200  /* bit9  BUTTON_L2 104 */
+  #define FOX_L3     0x0400  /* bit10 THUMBL    106 */
+  #define FOX_R1     0x0800  /* bit11 BUTTON_R1 103 */
+  #define FOX_R2     0x1000  /* bit12 BUTTON_R2 105 */
+  #define FOX_R3     0x2000  /* bit13 THUMBR    107 */
+  #define FOX_BACK   0x4000  /* bit14 BUTTON_SELECT 109 / BACK */
+  #define FOX_START  0x8000  /* bit15 BUTTON_START 108 (confirm título/pause) */
+  #define FOX_A_MENU (FOX_A_GAME|FOX_START)  /* 0x8020 = A(decide)+START(confirm título) */
+  #define FOX_PAUSE  FOX_START               /* pause in-game = START (check do engine é pad&0xC000) */
 
   /* 🔑 demo-resource: o gate do título (CDemoResourceManager::IsValid evt3) trava
      pq o recurso "MenuDraw" (tipo 2) não está setado (dmMenuDrawIsSetUpEnd=0).
@@ -1102,14 +1104,9 @@ int main(int argc, char *argv[]) {
       mask |= FOX_PAUSE;
       autopause_state = 1;
     }
-    /* 🔧 FIX Y=Left (reportado pelo luis, REPRODUZIDO no R36S): no WORLD MAP /
-       level select o bit FOX_Y(0x100) alias pra LEFT (injetar 0x100 move o mapa
-       IGUAL a 0x004 — confirmado por screenshot). FOX_Y/FOX_X foram bits "provisorios"
-       (chute, ver nota em 0x849); Y/X NAO sao acoes no Sonic 4 fora do gameplay.
-       Suprimir Y/X fora do gameplay mata o falso-left sem afetar jogo/menu.
-       SONIC_NO_YX_FIX=1 desliga (debug). */
-    if (!sonic_in_gameplay && !getenv("SONIC_NO_YX_FIX"))
-      mask &= ~(FOX_Y | FOX_X);
+    /* (O hack antigo de suprimir Y/X fora do gameplay foi REMOVIDO: a causa real era o
+       bit errado do Y; agora FOX_Y=0x10 (mapa real s_remapKey) -> Y dispara sua função
+       própria e não aliasa mais pra L1/left.) */
     if (fox.SetPadData) fox.SetPadData(env, thiz, mask, 0, 0, 0, 0, 0);
     if (gm_direct) *gm_direct = (short)mask;
     if (gm_lx) *gm_lx = (short)lx;
