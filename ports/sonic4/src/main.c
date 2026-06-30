@@ -22,6 +22,8 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <execinfo.h>
+#include <string.h>
 
 #include <SDL2/SDL.h>
 
@@ -48,7 +50,42 @@ volatile uintptr_t g_load_base = 0;
 volatile unsigned long sonic_frame_for_imports = 0;
 volatile int sonic_game_started = 0;
 static volatile int sonic_in_draw_frame = 0;
+static int g_fbclear = 0; /* SONIC_FBCLEAR: glClear por frame (fix candidato dos rastros) */
 extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim) */
+
+/* 🔧 HANDLER DE CRASH (workflow de debug): captura SIGSEGV/ABRT/BUS/ILL/FPE,
+   grava backtrace com offset `libfox+0xNNN` (= bt[i]-text_base, resolvível por
+   readelf) num `crash.log` PERSISTENTE (append; o log.txt é truncado no relaunch
+   pelo launcher, por isso o crash some). Inclui frame atual e se estava no DrawFrame. */
+static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
+  (void)uc;
+  void *bt[48];
+  int n = backtrace(bt, 48);
+  FILE *fs[2]; fs[0] = stderr; fs[1] = fopen("crash.log", "a");
+  for (int k = 0; k < 2; k++) {
+    FILE *o = fs[k]; if (!o) continue;
+    fprintf(o, "\n==== CRASH sig=%d addr=%p text_base=%p frame=%lu in_draw=%d ====\n",
+            sig, si ? si->si_addr : NULL, (void *)text_base,
+            sonic_frame_for_imports, sonic_in_draw_frame);
+    for (int i = 0; i < n; i++) {
+      long off = (long)((uintptr_t)bt[i] - (uintptr_t)text_base);
+      fprintf(o, "  #%-2d %p  libfox+0x%lx\n", i, bt[i], off);
+    }
+    fflush(o);
+  }
+  if (fs[1]) fclose(fs[1]);
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+static void sonic_install_crash_handler(void) {
+  struct sigaction sa; memset(&sa, 0, sizeof sa);
+  sa.sa_sigaction = sonic_crash_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigemptyset(&sa.sa_mask);
+  int sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
+  for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+    sigaction(sigs[i], &sa, NULL);
+}
 
 static struct {
   int pending;
@@ -493,6 +530,8 @@ int main(int argc, char *argv[]) {
   setvbuf(stderr, NULL, _IONBF, 0);
   fprintf(stderr, "=== SONIC 4 EPISODE II (NN/fox) so-loader / NextOS armv7 Mali-450 ===\n");
 
+  if (!getenv("SONIC_NO_CRASHLOG")) sonic_install_crash_handler();
+
   /* mata instância anterior + confirma 0 antes de tocar no fb/EGL (regra do device). */
   sonic_kill_other_instances();
 
@@ -618,11 +657,11 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
     patch_arm_jump("_Z17amThreadCheckDrawl", (void *)sonic_amThreadCheckDraw);
 
-  /* 🪶 FULLFX agora é DEFAULT (pedido do usuário v4.0): bloom + sombras LIGADOS (visual
-     completo do jogo). O LOWFX estava causando problema visual em alguns devices, então
-     os patches de perf só entram SE pedidos: SONIC_LOWFX=1 desliga bloom+sombra (perf no
-     Mali-450 fraco); SONIC_NOBLOOM / SONIC_NOSHADOW são overrides finos individuais. */
-  int sonic_lowfx = env_flag_enabled("SONIC_LOWFX");
+  /* 🪶 LOWFX de volta como DEFAULT (FULLFX não resolveu os bugs reais — vídeo/crash/rastros
+     — e custa perf). Bloom+sombras OFF por default. SONIC_FULLFX=1 restaura tudo;
+     SONIC_NOBLOOM/SONIC_NOSHADOW overrides finos. (O fix REAL de rastro = glClear por frame,
+     gated por SONIC_FBCLEAR, independente de FX.) */
+  int sonic_lowfx = !env_flag_enabled("SONIC_FULLFX");
   /* - bloom (SsConstBloomIsEnable->0): pula extract hi-luminance + blur gaussiano
        + merge (3 passes full-screen por frame). Mantém água/efeitos de cena. */
   if (sonic_lowfx || env_flag_enabled("SONIC_NOBLOOM")) {
@@ -916,6 +955,8 @@ int main(int argc, char *argv[]) {
   const char *fs = getenv("SONIC_FRAME_SLEEP_US");
   long frame_sleep_us = fs ? atol(fs) : 0;
   fprintf(stderr, "=== frame sleep us: %ld ===\n", frame_sleep_us);
+  g_fbclear = getenv("SONIC_FBCLEAR") != NULL;
+  if (g_fbclear) fprintf(stderr, "=== SONIC_FBCLEAR: glClear por frame LIGADO ===\n");
   int gameplay_start_delay_done = 0;
   /* 🔑 CONTINUE/SAVE-COM-PROGRESSO: ao reabrir com save que tem fase interrompida
      (qualquer mundo/mapa já jogado), o título entra em CStateWaitViewPausing:
@@ -1158,6 +1199,13 @@ int main(int argc, char *argv[]) {
       }
     }
     sonic_in_draw_frame = 1;
+    /* 🔧 SONIC_FBCLEAR: limpa o back-buffer ANTES do jogo desenhar. Fix candidato dos
+       RASTROS (o jogo conta com o pass full-screen do bloom p/ reescrever a tela; sem
+       bloom e sem clear, o double-buffer retém frames antigos). Independente de FX. */
+    if (g_fbclear) {
+      extern void glClear(unsigned int);
+      glClear(0x4000 /* GL_COLOR_BUFFER_BIT */);
+    }
     if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
     sonic_in_draw_frame = 0;
     if (getenv("SONIC_TESTCLEAR")) {  /* diagnóstico: present/contexto OK? */
