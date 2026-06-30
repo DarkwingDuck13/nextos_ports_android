@@ -1,5 +1,21 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-06-30 — v4.0 FULLFX default + fix dos RASTROS (Metal Sonic)
+- **FULLFX agora e DEFAULT (commit a3d1fda):** bloom + sombras LIGADOS. LOWFX virou opt-in
+  (`SONIC_LOWFX=1`); o launcher NAO seta -> LOWFX nunca ativa. Validado no R36S (title limpo, 0 crash).
+- **RASTROS do Sonic ao pular no estagio do Metal Sonic = causado pelo LOWFX.** Mecanismo
+  confirmado por RE: o present NAO limpa o framebuffer por frame (glClear so sob SONIC_TESTCLEAR)
+  e e double-buffered; o jogo conta com o pass full-screen do BLOOM pra reescrever a tela. Com
+  LOWFX (bloom off), o buffer antigo (Sonic 2 frames atras) nao e sobrescrito -> rastros. FULLFX
+  (bloom on) cobre a tela -> rastros somem. Log do tester confirmou LOWFX ativo durante o bug.
+  (Robustez opcional p/ modo adaptativo futuro: glClear por frame no inicio do DrawFrame mataria
+  os rastros em qualquer nivel de FX.)
+- **v4.0 REEMPACOTADO** (Area de trabalho, md5 7b13215b): binario FULLFX (md5 38954661) +
+  version.txt=4.0 + cover novo. Tudo resolvido: Y/mapa, volume, L3/R3, rastros, visual completo.
+- Pendencias menores OPCIONAIS: confirmar score-preso Oil Desert (pode ter sido resolvido pelo
+  fix de mapeamento); 3 SFX mudos no Metal Sonic (MS_Homing/Kama/Boss2_03 — nao existem na
+  AudioDataTbl do jogo, so chute-map possivel).
+
 ## Sessao 2026-06-29 (noite) — RELEASE v4.0 + fixes de raiz validados no R36S
 - **Y / mapa de botoes (RAIZ, commit 1b1075e):** o input real do engine = `gmPadValue`
   montado por `onKeyEvnet(keycode)` via tabela `s_remapKey` do jogo (decompilada com
