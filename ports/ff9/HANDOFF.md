@@ -7,9 +7,18 @@
 
 ---
 
-## s8 2026-06-30 — 🐛 BUG DE ENDEREÇO do New Game CORRIGIDO + muros mapeados (commit a025dc5)
+## s8 2026-06-30 — 🐛 New Game addr fix + ✅ DISCLAIMER RENDERIZA COMPLETO (FASTTWEEN) + muros mapeados
 
-> **Sessão de DIAGNÓSTICO (Alt-D) + 1 bugfix real.** Trabalho non-stop, device .90.
+> Device .90. Commits: a025dc5, 38656dd, efa922f, 55d7f10, 0cbf5e9, 9e09a37, 0a49d17, 054732c.
+
+### ✅✅ s8 cont3 — DISCLAIMER RENDERIZA BRANCO/COMPLETO (dica do usuário foi a virada)
+- **`FF9_FASTTWEEN` (default-on, commit 9e09a37):** os fades NGUI (UITweener/TweenAlpha) avançam por `Time.deltaTime` que é ~0 no so-loader → o tween engatinha e o disclaimer fica apagado/travado. FIX: hook `UITweener.Update` (mk_tramp no prólogo REAL **0x1276808**; 0x1276804 é stub `b`), acelera `mFactor`(+0x78) na direção de `mAmountPerDelta`(+0x74). **Disclaimer agora renderiza BRANCO FORTE/completo** (usuário confirmou).
+- 🔴 **MAS não avança disclaimer→logo→menu.** Tentado sem sucesso: `FF9_FIXDT` (Time.get_deltaTime 0x2567384→1/60; deltaTime provavelmente inlined), `FF9_NOTIFYCLICK` (UICamera.Notify SlideShowHitArea OnClick/OnPress), `FF9_VSYNC_WAIT`+`FF9_VSYNCTICK` (não avança+piora boot), `FF9_STOPSPLASH` (apaga preto), `FF9_TWEENNODELAY` (delay-zero, não-confirmado→opt-in).
+- ⚠️ **ES MASCARADO no .90** (`systemctl mask emustation`) — desenhava o menu PORTS por cima do FF9. **DESMASCARAR depois** (`systemctl unmask emustation`).
+- 🎯 **PRÓXIMO:** avanço trava num HOLD (provável WaitForSeconds lendo Time.time interno do libunity ~0 — fix de frame-time do player-loop, ligado ao vsync/present) OU tap NGUI via `UICamera.GetInputTouch` delegate custom (+0x220) não-alimentado. NÃO mexer no FASTTWEEN default.
+
+### ✅ s8 cont1/2 — bugfix New Game + menu natural
+> **DIAGNÓSTICO (Alt-D) + bugfixes.** Trabalho non-stop, device .90.
 
 ### ✅ Achados/fixes desta sessão
 1. **🐛 BUG: `OnNewGameButtonClick` estava sendo chamado em `0x134464c` (ERRADO).** O RVA correto do dump il2cpp é **`0x1344634`**. A "correção" de uma sessão anterior (0x1344634→0x134464c) caía no **MEIO da função** (pulava o prólogo → x0 lixo → `blr` num ponteiro lixo → SIGSEGV). **Corrigido** (main.c, render loop FF9_NEWGAME). Agora o New Game **EXECUTA de verdade**.
