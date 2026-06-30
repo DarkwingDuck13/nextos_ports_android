@@ -696,6 +696,15 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z24SsDrawMotionObjectShadowP10AMS_MOTIONP12_NNS_TEXLISTy");
     fprintf(stderr, "=== LOWFX: sombras de objeto desligadas (perf) ===\n");
   }
+  /* 💡 SONIC_NOLIGHTMASK (DIAG/teste do bug do cassino): desliga o post-effect de
+     máscara de luz (amPostEFLightMaskDraw) + distortion. O "blob branco estourado" do
+     cassino é esse light-mask. Se sumir com isso, é ele. (GmPlyPostEfctLightMaskColGet
+     lê uma intensidade clampada a 0xff -> luz branca máxima quando alto.) */
+  if (getenv("SONIC_NOLIGHTMASK")) {
+    patch_ret0("_Z21amPostEFLightMaskDrawmPA16_fS0_");
+    patch_ret0("_Z22amPostEFDistortionDrawmPA16_fS0_");
+    fprintf(stderr, "=== SONIC_NOLIGHTMASK: light-mask/distortion post-FX desligados ===\n");
+  }
   /* 💧 SONIC_NOWATERFX (opt-in, NÃO no LOWFX por default — mexe mais no visual):
      no-op nos EFEITOS extras de água (ripple/waterfall-split), mantendo a SUPERFÍCIE
      (a água não some). Reduz overdraw de alpha das cenas de água. */

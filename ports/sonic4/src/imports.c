@@ -349,6 +349,17 @@ static int force_mask_on(void) {
   return force3d_on() || g_force_mask;
 }
 static unsigned g_cur_fbo, g_cur_prog, g_cur_active_unit, g_cur_tex2d[8];
+/* DIAG smear: por-FBO conta draws e clears -> FBO com draws>0 e clears==0 = a camada
+   que nunca é limpa (causa do rastro). Dump periódico sob SONIC_CLEARLOG. */
+static unsigned g_fbo_draws[32], g_fbo_clears[32];
+static void fbo_stat_draw(void){ if(g_cur_fbo<32) g_fbo_draws[g_cur_fbo]++; }
+static void fbo_stat_clear(void){ if(g_cur_fbo<32) g_fbo_clears[g_cur_fbo]++; }
+static void fbo_stat_dump(void){
+  fprintf(stderr,"[FBO-STATS] (draws/clears por FBO; draws>0 clears=0 = smear)\n");
+  for(unsigned i=0;i<32;i++) if(g_fbo_draws[i]||g_fbo_clears[i])
+    fprintf(stderr,"   FBO %u: draws=%u clears=%u%s\n",i,g_fbo_draws[i],g_fbo_clears[i],
+            (g_fbo_draws[i]>50&&g_fbo_clears[i]==0)?"   <<< NUNCA LIMPO (SMEAR?)":"");
+}
 static int g_depth_test = -1, g_cull_face = -1, g_blend = -1, g_scissor = -1;
 static int g_depth_mask = 1, g_color_mask[4] = {1, 1, 1, 1};
 static unsigned g_depth_func, g_cull_mode, g_blend_src, g_blend_dst, g_blend_src_a, g_blend_dst_a;
@@ -413,7 +424,13 @@ static void my_glClearColor(float a,float b,float c,float d){
 }
 static void my_glClear(unsigned m){
   static void(*r)(unsigned); if(!r)r=rgl("glClear");
-  if (gllog_on()) { static unsigned long n=0; if((n++ % 120)==0)fprintf(stderr,"[GL] Clear mask=0x%x (#%lu)\n",m,n); }
+  /* SONIC_CLEARLOG: loga CADA glClear com o FBO ligado (g_cur_fbo) -> ver se o FBO da
+     cena (RenderTarget != 0) é limpo por frame. Cap pequeno p/ capturar a estrutura. */
+  fbo_stat_clear();
+  if (getenv("SONIC_CLEARLOG")) { static unsigned long c=0;
+      if(c<60) fprintf(stderr,"[CLEAR] fbo=%u mask=0x%x\n", g_cur_fbo, m);
+      if((++c % 600)==0) fbo_stat_dump(); }
+  else if (gllog_on()) { static unsigned long n=0; if((n++ % 120)==0)fprintf(stderr,"[GL] Clear mask=0x%x (#%lu)\n",m,n); }
   r(m);
 }
 static int g_glerr = -1;
@@ -432,6 +449,7 @@ static void glerr_check(const char*tag){
 }
 static void my_glDrawElements(unsigned md,int c,unsigned t,const void*i){
   static void(*r)(unsigned,int,unsigned,const void*); if(!r)r=rgl("glDrawElements");
+  fbo_stat_draw();
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawElements #%lu count=%d\n",n,c); }
   force_visible_3d_state(c);
   log_draw_call("elements", md, -1, c, t, i);
@@ -440,6 +458,7 @@ static void my_glDrawElements(unsigned md,int c,unsigned t,const void*i){
 }
 static void my_glDrawArrays(unsigned md,int f,int c){
   static void(*r)(unsigned,int,int); if(!r)r=rgl("glDrawArrays");
+  fbo_stat_draw();
   if (gllog_on()) { static unsigned long n=0; if((n++ % 500)==0)fprintf(stderr,"[GL] DrawArrays #%lu count=%d\n",n,c); }
   force_visible_3d_state(c);
   log_draw_call("arrays", md, f, c, 0, NULL);
