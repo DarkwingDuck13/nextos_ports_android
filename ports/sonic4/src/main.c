@@ -618,12 +618,11 @@ int main(int argc, char *argv[]) {
   if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
     patch_arm_jump("_Z17amThreadCheckDrawl", (void *)sonic_amThreadCheckDraw);
 
-  /* 🪶 LOWFX agora é DEFAULT (estado aprovado pelo NextOS; antes vinha do launcher
-     SONIC_LOWFX=1 — agora no binário p/ deixar o launcher enxuto). Desliga os passes
-     full-screen mais caros e quase imperceptíveis em tela pequena, SEM mexer em
-     resolução/cores. Opt-out total: SONIC_FULLFX=1 restaura tudo (bloom+sombra).
-     SONIC_NOBLOOM/SONIC_NOSHADOW seguem como overrides finos (forçam mesmo c/ FULLFX). */
-  int sonic_lowfx = !env_flag_enabled("SONIC_FULLFX");
+  /* 🪶 FULLFX agora é DEFAULT (pedido do usuário v4.0): bloom + sombras LIGADOS (visual
+     completo do jogo). O LOWFX estava causando problema visual em alguns devices, então
+     os patches de perf só entram SE pedidos: SONIC_LOWFX=1 desliga bloom+sombra (perf no
+     Mali-450 fraco); SONIC_NOBLOOM / SONIC_NOSHADOW são overrides finos individuais. */
+  int sonic_lowfx = env_flag_enabled("SONIC_LOWFX");
   /* - bloom (SsConstBloomIsEnable->0): pula extract hi-luminance + blur gaussiano
        + merge (3 passes full-screen por frame). Mantém água/efeitos de cena. */
   if (sonic_lowfx || env_flag_enabled("SONIC_NOBLOOM")) {
