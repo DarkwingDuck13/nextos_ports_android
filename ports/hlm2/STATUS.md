@@ -63,6 +63,19 @@ alpha=255) apareciam; menu (alpha=0) preto → falso-correlacionava com o save (
 **Fix:** força alpha=255 no fb antes do swap (glColorMask so-alpha + glClear). HM_NOALPHAFIX desliga.
 🔑 LICAO REUSAVEL p/ qualquer GLES no Amlogic: se renderiza no fb mas TV preta, cheque o ALPHA.
 
+## 🔊 MÚSICA (s5, em aberto) — SFX funciona, música NÃO
+HLM2 usa mecanismo de música DIFERENTE do katanazero:
+- katana (música OK): `OggSyncThread`/`OggAudio` (streaming por thread; o hook `getJNIEnv` herdado e pra isso).
+- **HLM2: `CompressedAudioStream` + `VorbisMemoryStream::DecodeStream`** (decode de Vorbis da MEMORIA, sem thread).
+  HLM2 NAO tem OggSyncThread -> o hook getJNIEnv e irrelevante. Sistema proprio: `hlm2_music_unpack_all`
+  (desempacota o wad->WADTEMP, feito), `hlm2_music_init`, `scrPlaySong`, `hlm2_currentsong`.
+- Diagnostico: OGGs validos (OggS 44100Hz). Jogo ABRE os OGGs mas o PCM mixado enfileirado tem **peak=0
+  (silencio)** no menu (KZ_SNDLOG loga peak). strace no menu = 0 leituras de OGG. SFX (audio_play_sound
+  buffer) entra no mix e funciona. So 1 player (ANDROIDSIMPLEBUFFERQUEUE 0x800007bd), musica mixada nele.
+- **Proximo passo:** hookar `VorbisMemoryStream::DecodeStream` (0x14b487c) e `scrPlaySong` (0x1b7ff78) com
+  CALL-THROUGH p/ ver se o decode e chamado e se produz PCM (buffer de memoria carregado? decode falha?).
+  Instrumentacao pronta: KZ_SNDLOG (peak do enqueue + locatorType), KZ_ASSETLOG (reads do OGG).
+
 ## ⏳ FALTA
 - Travar qual acao (pickup/finish/lockon) em cada index restante (verificacao no gameplay).
 - Confirmar AUDIO (OpenSLES wired, players ainda nao criados no log; musica wad carrega).

@@ -130,7 +130,10 @@ void *AAssetManager_open(void *mgr, const char *name, int mode) {
 }
 long AAsset_getLength(void *a) { FILE *f = a; long c = ftell(f); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, c, SEEK_SET); return n; }
 long AAsset_getLength64(void *a) { return AAsset_getLength(a); }
-int AAsset_read(void *a, void *buf, size_t n) { size_t r=fread(buf,1,n,(FILE*)a); static int c=0; if(c++<3) fprintf(stderr,"[asset] read %zu->%zu\n",n,r); return (int)r; }
+int AAsset_read(void *a, void *buf, size_t n) { size_t r=fread(buf,1,n,(FILE*)a);
+  if(getenv("KZ_ASSETLOG")){ static int c=0; if(c++<400) fprintf(stderr,"[asset] read fd=%p %zu->%zu\n",a,n,r); }
+  else { static int c=0; if(c++<3) fprintf(stderr,"[asset] read %zu->%zu\n",n,r); }
+  return (int)r; }
 long AAsset_seek(void *a, long off, int whence) { fseek((FILE *)a, off, whence); return ftell((FILE *)a); }
 const void *AAsset_getBuffer(void *a) {
   FILE *f = a; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);

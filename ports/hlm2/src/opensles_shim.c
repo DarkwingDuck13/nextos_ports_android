@@ -736,7 +736,11 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      { static int eqc = 0; if (eqc++ % 100 == 0) if(getenv("KZ_SNDLOG")) fprintf(stderr, "[sl] bq_Enqueue p%d size=%u state=%d\n", i, (unsigned)size, p->play_state); }
+      { static int eqc = 0; if (eqc++ % 100 == 0) if(getenv("KZ_SNDLOG")) {
+        /* pico de amplitude do buffer mixado: continuo alto = MUSICA no mix; so picos = so SFX */
+        int peak = 0; const int16_t *s = (const int16_t *)pBuffer; SLuint32 ns = size/2;
+        for (SLuint32 k = 0; k < ns; k += 8) { int v = s[k]; if (v<0) v=-v; if (v>peak) peak=v; }
+        fprintf(stderr, "[sl] bq_Enqueue p%d size=%u state=%d peak=%d\n", i, (unsigned)size, p->play_state, peak); } }
       uint32_t written = ring_write(p, pBuffer, size);
       if (written != size) {
         debugPrintf("opensles_shim: WARNING: truncated enqueue for player %d (%u/%u bytes)\n",
@@ -987,6 +991,11 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
     SLDataSource *src = (SLDataSource *)pAudioSrc;
     if (src->pLocator) {
       SLDataLocator_BufferQueue *loc = (SLDataLocator_BufferQueue *)src->pLocator;
+      /* LOG do tipo de locator: BUFFERQUEUE(0x800007BC/0x19)=PCM(SFX, decodificamos);
+       * URI(0x13)/ANDROIDFD(0x800007BC?)=OGG decodificado pelo Android (musica) -> NAO
+       * decodificamos -> silencio. Confirma se a musica usa um player que dropamos. */
+      static int pc = 0;
+      fprintf(stderr, "[sl] CreateAudioPlayer #%d locatorType=0x%x\n", pc++, (unsigned)loc->locatorType);
       if (loc->locatorType == SL_DATALOCATOR_BUFFERQUEUE) {
         p->queue_capacity = loc->numBuffers;
       }
