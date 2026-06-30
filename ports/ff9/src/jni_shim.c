@@ -650,6 +650,8 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   (void)env;
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
+  if (obj == &g_current_activity && getenv("FF9_ACTTRACE"))
+    debugPrintf("[ACTCALL/Obj] %s\n", nm ? nm : "?");
   static int fake_obj;
   if (nm) {
     if (getenv("TER_KBFIX")) {
@@ -917,6 +919,8 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
                                             void *methodID, va_list ap) {
   (void)obj;
   const char *nm = mid_name(methodID);
+  if (obj == &g_current_activity && getenv("FF9_ACTTRACE"))
+    debugPrintf("[ACTCALL/Bool] %s\n", nm ? nm : "?");
   if (nm) {
     if (getenv("TER_REFLOG") && (strstr(nm,"isArray")||strstr(nm,"isPrimitive")||strstr(nm,"isAssign"))) {
       static int bn=0; if (bn++<40) debugPrintf("[REFLOG-bool] %s -> 0\n", nm);
@@ -963,6 +967,8 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
                                va_list ap) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (obj == &g_current_activity && getenv("FF9_ACTTRACE"))
+    debugPrintf("[ACTCALL/Int] %s\n", nm ? nm : "?");
   if (obj == (void *)&g_message_sentinel && nm && strcmp(nm, "getWhat") == 0)
     return g_message_what;
   /* org.fmod.FMODAudioDevice — qualquer método int/bool (start/isRunning/init...) = sucesso */
@@ -1046,6 +1052,8 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  if (obj == &g_current_activity && getenv("FF9_ACTTRACE"))
+    debugPrintf("[ACTCALL/Void] %s\n", nm ? nm : "?");
   if (nm && strcmp(nm, "showSoftInput") == 0) {
     void *text_j = va_arg(ap, void *);
     (void)va_arg(ap, int); /* keyboardType */

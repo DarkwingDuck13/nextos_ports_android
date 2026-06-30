@@ -6636,11 +6636,20 @@ int main(int argc, char **argv) {
          disclaimer. Chamamos SiliconStudio.Social.ProcessAuthentication(Canceled=2) algumas
          vezes p/ completar o auth como guest (ProcessAuthentication null-checa o platform). */
       if (getenv("FF9_NOLOGIN") && inj_hooked && g_il2cpp_base) {
+        /* o Play Games RE-ativa e re-tenta o auth após cada cancel -> cancelar 5× não basta.
+           FF9_NOLOGIN_N=máx de cancels (default 60, ~uncapped p/ o boot), FF9_NOLOGIN_EVERY=período
+           (default 20 frames), FF9_NOLOGIN_STATE=arg do ProcessAuthentication (default 2=Canceled;
+           tentar 1/0 = Success/guest p/ destravar WaitForSocialLoginProcess). */
         static int nl_done = 0;
-        if (nl_done < 5 && (f % 30 == 0)) {
+        int nmax = getenv("FF9_NOLOGIN_N") ? atoi(getenv("FF9_NOLOGIN_N")) : 60;
+        int nevery = getenv("FF9_NOLOGIN_EVERY") ? atoi(getenv("FF9_NOLOGIN_EVERY")) : 20;
+        int nstate = getenv("FF9_NOLOGIN_STATE") ? atoi(getenv("FF9_NOLOGIN_STATE")) : 2;
+        if (nevery < 1) nevery = 20;
+        if (nl_done < nmax && (f % nevery == 0)) {
           void (*pa)(int, void *) = (void (*)(int, void *))(g_il2cpp_base + 0x14829fc);
-          fprintf(stderr, "[FF9_NOLOGIN] Social.ProcessAuthentication(Canceled) #%d @f=%d\n", nl_done, f); fsync(2);
-          pa(2, NULL);
+          if (nl_done < 6 || nl_done % 10 == 0)
+            { fprintf(stderr, "[FF9_NOLOGIN] Social.ProcessAuthentication(%d) #%d @f=%d\n", nstate, nl_done, f); fsync(2); }
+          pa(nstate, NULL);
           nl_done++;
         }
       }
@@ -6660,7 +6669,9 @@ int main(int argc, char **argv) {
         /* já capturou o this -> chama OnNewGameButtonClick 1× DO render loop (Update intacto) */
         if (ng && g_titleui_this && !g_newgame_done) {
           g_newgame_done = 1;
-          void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x134464c);
+          /* RVA do dump il2cpp: OnNewGameButtonClick = 0x1344634 (a "correção" p/ 0x134464c era
+             ERRADA — caía no MEIO da função, pulando o prólogo -> x0 lixo -> SIGSEGV no New Game). */
+          void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x1344634);
           fprintf(stderr, "[FF9_NEWGAME] OnNewGameButtonClick(this=%p) do render loop\n", (void *)g_titleui_this); fsync(2);
           ong((void *)g_titleui_this, NULL);
         }
