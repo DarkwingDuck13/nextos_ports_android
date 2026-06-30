@@ -604,17 +604,24 @@ double hm_get_control(int id, int slot) {
     int dd = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
     int dl = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
     int dr = SDL_GameControllerGetButton(p, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    /* FALLBACK joystick CRU: controles genericos (USB Gamepad sem entry no gamecontrollerdb)
+     * mapeiam ombros/gatilhos/sticks como JOYBUTTON que o GameController NAO expoe (LB/RB
+     * nao registravam -> "HOLD LB" nao funcionava). Le o joystick por baixo e OR com o pad. */
+    SDL_Joystick *j = SDL_GameControllerGetJoystick(p);
+    int nb = j ? SDL_JoystickNumButtons(j) : 0;
     #define DZ(a) (((a) > 7000 || (a) < -7000) ? (a) / 32767.0 : 0.0)   /* eixo c/ deadzone */
     #define B(x) (SDL_GameControllerGetButton(p, (x)) ? 1.0 : 0.0)
+    #define J(n) ((j && (n) < nb && SDL_JoystickGetButton(j, (n))) ? 1.0 : 0.0)  /* joy cru */
     switch (id) {
       case 0:  v = DZ(lx); break;                       /* lx */
       case 1:  v = DZ(ly); break;                       /* ly (SDL: + = baixo) */
       case 2:  v = DZ(rx); break;                       /* rx */
       case 3:  v = DZ(ry); break;                       /* ry */
-      case 4:  v = (lt > 3000) ? lt / 32767.0 : 0.0; break;  /* l2 */
-      case 5:  v = (rt > 3000) ? rt / 32767.0 : 0.0; break;  /* r2 */
-      case 6:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);  break; /* l1 */
-      case 7:  v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER); break; /* r1 */
+      /* l2/r2: gatilho analogico OU joybutton (6/7 em pads genericos) */
+      case 4:  v = (lt > 3000) ? lt / 32767.0 : J(6); break;  /* l2 */
+      case 5:  v = (rt > 3000) ? rt / 32767.0 : J(7); break;  /* r2 */
+      case 6:  v = B(SDL_CONTROLLER_BUTTON_LEFTSHOULDER)  ? 1.0 : J(4); break; /* l1 (joy4) */
+      case 7:  v = B(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1.0 : J(5); break; /* r1 (joy5) */
       case 8:  v = B(SDL_CONTROLLER_BUTTON_A); break;
       case 9:  v = B(SDL_CONTROLLER_BUTTON_B); break;
       case 10: v = B(SDL_CONTROLLER_BUTTON_X); break;
@@ -625,14 +632,15 @@ double hm_get_control(int id, int slot) {
       case 15: v = dd ? 1.0 : 0.0; break;
       case 16: v = dl ? 1.0 : 0.0; break;
       case 17: v = dr ? 1.0 : 0.0; break;
-      case 18: v = B(SDL_CONTROLLER_BUTTON_START); break;  /* menu */
-      case 19: v = B(SDL_CONTROLLER_BUTTON_BACK);  break;  /* options */
-      case 20: v = B(SDL_CONTROLLER_BUTTON_LEFTSTICK);  break; /* l3 */
-      case 21: v = B(SDL_CONTROLLER_BUTTON_RIGHTSTICK); break; /* r3 */
+      case 18: v = B(SDL_CONTROLLER_BUTTON_START) ? 1.0 : J(9); break;  /* menu (start, joy9) */
+      case 19: v = B(SDL_CONTROLLER_BUTTON_BACK)  ? 1.0 : J(8); break;  /* options (select, joy8) */
+      case 20: v = B(SDL_CONTROLLER_BUTTON_LEFTSTICK)  ? 1.0 : J(10); break; /* l3 (joy10) */
+      case 21: v = B(SDL_CONTROLLER_BUTTON_RIGHTSTICK) ? 1.0 : J(11); break; /* r3 (joy11) */
       default: v = 0.0; break;
     }
     #undef B
     #undef DZ
+    #undef J
   }
   /* HM_AUTOEXT/HM_SWEEP: injeta valor forcado (autopilot/experimento) */
   if (id >= 0 && id < 256 && g_force[id] != 0.0) v = g_force[id];

@@ -11,7 +11,11 @@ Device de bancada: **192.168.31.79** (Mali-450 Amlogic, EMUELEC, fbdev). `sshpas
 - **game.droid** (60MB) carrega via AAssetManager; resolver de asset **case-insensitive** (cwd+assets/)
   destrava localization + musica (`hlm2music/hlm2_music_desktop.wad`, engine pede `HLM2Music`) + asset_orders.
 
-## 🎮 CONTROLES (em refino) — input pela EXTENSAO `getControllerValue` (NAO gamepad nativo)
+> ✅ **s4: CONTROLES FUNCIONANDO** ("mil vezes melhor") apos 2 fixes: (1) mapa do dex (passthrough,
+> nao inventar) (2) **deploy.sh mata o processo ANTES do scp** — o bug real era binario VELHO no device
+> (scp nao sobrescreve binario em execucao -> "text busy" silencioso -> fixes nunca rodavam).
+
+## 🎮 CONTROLES ✅ — input pela EXTENSAO `getControllerValue` (NAO gamepad nativo)
 HLM2 le o controle por uma extensao GML: `gamepad_init`/`isControllerConnected`/`getControllerValue(index)`.
 Implementado via JNI (double-array p/ ler os args). **NAO usar gptokeyb** (converteria p/ teclado e a
 extensao veria "sem controle"). NAO registrar o gamepad NATIVO do GameMaker (conflito = botoes embaralhados).
