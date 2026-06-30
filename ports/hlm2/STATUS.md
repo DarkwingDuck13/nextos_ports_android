@@ -17,12 +17,21 @@ Implementado via JNI (double-array p/ ler os args). **NAO usar gptokeyb** (conve
 extensao veria "sem controle"). NAO registrar o gamepad NATIVO do GameMaker (conflito = botoes embaralhados).
 
 ### Mapa DEFINITIVO (decompilado de com.dalmac.hotlinemiami2.Vibrate.getControllerValue no dex)
-- **0=UP 1=DOWN 2=LEFT 3=RIGHT** (direcoes) → dpad + analogico ESQ. [poll-order f1000: seq0-3 = 2,3,0,1]
-- **18=LOOK X 19=LOOK Y** (mira/cursor) → analogico DIR.
-- **5=ATTACK/confirm** → A. [disclaimer: forcar idx5 avanca a tela = confirmar]
-- acoes restantes (PICKUP/FINISH/LOCKON) em {4,6,8,9,10,20,21} → mapeadas bijetivas a B/X/Y/LB/RB/LT/RT
-  (a refinar qual e qual; o jogo TEM rebind in-game: Options→Controls "CHOOSE X BUTTON").
-- 5 bindings de acao no binario: g_VAR_{attack,finish,pickup,look,lockon}_controller.
+`getControllerValue(index)` = PASSTHROUGH do INPUT FISICO CRU (NAO acao). O JOGO faz o binding interno
+(incl. rebind in-game Options→Controls). index → input fisico:
+```
+ 0=lx  1=ly  2=rx  3=ry      (eixos analogicos, -1..1)
+ 4=l2  5=r2                  (gatilhos, 0..1)
+ 6=l1  7=r1                  (ombros)
+ 8=a   9=b  10=x  11=y       (faces)
+12=dpx 13=dpy                (dpad como eixo)
+14=dpadUp 15=dpadDown 16=dpadLeft 17=dpadRight
+18=menu 19=options 20=l3 21=r3
+```
+Lição: NAO inventar mapa de acao — devolver o estado fisico SDL exato; o jogo (codigo do dalmac) ja
+tem o mapeamento padrao. Erro anterior: tratei idx0-3 como UP/DOWN/LEFT/RIGHT quando sao os EIXOS lx/ly/rx/ry.
+Como achar: classes.dex → method `getControllerValue` na classe `com/dalmac/hotlinemiami2/Vibrate` →
+packed-switch index→campo (parser DEX em python, ver historico).
 
 ### Ferramentas de RE (env)
 - `HM_CTRLLIVE=1` loga cada index ativo (id<->botao fisico). `HM_POLLORDER=N` dump da ordem de polling no frame N.
