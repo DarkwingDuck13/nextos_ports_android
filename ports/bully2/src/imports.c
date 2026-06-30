@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -25,6 +26,65 @@ volatile long g_asset_bytes_frame = 0;
 static int env_enabled(const char *name) {
   const char *e = getenv(name);
   return e && strcmp(e, "0") != 0;
+}
+
+static const char *first_env(const char *a, const char *b) {
+  const char *e = getenv(a);
+  if (e && *e)
+    return e;
+  e = getenv(b);
+  return (e && *e) ? e : NULL;
+}
+
+static int read_first_token(const char *path, char *buf, size_t len) {
+  if (!path || !*path || !len)
+    return 0;
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return 0;
+  size_t n = fread(buf, 1, len - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == '\t')
+      buf[i] = ' ';
+  }
+  while (*buf == ' ')
+    memmove(buf, buf + 1, strlen(buf));
+  return buf[0] != 0;
+}
+
+static int parse_start_texture_profile(const char *e, int *half, int *min_dim,
+                                       const char **label) {
+  if (!e || !*e)
+    return 0;
+  while (*e == ' ' || *e == '\t' || *e == '\n' || *e == '\r')
+    e++;
+  if (!*e)
+    return 0;
+  if (!strncasecmp(e, "low", 3) || !strncasecmp(e, "256", 3) ||
+      !strncasecmp(e, "extreme", 7)) {
+    *half = 1;
+    *min_dim = 256;
+    *label = "low";
+    return 1;
+  }
+  if (!strncasecmp(e, "medium", 6) || !strncasecmp(e, "med", 3) ||
+      !strncasecmp(e, "512", 3)) {
+    *half = 1;
+    *min_dim = 512;
+    *label = "medium";
+    return 1;
+  }
+  if (!strncasecmp(e, "high", 4) || !strncasecmp(e, "full", 4) ||
+      !strncasecmp(e, "native", 6) || !strncasecmp(e, "off", 3) ||
+      !strcmp(e, "0")) {
+    *half = 0;
+    *min_dim = 1024;
+    *label = "high";
+    return 1;
+  }
+  return 0;
 }
 
 static int io_log_enabled(void) {
@@ -195,18 +255,46 @@ static void tex_runtime_init(void) {
   if (__atomic_load_n(&g_tex_half_runtime, __ATOMIC_RELAXED) >= 0)
     return;
 
-  int enabled = (env_enabled("BULLY2_TEX_HALF") || env_enabled("BULLY_TEX_HALF"))
-                    ? 1
-                    : 0;
-  const char *e = getenv("BULLY2_TEX_HALF_MIN");
-  if (!e || !*e)
-    e = getenv("BULLY_TEX_HALF_MIN");
-  int min_dim = e ? atoi(e) : 1024;
+  int enabled = 1;
+  int min_dim = 512;
+  const char *label = "medium";
+  const char *half_env = first_env("BULLY2_TEX_HALF", "BULLY_TEX_HALF");
+  const char *min_env = first_env("BULLY2_TEX_HALF_MIN", "BULLY_TEX_HALF_MIN");
+
+  if (half_env) {
+    enabled = strcmp(half_env, "0") != 0;
+    min_dim = min_env ? atoi(min_env) : 1024;
+    label = enabled ? "custom-half" : "high";
+  } else {
+    char file_profile[32];
+    const char *profile = first_env("BULLY2_TEXTURE_PROFILE",
+                                    "BULLY_TEXTURE_PROFILE");
+    if (!profile)
+      profile = first_env("BULLY2_TEX_HALF_MODE", "BULLY_TEX_HALF_MODE");
+    if (!profile) {
+      const char *path = first_env("BULLY2_TEX_PROFILE_SAVE",
+                                   "BULLY_TEX_PROFILE_SAVE");
+      if (!path || !*path)
+        path = "texture_profile.cfg";
+      if (read_first_token(path, file_profile, sizeof(file_profile)))
+        profile = file_profile;
+    }
+    if (profile && !parse_start_texture_profile(profile, &enabled, &min_dim,
+                                                &label)) {
+      fprintf(stderr, "[tex] unsupported startup profile=%s; using medium\n",
+              profile);
+      enabled = 1;
+      min_dim = 512;
+      label = "medium";
+    }
+  }
   if (min_dim < 256)
     min_dim = 256;
 
   __atomic_store_n(&g_tex_half_min_runtime, min_dim, __ATOMIC_RELAXED);
   __atomic_store_n(&g_tex_half_runtime, enabled, __ATOMIC_RELEASE);
+  fprintf(stderr, "[tex] startup profile=%s half=%d min=%d\n", label, enabled,
+          min_dim);
 }
 
 static int tex_half_enabled(void) {

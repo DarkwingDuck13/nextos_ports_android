@@ -42,6 +42,7 @@ extern int bully_tex_runtime_half_min_dim(void);
 static void *make_callthrough(uintptr_t addr);
 static int current_texture_memory_used(void);
 static const char *first_env(const char *a, const char *b);
+static int read_first_token(const char *path, char *buf, size_t len);
 
 #define DATA_PATH "."
 
@@ -103,6 +104,12 @@ static unsigned char g_kb[SDL_NUM_SCANCODES];
 static int g_mxrel, g_myrel;
 static int g_gptk_mode = -1;
 static int g_native_nvapk = -1;
+static void (*g_item_touchfn)(int, int, int, int);
+static int g_item_tap_inited;
+static int g_item_tap_hold = -1;
+static int g_item_tap_x, g_item_tap_y;
+static int g_item_prev_x = -1, g_item_prev_y = -1;
+static int g_item_next_x = -1, g_item_next_y = -1;
 
 static int env_enabled(const char *name) {
   const char *e = getenv(name);
@@ -190,7 +197,9 @@ static int tex_budget_bytes(void) {
 
 static int loadscene_clean_level(void) {
   const char *e = getenv("BULLY2_LOADSCENE_CLEAN");
-  if (!e || !*e || strcmp(e, "0") == 0)
+  if (!e || !*e)
+    return bully_tex_runtime_half_enabled() ? 1 : 0;
+  if (strcmp(e, "0") == 0)
     return 0;
   if (strcmp(e, "1") == 0)
     return 1;
@@ -227,7 +236,12 @@ static int evict_request_bytes(void) {
 
 static int stream_distance_pct(void) {
   const char *e = getenv("BULLY2_STREAM_DISTANCE_PCT");
-  if (!e || !*e || strcmp(e, "0") == 0 || strcmp(e, "100") == 0)
+  if (!e || !*e) {
+    if (!bully_tex_runtime_half_enabled())
+      return 100;
+    return bully_tex_runtime_half_min_dim() <= 256 ? 50 : 60;
+  }
+  if (strcmp(e, "0") == 0 || strcmp(e, "100") == 0)
     return 100;
   if (strcmp(e, "1") == 0)
     return 70;
@@ -460,6 +474,87 @@ static const struct {
     {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 18},
 };
 
+static void item_tap_init(void) {
+  if (g_item_tap_inited)
+    return;
+
+  g_item_touchfn = (void *)so_symbol(&mod_game, "_Z14AND_TouchEventiiii");
+  int w = bully_screen_w();
+  int h = bully_screen_h();
+  g_item_prev_x = w * 1288 / 1920;
+  g_item_prev_y = h * 923 / 1080;
+  g_item_next_x = w * 1320 / 1920;
+  g_item_next_y = h * 958 / 1080;
+
+  const char *e = first_env("BULLY2_TAP_PREV", "BULLY_TAP_PREV");
+  if (e)
+    sscanf(e, "%d,%d", &g_item_prev_x, &g_item_prev_y);
+  e = first_env("BULLY2_TAP_NEXT", "BULLY_TAP_NEXT");
+  if (e)
+    sscanf(e, "%d,%d", &g_item_next_x, &g_item_next_y);
+
+  fprintf(stderr, "[tap] AND_TouchEvent=%p prev=%d,%d next=%d,%d\n",
+          (void *)g_item_touchfn, g_item_prev_x, g_item_prev_y, g_item_next_x,
+          g_item_next_y);
+  g_item_tap_inited = 1;
+}
+
+static void item_tap_xy(int x, int y, const char *why) {
+  item_tap_init();
+  if (!g_item_touchfn || x < 0 || y < 0 || g_item_tap_hold > 0)
+    return;
+
+  g_item_tap_x = x;
+  g_item_tap_y = y;
+  g_item_touchfn(2, 0, x, y);
+  g_item_tap_hold = 8;
+  if (env_enabled("BULLY2_TAP_LOG"))
+    fprintf(stderr, "[tap] %s %d,%d\n", why ? why : "item", x, y);
+}
+
+static void item_tap_cycle(int dir) {
+  item_tap_init();
+  if (dir < 0)
+    item_tap_xy(g_item_prev_x, g_item_prev_y, "prev");
+  else
+    item_tap_xy(g_item_next_x, g_item_next_y, "next");
+}
+
+static void item_tap_pump(void) {
+  item_tap_init();
+  if (g_item_touchfn && g_item_tap_hold > 0 && --g_item_tap_hold == 0) {
+    g_item_touchfn(1, 0, g_item_tap_x, g_item_tap_y);
+    g_item_tap_hold = -1;
+  }
+
+  static int frames;
+  if (!g_item_touchfn || ++frames % 10 != 0)
+    return;
+
+  FILE *tf = fopen("/dev/shm/bully_tap", "r");
+  if (!tf)
+    return;
+
+  char buf[64];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, tf);
+  fclose(tf);
+  unlink("/dev/shm/bully_tap");
+  buf[n] = '\0';
+
+  if (strstr(buf, "prev") || strstr(buf, "left")) {
+    item_tap_cycle(-1);
+    return;
+  }
+  if (strstr(buf, "next") || strstr(buf, "right")) {
+    item_tap_cycle(1);
+    return;
+  }
+
+  int x = -1, y = -1;
+  if (sscanf(buf, "%d %d", &x, &y) == 2)
+    item_tap_xy(x, y, "probe");
+}
+
 static void gptk_event(SDL_Event *e) {
   if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) {
     int sc = e->key.keysym.scancode;
@@ -497,6 +592,17 @@ static void pump_gptk(void) {
     fprintf(stderr, "[pad] SELECT+START (gptk) -> exit\n");
     _exit(0);
   }
+
+  item_tap_pump();
+  static int last_item_prev, last_item_next;
+  int item_prev = g_kb[SDL_SCANCODE_F] ? 1 : 0;
+  int item_next = g_kb[SDL_SCANCODE_G] ? 1 : 0;
+  if (item_prev && !last_item_prev)
+    item_tap_cycle(-1);
+  if (item_next && !last_item_next)
+    item_tap_cycle(1);
+  last_item_prev = item_prev;
+  last_item_next = item_next;
 
   static const struct {
     int sc;
@@ -630,6 +736,14 @@ static void pump_gamepad(void) {
            12000;
   int rt = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >
            12000;
+  static int last_tap_lt, last_tap_rt;
+  if (lt && !last_tap_lt)
+    item_tap_cycle(-1);
+  if (rt && !last_tap_rt)
+    item_tap_cycle(1);
+  last_tap_lt = lt;
+  last_tap_rt = rt;
+  item_tap_pump();
   if (lt != last[17]) {
     if (lt) {
       if (down)
@@ -990,6 +1104,7 @@ static const char *light_profile_menu_name(int id) {
 }
 
 static const char *light_profile_env(void) {
+  static char saved[32];
   const char *e = getenv("BULLY2_TEX_LIGHT");
   if (e && *e)
     return e;
@@ -1000,7 +1115,14 @@ static const char *light_profile_env(void) {
   if (e && *e)
     return e;
   e = getenv("BULLY_TEX_LIGHT");
-  return (e && *e) ? e : NULL;
+  if (e && *e)
+    return e;
+
+  const char *path = first_env("BULLY2_TEX_LIGHT_SAVE",
+                               "BULLY_TEX_LIGHT_SAVE");
+  if (!path || !*path)
+    path = "light_profile.cfg";
+  return read_first_token(path, saved, sizeof(saved)) ? saved : NULL;
 }
 
 static void tex_light_runtime_init(void) {
@@ -1214,6 +1336,24 @@ static const char *first_env(const char *a, const char *b) {
   return (e && *e) ? e : NULL;
 }
 
+static int read_first_token(const char *path, char *buf, size_t len) {
+  if (!path || !*path || !len)
+    return 0;
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return 0;
+  size_t n = fread(buf, 1, len - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == '\t')
+      buf[i] = ' ';
+  }
+  while (*buf == ' ')
+    memmove(buf, buf + 1, strlen(buf));
+  return buf[0] != 0;
+}
+
 static int env_flag_default_on(const char *a, const char *b) {
   const char *e = first_env(a, b);
   if (!e)
@@ -1360,10 +1500,10 @@ static void hook_shadow_default(void) {
     e = getenv("BULLY2_SHADOW_FORCE");
   if (!e || !*e)
     e = getenv("BULLY_SHADOW_FORCE");
-  if (!e || !*e || !strcmp(e, "native") || !strcmp(e, "original"))
+  if (e && *e && (!strcmp(e, "native") || !strcmp(e, "original")))
     return;
 
-  g_shadow_default = parse_shadow_setting(e, 0);
+  g_shadow_default = parse_shadow_setting(e, 2);
   uintptr_t s = so_symbol(&mod_game, "_ZN13BullySettings16GetShadowDefaultEv");
   if (!s && text_base)
     s = (uintptr_t)text_base + 0x1033f40;
@@ -1632,7 +1772,9 @@ static int shadow_vector_skip_enabled(void) {
 
 static int shadow_ssao_enabled(void) {
   const char *e = first_env("BULLY2_SHADOW_SSAO", "BULLY_SHADOW_SSAO");
-  if (!e || !*e || !strcmp(e, "1") || !strcmp(e, "on"))
+  if (!e || !*e)
+    return !is_utgard_mali450();
+  if (!strcmp(e, "1") || !strcmp(e, "on"))
     return 1;
   return !(strcmp(e, "0") == 0 || !strcmp(e, "off") ||
            !strcmp(e, "disabled"));
@@ -2530,7 +2672,9 @@ static void **texture_array_items(TexturePtrArray *arr) {
 static const char *texture_reload_mode(void) {
   const char *e = first_env("BULLY2_TEX_RELOAD_ON_CHANGE",
                             "BULLY_TEX_RELOAD_ON_CHANGE");
-  if (!e || !*e || !strcmp(e, "0") || !strcmp(e, "off") ||
+  if (!e || !*e)
+    return "reload";
+  if (!strcmp(e, "0") || !strcmp(e, "off") ||
       !strcmp(e, "false") || !strcmp(e, "none"))
     return NULL;
   if (!strcmp(e, "attempt") || !strcmp(e, "unload") ||
@@ -2683,7 +2827,7 @@ static int texture_profile_queue_reload(const char *why) {
   g_tex_reload_queue.index = 0;
   g_tex_reload_queue.batch =
       texture_env_uint("BULLY2_TEX_RELOAD_BATCH", "BULLY_TEX_RELOAD_BATCH",
-                       2, 1, 32);
+                       1, 1, 32);
   g_tex_reload_queue.min_dim =
       texture_env_uint("BULLY2_TEX_RELOAD_MIN_DIM",
                        "BULLY_TEX_RELOAD_MIN_DIM", default_min_dim, 0, 4096);
@@ -3071,9 +3215,11 @@ static void native_stream_evict(const char *why, int force) {
          env_enabled("BULLY2_LOWMEM_JNI")) &&
         g_OnLowMemory)
       g_OnLowMemory(fake_env, NULL);
-    if ((strcmp(mode, "tidytex") == 0 || env_enabled("BULLY2_LOWMEM_TIDYTEX")) &&
+    if ((strcmp(mode, "tidytex") == 0 ||
+         env_default_enabled("BULLY2_LOWMEM_TIDYTEX")) &&
         g_TidyUpTextureMemory)
-      g_TidyUpTextureMemory(env_enabled("BULLY2_LOWMEM_TIDYTEX_FORCE") ? 1 : 0);
+      g_TidyUpTextureMemory(
+          env_default_enabled("BULLY2_LOWMEM_TIDYTEX_FORCE") ? 1 : 0);
     if (env_enabled("BULLY2_LOWMEM_PROCESS") && g_ProcessTidyUpMemory)
       g_ProcessTidyUpMemory();
     if (env_enabled("BULLY2_LOWMEM_TIDY") && g_TidyUpMemory)

@@ -1,5 +1,10 @@
 # Bully2 -- gptokeyb layout for PortMaster controls.
-# The binary converts these keys to Bully GameNative gamepad events.
+# Parser note: keep comments on their own lines.
+#
+# Fixed keys handled by the binary:
+#   x/c/q/t = face, enter/esc = start/select
+#   u/i = aim/fire axis fallback, f/g = previous/next item touch tap
+#   n/m = look back/crouch, h/k/j/l = shoulder/trigger enums, arrows = dpad
 
 a = x
 b = c
@@ -10,6 +15,7 @@ start = enter
 back = esc
 
 # Device shoulder/trigger naming varies; this mirrors the validated Bully layout.
+# On the test pads physical L2/R2 arrive as l1/r1, so they cycle items.
 l1 = f
 l2 = u
 r1 = g

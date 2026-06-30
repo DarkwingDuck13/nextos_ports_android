@@ -96,14 +96,16 @@ Logs locais salvos em `ports/bully2/logs/`.
 O scaler arbitrario `BULLY2_TEX_SCALE_PCT=70` foi rejeitado: gerou tela preta.
 O caminho estavel e o half exato estilo `BULLY_TEX_HALF`.
 
-Perfis atuais no launcher:
+Perfis atuais no binario/menu:
 
-- starter limpo: instalacao limpa seleciona `Textures=Medium` (`512`),
+- instalacao limpa seleciona `Textures=Medium` (`512`),
   independente da RAM;
 - `texture_profile.cfg` persiste `low`, `medium` ou `high` e tem prioridade no
   proximo boot;
 - `BULLY2_TEXTURE_PROFILE=low|medium|high` fica apenas como diagnostico;
-- a matriz antiga de `384`/`768`/`1024`/porcentagem saiu do starter.
+- a matriz antiga de `384`/`768`/`1024`/porcentagem saiu do starter;
+- o `Bully.sh` nao exporta mais `BULLY2_TEX_HALF*`: o binario le o arquivo salvo
+  e aplica `Low=256`, `Medium=512`, `High=full` sozinho.
 
 Resultados historicos em Mali-450/1GB, swap desligado:
 
@@ -153,8 +155,8 @@ Shadows:
 - A opcao aparece em ingles como `Textures` e alterna `Low`, `Medium`, `High`.
 - Mapeamento runtime: `Low` = perfil `256`, `Medium` = `512`, `High` = full.
 - A escolha do menu e persistida em `texture_profile.cfg`; no boot seguinte o
-  launcher le esse arquivo antes do perfil automatico e recria
-  `bully2_patch.zip` com o texto inicial correto (`Low`, `Medium` ou `High`).
+  binario le esse arquivo antes do perfil automatico. O launcher apenas chama
+  `tools/ensure-bully-menu-patch.sh` para recriar `bully2_patch.zip`.
 - A troca passa por `apply_texture_profile_runtime()` e executa o despejo nativo
   ja validado (`OnLowMemory`, `TidyUpTextureMemory`, `TxdGarbageCollect`,
   `native_stream_evict`) sem gravar cache/texswap/conversao.
@@ -216,6 +218,22 @@ Shadows:
   `OS_ZipFileOpen`, `NvAPKOpen` e `NvAPKOpenFromPack` apenas para redirecionar
   esses assets de detalhe quando o perfil pede. Em modo compat, o mesmo filtro
   roda em `nv_open`.
+
+## Controles L2/R2
+
+- Recuperado do Bully 1 o caminho de troca de item por touch: a build Android
+  nao cicla item/arma pelos enums normais de gamepad `14/15`; ela espera o toque
+  nos botoes touch do HUD.
+- No modo `BULLY2_INPUT=gptk`, `f` e `g` agora disparam
+  `_Z14AND_TouchEventiiii` nas coordenadas relativas validadas do slot de arma:
+  `f` = anterior, `g` = proximo.
+- O `bully2.gptk` mantem o mapeamento validado do Bully 1: fisico `L2` chega
+  como `l1 = f`, fisico `R2` chega como `r1 = g`; `L1/R1` seguem em `u/i` para
+  mira/disparo.
+- Tambem foi coberto o fallback nativo SDL: trigger esquerdo/direito em eixo
+  dispara o mesmo tap de item se algum device nao passar pelo gptokeyb.
+- Para diagnostico, `/dev/shm/bully_tap` aceita `prev`, `next` ou `x y` e
+  `BULLY2_TAP_LOG=1` loga cada tap.
 - O metodo rejeitado foi retornar "arquivo nao existe" para `_s/_n`: no streaming
   real isso crashou em `sig=11 addr=0x10d5` logo apos a troca para `Low`, porque
   o jogo espera receber um `Texture2D` valido para o material.
@@ -240,3 +258,24 @@ Shadows:
 - Ainda falta validacao visual longa pelo usuario em gameplay real para comparar
   a qualidade de `Off/Low/Medium/High`; a estabilidade basica de boot/runtime
   no Mali-450 ja foi validada.
+
+## Launcher v11 limpo
+
+- `Bully.sh` do pacote foi reduzido para 88 linhas.
+- A extração BYO saiu do launcher e ficou em
+  `tools/extract-bully-data.sh`, mantendo splash/progresso.
+- A geração de `assets/bully2_patch.zip` saiu do launcher e ficou em
+  `tools/ensure-bully-menu-patch.sh`.
+- O launcher nao exporta mais textura, Light, Clarity, Shadows, streaming,
+  reload, heap ou lowmem. Esses defaults agora ficam no binario:
+  - `Textures=Medium` por padrao ou arquivo `texture_profile.cfg`;
+  - `Light=Off` por padrao ou arquivo `light_profile.cfg`;
+  - `Clarity=High`;
+  - `Shadows=Medium`;
+  - SSAO de shadow desligado automaticamente em Mali/Utgard;
+  - stream distance `60` em Medium, `50` em Low, nativo em High;
+  - reload seletivo de textura em batch 1 por padrao.
+- Teste Mali-450 com launcher limpo:
+  - `medium/off`: boot pelo `/roms/ports_scripts/Bully.sh`, vivo ate frame 1200;
+  - `high/high`: boot sem env de perfil, binario leu os arquivos salvos, redirecionou
+    `_n/_s` e ficou vivo ate frame 1200.

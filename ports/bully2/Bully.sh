@@ -1,7 +1,7 @@
 #!/bin/bash
-# Bully2 dev launcher -- Android so-loader -> PortMaster.
+# Bully v11 -- Android so-loader -> PortMaster.
 
-PORTNAME="Bully2"
+PORTNAME="Bully: Anniversary Edition"
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 
 if [ -d "/opt/system/Tools/PortMaster/" ]; then
@@ -24,7 +24,7 @@ directory=${directory:-storage/roms}
 CUR_TTY=/dev/tty0
 $ESUDO chmod 666 "$CUR_TTY" 2>/dev/null || true
 
-GAMEDIR="/$directory/ports/bully2"
+GAMEDIR="/$directory/ports/bully"
 cd "$GAMEDIR" || exit 1
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
@@ -36,19 +36,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-pkill -9 -x bully2 2>/dev/null || true
+pkill -9 -x bully 2>/dev/null || true
 pkill -9 -x gptokeyb 2>/dev/null || true
 
-$ESUDO chmod +x "$GAMEDIR/bully2" "$GAMEDIR/tools/"*.sh 2>/dev/null || chmod +x "$GAMEDIR/bully2" "$GAMEDIR/tools/"*.sh 2>/dev/null || true
+$ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || true
 
-BULLY_BINARY="$GAMEDIR/bully2" "$GAMEDIR/tools/extract-bully-data.sh" "" "$GAMEDIR" || {
-  echo "Bully2: coloque o APK legal do Bully 1.4.311 em $GAMEDIR." > "$CUR_TTY" 2>/dev/null || true
+BULLY_BINARY="$GAMEDIR/bully" "$GAMEDIR/tools/extract-bully-data.sh" "" "$GAMEDIR" || {
+  echo "Bully: coloque o APK legal do Bully 1.4.311 em $GAMEDIR." > "$CUR_TTY" 2>/dev/null || true
   sleep 8
   exit 1
 }
 
 missing=0
-for required in "$GAMEDIR/bully2" "$GAMEDIR/libGame.so" "$GAMEDIR/libc++_shared.so" \
+for required in "$GAMEDIR/bully" "$GAMEDIR/libGame.so" "$GAMEDIR/libc++_shared.so" \
                 "$GAMEDIR/assets/data_0.zip" "$GAMEDIR/assets/data_1.zip" \
                 "$GAMEDIR/assets/data_2.zip" "$GAMEDIR/assets/data_3.zip" \
                 "$GAMEDIR/assets/data_4.zip"; do
@@ -56,7 +56,7 @@ for required in "$GAMEDIR/bully2" "$GAMEDIR/libGame.so" "$GAMEDIR/libc++_shared.
 done
 
 if [ "$missing" != "0" ]; then
-  echo "Bully2 incompleto. Reinstale o port e use o APK completo v1.4.311." > "$CUR_TTY" 2>/dev/null || true
+  echo "Bully incompleto. Reinstale o port e use o APK completo v1.4.311." > "$CUR_TTY" 2>/dev/null || true
   sleep 8
   exit 1
 fi
@@ -78,11 +78,11 @@ fi
 $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
 if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
   export BULLY2_INPUT=gptk
-  $GPTOKEYB "bully2" -c "$GAMEDIR/bully2.gptk" &
+  $GPTOKEYB "bully" -c "$GAMEDIR/bully.gptk" &
 elif command -v gptokeyb >/dev/null 2>&1; then
   export BULLY2_INPUT=gptk
-  gptokeyb -1 "bully2" -c "$GAMEDIR/bully2.gptk" &
+  gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
 fi
 
-./bully2
+./bully
 exit $?

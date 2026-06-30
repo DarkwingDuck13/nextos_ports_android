@@ -12,20 +12,20 @@ Escopo inicial:
 - `NvAPK` nativo do `libGame.so` por padrao (`BULLY2_NVAPK_MODE=native`);
 - despejo nativo por `GameNative.implOnLowMemory` + `CGame::TidyUpTextureMemory`
   por padrao (`BULLY2_EVICT=onlow`, `BULLY2_LOWMEM_TIDYTEX=1`);
-- perfil inicial limpo:
+- launcher PortMaster limpo: extração BYO, patch do menu, controle e execução;
+  sem matriz de textura, shadow, clarity, streaming ou reload no `.sh`;
+- perfil inicial limpo no binario:
   - instalacao limpa usa `Textures=Medium` (`512`), independente da RAM;
-  - o starter so le `texture_profile.cfg` ou `BULLY2_TEXTURE_PROFILE`
+  - o binario le `texture_profile.cfg` ou `BULLY2_TEXTURE_PROFILE`
     (`low`, `medium`, `high`) para diagnostico;
   - a troca real de `Textures` fica no binario/menu, sem matriz de downscale no
     starter.
-- watchdog do launcher ativo por padrao para encerrar o teste antes do device
-  travar (`BULLY2_WATCHDOG_MIN_AVAIL_MB`,
-  `BULLY2_WATCHDOG_MAX_SWAP_MB=64`);
-- controle por eventos JNI nativos do jogo.
+- controle por eventos JNI nativos do jogo; `L2/R2` no layout validado voltam a
+  trocar item/arma por tap sintetico em `AND_TouchEvent`, igual ao Bully 1.
 - Clarity fica em `RS_High` por hook nativo.
-- Shadows inicia em `Medium` por padrao (`BULLY2_SHADOW_DEFAULT=2`).
+- Shadows inicia em `Medium` por padrao no binario.
 - Shadows ficam visiveis como `Off`, `Low`, `Medium`, `High`. Em Mali-450/Utgard
-  o launcher usa `BULLY2_SHADOW_SSAO=0`: o valor bruto `High` continua ativo,
+  o binario desliga automaticamente o SSAO quebrado: o valor bruto `High` continua ativo,
   mas o postprocess `pp_ssao` do Android, que crasha o driver ao vivo, nao e
   criado.
 - O menu de Settings ganha a opcao `Textures`, abaixo de `Shadows`:
@@ -42,8 +42,8 @@ Escopo inicial:
   `Texture2D::AttemptUnload()` liberou RAM, mas deixou o render preto porque o
   jogo nao recarrega todas as texturas residentes imediatamente.
 - A escolha de `Textures` fica salva em `texture_profile.cfg`. No proximo boot,
-  o launcher le esse arquivo antes do automatico e recria o patch do menu ja com
-  `Low`, `Medium` ou `High` como valor inicial correto.
+  o binario le esse arquivo antes do automatico; o patch do menu e recriado pelo
+  helper limpo do launcher.
 - A escolha de `Light` fica salva em `light_profile.cfg` e tambem e sincronizada
   no menu por `MenuSettings::UpdateOption`.
 - O valor visual das linhas customizadas e sincronizado diretamente no row da
@@ -55,7 +55,7 @@ Escopo inicial:
   `data_4.zip` nem `data_4.zip.idx`. O patch inclui `resource_files.list` e o
   loader registra o zip por `ResourceManager::RegisterPatchZip`.
 
-BYO data: coloque um APK completo do Bully v1.4.311 em `ports/bully2` na primeira execucao. O launcher extrai `libGame.so`, `libc++_shared.so` e `assets/data_*.zip(+.idx)`.
+BYO data: coloque um APK completo do Bully v1.4.311 em `ports/bully2` na primeira execucao. O helper `tools/extract-bully-data.sh` extrai `libGame.so`, `libc++_shared.so` e `assets/data_*.zip(+.idx)`.
 
 Este port pode usar o `ports/bully` antigo como referencia de fatos, mas a implementacao aqui deve continuar limpa e separada.
 
@@ -64,9 +64,9 @@ Debug pesado fica desligado por padrao. Use `BULLY2_STREAMLOG=1`,
 O poll por arquivo `/tmp/bully_tex_profile` tambem fica desligado por padrao;
 use `BULLY2_TEX_PROFILE_POLL=1` ou `BULLY2_TEX_PROFILE_FILE=/caminho` apenas em
 teste controlado.
-Ao trocar `Textures` em runtime, use o reload seletivo nativo:
-`BULLY2_TEX_RELOAD_ON_CHANGE=reload`. O launcher v11 liga isso por padrao e usa
-batch 1. O caminho bruto antigo fica apenas para diagnostico:
+Ao trocar `Textures` em runtime, o binario usa reload seletivo nativo por
+padrao (`BULLY2_TEX_RELOAD_ON_CHANGE=reload`, batch 1). O caminho bruto antigo
+fica apenas para diagnostico:
 `BULLY2_TEX_RELOAD_ON_CHANGE=attempt`.
 Ao trocar `Light`, o padrao nao forca reload de texturas residentes: o perfil
 novo vale para streams novos. O reload de Light fica apenas para diagnostico via

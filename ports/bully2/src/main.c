@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <ucontext.h>
@@ -148,6 +149,59 @@ static int env_mb(const char *name, int def, int min, int max) {
   if (v > max)
     v = max;
   return v;
+}
+
+static const char *first_env(const char *a, const char *b) {
+  const char *e = getenv(a);
+  if (e && *e)
+    return e;
+  e = getenv(b);
+  return (e && *e) ? e : NULL;
+}
+
+static int read_first_token(const char *path, char *buf, size_t len) {
+  if (!path || !*path || !len)
+    return 0;
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return 0;
+  size_t n = fread(buf, 1, len - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == '\t')
+      buf[i] = ' ';
+  }
+  while (*buf == ' ')
+    memmove(buf, buf + 1, strlen(buf));
+  return buf[0] != 0;
+}
+
+static int texture_profile_is_high(const char *e) {
+  if (!e || !*e)
+    return 0;
+  while (*e == ' ' || *e == '\t' || *e == '\n' || *e == '\r')
+    e++;
+  return !strncasecmp(e, "high", 4) || !strncasecmp(e, "full", 4) ||
+         !strncasecmp(e, "native", 6) || !strncasecmp(e, "off", 3) ||
+         !strcmp(e, "0");
+}
+
+static int default_game_heap_mb(void) {
+  char file_profile[32];
+  const char *profile = first_env("BULLY2_TEXTURE_PROFILE",
+                                  "BULLY_TEXTURE_PROFILE");
+  if (!profile)
+    profile = first_env("BULLY2_TEX_HALF_MODE", "BULLY_TEX_HALF_MODE");
+  if (!profile) {
+    const char *path = first_env("BULLY2_TEX_PROFILE_SAVE",
+                                 "BULLY_TEX_PROFILE_SAVE");
+    if (!path || !*path)
+      path = "texture_profile.cfg";
+    if (read_first_token(path, file_profile, sizeof(file_profile)))
+      profile = file_profile;
+  }
+  return texture_profile_is_high(profile) ? 160 : 128;
 }
 
 static int file_exists(const char *path) {
@@ -384,7 +438,8 @@ int main(int argc, char **argv) {
   memcpy(comb, g_base, sizeof(DynLibFunction) * (size_t)g_base_n);
   memcpy(comb + g_base_n, cxx_tbl, sizeof(DynLibFunction) * (size_t)cxx_n);
 
-  load_module(GAME_SO, env_mb("BULLY2_GAME_HEAP_MB", GAME_HEAP_MB, 96, 256),
+  load_module(GAME_SO,
+              env_mb("BULLY2_GAME_HEAP_MB", default_game_heap_mb(), 96, 256),
               comb, comb_n);
 
   fprintf(stderr, "=== entering JNI lifecycle ===\n");
