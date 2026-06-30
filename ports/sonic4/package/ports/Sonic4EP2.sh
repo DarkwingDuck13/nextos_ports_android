@@ -1,6 +1,5 @@
 #!/bin/bash
-# Sonic The Hedgehog 4: Episode II -- Android so-loader -> NextOS / PortMaster.
-# BYO-data: copy the APK and cache ZIP/OBB to roms/ports/sonic4ep2, then launch once.
+# Sonic The Hedgehog 4: Episode II -- Android so-loader for NextOS / PortMaster.
 
 PORTNAME="Sonic The Hedgehog 4: Episode II"
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
@@ -28,7 +27,7 @@ GAMEDIR="/$directory/ports/sonic4ep2"
 cd "$GAMEDIR" || exit 1
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-# Primeira execução: extrai libfox.so + OBB do APK/cache (BYO-data).
+# First run: extract libfox.so + OBB from the APK / cache (bring-your-own data).
 extract_data_first_run() {
   [ -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] && \
   [ -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ] && return 0
@@ -67,19 +66,15 @@ if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.2
   exit 1
 fi
 
-# /usr/local/lib/arm-linux-gnueabihf = onde o ArkOS poe libmali/libGLESv2/libEGL armhf
-# (em outros sistemas esses paths nao existem -> inofensivos). Sem isso o binario nao
-# acha libGLESv2.so no load nesse device.
+# ArkOS keeps libmali/GLESv2/EGL (armhf) in /usr/local/lib/arm-linux-gnueabihf; other
+# systems just ignore the missing paths. Display/audio are auto-detected (nothing forced).
 export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/armeabi-v7a:/usr/lib32:/lib32:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/local/lib/arm-linux-gnueabihf:/usr/local/lib32:/usr/local/lib:/usr/lib:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
-# Display/áudio/single-instance/hints de SDL: TUDO no binário agora. O sistema/SDL
-# detectam wayland/kmsdrm/fbdev e pulse/alsa/pipewire automaticamente (nada forçado).
 
 $ESUDO chmod +x "$GAMEDIR/sonic4" 2>/dev/null || chmod +x "$GAMEDIR/sonic4"
 $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
 
-# PERF (best-effort, só leitura): readahead do storage p/ suavizar o streaming da
-# OBB durante o gameplay. Não toca em save nem driver; falha silenciosa sem root.
+# Storage read-ahead to smooth OBB streaming (read-only, best-effort).
 if command -v blockdev >/dev/null 2>&1; then
   _sdev=$(df "$GAMEDIR" 2>/dev/null | awk 'NR==2{print $1}' | sed 's/p[0-9]*$//; s/[0-9]*$//')
   for _d in "$_sdev" /dev/mmcblk0 /dev/mmcblk1; do
@@ -96,52 +91,22 @@ if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   fi
 fi
 
-# v3.6 build DIAGNOSTICO: liga o log de audio COMPLETO (banners de driver +
-# detalhe fino) p/ rastrear o "sem som" em devices que nao temos (muOS/Knulli).
-# Os banners principais (qual driver abriu) ja sao sempre-visiveis no binario.
-# Desligar com SONIC_AUDIOLOG=0 no ambiente. O tester pode FORCAR um driver p/
-# achar o audivel: SONIC_AUDIODRIVER=alsa (ou pulseaudio/pipewire). Vazio=auto.
-export SONIC_AUDIOLOG="${SONIC_AUDIOLOG:-1}"
-
-# ======================= AUDIO (opcional) =======================
-# Deixe VAZIO p/ automatico (o jogo escolhe sozinho o driver audivel e ja PULA
-# os mudos "disk"/"dummy"). So mexa aqui se o seu device ficar SEM SOM:
-# escolha um de: alsa  |  pulseaudio  |  pipewire
-#   AUDIO_DRIVER="alsa"
+# Audio: auto by default. Only set this if your device has no sound: alsa | pulseaudio | pipewire
 AUDIO_DRIVER="${AUDIO_DRIVER:-}"
 [ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
-# ================================================================
 
-# 🔊 VOLUME (batocera/Knulli e afins): o PCM "default" do ALSA -- que tem o
-# SOFTVOL que os BOTOES DE VOLUME do device controlam -- so existe via o asoundrc
-# do usuario, que o ALSA le a partir do HOME. Sem ele, o jogo abre o card CRU
-# (toca, mas o volume fica FIXO no maximo, sem como baixar). Apontando o HOME pro
-# asoundrc do sistema, o "default" abre pelo softvol -> os botoes de volume voltam
-# a funcionar. So afeta devices que TEM esse arquivo (os nossos nem entram aqui).
-# SONIC_KEEP_HOME=1 desliga.
+# Volume buttons (batocera/Knulli/raw-ALSA): point HOME at the system asoundrc so the
+# ALSA "default" (softvol) opens and the device volume keys work.
 if [ -z "$SONIC_KEEP_HOME" ]; then
-  _found=""
   for _adir in /userdata/system /storage/.config /root "$HOME" /etc; do
-    if [ -f "$_adir/.asoundrc" ] || [ -f "$_adir/asound.conf" ]; then _found="$_adir"; break; fi
+    if [ -f "$_adir/.asoundrc" ]; then export HOME="$_adir"; break; fi
   done
-  if [ -n "$_found" ]; then
-    [ -f "$_found/.asoundrc" ] && export HOME="$_found"
-    echo "sonic: ALSA config achado em $_found -> HOME=$HOME (tenta default+softvol p/ volume)"
-  else
-    echo "sonic: NENHUM asoundrc/asound.conf do sistema achado -> se faltar volume, e por isso (card cru sem softvol)"
-  fi
-  echo "sonic: asoundrc candidatos: $(ls -1 /userdata/system/.asoundrc /storage/.config/.asoundrc /root/.asoundrc /etc/asound.conf 2>/dev/null | tr '\n' ' ')"
 fi
 
-# Fix de render da fase Electric Road (Episode Metal/cassino): limpa cada FBO
-# off-screen 1x por frame (o engine espera isso; sem isso o fundo acumula e
-# estoura). Inofensivo nas outras fases. Desliga com SONIC_NO_CLEARALL.
+# Electric Road (Episode Metal) render fix; harmless elsewhere. Disable: SONIC_NO_CLEARALL.
 [ -z "$SONIC_NO_CLEARALL" ] && export SONIC_CLEARALL=1
 
-# 🔓 DESBLOQUEAR TODAS AS FASES (p/ teste): crie o marcador `unlock_all` no gamedir
-#   ->  touch "$GAMEDIR/unlock_all"
-# Libera IsStageUnlocked/IsStageClear e o Episode Metal sem precisar do save. Remova o
-# arquivo p/ voltar ao progresso normal do save (release NÃO vem com o marcador).
+# Testing aid: `touch sonic4ep2/unlock_all` unlocks every stage (not shipped in releases).
 [ -f "$GAMEDIR/unlock_all" ] && export SONIC_UNLOCK_ALL=1
 
 ./sonic4
