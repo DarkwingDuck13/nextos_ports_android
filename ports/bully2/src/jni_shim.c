@@ -1,6 +1,7 @@
 /* jni_shim.c -- clean static-JNI Android lifecycle for Bully2. */
 #define _GNU_SOURCE
 #include <SDL2/SDL.h>
+#include <malloc.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -29,7 +30,13 @@ extern long long bully_glmem_peak_bytes(void);
 extern long bully_glmem_gen_count(void);
 extern long bully_glmem_del_count(void);
 extern long bully_glmem_upload_count(void);
+extern long bully_glmem_half_upload_count(void);
+extern long long bully_glmem_half_saved_bytes(void);
 extern void bully_glmem_report(const char *why);
+extern void bully_tex_set_runtime_profile(int half, int min_dim,
+                                          const char *why);
+extern int bully_tex_runtime_half_enabled(void);
+extern int bully_tex_runtime_half_min_dim(void);
 
 #define DATA_PATH "."
 
@@ -97,6 +104,20 @@ static int env_enabled(const char *name) {
   return e && strcmp(e, "0") != 0;
 }
 
+static int env_default_enabled(const char *name) {
+  const char *e = getenv(name);
+  return !e || strcmp(e, "0") != 0;
+}
+
+static int trim_heap(const char *why) {
+  if (!env_default_enabled("BULLY2_MALLOC_TRIM"))
+    return 0;
+  int r = malloc_trim(0);
+  if (env_enabled("BULLY2_TRIMLOG"))
+    fprintf(stderr, "[trim] %s malloc_trim=%d\n", why ? why : "trim", r);
+  return r;
+}
+
 static int use_native_nvapk(void) {
   if (g_native_nvapk < 0) {
     const char *e = getenv("BULLY2_NVAPK_MODE");
@@ -162,6 +183,29 @@ static int tex_budget_bytes(void) {
   return bytes;
 }
 
+static int loadscene_clean_level(void) {
+  const char *e = getenv("BULLY2_LOADSCENE_CLEAN");
+  if (!e || !*e || strcmp(e, "0") == 0)
+    return 0;
+  if (strcmp(e, "1") == 0)
+    return 1;
+  if (strcmp(e, "2") == 0)
+    return 2;
+  if (strcmp(e, "3") == 0)
+    return 3;
+  if (strcmp(e, "safe") == 0)
+    return 1;
+  if (strcmp(e, "aggressive") == 0)
+    return 2;
+  if (strcmp(e, "txdref") == 0)
+    return 3;
+  fprintf(stderr,
+          "[loadscene] unsupported BULLY2_LOADSCENE_CLEAN=%s "
+          "(supported: 0,1,2,3,safe,aggressive,txdref); disabled\n",
+          e);
+  return 0;
+}
+
 static int evict_request_bytes(void) {
   static int bytes;
   if (!bytes) {
@@ -174,6 +218,106 @@ static int evict_request_bytes(void) {
     bytes = mb * 1024 * 1024;
   }
   return bytes;
+}
+
+static int stream_distance_pct(void) {
+  const char *e = getenv("BULLY2_STREAM_DISTANCE_PCT");
+  if (!e || !*e || strcmp(e, "0") == 0 || strcmp(e, "100") == 0)
+    return 100;
+  if (strcmp(e, "1") == 0)
+    return 70;
+  int pct = atoi(e);
+  if (pct == 50 || pct == 60 || pct == 70 || pct == 75 || pct == 80)
+    return pct;
+  fprintf(stderr,
+          "[streamdist] unsupported BULLY2_STREAM_DISTANCE_PCT=%s "
+          "(supported: 50,60,70,75,80); leaving native distances\n",
+          e);
+  return 100;
+}
+
+static int patch_stream_word(uintptr_t addr, uint32_t expected, uint32_t repl,
+                             const char *name) {
+  uint32_t *p = (uint32_t *)addr;
+  uint32_t old = *p;
+  if (old != expected) {
+    fprintf(stderr,
+            "[streamdist] signature mismatch %s at %p: have=%08x expected=%08x; "
+            "distance patch disabled\n",
+            name, (void *)addr, old, expected);
+    return 0;
+  }
+  *p = repl;
+  __builtin___clear_cache((char *)p, (char *)p + sizeof(*p));
+  return 1;
+}
+
+static void patch_stream_distances(void) {
+  int pct = stream_distance_pct();
+  if (pct >= 100)
+    return;
+
+  uintptr_t add = (uintptr_t)so_symbol(
+      &mod_game, "_ZN10CStreaming22AddModelsToRequestListERK7CVectorj");
+  if (!add) {
+    fprintf(stderr, "[streamdist] AddModelsToRequestList not found\n");
+    return;
+  }
+
+  struct stream_patch {
+    uintptr_t off;
+    uint32_t expected;
+    uint32_t repl50;
+    uint32_t repl60;
+    uint32_t repl70;
+    uint32_t repl75;
+    uint32_t repl80;
+    const char *name;
+  };
+  static const struct stream_patch patches[] = {
+      {0x34, 0x52b85909u, 0x52b84909u, 0x52b84e09u, 0x52b85189u,
+       0x52b852c9u, 0x52b85409u, "-100"},
+      {0x38, 0x52b8540au, 0x52b8440au, 0x52b8480au, 0x52b84c0au,
+       0x52b84e0au, 0x52b8500au, "-80"},
+      {0x54, 0x52a85909u, 0x52a84909u, 0x52a84e09u, 0x52a85189u,
+       0x52a852c9u, 0x52a85409u, "100"},
+      {0x58, 0x52a8540au, 0x52a8440au, 0x52a8480au, 0x52a84c0au,
+       0x52a84e0au, 0x52a8500au, "80"},
+      {0x74, 0x52a84908u, 0x52a83908u, 0x52a83e08u, 0x52a84188u,
+       0x52a842c8u, 0x52a84408u, "50"},
+      {0x84, 0x52a8418au, 0x52a8318au, 0x52a8350au, 0x52a8388au,
+       0x52a83a4au, 0x52a83c0au, "35"},
+  };
+
+  for (size_t i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+    const struct stream_patch *p = &patches[i];
+    uint32_t old = *(uint32_t *)(add + p->off);
+    if (old != p->expected) {
+      fprintf(stderr,
+              "[streamdist] signature mismatch %s at %p: have=%08x expected=%08x; "
+              "distance patch disabled\n",
+              p->name, (void *)(add + p->off), old, p->expected);
+      return;
+    }
+  }
+
+  for (size_t i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+    const struct stream_patch *p = &patches[i];
+    uint32_t repl = p->repl70;
+    if (pct == 50)
+      repl = p->repl50;
+    else if (pct == 60)
+      repl = p->repl60;
+    else if (pct == 75)
+      repl = p->repl75;
+    else if (pct == 80)
+      repl = p->repl80;
+    patch_stream_word(add + p->off, p->expected, repl, p->name);
+  }
+  fprintf(stderr,
+          "[streamdist] AddModelsToRequestList distances patched pct=%d "
+          "(outer window reduced, native streaming kept)\n",
+          pct);
 }
 
 static int use_gptk(void) {
@@ -886,6 +1030,178 @@ static void hook_cxa(void) {
            (uintptr_t)my_cxa_guard_abort);
 }
 
+static const char *first_env(const char *a, const char *b) {
+  const char *e = getenv(a);
+  if (e && *e)
+    return e;
+  e = getenv(b);
+  return (e && *e) ? e : NULL;
+}
+
+static int env_flag_default_on(const char *a, const char *b) {
+  const char *e = first_env(a, b);
+  if (!e)
+    return 1;
+  return strcmp(e, "0") && strcmp(e, "off") && strcmp(e, "false") &&
+         strcmp(e, "no");
+}
+
+static int env_flag_default_off(const char *a, const char *b) {
+  const char *e = first_env(a, b);
+  if (!e)
+    return 0;
+  return strcmp(e, "0") && strcmp(e, "off") && strcmp(e, "false") &&
+         strcmp(e, "no");
+}
+
+static int parse_clarity_level(const char *e) {
+  if (!e || !*e)
+    return 2;
+  if (!strcmp(e, "low") || !strcmp(e, "off") || !strcmp(e, "0"))
+    return 0;
+  if (!strcmp(e, "med") || !strcmp(e, "medium") || !strcmp(e, "1"))
+    return 1;
+  return 2;
+}
+
+static int file_contains_token(const char *path, const char *token) {
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return 0;
+  char buf[512];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  for (size_t i = 0; i < n; i++)
+    if (!buf[i])
+      buf[i] = ' ';
+  return strstr(buf, token) != NULL;
+}
+
+static int is_utgard_mali450(void) {
+  if (access("/sys/module/mali/version", F_OK) == 0)
+    return 1;
+  if (file_contains_token("/proc/device-tree/compatible", "gxbb") ||
+      file_contains_token("/proc/device-tree/compatible", "gxl") ||
+      file_contains_token("/proc/device-tree/compatible", "gxm"))
+    return 1;
+  return 0;
+}
+
+static int parse_shadow_setting(const char *e, int def) {
+  if (!e || !*e)
+    return def;
+  if (!strcmp(e, "auto"))
+    return def;
+  if (!strcmp(e, "off") || !strcmp(e, "none") || !strcmp(e, "0"))
+    return 0;
+  if (!strcmp(e, "low") || !strcmp(e, "1"))
+    return 1;
+  if (!strcmp(e, "med") || !strcmp(e, "medium") || !strcmp(e, "2"))
+    return 2;
+  if (!strcmp(e, "high") || !strcmp(e, "3") || !strcmp(e, "full"))
+    return 3;
+  int v = atoi(e);
+  if (v < 0)
+    v = 0;
+  if (v > 3)
+    v = 3;
+  return v;
+}
+
+static int my_GetResolutionDefault(void *self) {
+  (void)self;
+  return parse_clarity_level(first_env("BULLY2_CLARITY", "BULLY_CLARITY"));
+}
+
+static void hook_clarity(void) {
+  const char *e = first_env("BULLY2_CLARITY", "BULLY_CLARITY");
+  if (e && (!strcmp(e, "native") || !strcmp(e, "original")))
+    return;
+
+  uintptr_t s =
+      so_symbol(&mod_game, "_ZN13BullySettings20GetResolutionDefaultEv");
+  if (!s && text_base)
+    s = (uintptr_t)text_base + 0x1034040;
+  if (s) {
+    hook_x64(s, (uintptr_t)my_GetResolutionDefault);
+    fprintf(stderr, "[clarity] GetResolutionDefault hooked -> RS_%s (%d)\n",
+            parse_clarity_level(e) == 0 ? "Low"
+            : parse_clarity_level(e) == 1 ? "Med"
+                                          : "High",
+            parse_clarity_level(e));
+  } else {
+    fprintf(stderr, "[clarity] GetResolutionDefault not found\n");
+  }
+}
+
+static int my_GetDisplayShadowOption(void *self) {
+  (void)self;
+  return 1;
+}
+
+static int my_GetMaxShadowOption(void *self) {
+  (void)self;
+  return parse_shadow_setting(first_env("BULLY2_SHADOWS_MAX",
+                                        "BULLY_SHADOWS_MAX"),
+                              3);
+}
+
+static void hook_shadow_menu(void) {
+  if (!env_flag_default_on("BULLY2_SHADOWS_MENU", "BULLY_SHADOWS_MENU"))
+    return;
+
+  uintptr_t display =
+      so_symbol(&mod_game, "_ZN13BullySettings22GetDisplayShadowOptionEv");
+  uintptr_t max =
+      so_symbol(&mod_game, "_ZN13BullySettings18GetMaxShadowOptionEv");
+  if (!display && text_base)
+    display = (uintptr_t)text_base + 0x1033ccc;
+  if (!max && text_base)
+    max = (uintptr_t)text_base + 0x1033d24;
+
+  if (display)
+    hook_x64(display, (uintptr_t)my_GetDisplayShadowOption);
+  if (max)
+    hook_x64(max, (uintptr_t)my_GetMaxShadowOption);
+
+  fprintf(stderr,
+          "[shadows] menu forced display=%p max=%p max_setting=%d "
+          "(0=Off 1=Low 2=Medium 3=High)\n",
+          (void *)display, (void *)max, my_GetMaxShadowOption(NULL));
+}
+
+static int g_shadow_default = -1;
+
+static int my_GetShadowDefault(void *self) {
+  (void)self;
+  return g_shadow_default >= 0 ? g_shadow_default : 0;
+}
+
+static void hook_shadow_default(void) {
+  const char *e = getenv("BULLY2_SHADOW_DEFAULT");
+  if (!e || !*e)
+    e = getenv("BULLY2_SHADOW_FORCE");
+  if (!e || !*e)
+    e = getenv("BULLY_SHADOW_FORCE");
+  if (!e || !*e || !strcmp(e, "native") || !strcmp(e, "original"))
+    return;
+
+  g_shadow_default = parse_shadow_setting(e, 0);
+  uintptr_t s = so_symbol(&mod_game, "_ZN13BullySettings16GetShadowDefaultEv");
+  if (!s && text_base)
+    s = (uintptr_t)text_base + 0x1033f40;
+  if (s) {
+    hook_x64(s, (uintptr_t)my_GetShadowDefault);
+    fprintf(stderr,
+            "[shadows] default hooked setting=%d "
+            "(0=Off 1=Low 2=Medium 3=High) GetShadowDefault=%p\n",
+            g_shadow_default, (void *)s);
+  } else {
+    fprintf(stderr, "[shadows] GetShadowDefault not found\n");
+  }
+}
+
 static void *make_callthrough(uintptr_t addr) {
   unsigned int *t = mmap(NULL, 32, PROT_READ | PROT_WRITE | PROT_EXEC,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -899,6 +1215,899 @@ static void *make_callthrough(uintptr_t addr) {
   return t;
 }
 
+static int shadow_log_enabled(void) {
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = env_enabled("BULLY2_SHADOWLOG") ? 1 : 0;
+  return enabled;
+}
+
+static int (*tramp_rt2d_init)(void *, unsigned, unsigned, int, int, int, int,
+                              int) = NULL;
+static void (*tramp_shadow_render)(void *, int) = NULL;
+static void (*tramp_rt2d_select)(void *, int) = NULL;
+static void (*tramp_renderer_begin)(void *, void *, int, int, int, int) = NULL;
+static void (*tramp_renderer_end)(void *, int) = NULL;
+static void (*tramp_scene_fullscreen)(void *, void *) = NULL;
+
+static unsigned rt2d_w(void *rt) {
+  return rt ? *(unsigned *)((char *)rt + 80) : 0;
+}
+
+static unsigned rt2d_h(void *rt) {
+  return rt ? *(unsigned *)((char *)rt + 84) : 0;
+}
+
+static unsigned rt2d_fbo(void *rt) {
+  return rt ? *(unsigned *)((char *)rt + 88) : 0;
+}
+
+static int rt2d_depth(void *rt) {
+  return rt ? *(int *)((char *)rt + 12) : 0;
+}
+
+static int should_log_rt(void *rt) {
+  unsigned w = rt2d_w(rt);
+  unsigned h = rt2d_h(rt);
+  return shadow_log_enabled() && rt && w == h && w >= 512;
+}
+
+static int my_RenderTarget2DES_InitWithFormat(void *self, unsigned w,
+                                               unsigned h, int depth,
+                                               int c0, int c1, int c2,
+                                               int c3) {
+  if (shadow_log_enabled() && w == h && w >= 512) {
+    fprintf(stderr,
+            "[shadowlog] RT2DES::Init self=%p size=%ux%u depth=%d "
+            "colors=%d,%d,%d,%d\n",
+            self, w, h, depth, c0, c1, c2, c3);
+  }
+  return tramp_rt2d_init
+             ? tramp_rt2d_init(self, w, h, depth, c0, c1, c2, c3)
+             : 0;
+}
+
+static void my_ShadowSceneView_RenderView(void *self, int visible) {
+  if (shadow_log_enabled()) {
+    static long count;
+    count++;
+    if (count <= 12 || (count % 120) == 0) {
+      float viewport_scale = *(float *)((char *)self + 952);
+      float alpha = *(float *)((char *)self + 956);
+      int cached_count = *(int *)((char *)self + 916);
+      void *scene = *(void **)((char *)self + 920);
+      void *camera = *(void **)((char *)self + 768);
+      void *material = NULL;
+      int tex_count = -1;
+      if (scene) {
+        material = *(void **)((char *)scene + 936);
+        if (material)
+          tex_count = *(int *)((char *)material + 108);
+      }
+      fprintf(stderr,
+              "[shadowlog] ShadowRender #%ld self=%p visible=%d "
+              "scale=%.3f alpha=%.3f cached=%d scene=%p camera=%p "
+              "mat=%p tex_count=%d\n",
+              count, self, visible, viewport_scale, alpha, cached_count,
+              scene, camera, material, tex_count);
+    }
+  }
+  if (tramp_shadow_render)
+    tramp_shadow_render(self, visible);
+}
+
+static void my_RenderTarget2DES_Select(void *self, int clear) {
+  if (should_log_rt(self)) {
+    static long count;
+    count++;
+    if (count <= 32 || (count % 120) == 0)
+      fprintf(stderr,
+              "[shadowlog] RT2DES::Select #%ld self=%p fbo=%u size=%ux%u "
+              "depth=%d clear=%d\n",
+              count, self, rt2d_fbo(self), rt2d_w(self), rt2d_h(self),
+              rt2d_depth(self), clear);
+  }
+  if (tramp_rt2d_select)
+    tramp_rt2d_select(self, clear);
+}
+
+static void my_RendererES_BeginRendering(void *renderer, void *target, int a,
+                                         int b, int c, int d) {
+  if (should_log_rt(target)) {
+    static long count;
+    count++;
+    if (count <= 32 || (count % 120) == 0)
+      fprintf(stderr,
+              "[shadowlog] RendererES::Begin #%ld renderer=%p target=%p "
+              "fbo=%u size=%ux%u depth=%d args=%d,%d,%d,%d drawbuf=%d\n",
+              count, renderer, target, rt2d_fbo(target), rt2d_w(target),
+              rt2d_h(target), rt2d_depth(target), a, b, c, d,
+              renderer ? *(unsigned char *)((char *)renderer + 2056) : -1);
+  }
+  if (tramp_renderer_begin)
+    tramp_renderer_begin(renderer, target, a, b, c, d);
+}
+
+static void my_RendererES_EndRendering(void *renderer, int blit) {
+  void *target = renderer ? *(void **)((char *)renderer + 80) : NULL;
+  if (should_log_rt(target)) {
+    static long count;
+    count++;
+    if (count <= 32 || (count % 120) == 0)
+      fprintf(stderr,
+              "[shadowlog] RendererES::End #%ld renderer=%p target=%p "
+              "fbo=%u size=%ux%u depth=%d blit=%d drawbuf=%d\n",
+              count, renderer, target, rt2d_fbo(target), rt2d_w(target),
+              rt2d_h(target), rt2d_depth(target), blit,
+              renderer ? *(unsigned char *)((char *)renderer + 2056) : -1);
+  }
+  if (tramp_renderer_end)
+    tramp_renderer_end(renderer, blit);
+}
+
+static void my_SceneView_RenderFullScreen(void *self, void *material) {
+  if (shadow_log_enabled()) {
+    static long count;
+    count++;
+    if (count <= 24 || (count % 120) == 0) {
+      int tex_count = material ? *(int *)((char *)material + 108) : -1;
+      fprintf(stderr,
+              "[shadowlog] SceneView::RenderFullScreen #%ld self=%p "
+              "material=%p tex_count=%d\n",
+              count, self, material, tex_count);
+    }
+  }
+  if (tramp_scene_fullscreen)
+    tramp_scene_fullscreen(self, material);
+}
+
+static void hook_shadow_diagnostics(void) {
+  if (!shadow_log_enabled())
+    return;
+
+  uintptr_t rt = so_symbol(&mod_game,
+                           "_ZN16RenderTarget2DES14InitWithFormatEjj11RTDepthType11RTColorTypeS1_S1_S1_");
+  uintptr_t rv = so_symbol(&mod_game, "_ZN15ShadowSceneView10RenderViewEb");
+  uintptr_t select = so_symbol(&mod_game, "_ZN16RenderTarget2DES6SelectEb");
+  uintptr_t begin =
+      so_symbol(&mod_game, "_ZN10RendererES14BeginRenderingEP14RenderTarget2Diiii");
+  uintptr_t end = so_symbol(&mod_game, "_ZN10RendererES12EndRenderingEb");
+  uintptr_t fullscreen =
+      so_symbol(&mod_game, "_ZN9SceneView16RenderFullScreenEP8Material");
+  if (rt) {
+    tramp_rt2d_init =
+        (int (*)(void *, unsigned, unsigned, int, int, int, int, int))
+            make_callthrough(rt);
+    if (tramp_rt2d_init)
+      hook_x64(rt, (uintptr_t)my_RenderTarget2DES_InitWithFormat);
+  }
+  if (select) {
+    tramp_rt2d_select = (void (*)(void *, int))make_callthrough(select);
+    if (tramp_rt2d_select)
+      hook_x64(select, (uintptr_t)my_RenderTarget2DES_Select);
+  }
+  if (begin) {
+    tramp_renderer_begin =
+        (void (*)(void *, void *, int, int, int, int))make_callthrough(begin);
+    if (tramp_renderer_begin)
+      hook_x64(begin, (uintptr_t)my_RendererES_BeginRendering);
+  }
+  if (end) {
+    tramp_renderer_end = (void (*)(void *, int))make_callthrough(end);
+    if (tramp_renderer_end)
+      hook_x64(end, (uintptr_t)my_RendererES_EndRendering);
+  }
+  if (fullscreen) {
+    tramp_scene_fullscreen =
+        (void (*)(void *, void *))make_callthrough(fullscreen);
+    if (tramp_scene_fullscreen)
+      hook_x64(fullscreen, (uintptr_t)my_SceneView_RenderFullScreen);
+  }
+  if (rv) {
+    tramp_shadow_render = (void (*)(void *, int))make_callthrough(rv);
+    if (tramp_shadow_render)
+      hook_x64(rv, (uintptr_t)my_ShadowSceneView_RenderView);
+  }
+  fprintf(stderr,
+          "[shadowlog] hooks rt=%p/%p select=%p/%p begin=%p/%p end=%p/%p "
+          "fullscreen=%p/%p render=%p/%p\n",
+          (void *)rt, (void *)tramp_rt2d_init, (void *)select,
+          (void *)tramp_rt2d_select, (void *)begin,
+          (void *)tramp_renderer_begin, (void *)end,
+          (void *)tramp_renderer_end, (void *)fullscreen,
+          (void *)tramp_scene_fullscreen, (void *)rv,
+          (void *)tramp_shadow_render);
+}
+
+static int (*tramp_menu_settings_init)(void *, void *, void *) = NULL;
+static void (*tramp_menu_settings_update)(void *, float) = NULL;
+static void (*tramp_menu_command_rotate)(void *, void *) = NULL;
+static void (*tramp_initialize_resource_manager)(void) = NULL;
+static void (*tramp_setup_postprocess)(void *) = NULL;
+static void (*tramp_material_queue_vector)(void *, unsigned, const void *) =
+    NULL;
+static void (*g_Material_AddDefaultVectors)(void *, unsigned) = NULL;
+static void (*g_Vector4_AddCleared)(void *, unsigned) = NULL;
+static void (*g_WaitForRenderToFinish)(void *) = NULL;
+static void **g_GameRend = NULL;
+static void *g_shadow_ssao_material = NULL;
+
+static int shadow_rotate_safe_enabled(void) {
+  return env_flag_default_on("BULLY2_SHADOW_ROTATE_SAFE",
+                             "BULLY_SHADOW_ROTATE_SAFE");
+}
+
+static int shadow_setup_sync_enabled(void) {
+  return env_flag_default_on("BULLY2_SHADOW_SETUP_SYNC",
+                             "BULLY_SHADOW_SETUP_SYNC");
+}
+
+static int shadow_vector_local_enabled(void) {
+  const char *e = first_env("BULLY2_SHADOW_VECTOR_LOCAL",
+                            "BULLY_SHADOW_VECTOR_LOCAL");
+  return e && strcmp(e, "0") != 0;
+}
+
+static int shadow_vector_skip_enabled(void) {
+  const char *e = first_env("BULLY2_SHADOW_VECTOR_LOCAL",
+                            "BULLY_SHADOW_VECTOR_LOCAL");
+  return e && (!strcmp(e, "skip") || !strcmp(e, "noop"));
+}
+
+static int shadow_ssao_enabled(void) {
+  const char *e = first_env("BULLY2_SHADOW_SSAO", "BULLY_SHADOW_SSAO");
+  if (!e || !*e || !strcmp(e, "1") || !strcmp(e, "on"))
+    return 1;
+  return !(strcmp(e, "0") == 0 || !strcmp(e, "off") ||
+           !strcmp(e, "disabled"));
+}
+
+static void *current_bully_settings(void) {
+  void **app_global = (void **)so_symbol(&mod_game, "application");
+  void *app = (app_global && *app_global) ? *app_global : NULL;
+  return app ? *(void **)((char *)app + 176) : NULL;
+}
+
+static void resolve_shadow_renderer_sync(void) {
+  if (!g_WaitForRenderToFinish)
+    g_WaitForRenderToFinish =
+        (void (*)(void *))so_symbol(&mod_game,
+                                    "_ZN12GameRenderer21WaitForRenderToFinishEv");
+  if (!g_GameRend)
+    g_GameRend = (void **)so_symbol(&mod_game, "GameRend");
+}
+
+static void wait_for_renderer_idle(const char *why) {
+  resolve_shadow_renderer_sync();
+  void *renderer = (g_GameRend && *g_GameRend) ? *g_GameRend : NULL;
+  if (!renderer || !g_WaitForRenderToFinish)
+    return;
+  if (shadow_log_enabled())
+    fprintf(stderr, "[shadows] wait render idle: %s renderer=%p\n",
+            why ? why : "rotate", renderer);
+  g_WaitForRenderToFinish(renderer);
+}
+
+static void apply_texture_profile_runtime(const char *profile,
+                                          const char *why);
+static int current_texture_profile_id(void);
+
+static void (*g_string8_ctor)(void *, const char *) = NULL;
+static void (*g_string8_dtor)(void *) = NULL;
+static void (*g_name8_set)(void *, const char *) = NULL;
+static void *(*g_ui_get_relative)(void *, void *) = NULL;
+static void *(*g_ui_create_copy)(void *) = NULL;
+static int (*g_ui_set_custom_string)(void *, void *, void *) = NULL;
+static void (*g_ui_set_selectable)(void *, int) = NULL;
+static void (*g_ui_list_add_child_at_index)(void *, int, void *) = NULL;
+static void (*g_menu_sound_select)(void *) = NULL;
+static void (*g_menu_update_option)(void *, void *, void *, int) = NULL;
+
+static int texture_menu_enabled(void) {
+  return env_flag_default_on("BULLY2_TEXTURE_MENU", "BULLY_TEXTURE_MENU");
+}
+
+static int texture_menu_clone_enabled(void) {
+  return env_flag_default_off("BULLY2_TEXTURE_MENU_CLONE",
+                              "BULLY_TEXTURE_MENU_CLONE");
+}
+
+static int texture_menu_refresh_enabled(void) {
+  return env_flag_default_off("BULLY2_TEXTURE_MENU_REFRESH",
+                              "BULLY_TEXTURE_MENU_REFRESH");
+}
+
+static void resolve_texture_menu_symbols(void) {
+  if (!g_string8_ctor)
+    g_string8_ctor =
+        (void (*)(void *, const char *))so_symbol(&mod_game,
+                                                  "_ZN7string8C2EPKc");
+  if (!g_string8_dtor)
+    g_string8_dtor =
+        (void (*)(void *))so_symbol(&mod_game, "_ZN7string8D2Ev");
+  if (!g_name8_set)
+    g_name8_set =
+        (void (*)(void *, const char *))so_symbol(&mod_game,
+                                                  "_ZN5name811setWithTextEPKc");
+  if (!g_ui_get_relative)
+    g_ui_get_relative =
+        (void *(*)(void *, void *))so_symbol(&mod_game,
+                                             "_ZNK6UIRoot19GetRelativeFromPathE7string8");
+  if (!g_ui_create_copy)
+    g_ui_create_copy =
+        (void *(*)(void *))so_symbol(&mod_game, "_ZN6UIRoot10CreateCopyEv");
+  if (!g_ui_set_custom_string)
+    g_ui_set_custom_string =
+        (int (*)(void *, void *, void *))so_symbol(
+            &mod_game, "_ZN9UIElement15SetCustomStringERK5name8RK7string8");
+  if (!g_ui_set_selectable)
+    g_ui_set_selectable =
+        (void (*)(void *, int))so_symbol(&mod_game,
+                                         "_ZN9UIElement13SetSelectableEb");
+  if (!g_ui_list_add_child_at_index)
+    g_ui_list_add_child_at_index =
+        (void (*)(void *, int, void *))so_symbol(
+            &mod_game, "_ZN15UIContainerList15AddChildAtIndexEiP9UIElement");
+  if (!g_menu_sound_select)
+    g_menu_sound_select =
+        (void (*)(void *))so_symbol(&mod_game,
+                                    "_ZN17BullySceneWrapper19Command_SoundSelectEv");
+  if (!g_menu_update_option)
+    g_menu_update_option =
+        (void (*)(void *, void *, void *, int))so_symbol(
+            &mod_game,
+            "_ZN12MenuSettings12UpdateOptionERK5name8RK7string8i");
+}
+
+static int string8_make(unsigned long long storage[4], const char *text) {
+  resolve_texture_menu_symbols();
+  if (!g_string8_ctor)
+    return 0;
+  memset(storage, 0, sizeof(unsigned long long) * 4);
+  g_string8_ctor(storage, text ? text : "");
+  return 1;
+}
+
+static void string8_drop(unsigned long long storage[4]) {
+  if (g_string8_dtor)
+    g_string8_dtor(storage);
+}
+
+static unsigned texture_menu_hash(const char *name) {
+  unsigned n = 0;
+  resolve_texture_menu_symbols();
+  if (g_name8_set)
+    g_name8_set(&n, name);
+  return n;
+}
+
+static void *ui_get_path(void *root, const char *path) {
+  unsigned long long s[4];
+  void *r = NULL;
+  resolve_texture_menu_symbols();
+  if (!root || !g_ui_get_relative || !string8_make(s, path))
+    return NULL;
+  r = g_ui_get_relative(root, s);
+  string8_drop(s);
+  return r;
+}
+
+static int ui_child_count(void *parent) {
+  if (!parent)
+    return 0;
+  int count = *(int *)((char *)parent + 124);
+  return (count >= 0 && count < 512) ? count : 0;
+}
+
+static void *ui_child_at(void *parent, int index) {
+  int count = ui_child_count(parent);
+  if (!parent || index < 0 || index >= count)
+    return NULL;
+  void *arr = *(void **)((char *)parent + 112);
+  if (!arr)
+    return NULL;
+  return ((void **)((char *)arr + 8))[index];
+}
+
+static int ui_find_child_index(void *parent, void *child) {
+  int count = ui_child_count(parent);
+  for (int i = 0; i < count; i++)
+    if (ui_child_at(parent, i) == child)
+      return i;
+  return -1;
+}
+
+static void *ui_find_child_by_hash(void *parent, unsigned hash) {
+  int count = ui_child_count(parent);
+  for (int i = 0; i < count; i++) {
+    void *child = ui_child_at(parent, i);
+    if (child && *(unsigned *)((char *)child + 48) == hash)
+      return child;
+  }
+  return NULL;
+}
+
+static const char *texture_profile_menu_label(int id) {
+  if (id <= 0)
+    return "Low";
+  if (id == 1)
+    return "Medium";
+  return "High";
+}
+
+static const char *texture_profile_menu_name(int id) {
+  if (id <= 0)
+    return "low";
+  if (id == 1)
+    return "medium";
+  return "high";
+}
+
+static const char *texture_profile_save_path(void) {
+  const char *path = first_env("BULLY2_TEX_PROFILE_SAVE",
+                               "BULLY_TEX_PROFILE_SAVE");
+  return (path && *path) ? path : "texture_profile.cfg";
+}
+
+static void texture_profile_persist(const char *profile) {
+  if (!env_flag_default_on("BULLY2_TEX_PROFILE_PERSIST",
+                           "BULLY_TEX_PROFILE_PERSIST"))
+    return;
+  const char *path = texture_profile_save_path();
+  if (!strcmp(path, "0") || !strcmp(path, "off") || !strcmp(path, "false"))
+    return;
+
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    fprintf(stderr, "[texmenu] persist failed path=%s profile=%s\n", path,
+            profile ? profile : "");
+    return;
+  }
+  fprintf(f, "%s\n", profile ? profile : "medium");
+  fclose(f);
+  fprintf(stderr, "[texmenu] persisted profile=%s path=%s\n",
+          profile ? profile : "medium", path);
+}
+
+static void ui_set_custom_literal(void *element, const char *key,
+                                  const char *value) {
+  unsigned name = 0;
+  unsigned long long s[4];
+  resolve_texture_menu_symbols();
+  if (!element || !g_ui_set_custom_string || !g_name8_set ||
+      !string8_make(s, value))
+    return;
+  g_name8_set(&name, key);
+  g_ui_set_custom_string(element, &name, s);
+  string8_drop(s);
+}
+
+static void texture_menu_update_row(void *row) {
+  char value[8];
+  int id = current_texture_profile_id();
+  snprintf(value, sizeof(value), "%d", id);
+  ui_set_custom_literal(row, "caption1", "Textures");
+  ui_set_custom_literal(row, "textvalue", texture_profile_menu_label(id));
+  ui_set_custom_literal(row, "value", value);
+}
+
+static void texture_menu_update_option(void *menu, const char *why) {
+  unsigned name = 0;
+  unsigned long long s[4];
+  int id = current_texture_profile_id();
+  const char *label = texture_profile_menu_label(id);
+
+  resolve_texture_menu_symbols();
+  if (!menu || !g_menu_update_option || !g_name8_set ||
+      !string8_make(s, label))
+    return;
+
+  g_name8_set(&name, "textures");
+  g_menu_update_option(menu, &name, s, id);
+  string8_drop(s);
+
+  if (env_enabled("BULLY2_TEXTURE_MENU_LOG"))
+    fprintf(stderr, "[texmenu] UpdateOption %s value=%s id=%d menu=%p\n",
+            why ? why : "sync", label, id, menu);
+}
+
+static void *texture_menu_find_row(void *root) {
+  void *row = ui_get_path(root, "main.content.textures");
+  if (row)
+    return row;
+  void *content = ui_get_path(root, "main.content");
+  return ui_find_child_by_hash(content, texture_menu_hash("textures"));
+}
+
+static void texture_menu_ensure(void *root) {
+  if (!texture_menu_enabled() || !root)
+    return;
+  resolve_texture_menu_symbols();
+  void *existing = texture_menu_find_row(root);
+  if (existing) {
+    texture_menu_update_row(existing);
+    return;
+  }
+  if (!texture_menu_clone_enabled())
+    return;
+  if (!g_ui_create_copy || !g_ui_list_add_child_at_index) {
+    fprintf(stderr,
+            "[texmenu] disabled: missing symbols copy=%p add=%p get=%p set=%p\n",
+            (void *)g_ui_create_copy, (void *)g_ui_list_add_child_at_index,
+            (void *)g_ui_get_relative, (void *)g_ui_set_custom_string);
+    return;
+  }
+
+  void *content = ui_get_path(root, "main.content");
+  if (!content)
+    return;
+  unsigned textures_hash = texture_menu_hash("textures");
+  void *shadow = ui_get_path(root, "main.content.shadow");
+  if (!shadow)
+    shadow = ui_find_child_by_hash(content, texture_menu_hash("shadow"));
+  if (!shadow)
+    return;
+
+  void *copy = g_ui_create_copy(shadow);
+  if (!copy)
+    return;
+  *(unsigned *)((char *)copy + 48) = textures_hash;
+  if (g_ui_set_selectable)
+    g_ui_set_selectable(copy, 1);
+
+  void *parent = *(void **)((char *)shadow + 104);
+  if (!parent)
+    parent = content;
+  int shadow_index = ui_find_child_index(parent, shadow);
+  g_ui_list_add_child_at_index(parent, shadow_index >= 0 ? shadow_index + 1 : -1,
+                               copy);
+  texture_menu_update_row(copy);
+  fprintf(stderr,
+          "[texmenu] inserted Textures row root=%p content=%p shadow=%p copy=%p "
+          "index=%d profile=%s\n",
+          root, content, shadow, copy, shadow_index + 1,
+          texture_profile_menu_label(current_texture_profile_id()));
+}
+
+static int texture_menu_handle_rotate(void *self, void *element) {
+  if (!texture_menu_enabled() || !element)
+    return 0;
+  if (*(unsigned *)((char *)element + 48) != texture_menu_hash("textures"))
+    return 0;
+
+  if (g_menu_sound_select)
+    g_menu_sound_select(self);
+  int next = (current_texture_profile_id() + 1) % 3;
+  const char *next_profile = texture_profile_menu_name(next);
+  apply_texture_profile_runtime(next_profile, "menu");
+  texture_profile_persist(next_profile);
+  texture_menu_update_row(element);
+  texture_menu_update_option(self, "rotate");
+  void *root = self ? *(void **)((char *)self + 16) : NULL;
+  void *row = texture_menu_find_row(root);
+  if (row && row != element)
+    texture_menu_update_row(row);
+  fprintf(stderr, "[texmenu] menu selected %s (%d)\n",
+          texture_profile_menu_label(current_texture_profile_id()),
+          current_texture_profile_id());
+  return 1;
+}
+
+static int my_MenuSettings_InitWithScene(void *self, void *scene, void *params) {
+  int ret = tramp_menu_settings_init
+                ? tramp_menu_settings_init(self, scene, params)
+                : 0;
+  if (ret) {
+    texture_menu_ensure(scene);
+    texture_menu_update_option(self, "init");
+  }
+  return ret;
+}
+
+static void my_MenuSettings_Update(void *self, float dt) {
+  if (tramp_menu_settings_update)
+    tramp_menu_settings_update(self, dt);
+  static unsigned tick;
+  if ((++tick % 15) == 0)
+    texture_menu_update_option(self, "update");
+}
+
+static int material_vector_count(void *mat) {
+  return mat ? *(int *)((char *)mat + 124) : -1;
+}
+
+static int material_effect_vector_count(void *mat) {
+  void *effect = mat ? *(void **)((char *)mat + 56) : NULL;
+  return effect ? *(int *)((char *)effect + 156) : -1;
+}
+
+static void material_ensure_vector_slots(void *mat, unsigned needed) {
+  if (!mat || needed == 0)
+    return;
+
+  int old_count = *(int *)((char *)mat + 124);
+  if (old_count >= (int)needed)
+    return;
+  if (!g_Vector4_AddCleared)
+    return;
+
+  g_Vector4_AddCleared((char *)mat + 112,
+                       needed - (old_count > 0 ? (unsigned)old_count : 0));
+}
+
+static void material_set_vector_local(void *mat, unsigned index,
+                                      const void *vec) {
+  if (!mat || !vec)
+    return;
+  int effect_vectors = material_effect_vector_count(mat);
+  if (effect_vectors >= 0 && index >= (unsigned)effect_vectors)
+    return;
+
+  unsigned needed = index + 1;
+  if (effect_vectors > (int)needed)
+    needed = (unsigned)effect_vectors;
+  material_ensure_vector_slots(mat, needed);
+
+  void *arr = *(void **)((char *)mat + 112);
+  int count = material_vector_count(mat);
+  if (!arr || (int)index >= count)
+    return;
+
+  memcpy((char *)arr + 8 + (index * 16), vec, 16);
+  if (shadow_log_enabled())
+    fprintf(stderr, "[shadows] ssao vector stored mat=%p index=%u count=%d\n",
+            mat, index, count);
+}
+
+static void my_Material_QueueVectorParameter(void *mat, unsigned index,
+                                             const void *vec) {
+  if (shadow_vector_local_enabled() && mat && mat == g_shadow_ssao_material &&
+      index <= 2) {
+    if (shadow_log_enabled())
+      fprintf(stderr,
+              "[shadows] ssao vector local mat=%p index=%u count=%d "
+              "effect_vectors=%d\n",
+              mat, index, material_vector_count(mat),
+              material_effect_vector_count(mat));
+    if (shadow_vector_skip_enabled())
+      return;
+    material_set_vector_local(mat, index, vec);
+    return;
+  }
+  if (tramp_material_queue_vector)
+    tramp_material_queue_vector(mat, index, vec);
+}
+
+static void log_postprocess_state(const char *phase, void *self) {
+  if (!shadow_log_enabled() || !self)
+    return;
+  void *ssao = *(void **)((char *)self + 840);
+  fprintf(stderr,
+          "[shadows] postprocess %s self=%p pp=%p cm=%p ssao=%p "
+          "cached=%d,%d,%d ssao_vec=%d/%d\n",
+          phase ? phase : "state", self, *(void **)((char *)self + 720),
+          *(void **)((char *)self + 832), ssao,
+          *(int *)((char *)self + 888), *(int *)((char *)self + 892),
+          *(int *)((char *)self + 896), material_vector_count(ssao),
+          material_effect_vector_count(ssao));
+}
+
+static void my_BullyGameRenderer_SetupPostProcess(void *self) {
+  void *settings = current_bully_settings();
+  int *shadow_setting = settings ? (int *)((char *)settings + 28) : NULL;
+  int saved_shadow = -1;
+  if (!shadow_ssao_enabled() && shadow_setting && *shadow_setting >= 3) {
+    saved_shadow = *shadow_setting;
+    *shadow_setting = 2;
+    if (shadow_log_enabled())
+      fprintf(stderr,
+              "[shadows] SSAO disabled for SetupPostProcess: %d -> 2\n",
+              saved_shadow);
+  }
+
+  if (shadow_setup_sync_enabled()) {
+    wait_for_renderer_idle("before SetupPostProcess");
+    log_postprocess_state("before", self);
+  }
+  if (tramp_setup_postprocess)
+    tramp_setup_postprocess(self);
+
+  if (saved_shadow >= 0) {
+    *shadow_setting = saved_shadow;
+    if (self)
+      *(int *)((char *)self + 892) = saved_shadow;
+  }
+
+  g_shadow_ssao_material = self ? *(void **)((char *)self + 840) : NULL;
+  if (!shadow_ssao_enabled())
+    g_shadow_ssao_material = NULL;
+  if (shadow_setup_sync_enabled()) {
+    log_postprocess_state("after", self);
+    wait_for_renderer_idle("after SetupPostProcess");
+  }
+}
+
+static void my_MenuSettings_Command_Rotate(void *self, void *element) {
+  if (texture_menu_handle_rotate(self, element))
+    return;
+  if (shadow_rotate_safe_enabled())
+    wait_for_renderer_idle("before Command_Rotate");
+  if (tramp_menu_command_rotate)
+    tramp_menu_command_rotate(self, element);
+  if (shadow_rotate_safe_enabled())
+    wait_for_renderer_idle("after Command_Rotate");
+}
+
+static void hook_shadow_rotate_safe(void) {
+  if (!shadow_rotate_safe_enabled() && !texture_menu_enabled())
+    return;
+  uintptr_t rotate =
+      so_symbol(&mod_game, "_ZN12MenuSettings14Command_RotateEP9UIElement");
+  resolve_shadow_renderer_sync();
+  if (rotate) {
+    tramp_menu_command_rotate = (void (*)(void *, void *))make_callthrough(rotate);
+    if (tramp_menu_command_rotate)
+      hook_x64(rotate, (uintptr_t)my_MenuSettings_Command_Rotate);
+  }
+  fprintf(stderr,
+          "[shadows] rotate safe=%d rotate=%p tramp=%p wait=%p GameRend=%p\n",
+          shadow_rotate_safe_enabled(), (void *)rotate,
+          (void *)tramp_menu_command_rotate, (void *)g_WaitForRenderToFinish,
+          (void *)g_GameRend);
+}
+
+static void hook_texture_menu(void) {
+  if (!texture_menu_enabled())
+    return;
+  resolve_texture_menu_symbols();
+  uintptr_t init =
+      so_symbol(&mod_game,
+                "_ZN12MenuSettings13InitWithSceneEP7UIScene12orderedarrayI7string8E");
+  uintptr_t update =
+      so_symbol(&mod_game, "_ZN12MenuSettings6UpdateEf");
+  if (init) {
+    tramp_menu_settings_init =
+        (int (*)(void *, void *, void *))make_callthrough(init);
+    if (tramp_menu_settings_init)
+      hook_x64(init, (uintptr_t)my_MenuSettings_InitWithScene);
+  }
+  if (update) {
+    tramp_menu_settings_update =
+        (void (*)(void *, float))make_callthrough(update);
+    if (tramp_menu_settings_update)
+      hook_x64(update, (uintptr_t)my_MenuSettings_Update);
+  }
+  fprintf(stderr,
+          "[texmenu] enabled init=%p/%p update=%p/%p clone=%d refresh=%d "
+          "copy=%p add=%p get=%p set=%p option=%p\n",
+          (void *)init, (void *)tramp_menu_settings_init, (void *)update,
+          (void *)tramp_menu_settings_update,
+          texture_menu_clone_enabled(),
+          texture_menu_refresh_enabled(),
+          (void *)g_ui_create_copy, (void *)g_ui_list_add_child_at_index,
+          (void *)g_ui_get_relative, (void *)g_ui_set_custom_string,
+          (void *)g_menu_update_option);
+}
+
+static void register_texture_menu_patch_zip(const char *why) {
+  if (!texture_menu_enabled() || access("assets/bully2_patch.zip", R_OK) != 0)
+    return;
+
+  void **resource = (void **)so_symbol(&mod_game, "gResource");
+  void (*register_patch_zip)(void *, void *) =
+      (void (*)(void *, void *))so_symbol(
+          &mod_game, "_ZN15ResourceManager16RegisterPatchZipERK7string8");
+  void *rm = resource ? *resource : NULL;
+  unsigned long long path[4];
+  if (!rm || !register_patch_zip || !string8_make(path, "bully2_patch.zip")) {
+    fprintf(stderr,
+            "[texmenu] RegisterPatchZip skipped why=%s gResource=%p rm=%p "
+            "fn=%p\n",
+            why ? why : "?", (void *)resource, rm,
+            (void *)register_patch_zip);
+    return;
+  }
+  register_patch_zip(rm, path);
+  string8_drop(path);
+  fprintf(stderr, "[texmenu] RegisterPatchZip bully2_patch.zip why=%s rm=%p\n",
+          why ? why : "?", rm);
+}
+
+static void my_InitializeResourceManager(void) {
+  if (tramp_initialize_resource_manager)
+    tramp_initialize_resource_manager();
+  register_texture_menu_patch_zip("InitializeResourceManager");
+}
+
+static void hook_texture_menu_patch_zip(void) {
+  if (!texture_menu_enabled())
+    return;
+  uintptr_t init = so_symbol(&mod_game, "_Z25InitializeResourceManagerv");
+  if (init) {
+    tramp_initialize_resource_manager =
+        (void (*)(void))make_callthrough(init);
+    if (tramp_initialize_resource_manager)
+      hook_x64(init, (uintptr_t)my_InitializeResourceManager);
+  }
+  fprintf(stderr, "[texmenu] patch zip hook initres=%p tramp=%p\n",
+          (void *)init, (void *)tramp_initialize_resource_manager);
+}
+
+static void hook_shadow_postprocess_sync(void) {
+  if (!shadow_setup_sync_enabled())
+    return;
+  resolve_shadow_renderer_sync();
+  uintptr_t setup =
+      so_symbol(&mod_game, "_ZN17BullyGameRenderer16SetupPostProcessEv");
+  if (setup) {
+    tramp_setup_postprocess = (void (*)(void *))make_callthrough(setup);
+    if (tramp_setup_postprocess)
+      hook_x64(setup, (uintptr_t)my_BullyGameRenderer_SetupPostProcess);
+  }
+  fprintf(stderr,
+          "[shadows] setup sync=%d setup=%p tramp=%p wait=%p GameRend=%p\n",
+          shadow_setup_sync_enabled(), (void *)setup,
+          (void *)tramp_setup_postprocess, (void *)g_WaitForRenderToFinish,
+          (void *)g_GameRend);
+}
+
+static void hook_shadow_material_vector_fix(void) {
+  if (!shadow_vector_local_enabled())
+    return;
+  uintptr_t queue =
+      so_symbol(&mod_game, "_ZN8Material20QueueVectorParameterEjRK7vector4");
+  g_Material_AddDefaultVectors =
+      (void (*)(void *, unsigned))so_symbol(&mod_game,
+                                            "_ZN8Material17AddDefaultVectorsEj");
+  g_Vector4_AddCleared =
+      (void (*)(void *, unsigned))so_symbol(&mod_game,
+                                            "_ZN12orderedarrayI7vector4E10addClearedEj");
+  if (queue) {
+    tramp_material_queue_vector =
+        (void (*)(void *, unsigned, const void *))make_callthrough(queue);
+    if (tramp_material_queue_vector)
+      hook_x64(queue, (uintptr_t)my_Material_QueueVectorParameter);
+  }
+  fprintf(stderr,
+          "[shadows] vector local=%d queue=%p tramp=%p add_defaults=%p "
+          "vec_add_cleared=%p\n",
+          shadow_vector_local_enabled(), (void *)queue,
+          (void *)tramp_material_queue_vector,
+          (void *)g_Material_AddDefaultVectors,
+          (void *)g_Vector4_AddCleared);
+}
+
+static void maybe_auto_set_shadow(int frame) {
+  static int done;
+  static int trigger = -2;
+  static int value = 3;
+  if (trigger == -2) {
+    const char *f = getenv("BULLY2_SHADOW_AUTO_SET_FRAME");
+    trigger = (f && *f) ? atoi(f) : -1;
+    value = parse_shadow_setting(getenv("BULLY2_SHADOW_AUTO_SET"), 3);
+  }
+  if (done || trigger < 0 || frame < trigger)
+    return;
+  done = 1;
+
+  void **app_global = (void **)so_symbol(&mod_game, "application");
+  void *app = (app_global && *app_global) ? *app_global : NULL;
+  void *settings = app ? *(void **)((char *)app + 176) : NULL;
+  if (!settings) {
+    fprintf(stderr,
+            "[shadows] auto-set failed frame=%d value=%d app=%p settings=%p\n",
+            frame, value, app, settings);
+    return;
+  }
+
+  int old = *(int *)((char *)settings + 28);
+  *(int *)((char *)settings + 28) = value;
+  *(unsigned char *)((char *)settings + 176) = 1;
+  fprintf(stderr,
+          "[shadows] auto-set frame=%d shadow %d -> %d settings=%p\n",
+          frame, old, value, settings);
+}
+
 static void (*tramp_loadscene)(void *) = NULL;
 static void (*g_UpdateMemoryUsed)(void) = NULL;
 static int (*g_GetTexMemUsed)(void) = NULL;
@@ -907,6 +2116,7 @@ static void (*g_RemoveAllUnused)(int) = NULL;
 static void (*g_MakeSpaceFor)(int) = NULL;
 static void (*g_MakeSpaceForMemoryObject)(int, int) = NULL;
 static void (*g_RemoveIslands)(int) = NULL;
+static void (*g_DeleteFarAwayRwObjects)(void *) = NULL;
 static int (*g_RemoveNonReferencedTxds)(int, int) = NULL;
 static int (*g_RemoveReferencedTxds)(int, int) = NULL;
 static void (*g_TxdGarbageCollect)(void) = NULL;
@@ -916,22 +2126,520 @@ static void (*g_TidyUpTextureMemory)(int) = NULL;
 static void (*g_TidyUpMemory)(int, int) = NULL;
 static void (*g_DrasticTidyUpMemory)(int) = NULL;
 static void (*g_ProcessTidyUpMemory)(void) = NULL;
+static void (*g_Texture2D_AttemptUnload)(void *) = NULL;
+static void (*g_GetAllLoadedTextures)(void *, void *) = NULL;
+static void (*g_ResourceManager_Reload)(void *, void *) = NULL;
+static int (*g_Texture2D_GetWidth)(void *) = NULL;
+static int (*g_Texture2D_GetHeight)(void *) = NULL;
 static int *g_TxdMemoryLoaded = NULL;
 static int *g_TexHeapCachedUsed = NULL;
 static int *g_StreamingMemoryUsed = NULL;
 static int *g_StreamingBufferSize = NULL;
 static long g_lowmem_requests;
 
+typedef struct {
+  void *data;
+  unsigned capacity;
+  unsigned count;
+} TexturePtrArray;
+
+typedef struct {
+  TexturePtrArray arr;
+  unsigned index;
+  unsigned attempted;
+  unsigned skipped;
+  unsigned inspected;
+  unsigned batch;
+  unsigned min_dim;
+  unsigned limit;
+  unsigned pre_unload;
+  int active;
+  char reason[96];
+  long long gl_before;
+  long uploads_before;
+  long del_before;
+} TextureReloadQueue;
+
+static TextureReloadQueue g_tex_reload_queue;
+
+static void native_stream_evict(const char *why, int force);
+
+static int parse_texture_profile(const char *e, int *half, int *min_dim,
+                                 const char **label) {
+  if (!e || !*e)
+    return 0;
+  while (*e == ' ' || *e == '\t' || *e == '\n' || *e == '\r')
+    e++;
+  if (!*e)
+    return 0;
+  if (!strncmp(e, "low", 3) || !strncmp(e, "256", 3) ||
+      !strncmp(e, "extreme", 7)) {
+    *half = 1;
+    *min_dim = 256;
+    *label = "low";
+    return 1;
+  }
+  if (!strncmp(e, "medium", 6) || !strncmp(e, "med", 3) ||
+      !strncmp(e, "512", 3)) {
+    *half = 1;
+    *min_dim = 512;
+    *label = "medium";
+    return 1;
+  }
+  if (!strncmp(e, "high", 4) || !strncmp(e, "full", 4) ||
+      !strncmp(e, "native", 6) || !strncmp(e, "off", 3) ||
+      !strncmp(e, "0", 1)) {
+    *half = 0;
+    *min_dim = 1024;
+    *label = "high";
+    return 1;
+  }
+  return 0;
+}
+
+static int current_texture_profile_id(void) {
+  if (!bully_tex_runtime_half_enabled())
+    return 2;
+  int min_dim = bully_tex_runtime_half_min_dim();
+  return min_dim <= 256 ? 0 : 1;
+}
+
+static void texture_array_destroy(TexturePtrArray *arr) {
+  if (!arr || !arr->data)
+    return;
+  long *ref = (long *)arr->data;
+  long n = __atomic_sub_fetch(ref, 1, __ATOMIC_ACQ_REL);
+  if (n == 0)
+    free(arr->data);
+  arr->data = NULL;
+  arr->capacity = 0;
+  arr->count = 0;
+}
+
+static void **texture_array_items(TexturePtrArray *arr) {
+  return (arr && arr->data) ? (void **)((char *)arr->data + 8) : NULL;
+}
+
+static const char *texture_reload_mode(void) {
+  const char *e = first_env("BULLY2_TEX_RELOAD_ON_CHANGE",
+                            "BULLY_TEX_RELOAD_ON_CHANGE");
+  if (!e || !*e || !strcmp(e, "0") || !strcmp(e, "off") ||
+      !strcmp(e, "false") || !strcmp(e, "none"))
+    return NULL;
+  if (!strcmp(e, "attempt") || !strcmp(e, "unload") ||
+      !strcmp(e, "old"))
+    return "attempt";
+  return "reload";
+}
+
+static unsigned texture_env_uint(const char *name, const char *legacy,
+                                 unsigned def, unsigned min, unsigned max) {
+  const char *e = first_env(name, legacy);
+  long v = (e && *e) ? atol(e) : (long)def;
+  if (v < (long)min)
+    v = min;
+  if (v > (long)max)
+    v = max;
+  return (unsigned)v;
+}
+
+static void resolve_texture_reload_symbols(void) {
+  if (!g_GetAllLoadedTextures)
+    g_GetAllLoadedTextures =
+        (void (*)(void *, void *))so_symbol(
+            &mod_game,
+            "_ZNK15ResourceManager12GetAllLoadedI9Texture2DEE12orderedarrayIPT_Ev");
+  if (!g_Texture2D_AttemptUnload)
+    g_Texture2D_AttemptUnload =
+        (void (*)(void *))so_symbol(&mod_game,
+                                    "_ZN9Texture2D13AttemptUnloadEv");
+  if (!g_ResourceManager_Reload)
+    g_ResourceManager_Reload =
+        (void (*)(void *, void *))so_symbol(&mod_game,
+                                            "_ZN15ResourceManager6ReloadEP8Resource");
+  if (!g_Texture2D_GetWidth)
+    g_Texture2D_GetWidth =
+        (int (*)(void *))so_symbol(&mod_game, "_ZNK9Texture2D8GetWidthEv");
+  if (!g_Texture2D_GetHeight)
+    g_Texture2D_GetHeight =
+        (int (*)(void *))so_symbol(&mod_game, "_ZNK9Texture2D9GetHeightEv");
+}
+
+static int texture_profile_collect_loaded(TexturePtrArray *arr,
+                                          const char *why) {
+  if (!arr)
+    return 0;
+  memset(arr, 0, sizeof(*arr));
+  void **resource = (void **)so_symbol(&mod_game, "gResource");
+  void *rm = resource ? *resource : NULL;
+  resolve_texture_reload_symbols();
+  if (!rm || !g_GetAllLoadedTextures) {
+    fprintf(stderr,
+            "[texreload] collect skipped why=%s gResource=%p rm=%p get=%p\n",
+            why ? why : "profile", (void *)resource, rm,
+            (void *)g_GetAllLoadedTextures);
+    return 0;
+  }
+
+  wait_for_renderer_idle("before texture reload");
+
+#if defined(__aarch64__)
+  register void *x0 asm("x0") = rm;
+  register void *x8 asm("x8") = arr;
+  register void *fn asm("x16") = (void *)g_GetAllLoadedTextures;
+  asm volatile("blr %2"
+               : "+r"(x0), "+r"(x8)
+               : "r"(fn)
+               : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x9", "x10",
+                 "x11", "x12", "x13", "x14", "x15", "x17", "x18", "v0",
+                 "v1", "v2", "v3", "v4", "v5", "v6", "v7", "memory", "cc");
+#else
+  g_GetAllLoadedTextures(rm, arr);
+#endif
+
+  return arr->data != NULL;
+}
+
+static int texture_loaded_flag(void *tex) {
+  return tex && (*(unsigned char *)((char *)tex + 50) == 0);
+}
+
+static int texture_dimensions(void *tex, int *w, int *h) {
+  if (!tex || !w || !h)
+    return 0;
+  resolve_texture_reload_symbols();
+  int tw = g_Texture2D_GetWidth ? g_Texture2D_GetWidth(tex) : 0;
+  int th = g_Texture2D_GetHeight ? g_Texture2D_GetHeight(tex) : 0;
+  if (tw <= 0 || tw > 8192 || th <= 0 || th > 8192)
+    return 0;
+  *w = tw;
+  *h = th;
+  return 1;
+}
+
+static void texture_reload_queue_reset(void) {
+  texture_array_destroy(&g_tex_reload_queue.arr);
+  memset(&g_tex_reload_queue, 0, sizeof(g_tex_reload_queue));
+}
+
+static void texture_profile_cleanup(const char *why);
+
+static void texture_profile_reload_finish(const char *status) {
+  char reason[96];
+  unsigned attempted = g_tex_reload_queue.attempted;
+  unsigned skipped = g_tex_reload_queue.skipped;
+  unsigned inspected = g_tex_reload_queue.inspected;
+  unsigned total = g_tex_reload_queue.arr.count;
+  long long gl_before = g_tex_reload_queue.gl_before;
+  long del_before = g_tex_reload_queue.del_before;
+  long uploads_before = g_tex_reload_queue.uploads_before;
+  snprintf(reason, sizeof(reason), "%s",
+           g_tex_reload_queue.reason[0] ? g_tex_reload_queue.reason
+                                        : "texreload");
+
+  texture_reload_queue_reset();
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  fprintf(stderr,
+          "[texreload] %s %s total=%u inspected=%u reloaded=%u skipped=%u "
+          "gl=%lld->%lld MB del=%ld->%ld uploads=%ld->%ld\n",
+          reason, status ? status : "done", total, inspected, attempted,
+          skipped, gl_before / (1024 * 1024),
+          bully_glmem_live_bytes() / (1024 * 1024), del_before,
+          bully_glmem_del_count(), uploads_before, bully_glmem_upload_count());
+  texture_profile_cleanup(reason);
+}
+
+static int texture_profile_queue_reload(const char *why) {
+  TexturePtrArray arr;
+  unsigned count;
+  int id = current_texture_profile_id();
+  unsigned default_min_dim = (id <= 0) ? 256 : 512;
+
+  resolve_texture_reload_symbols();
+  if (!g_ResourceManager_Reload) {
+    fprintf(stderr, "[texreload] reload skipped why=%s reload=%p\n",
+            why ? why : "profile", (void *)g_ResourceManager_Reload);
+    return 0;
+  }
+  if (!texture_profile_collect_loaded(&arr, why))
+    return 0;
+
+  count = arr.count;
+  if (count > 4096)
+    count = 4096;
+
+  texture_reload_queue_reset();
+  g_tex_reload_queue.arr = arr;
+  g_tex_reload_queue.index = 0;
+  g_tex_reload_queue.batch =
+      texture_env_uint("BULLY2_TEX_RELOAD_BATCH", "BULLY_TEX_RELOAD_BATCH",
+                       2, 1, 32);
+  g_tex_reload_queue.min_dim =
+      texture_env_uint("BULLY2_TEX_RELOAD_MIN_DIM",
+                       "BULLY_TEX_RELOAD_MIN_DIM", default_min_dim, 0, 4096);
+  g_tex_reload_queue.limit =
+      texture_env_uint("BULLY2_TEX_RELOAD_LIMIT", "BULLY_TEX_RELOAD_LIMIT",
+                       count, 1, 4096);
+  g_tex_reload_queue.pre_unload =
+      texture_env_uint("BULLY2_TEX_RELOAD_PRE_UNLOAD",
+                       "BULLY_TEX_RELOAD_PRE_UNLOAD", 1, 0, 1);
+  if (g_tex_reload_queue.limit > count)
+    g_tex_reload_queue.limit = count;
+  g_tex_reload_queue.active = 1;
+  snprintf(g_tex_reload_queue.reason, sizeof(g_tex_reload_queue.reason), "%s",
+           why ? why : "profile");
+  g_tex_reload_queue.gl_before = bully_glmem_live_bytes();
+  g_tex_reload_queue.del_before = bully_glmem_del_count();
+  g_tex_reload_queue.uploads_before = bully_glmem_upload_count();
+
+  fprintf(stderr,
+          "[texreload] queued %s total=%u limit=%u batch=%u min_dim=%u "
+          "pre_unload=%u reload=%p unload=%p get=%p getwh=%p/%p gl=%lld MB\n",
+          g_tex_reload_queue.reason, arr.count, g_tex_reload_queue.limit,
+          g_tex_reload_queue.batch, g_tex_reload_queue.min_dim,
+          g_tex_reload_queue.pre_unload, (void *)g_ResourceManager_Reload,
+          (void *)g_Texture2D_AttemptUnload, (void *)g_GetAllLoadedTextures,
+          (void *)g_Texture2D_GetWidth, (void *)g_Texture2D_GetHeight,
+          g_tex_reload_queue.gl_before / (1024 * 1024));
+  return 1;
+}
+
+static void texture_profile_reload_tick(int frame) {
+  if (!g_tex_reload_queue.active)
+    return;
+
+  void **resource = (void **)so_symbol(&mod_game, "gResource");
+  void *rm = resource ? *resource : NULL;
+  void **items = texture_array_items(&g_tex_reload_queue.arr);
+  unsigned count = g_tex_reload_queue.arr.count;
+  if (count > g_tex_reload_queue.limit)
+    count = g_tex_reload_queue.limit;
+  resolve_texture_reload_symbols();
+  if (!rm || !items || !g_ResourceManager_Reload ||
+      (g_tex_reload_queue.pre_unload && !g_Texture2D_AttemptUnload)) {
+    fprintf(stderr,
+            "[texreload] aborted frame=%d rm=%p items=%p reload=%p unload=%p\n",
+            frame, rm, (void *)items, (void *)g_ResourceManager_Reload,
+            (void *)g_Texture2D_AttemptUnload);
+    texture_profile_reload_finish("aborted");
+    return;
+  }
+
+  unsigned reloaded = 0;
+  unsigned skipped = 0;
+  unsigned scanned = 0;
+  unsigned max_scan = 96 + (g_tex_reload_queue.batch * 48);
+  long long gl_before = bully_glmem_live_bytes();
+  long uploads_before = bully_glmem_upload_count();
+  long del_before = bully_glmem_del_count();
+
+  wait_for_renderer_idle("before texture reload batch");
+  while (g_tex_reload_queue.index < count &&
+         reloaded < g_tex_reload_queue.batch && scanned < max_scan) {
+    void *tex = items[g_tex_reload_queue.index++];
+    int w = 0;
+    int h = 0;
+    scanned++;
+    g_tex_reload_queue.inspected++;
+    if (!tex || !texture_loaded_flag(tex) || !texture_dimensions(tex, &w, &h)) {
+      skipped++;
+      continue;
+    }
+    if (g_tex_reload_queue.min_dim &&
+        w < (int)g_tex_reload_queue.min_dim &&
+        h < (int)g_tex_reload_queue.min_dim) {
+      skipped++;
+      continue;
+    }
+    if (g_tex_reload_queue.pre_unload && g_Texture2D_AttemptUnload)
+      g_Texture2D_AttemptUnload(tex);
+    g_ResourceManager_Reload(rm, tex);
+    reloaded++;
+    g_tex_reload_queue.attempted++;
+  }
+  g_tex_reload_queue.skipped += skipped;
+
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  if (reloaded || env_enabled("BULLY2_TEX_RELOAD_LOG")) {
+    fprintf(stderr,
+            "[texreload] tick frame=%d pos=%u/%u scanned=%u reload=%u "
+            "skip=%u gl=%lld->%lld MB del=%ld->%ld uploads=%ld->%ld\n",
+            frame, g_tex_reload_queue.index, count, scanned, reloaded, skipped,
+            gl_before / (1024 * 1024),
+            bully_glmem_live_bytes() / (1024 * 1024), del_before,
+            bully_glmem_del_count(), uploads_before,
+            bully_glmem_upload_count());
+  }
+  wait_for_renderer_idle("after texture reload batch");
+
+  if (g_tex_reload_queue.index >= count)
+    texture_profile_reload_finish("done");
+}
+
+static void texture_profile_attempt_unload_loaded_textures(const char *why) {
+  TexturePtrArray arr;
+  if (!texture_profile_collect_loaded(&arr, why))
+    return;
+  resolve_texture_reload_symbols();
+  if (!g_Texture2D_AttemptUnload) {
+    fprintf(stderr, "[texreload] attempt skipped why=%s unload=%p\n",
+            why ? why : "profile", (void *)g_Texture2D_AttemptUnload);
+    texture_array_destroy(&arr);
+    return;
+  }
+
+  unsigned count = arr.count;
+  if (count > 4096)
+    count = 4096;
+  void **items = texture_array_items(&arr);
+  unsigned attempted = 0;
+  unsigned skipped = 0;
+  long long gl_before = bully_glmem_live_bytes();
+  long del_before = bully_glmem_del_count();
+  long uploads_before = bully_glmem_upload_count();
+
+  for (unsigned i = 0; items && i < count; i++) {
+    void *tex = items[i];
+    if (!tex) {
+      skipped++;
+      continue;
+    }
+    g_Texture2D_AttemptUnload(tex);
+    attempted++;
+  }
+
+  texture_array_destroy(&arr);
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  int trimmed = trim_heap(why);
+  long long gl_after = bully_glmem_live_bytes();
+  fprintf(stderr,
+          "[texreload] attempt %s loaded=%u attempted=%u skipped=%u gl=%lld->%lld MB "
+          "del=%ld->%ld uploads=%ld->%ld trim=%d\n",
+          why ? why : "profile", count, attempted, skipped,
+          gl_before / (1024 * 1024), gl_after / (1024 * 1024), del_before,
+          bully_glmem_del_count(), uploads_before, bully_glmem_upload_count(),
+          trimmed);
+  bully_glmem_report(why ? why : "texreload");
+  wait_for_renderer_idle("after texture reload");
+}
+
+static int texture_profile_reload_loaded_textures(const char *why) {
+  const char *mode = texture_reload_mode();
+  if (!mode)
+    return 0;
+  if (!strcmp(mode, "attempt")) {
+    texture_profile_attempt_unload_loaded_textures(why);
+    return 0;
+  }
+  return texture_profile_queue_reload(why);
+}
+
+static void texture_profile_cleanup(const char *why) {
+  wait_for_renderer_idle("before texture profile change");
+  if (g_OnLowMemory)
+    g_OnLowMemory(fake_env, NULL);
+  if (g_TidyUpTextureMemory)
+    g_TidyUpTextureMemory(1);
+  if (g_TxdGarbageCollect)
+    g_TxdGarbageCollect();
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  trim_heap(why);
+  native_stream_evict(why ? why : "texture-profile", 1);
+  bully_glmem_report(why ? why : "texture-profile");
+  wait_for_renderer_idle("after texture profile change");
+}
+
+static void apply_texture_profile_runtime(const char *profile,
+                                          const char *why) {
+  int half = 1;
+  int min_dim = 512;
+  const char *label = "medium";
+  if (!parse_texture_profile(profile, &half, &min_dim, &label)) {
+    fprintf(stderr, "[texprofile] ignored invalid profile '%s'\n",
+            profile ? profile : "");
+    return;
+  }
+
+  int old_id = current_texture_profile_id();
+  int new_id = half ? (min_dim <= 256 ? 0 : 1) : 2;
+  if (old_id == new_id)
+    return;
+
+  char reason[96];
+  snprintf(reason, sizeof(reason), "%s:%s", why ? why : "runtime", label);
+  bully_tex_set_runtime_profile(half, min_dim, reason);
+  if (!texture_profile_reload_loaded_textures(reason))
+    texture_profile_cleanup(reason);
+}
+
+static void maybe_runtime_texture_profile(int frame) {
+  static int auto_done;
+  static int auto_trigger = -2;
+  static char last_file_profile[32];
+
+  if (auto_trigger == -2) {
+    const char *f = getenv("BULLY2_TEX_AUTO_SET_FRAME");
+    auto_trigger = (f && *f) ? atoi(f) : -1;
+  }
+
+  if (!auto_done && auto_trigger >= 0 && frame >= auto_trigger) {
+    auto_done = 1;
+    apply_texture_profile_runtime(getenv("BULLY2_TEX_AUTO_SET"),
+                                  "auto-frame");
+  }
+
+  if ((frame % 60) != 0)
+    return;
+
+  const char *path = getenv("BULLY2_TEX_PROFILE_FILE");
+  if (!path || !*path) {
+    if (!env_enabled("BULLY2_TEX_PROFILE_POLL"))
+      return;
+    path = "/tmp/bully_tex_profile";
+  }
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return;
+  char buf[32];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  for (size_t i = 0; i < n; i++)
+    if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t')
+      buf[i] = ' ';
+  if (!strcmp(buf, last_file_profile))
+    return;
+  snprintf(last_file_profile, sizeof(last_file_profile), "%s", buf);
+  apply_texture_profile_runtime(buf, "file");
+}
+
+static int current_texture_memory_used(void) {
+  long long used = 0;
+  if (g_TexHeapCachedUsed && *g_TexHeapCachedUsed > used)
+    used = *g_TexHeapCachedUsed;
+  if (g_TxdMemoryLoaded && *g_TxdMemoryLoaded > used)
+    used = *g_TxdMemoryLoaded;
+  long long gl_used = bully_glmem_live_bytes();
+  if (gl_used > used)
+    used = gl_used;
+  return used > 0x7fffffffLL ? 0x7fffffff : (int)used;
+}
+
 static int my_GetTotalGraphicsMemoryOfSystem(void) {
   return tex_budget_bytes();
 }
 
+static int my_GetCurrentTextureMemoryUsed(void) {
+  return current_texture_memory_used();
+}
+
 static int my_GetFreeStreamingTextureMemory(void) {
   int total = tex_budget_bytes();
-  int used = g_GetTexMemUsed ? g_GetTexMemUsed() : 0;
-  long long gl_used = bully_glmem_live_bytes();
-  if (gl_used > used)
-    used = gl_used > 0x7fffffffLL ? 0x7fffffff : (int)gl_used;
+  int used = current_texture_memory_used();
   return used < total ? total - used : 0;
 }
 
@@ -956,7 +2664,7 @@ static void native_stream_evict(const char *why, int force) {
   if (g_UpdateMemoryUsed)
     g_UpdateMemoryUsed();
   long long gl_before = bully_glmem_live_bytes();
-  int helper_before = g_GetTexMemUsed ? g_GetTexMemUsed() : 0;
+  int helper_before = current_texture_memory_used();
   int txd_before = g_TxdMemoryLoaded ? *g_TxdMemoryLoaded : 0;
   int cache_before = g_TexHeapCachedUsed ? *g_TexHeapCachedUsed : 0;
   int before = helper_before;
@@ -1015,9 +2723,10 @@ static void native_stream_evict(const char *why, int force) {
     g_TxdGarbageCollect();
   if (g_UpdateMemoryUsed)
     g_UpdateMemoryUsed();
+  int trimmed = trim_heap(why);
 
   long long gl_after = bully_glmem_live_bytes();
-  int helper_after = g_GetTexMemUsed ? g_GetTexMemUsed() : 0;
+  int helper_after = current_texture_memory_used();
   int txd_after = g_TxdMemoryLoaded ? *g_TxdMemoryLoaded : 0;
   int cache_after = g_TexHeapCachedUsed ? *g_TexHeapCachedUsed : 0;
   int after = helper_after;
@@ -1028,12 +2737,13 @@ static void native_stream_evict(const char *why, int force) {
   long long observed_after = after;
   if (gl_after > observed_after)
     observed_after = gl_after;
-  if (force || evict_log_enabled() || observed_after > budget) {
+  if (evict_log_enabled()) {
     fprintf(stderr,
             "[evict] %s mode=%s tex=%d->%d MB helper=%d->%d txd=%d->%d "
             "cache=%d->%d gl=%lld->%lld MB glpeak=%lld MB "
-            "gencnt=%ld delcnt=%ld uploads=%ld lowmem=%ld txd_removed=%d "
-            "memobj=%d stream=%d/%d MB "
+            "gencnt=%ld delcnt=%ld uploads=%ld half=%ld saved=%lld MB "
+            "lowmem=%ld txd_removed=%d "
+            "memobj=%d trim=%d stream=%d/%d MB "
             "observed=%lld->%lld MB budget=%d MB request=%d MB funcs "
             "low=%p app=%p tidytex=%p tidymem=%p drastic=%p rm=%p "
             "island=%p msf=%p txdgc=%p\n",
@@ -1045,8 +2755,10 @@ static void native_stream_evict(const char *why, int force) {
             gl_after / (1024 * 1024),
             bully_glmem_peak_bytes() / (1024 * 1024),
             bully_glmem_gen_count(), bully_glmem_del_count(),
-            bully_glmem_upload_count(), g_lowmem_requests, txd_removed,
-            memobj_called,
+            bully_glmem_upload_count(), bully_glmem_half_upload_count(),
+            bully_glmem_half_saved_bytes() / (1024 * 1024),
+            g_lowmem_requests, txd_removed,
+            memobj_called, trimmed,
             (g_StreamingMemoryUsed ? *g_StreamingMemoryUsed : 0) / (1024 * 1024),
             (g_StreamingBufferSize ? *g_StreamingBufferSize : 0) / (1024 * 1024),
             observed_before / (1024 * 1024),
@@ -1063,9 +2775,84 @@ static void native_stream_evict(const char *why, int force) {
   busy = 0;
 }
 
+static void loadscene_clean(const char *why, void *vec) {
+  int level = loadscene_clean_level();
+  if (level <= 0)
+    return;
+
+  long long gl_before = bully_glmem_live_bytes();
+  long gen_before = bully_glmem_gen_count();
+  long del_before = bully_glmem_del_count();
+  long uploads_before = bully_glmem_upload_count();
+
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  int helper_before = current_texture_memory_used();
+  int stream_before = g_StreamingMemoryUsed ? *g_StreamingMemoryUsed : 0;
+
+  if (g_OnLowMemory)
+    g_OnLowMemory(fake_env, NULL);
+  if (g_TidyUpTextureMemory)
+    g_TidyUpTextureMemory(1);
+  if (vec && g_DeleteFarAwayRwObjects)
+    g_DeleteFarAwayRwObjects(vec);
+  if (g_RemoveUnused)
+    g_RemoveUnused();
+  if (level >= 2 && g_RemoveAllUnused)
+    g_RemoveAllUnused(0);
+  if (g_RemoveIslands)
+    g_RemoveIslands(0);
+  if (g_MakeSpaceFor)
+    g_MakeSpaceFor(evict_request_bytes());
+
+  int txd_nonref = 0;
+  int txd_ref = 0;
+  if (level >= 2 && g_RemoveNonReferencedTxds)
+    txd_nonref = g_RemoveNonReferencedTxds(evict_request_bytes(), 12200);
+  if (level >= 3 && g_RemoveReferencedTxds)
+    txd_ref = g_RemoveReferencedTxds(evict_request_bytes(), 12200);
+  if (env_enabled("BULLY2_LOADSCENE_MEMOBJ") && g_MakeSpaceForMemoryObject)
+    g_MakeSpaceForMemoryObject(evict_request_bytes(), 12200);
+  if (env_enabled("BULLY2_LOADSCENE_TIDYMEM") && g_TidyUpMemory)
+    g_TidyUpMemory(0, 0);
+  if (env_enabled("BULLY2_LOADSCENE_DRASTIC") && g_DrasticTidyUpMemory)
+    g_DrasticTidyUpMemory(0);
+  if (g_TxdGarbageCollect)
+    g_TxdGarbageCollect();
+  if (g_UpdateMemoryUsed)
+    g_UpdateMemoryUsed();
+  int trimmed = trim_heap(why);
+
+  long long gl_after = bully_glmem_live_bytes();
+  int helper_after = current_texture_memory_used();
+  int stream_after = g_StreamingMemoryUsed ? *g_StreamingMemoryUsed : 0;
+  if (evict_log_enabled() || env_enabled("BULLY2_LOADSCENE_LOG")) {
+    fprintf(stderr,
+            "[loadscene] %s level=%d tex=%d->%d MB gl=%lld->%lld MB "
+            "glpeak=%lld MB gen=%ld->%ld del=%ld->%ld uploads=%ld->%ld "
+            "stream=%d->%d MB txd_nonref=%d txd_ref=%d trim=%d funcs far=%p rm=%p "
+            "all=%p island=%p msf=%p low=%p tidytex=%p\n",
+            why ? why : "clean", level,
+            helper_before / (1024 * 1024), helper_after / (1024 * 1024),
+            gl_before / (1024 * 1024), gl_after / (1024 * 1024),
+            bully_glmem_peak_bytes() / (1024 * 1024), gen_before,
+            bully_glmem_gen_count(), del_before, bully_glmem_del_count(),
+            uploads_before, bully_glmem_upload_count(),
+            stream_before / (1024 * 1024), stream_after / (1024 * 1024),
+            txd_nonref, txd_ref, trimmed, (void *)g_DeleteFarAwayRwObjects,
+            (void *)g_RemoveUnused, (void *)g_RemoveAllUnused,
+            (void *)g_RemoveIslands, (void *)g_MakeSpaceFor,
+            (void *)g_OnLowMemory, (void *)g_TidyUpTextureMemory);
+  }
+}
+
 static void my_LoadScene(void *vec) {
+  if (env_enabled("BULLY2_EVICT_PRE_LOADSCENE"))
+    native_stream_evict("PreLoadScene", 1);
+  loadscene_clean("pre", vec);
   if (tramp_loadscene)
     tramp_loadscene(vec);
+  loadscene_clean("post", vec);
   native_stream_evict("LoadScene", 1);
 }
 
@@ -1089,6 +2876,8 @@ static void hook_streaming_evict(void) {
       (void (*)(int, int))so_symbol(&mod_game, "_ZN10CStreaming24MakeSpaceForMemoryObjectEii");
   g_RemoveIslands =
       (void (*)(int))so_symbol(&mod_game, "_ZN10CStreaming20RemoveIslandsNotUsedEi");
+  g_DeleteFarAwayRwObjects =
+      (void (*)(void *))so_symbol(&mod_game, "_ZN10CStreaming22DeleteFarAwayRwObjectsERK7CVector");
   g_RemoveNonReferencedTxds =
       (int (*)(int, int))so_symbol(&mod_game, "_ZN10CStreaming23RemoveNonReferencedTxdsEii");
   g_RemoveReferencedTxds =
@@ -1108,6 +2897,20 @@ static void hook_streaming_evict(void) {
       (void (*)(int))so_symbol(&mod_game, "_ZN5CGame19DrasticTidyUpMemoryEb");
   g_ProcessTidyUpMemory =
       (void (*)(void))so_symbol(&mod_game, "_ZN5CGame19ProcessTidyUpMemoryEv");
+  g_Texture2D_AttemptUnload =
+      (void (*)(void *))so_symbol(&mod_game,
+                                  "_ZN9Texture2D13AttemptUnloadEv");
+  g_GetAllLoadedTextures =
+      (void (*)(void *, void *))so_symbol(
+          &mod_game,
+          "_ZNK15ResourceManager12GetAllLoadedI9Texture2DEE12orderedarrayIPT_Ev");
+  g_ResourceManager_Reload =
+      (void (*)(void *, void *))so_symbol(&mod_game,
+                                          "_ZN15ResourceManager6ReloadEP8Resource");
+  g_Texture2D_GetWidth =
+      (int (*)(void *))so_symbol(&mod_game, "_ZNK9Texture2D8GetWidthEv");
+  g_Texture2D_GetHeight =
+      (int (*)(void *))so_symbol(&mod_game, "_ZNK9Texture2D9GetHeightEv");
   g_TxdMemoryLoaded =
       (int *)so_symbol(&mod_game, "_ZN9CTxdStore32ms_totalTXDMemoryCurrentlyLoadedE");
   g_TexHeapCachedUsed =
@@ -1118,6 +2921,8 @@ static void hook_streaming_evict(void) {
       (int *)so_symbol(&mod_game, "_ZN10CStreaming22ms_streamingBufferSizeE");
 
   if (tex_budget_hook_enabled()) {
+    hook_x64(so_symbol(&mod_game, "_ZN17TextureHeapHelper27GetCurrentTextureMemoryUsedEv"),
+             (uintptr_t)my_GetCurrentTextureMemoryUsed);
     hook_x64(so_symbol(&mod_game, "_ZN17TextureHeapHelper30GetTotalGraphicsMemoryOfSystemEv"),
              (uintptr_t)my_GetTotalGraphicsMemoryOfSystem);
     hook_x64(so_symbol(&mod_game, "_ZN17TextureHeapHelper29GetFreeStreamingTextureMemoryEv"),
@@ -1133,7 +2938,9 @@ static void hook_streaming_evict(void) {
   fprintf(stderr,
           "[evict] enabled mode=%s budget=%d MB request=%d MB LoadScene=%p "
           "budget_hook=%d tramp=%p used=%p low=%p app=%p tidytex=%p "
-          "tidymem=%p process=%p drastic=%p rm=%p all=%p island=%p msf=%p memobj=%p "
+          "tidymem=%p process=%p drastic=%p texunload=%p gettex=%p "
+          "texreload=%p getwh=%p/%p "
+          "far=%p rm=%p all=%p island=%p msf=%p memobj=%p "
           "txd=%p txdref=%p txdgc=%p txdmem=%p heapcache=%p stream=%p/%p\n",
           evict_mode(),
           tex_budget_bytes() / (1024 * 1024),
@@ -1142,7 +2949,11 @@ static void hook_streaming_evict(void) {
           (void *)g_GetTexMemUsed, (void *)g_OnLowMemory,
           (void *)g_SetLowMemoryWarning, (void *)g_TidyUpTextureMemory,
           (void *)g_TidyUpMemory, (void *)g_ProcessTidyUpMemory,
-          (void *)g_DrasticTidyUpMemory, (void *)g_RemoveUnused,
+          (void *)g_DrasticTidyUpMemory, (void *)g_Texture2D_AttemptUnload,
+          (void *)g_GetAllLoadedTextures, (void *)g_ResourceManager_Reload,
+          (void *)g_Texture2D_GetWidth, (void *)g_Texture2D_GetHeight,
+          (void *)g_DeleteFarAwayRwObjects,
+          (void *)g_RemoveUnused,
           (void *)g_RemoveAllUnused, (void *)g_RemoveIslands, (void *)g_MakeSpaceFor,
           (void *)g_MakeSpaceForMemoryObject,
           (void *)g_RemoveNonReferencedTxds, (void *)g_RemoveReferencedTxds,
@@ -1297,6 +3108,16 @@ static void install_hooks(void) {
   hook_threads();
   hook_screen();
   hook_cxa();
+  hook_clarity();
+  hook_shadow_menu();
+  hook_shadow_default();
+  hook_shadow_diagnostics();
+  hook_texture_menu();
+  hook_texture_menu_patch_zip();
+  hook_shadow_rotate_safe();
+  hook_shadow_postprocess_sync();
+  hook_shadow_material_vector_fix();
+  patch_stream_distances();
   hook_streaming_evict();
   so_make_text_executable();
   so_flush_caches();
@@ -1361,6 +3182,10 @@ void jni_load(void) {
       snprintf(name, sizeof(name), "data_%d.zip", i);
       fprintf(stderr, "[drv] OS_ZipAdd %s\n", name);
       OS_ZipAdd(name);
+    }
+    if (texture_menu_enabled() && access("assets/bully2_patch.zip", R_OK) == 0) {
+      fprintf(stderr, "[drv] OS_ZipAdd bully2_patch.zip\n");
+      OS_ZipAdd("bully2_patch.zip");
     }
   }
 
@@ -1489,7 +3314,10 @@ void jni_load(void) {
         OS_SignInComplete();
     }
 
+    maybe_auto_set_shadow(f);
+    maybe_runtime_texture_profile(f);
     OnDrawFrame(fake_env, NULL, 1.0f / 60.0f);
+    texture_profile_reload_tick(f);
     if (f > 300 && (f % 300) == 0)
       native_stream_evict("tick", 0);
     if (stream_log_enabled()) {

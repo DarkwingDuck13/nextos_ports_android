@@ -1,8 +1,8 @@
 /* imports.c -- Bully2 original-first bionic/NDK shims.
  *
  * This file is intentionally narrow. It resolves Android/Bionic and Mali-450
- * GLES2 compatibility gaps, but does not cache, convert, downscale, or replace
- * game texture content.
+ * GLES2 compatibility gaps. Texture half-res is an opt-in test path and never
+ * writes converted assets or cache.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -39,6 +39,9 @@ typedef struct {
   unsigned ifmt;
   int w;
   int h;
+  int orig_w;
+  int orig_h;
+  int half_storage;
   uint32_t level_bytes[16];
   uint32_t total;
   unsigned alive;
@@ -53,11 +56,64 @@ static long long g_gltex_peak_bytes;
 static long g_gltex_gen;
 static long g_gltex_del;
 static long g_gltex_upload;
+static long g_gltex_half_upload;
+static long long g_gltex_half_saved_bytes;
+static unsigned g_shadow_bound_fbo;
+static unsigned g_shadow_bound_rbo;
+static unsigned g_shadow_active_texture = 0x84C0; /* GL_TEXTURE0 */
+
+#define GLTRACE_LINES 96
+#define GLTRACE_LEN 160
+static char g_gltrace[GLTRACE_LINES][GLTRACE_LEN];
+static unsigned g_gltrace_seq;
 
 static int glmem_log_enabled(void) {
   static int enabled = -1;
   if (enabled < 0)
     enabled = env_enabled("BULLY2_GLMEMLOG") ? 1 : 0;
+  return enabled;
+}
+
+static int shadow_gl_log_enabled(void) {
+  static int enabled = -1;
+  if (enabled < 0)
+    enabled = env_enabled("BULLY2_SHADOWLOG") ? 1 : 0;
+  return enabled;
+}
+
+void bully_gltrace(const char *fmt, ...) {
+  if (!shadow_gl_log_enabled())
+    return;
+  unsigned slot = __atomic_fetch_add(&g_gltrace_seq, 1, __ATOMIC_RELAXED) %
+                  GLTRACE_LINES;
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(g_gltrace[slot], GLTRACE_LEN, fmt, ap);
+  va_end(ap);
+}
+
+void bully_gltrace_dump(FILE *out) {
+  if (!out || !shadow_gl_log_enabled())
+    return;
+  unsigned end = __atomic_load_n(&g_gltrace_seq, __ATOMIC_RELAXED);
+  unsigned start = end > GLTRACE_LINES ? end - GLTRACE_LINES : 0;
+  fprintf(out, "[gltrace] last %u GL ops:\n", end - start);
+  for (unsigned i = start; i < end; i++) {
+    const char *line = g_gltrace[i % GLTRACE_LINES];
+    if (line[0])
+      fprintf(out, "[gltrace] %06u %s\n", i, line);
+  }
+}
+
+static int drawbuffers_safe_enabled(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *e = getenv("BULLY2_DRAWBUFFERS_SAFE");
+    if (e && *e)
+      enabled = strcmp(e, "0") != 0;
+    else
+      enabled = access("/sys/module/mali/version", F_OK) == 0;
+  }
   return enabled;
 }
 
@@ -132,6 +188,93 @@ static uint32_t tex_level_size(int w, int h, int bpp) {
   return (uint32_t)bytes;
 }
 
+static volatile int g_tex_half_runtime = -1;
+static volatile int g_tex_half_min_runtime = -1;
+
+static void tex_runtime_init(void) {
+  if (__atomic_load_n(&g_tex_half_runtime, __ATOMIC_RELAXED) >= 0)
+    return;
+
+  int enabled = (env_enabled("BULLY2_TEX_HALF") || env_enabled("BULLY_TEX_HALF"))
+                    ? 1
+                    : 0;
+  const char *e = getenv("BULLY2_TEX_HALF_MIN");
+  if (!e || !*e)
+    e = getenv("BULLY_TEX_HALF_MIN");
+  int min_dim = e ? atoi(e) : 1024;
+  if (min_dim < 256)
+    min_dim = 256;
+
+  __atomic_store_n(&g_tex_half_min_runtime, min_dim, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_tex_half_runtime, enabled, __ATOMIC_RELEASE);
+}
+
+static int tex_half_enabled(void) {
+  tex_runtime_init();
+  return __atomic_load_n(&g_tex_half_runtime, __ATOMIC_ACQUIRE) > 0;
+}
+
+static int tex_half_min_dim(void) {
+  tex_runtime_init();
+  int min_dim = __atomic_load_n(&g_tex_half_min_runtime, __ATOMIC_ACQUIRE);
+  return min_dim < 256 ? 256 : min_dim;
+}
+
+void bully_tex_set_runtime_profile(int half, int min_dim, const char *why) {
+  tex_runtime_init();
+  if (min_dim < 256)
+    min_dim = 256;
+  __atomic_store_n(&g_tex_half_min_runtime, min_dim, __ATOMIC_RELEASE);
+  __atomic_store_n(&g_tex_half_runtime, half ? 1 : 0, __ATOMIC_RELEASE);
+  fprintf(stderr, "[texprofile] %s half=%d min=%d\n",
+          why ? why : "runtime", half ? 1 : 0, min_dim);
+}
+
+int bully_tex_runtime_half_enabled(void) {
+  return tex_half_enabled();
+}
+
+int bully_tex_runtime_half_min_dim(void) {
+  return tex_half_min_dim();
+}
+
+static int tex_half_type_supported(unsigned fmt, unsigned type, int bpp) {
+  if (bpp <= 0)
+    return 0;
+  if (type == 0x1401) { /* GL_UNSIGNED_BYTE */
+    return fmt == 0x1908 || fmt == 0x1907 || fmt == 0x1909 ||
+           fmt == 0x1906 || fmt == 0x190A;
+  }
+  return bpp == 2 &&
+         (type == 0x8363 || type == 0x8033 || type == 0x8034);
+}
+
+static void *half_pixels_nearest(const void *src, int w, int h, int bpp,
+                                 int *out_w, int *out_h) {
+  if (!src || w < 2 || h < 2 || bpp <= 0)
+    return NULL;
+  int hw = w / 2;
+  int hh = h / 2;
+  if (hw < 1 || hh < 1)
+    return NULL;
+  size_t out_size = (size_t)hw * (size_t)hh * (size_t)bpp;
+  if (out_size == 0 || out_size > 128 * 1024 * 1024)
+    return NULL;
+  unsigned char *out = malloc(out_size);
+  if (!out)
+    return NULL;
+  const unsigned char *in = src;
+  for (int y = 0; y < hh; y++) {
+    for (int x = 0; x < hw; x++) {
+      memcpy(out + ((size_t)y * hw + x) * bpp,
+             in + ((size_t)(y * 2) * w + x * 2) * bpp, (size_t)bpp);
+    }
+  }
+  *out_w = hw;
+  *out_h = hh;
+  return out;
+}
+
 static void tex_set_level(unsigned id, unsigned target, int level, unsigned ifmt,
                           int w, int h, uint32_t bytes) {
   if (!id || level < 0 || level >= 16 || !tex_ensure(id))
@@ -199,16 +342,19 @@ long long bully_glmem_peak_bytes(void) { return g_gltex_peak_bytes; }
 long bully_glmem_gen_count(void) { return g_gltex_gen; }
 long bully_glmem_del_count(void) { return g_gltex_del; }
 long bully_glmem_upload_count(void) { return g_gltex_upload; }
+long bully_glmem_half_upload_count(void) { return g_gltex_half_upload; }
+long long bully_glmem_half_saved_bytes(void) { return g_gltex_half_saved_bytes; }
 
 void bully_glmem_report(const char *why) {
   if (!glmem_log_enabled())
     return;
   fprintf(stderr,
           "[glmem] %s live=%lld MB peak=%lld MB gen=%ld del=%ld upload=%ld "
-          "bound2d=%u boundcube=%u\n",
+          "half=%ld saved=%lld MB bound2d=%u boundcube=%u\n",
           why ? why : "report", g_gltex_live_bytes / (1024 * 1024),
           g_gltex_peak_bytes / (1024 * 1024), g_gltex_gen, g_gltex_del,
-          g_gltex_upload, g_bound_2d, g_bound_cube);
+          g_gltex_upload, g_gltex_half_upload,
+          g_gltex_half_saved_bytes / (1024 * 1024), g_bound_2d, g_bound_cube);
 }
 
 static int *bionic___errno(void) {
@@ -594,7 +740,8 @@ static void my_glTexParameteri(unsigned target, unsigned pname, int param) {
     real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
   if (pname == 0x813D)
     return;
-  if (getenv("BULLY2_FORCE_LINEAR") && (pname == 0x2801 || pname == 0x2800) &&
+  if ((getenv("BULLY2_FORCE_LINEAR") || tex_half_enabled()) &&
+      (pname == 0x2801 || pname == 0x2800) &&
       param >= 0x2700 && param <= 0x2703)
     param = 0x2601;
   if (real_glTexParameteri)
@@ -621,6 +768,9 @@ static void (*real_glBindTexture)(unsigned, unsigned) = NULL;
 static void my_glBindTexture(unsigned target, unsigned texture) {
   if (!real_glBindTexture)
     real_glBindTexture = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled() && target == 0x0DE1)
+    bully_gltrace("glBindTexture unit=0x%x target=0x%x tex=%u fbo=%u",
+                  g_shadow_active_texture, target, texture, g_shadow_bound_fbo);
   if (real_glBindTexture)
     real_glBindTexture(target, texture);
   if (target == 0x0DE1)
@@ -632,6 +782,130 @@ static void my_glBindTexture(unsigned target, unsigned texture) {
     if (!t->target)
       t->target = target;
   }
+}
+
+static void (*real_glActiveTexture)(unsigned) = NULL;
+static void my_glActiveTexture(unsigned texture) {
+  if (!real_glActiveTexture)
+    real_glActiveTexture = dlsym(RTLD_DEFAULT, "glActiveTexture");
+  g_shadow_active_texture = texture;
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled())
+    bully_gltrace("glActiveTexture 0x%x fbo=%u", texture, g_shadow_bound_fbo);
+  if (real_glActiveTexture)
+    real_glActiveTexture(texture);
+}
+
+static void (*real_glBindFramebuffer)(unsigned, unsigned) = NULL;
+static void my_glBindFramebuffer(unsigned target, unsigned framebuffer) {
+  if (!real_glBindFramebuffer)
+    real_glBindFramebuffer = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+  if (target == 0x8D40)
+    g_shadow_bound_fbo = framebuffer;
+  if (shadow_gl_log_enabled())
+    bully_gltrace("glBindFramebuffer target=0x%x fbo=%u", target, framebuffer);
+  if (real_glBindFramebuffer)
+    real_glBindFramebuffer(target, framebuffer);
+}
+
+static void (*real_glBindRenderbuffer)(unsigned, unsigned) = NULL;
+static void my_glBindRenderbuffer(unsigned target, unsigned renderbuffer) {
+  if (!real_glBindRenderbuffer)
+    real_glBindRenderbuffer = dlsym(RTLD_DEFAULT, "glBindRenderbuffer");
+  if (target == 0x8D41)
+    g_shadow_bound_rbo = renderbuffer;
+  if (shadow_gl_log_enabled())
+    bully_gltrace("glBindRenderbuffer target=0x%x rbo=%u fbo=%u", target,
+                  renderbuffer, g_shadow_bound_fbo);
+  if (real_glBindRenderbuffer)
+    real_glBindRenderbuffer(target, renderbuffer);
+}
+
+static void (*real_glRenderbufferStorage)(unsigned, unsigned, int, int) = NULL;
+static void my_glRenderbufferStorage(unsigned target, unsigned internalformat,
+                                     int width, int height) {
+  if (!real_glRenderbufferStorage)
+    real_glRenderbufferStorage = dlsym(RTLD_DEFAULT, "glRenderbufferStorage");
+  if (shadow_gl_log_enabled() && width == height && width >= 512)
+    bully_gltrace("glRenderbufferStorage rbo=%u fmt=0x%x %dx%d fbo=%u",
+                  g_shadow_bound_rbo, internalformat, width, height,
+                  g_shadow_bound_fbo);
+  if (real_glRenderbufferStorage)
+    real_glRenderbufferStorage(target, internalformat, width, height);
+}
+
+static void (*real_glFramebufferRenderbuffer)(unsigned, unsigned, unsigned,
+                                              unsigned) = NULL;
+static void my_glFramebufferRenderbuffer(unsigned target, unsigned attachment,
+                                         unsigned renderbuffertarget,
+                                         unsigned renderbuffer) {
+  if (!real_glFramebufferRenderbuffer)
+    real_glFramebufferRenderbuffer =
+        dlsym(RTLD_DEFAULT, "glFramebufferRenderbuffer");
+  if (shadow_gl_log_enabled())
+    bully_gltrace("glFramebufferRenderbuffer fbo=%u att=0x%x rbo=%u target=0x%x",
+                  g_shadow_bound_fbo, attachment, renderbuffer,
+                  renderbuffertarget);
+  if (real_glFramebufferRenderbuffer)
+    real_glFramebufferRenderbuffer(target, attachment, renderbuffertarget,
+                                   renderbuffer);
+}
+
+static void (*real_glFramebufferTexture2D)(unsigned, unsigned, unsigned,
+                                           unsigned, int) = NULL;
+static void my_glFramebufferTexture2D(unsigned target, unsigned attachment,
+                                      unsigned textarget, unsigned texture,
+                                      int level) {
+  if (!real_glFramebufferTexture2D)
+    real_glFramebufferTexture2D = dlsym(RTLD_DEFAULT, "glFramebufferTexture2D");
+  if (shadow_gl_log_enabled())
+    bully_gltrace("glFramebufferTexture2D fbo=%u att=0x%x tex=%u target=0x%x lvl=%d",
+                  g_shadow_bound_fbo, attachment, texture, textarget, level);
+  if (real_glFramebufferTexture2D)
+    real_glFramebufferTexture2D(target, attachment, textarget, texture, level);
+}
+
+static void (*real_glViewport)(int, int, int, int) = NULL;
+static void my_glViewport(int x, int y, int w, int h) {
+  if (!real_glViewport)
+    real_glViewport = dlsym(RTLD_DEFAULT, "glViewport");
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled())
+    bully_gltrace("glViewport fbo=%u %d,%d %dx%d", g_shadow_bound_fbo, x, y, w,
+                  h);
+  if (real_glViewport)
+    real_glViewport(x, y, w, h);
+}
+
+static void (*real_glClear)(unsigned) = NULL;
+static void my_glClear(unsigned mask) {
+  if (!real_glClear)
+    real_glClear = dlsym(RTLD_DEFAULT, "glClear");
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled())
+    bully_gltrace("glClear fbo=%u mask=0x%x", g_shadow_bound_fbo, mask);
+  if (real_glClear)
+    real_glClear(mask);
+}
+
+static void (*real_glUseProgram)(unsigned) = NULL;
+static void my_glUseProgram(unsigned program) {
+  if (!real_glUseProgram)
+    real_glUseProgram = dlsym(RTLD_DEFAULT, "glUseProgram");
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled())
+    bully_gltrace("glUseProgram fbo=%u program=%u", g_shadow_bound_fbo,
+                  program);
+  if (real_glUseProgram)
+    real_glUseProgram(program);
+}
+
+static void (*real_glDrawElements)(unsigned, int, unsigned, const void *) = NULL;
+static void my_glDrawElements(unsigned mode, int count, unsigned type,
+                              const void *indices) {
+  if (!real_glDrawElements)
+    real_glDrawElements = dlsym(RTLD_DEFAULT, "glDrawElements");
+  if (g_shadow_bound_fbo && shadow_gl_log_enabled())
+    bully_gltrace("glDrawElements fbo=%u mode=0x%x count=%d type=0x%x idx=%p",
+                  g_shadow_bound_fbo, mode, count, type, indices);
+  if (real_glDrawElements)
+    real_glDrawElements(mode, count, type, indices);
 }
 
 static void (*real_glDeleteTextures)(int, const unsigned *) = NULL;
@@ -659,10 +933,46 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
   else if (ifmt == 0x8051)
     ifmt = 0x1907;
   track_ifmt = (unsigned)ifmt;
+
+  int rw = w;
+  int rh = h;
+  const void *rpx = px;
+  void *half = NULL;
+  int bpp = bytes_per_pixel(track_ifmt, fmt, type);
+
+  if (tex_half_enabled() && lvl > 0)
+    return;
+
+  if (tex_half_enabled() && lvl == 0 && px && bord == 0 &&
+      (w >= tex_half_min_dim() || h >= tex_half_min_dim()) &&
+      (tgt == 0x0DE1 || target_is_cube_face(tgt)) &&
+      tex_half_type_supported(fmt, type, bpp)) {
+    int hw = 0;
+    int hh = 0;
+    half = half_pixels_nearest(px, w, h, bpp, &hw, &hh);
+    if (half) {
+      uint32_t old_bytes = tex_level_size(w, h, bpp);
+      uint32_t new_bytes = tex_level_size(hw, hh, bpp);
+      rw = hw;
+      rh = hh;
+      rpx = half;
+      g_gltex_half_upload++;
+      if (old_bytes > new_bytes)
+        g_gltex_half_saved_bytes += (long long)old_bytes - new_bytes;
+      if (!real_glTexParameteri)
+        real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+      if (real_glTexParameteri) {
+        real_glTexParameteri(tgt, 0x2801, 0x2601);
+        real_glTexParameteri(tgt, 0x2800, 0x2601);
+      }
+    }
+  }
+
   if (real_glTexImage2D)
-    real_glTexImage2D(tgt, lvl, ifmt, w, h, bord, fmt, type, px);
-  tex_set_level(bound_tex_for_target(tgt), tgt, lvl, track_ifmt, w, h,
-                tex_level_size(w, h, bytes_per_pixel(track_ifmt, fmt, type)));
+    real_glTexImage2D(tgt, lvl, ifmt, rw, rh, bord, fmt, type, rpx);
+  free(half);
+  tex_set_level(bound_tex_for_target(tgt), tgt, lvl, track_ifmt, rw, rh,
+                tex_level_size(rw, rh, bpp));
 }
 
 static void (*real_glCompressedTexImage2D)(unsigned, int, unsigned, int, int,
@@ -723,8 +1033,31 @@ static void (*r_glDrawBuffers)(int, const unsigned *) = NULL;
 static void my_glDrawBuffers(int n, const unsigned *b) {
   if (!r_glDrawBuffers)
     r_glDrawBuffers = gl_proc2("glDrawBuffers", "glDrawBuffersEXT");
+  unsigned b0 = (b && n > 0) ? b[0] : 0;
+  bully_gltrace("glDrawBuffers fbo=%u n=%d b0=0x%x safe=%d real=%p",
+                g_shadow_bound_fbo, n, b0, drawbuffers_safe_enabled(),
+                (void *)r_glDrawBuffers);
+  if (drawbuffers_safe_enabled() && n == 1 && b0 == 0x8CE0)
+    return;
   if (r_glDrawBuffers)
     r_glDrawBuffers(n, b);
+}
+
+static void *(*real_eglGetProcAddress)(const char *) = NULL;
+static void *my_eglGetProcAddress(const char *name) {
+  if (!real_eglGetProcAddress)
+    real_eglGetProcAddress = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+  if (name && (!strcmp(name, "glDrawBuffers") ||
+               !strcmp(name, "glDrawBuffersEXT"))) {
+    bully_gltrace("eglGetProcAddress(%s) -> glDrawBuffers shim", name);
+    return (void *)my_glDrawBuffers;
+  }
+  void *p = real_eglGetProcAddress ? real_eglGetProcAddress(name) : NULL;
+  if (shadow_gl_log_enabled() && name &&
+      (strstr(name, "Framebuffer") || strstr(name, "Renderbuffer") ||
+       strstr(name, "Draw")))
+    bully_gltrace("eglGetProcAddress(%s) -> %p", name, p);
+  return p;
 }
 
 static void (*r_glTexStorage2D)(unsigned, int, unsigned, int, int) = NULL;
@@ -732,9 +1065,36 @@ static void my_glTexStorage2D(unsigned target, int levels, unsigned ifmt, int w,
                               int h) {
   if (!r_glTexStorage2D)
     r_glTexStorage2D = gl_proc2("glTexStorage2D", "glTexStorage2DEXT");
+  int rw = w;
+  int rh = h;
+  int rlevels = levels;
+  int do_half = tex_half_enabled() && (w >= tex_half_min_dim() || h >= tex_half_min_dim()) &&
+                (target == 0x0DE1 || target_is_cube_face(target));
+  if (do_half) {
+    rw = w / 2;
+    rh = h / 2;
+    if (rw < 1)
+      rw = 1;
+    if (rh < 1)
+      rh = 1;
+    rlevels = 1;
+    if (!real_glTexParameteri)
+      real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+    if (real_glTexParameteri) {
+      real_glTexParameteri(target, 0x2801, 0x2601);
+      real_glTexParameteri(target, 0x2800, 0x2601);
+    }
+  }
   if (r_glTexStorage2D) {
-    r_glTexStorage2D(target, levels, ifmt, w, h);
-    tex_set_storage(bound_tex_for_target(target), target, levels, ifmt, w, h);
+    r_glTexStorage2D(target, rlevels, ifmt, rw, rh);
+    unsigned id = bound_tex_for_target(target);
+    tex_set_storage(id, target, rlevels, ifmt, rw, rh);
+    if (id && tex_ensure(id)) {
+      TexInfo *t = &g_texinfo[id];
+      t->orig_w = w;
+      t->orig_h = h;
+      t->half_storage = do_half ? 1 : 0;
+    }
   } else
     fprintf(stderr, "[gl] glTexStorage2D unavailable (%dx%d levels=%d)\n", w, h,
             levels);
@@ -747,6 +1107,30 @@ static void my_glTexSubImage2D(unsigned target, int level, int x, int y, int w,
                                const void *pixels) {
   if (!r_glTexSubImage2D)
     r_glTexSubImage2D = dlsym(RTLD_DEFAULT, "glTexSubImage2D");
+  unsigned id = bound_tex_for_target(target);
+  TexInfo *t = (id && id < g_texinfo_cap) ? &g_texinfo[id] : NULL;
+  if (t && t->half_storage) {
+    if (level > 0)
+      return;
+    int bpp = bytes_per_pixel(t->ifmt, fmt, type);
+    if (pixels && x == 0 && y == 0 && w == t->orig_w && h == t->orig_h &&
+        tex_half_type_supported(fmt, type, bpp)) {
+      int hw = 0;
+      int hh = 0;
+      void *half = half_pixels_nearest(pixels, w, h, bpp, &hw, &hh);
+      if (half) {
+        if (r_glTexSubImage2D)
+          r_glTexSubImage2D(target, 0, 0, 0, hw, hh, fmt, type, half);
+        uint32_t old_bytes = tex_level_size(w, h, bpp);
+        uint32_t new_bytes = tex_level_size(hw, hh, bpp);
+        g_gltex_half_upload++;
+        if (old_bytes > new_bytes)
+          g_gltex_half_saved_bytes += (long long)old_bytes - new_bytes;
+        free(half);
+        return;
+      }
+    }
+  }
   if (r_glTexSubImage2D)
     r_glTexSubImage2D(target, level, x, y, w, h, fmt, type, pixels);
 }
@@ -788,9 +1172,11 @@ DynLibFunction bully_stub_table[] = {
     {"AAsset_getLength64", (uintptr_t)aa_getLength64},
     {"AAsset_getRemainingLength64", (uintptr_t)aa_getRemainingLength64},
     {"AAsset_close", (uintptr_t)aa_close},
+    {"eglGetProcAddress", (uintptr_t)my_eglGetProcAddress},
     {"glGetString", (uintptr_t)w_glGetString},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexParameteri", (uintptr_t)my_glTexParameteri},
+    {"glActiveTexture", (uintptr_t)my_glActiveTexture},
     {"glGenTextures", (uintptr_t)my_glGenTextures},
     {"glBindTexture", (uintptr_t)my_glBindTexture},
     {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
@@ -798,6 +1184,15 @@ DynLibFunction bully_stub_table[] = {
     {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},
     {"glTexStorage2D", (uintptr_t)my_glTexStorage2D},
     {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+    {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
+    {"glBindRenderbuffer", (uintptr_t)my_glBindRenderbuffer},
+    {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
+    {"glFramebufferRenderbuffer", (uintptr_t)my_glFramebufferRenderbuffer},
+    {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
+    {"glViewport", (uintptr_t)my_glViewport},
+    {"glClear", (uintptr_t)my_glClear},
+    {"glUseProgram", (uintptr_t)my_glUseProgram},
+    {"glDrawElements", (uintptr_t)my_glDrawElements},
     {"glGenVertexArrays", (uintptr_t)my_glGenVertexArrays},
     {"glBindVertexArray", (uintptr_t)my_glBindVertexArray},
     {"glDeleteVertexArrays", (uintptr_t)my_glDeleteVertexArrays},

@@ -90,3 +90,110 @@ Resultados no Mali-450, swap desligado:
   reload/thrash e nao virou padrao.
 
 Logs locais salvos em `ports/bully2/logs/`.
+
+## Perfis adaptativos de textura
+
+O scaler arbitrario `BULLY2_TEX_SCALE_PCT=70` foi rejeitado: gerou tela preta.
+O caminho estavel e o half exato estilo `BULLY_TEX_HALF`.
+
+Perfis atuais no launcher:
+
+- starter limpo: instalacao limpa seleciona `Textures=Medium` (`512`),
+  independente da RAM;
+- `texture_profile.cfg` persiste `low`, `medium` ou `high` e tem prioridade no
+  proximo boot;
+- `BULLY2_TEXTURE_PROFILE=low|medium|high` fica apenas como diagnostico;
+- a matriz antiga de `384`/`768`/`1024`/porcentagem saiu do starter.
+
+Resultados historicos em Mali-450/1GB, swap desligado:
+
+- `512`: validado pelo usuario em gameplay, entrou/rodou com perda perceptivel de
+  qualidade; log mostrou economia acima de 130 MB de textura e device estavel;
+- `768`: passou pelo primeiro `LoadScene`, swap 0, GL ~143 MB, pico ~147 MB,
+  RAM disponivel ~327 MB;
+- `1024`: passou pelo primeiro `LoadScene`, swap 0, GL ~153 MB em teste inicial,
+  economia menor e qualidade mais proxima do original;
+- `256`: passou pelo primeiro `LoadScene`, swap 0, GL ~45 MB, economia ~106 MB
+  logo no inicio; fica como emergencia por perda visual alta.
+
+## Clarity e shadows
+
+Clarity:
+
+- `BullySettings::GetResolutionDefault` fica hookado para `RS_High`.
+- A troca durante o jogo foi validada sem crash no Mali-450.
+
+Shadows:
+
+- O menu mostra os niveis nativos `Off`, `Low`, `Medium`, `High`.
+- `GetShadowLevel()` do jogo mapeia o valor bruto `3` para shadow level `2`,
+  que e o nivel alto real do renderizador.
+- O crash de `High` no Mali-450 foi isolado em
+  `BullyGameRenderer::SetupPostProcess()`: o branch de valor bruto `>=3` cria o
+  material/pass `pp_ssao`, e depois `RenderGame()` cai ao enfileirar parametro
+  desse material.
+- Correcao validada: em Mali/Utgard, `BULLY2_SHADOW_SSAO=0` evita apenas a
+  criacao do `pp_ssao` durante `SetupPostProcess`, restaura o valor bruto para
+  `3` em seguida e mantem `GetShadowLevel()` no caminho alto.
+- Testes Mali-450: boot direto em `High` passou de 3900 frames; troca
+  `Medium -> High` ao vivo passou de 4500 frames sem crash.
+
+## Menu Textures
+
+- Metodo antigo rejeitado: clonar `main.content.shadow` em runtime via
+  `MenuSettings::InitWithScene` abre o menu, mas o sistema de script/parent da UI
+  pode cair em `UIScene::GetParentByClass`/`SerializedResource::ReadClass`.
+- Metodo validado: o launcher gera `assets/bully2_patch.zip` pequeno a partir do
+  `assets/data_4.zip` legal do usuario. Esse zip contem apenas
+  `resource_files.list` e `bully/MenuSettings.xml`, com a linha `Textures`
+  abaixo de `Shadows`.
+- O loader adiciona `bully2_patch.zip` depois de `data_0.zip`...`data_4.zip` e
+  tambem registra o zip em `ResourceManager::RegisterPatchZip`. Nao se altera
+  `data_4.zip` nem `data_4.zip.idx`; isso evita quebrar offsets do indice nativo.
+- A opcao aparece em ingles como `Textures` e alterna `Low`, `Medium`, `High`.
+- Mapeamento runtime: `Low` = perfil `256`, `Medium` = `512`, `High` = full.
+- A escolha do menu e persistida em `texture_profile.cfg`; no boot seguinte o
+  launcher le esse arquivo antes do perfil automatico e recria
+  `bully2_patch.zip` com o texto inicial correto (`Low`, `Medium` ou `High`).
+- A troca passa por `apply_texture_profile_runtime()` e executa o despejo nativo
+  ja validado (`OnLowMemory`, `TidyUpTextureMemory`, `TxdGarbageCollect`,
+  `native_stream_evict`) sem gravar cache/texswap/conversao.
+- O unload total de texturas residentes foi testado com
+  `ResourceManager::GetAllLoaded<Texture2D>()` + `Texture2D::AttemptUnload()`.
+  Ele libera a memoria GL, mas foi rejeitado como padrao: depois da troca o jogo
+  fica preto porque nem todas as texturas residentes sao repedidas
+  imediatamente pelo streaming.
+- Padrao atual: mudar `Textures` altera o perfil GL em runtime, persiste a
+  escolha e agenda reload seletivo das texturas residentes. O caminho validado
+  usa `Texture2D::AttemptUnload()` e, na mesma textura/frame, chama
+  `ResourceManager::Reload()`. O unload bruto total fica apenas em
+  `BULLY2_TEX_RELOAD_ON_CHANGE=attempt` para diagnostico.
+- O poll por `/tmp/bully_tex_profile` foi desligado por padrao para nao aplicar
+  estado velho de testes no primeiro frame; agora so roda com
+  `BULLY2_TEX_PROFILE_POLL=1` ou `BULLY2_TEX_PROFILE_FILE`.
+- Build Docker glibc 2.30 validado no Mali-450 com hash
+  `d2294cec95ccf534cd67895703c4ee64157283b52deb266c7c333c8d0ccdb403`;
+  launcher recriou `assets/bully2_patch.zip`, loader carregou
+  `[drv] OS_ZipAdd bully2_patch.zip`/`RegisterPatchZip bully2_patch.zip`, boot
+  seguiu vivo, a opcao `Textures` apareceu visualmente no Settings e o log
+  confirmou persistencia via `[texmenu] persisted profile=low`.
+- Testes Mali-450 de reload em runtime:
+  - `low -> medium`: 1222 texturas tentadas, GL 41 MB -> 3 MB, processo vivo;
+  - `low -> high`: 1360 texturas tentadas, GL 45 MB -> 3 MB, processo vivo;
+  - `high -> low`: 1367 texturas tentadas, GL 194 MB -> 3 MB, processo vivo.
+  Resultado visual posterior: tela preta/sem repedir texturas; caminho marcado
+  como diagnostico, nao padrao.
+- Testes Mali-450 do reload seletivo novo:
+  - `ResourceManager::Reload(tex)` sozinho nao mudou GL (`uploads/del` parados);
+  - `AttemptUnload(tex)` + `ResourceManager::Reload(tex)` por textura reupou de
+    verdade (`del` 0->22, `uploads` 764->786) e reduziu GL 9 MB -> 3 MB;
+  - fila completa do menu (`High -> Low`, 112 residentes, batch 1) ficou viva
+    ate frame 2400 sem crash.
+- Fix de menu: `Textures` agora usa template proprio
+  `SettingRowTextureOption`, com `Low`/`Medium`/`High` inicial no template. Isso
+  evita herdar o `string(textvalue)="Test"` do template original.
+- Fix de persistencia visual em runtime: o binario hooka
+  `MenuSettings::InitWithScene`, `MenuSettings::Update` e usa
+  `MenuSettings::UpdateOption("textures", label, id)` depois da troca e durante
+  a tela de Settings. O arquivo salvo ja mudava para `high`; o bug restante era
+  apenas o texto da UI voltando para `Medium`.
