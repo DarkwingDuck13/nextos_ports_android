@@ -6682,11 +6682,21 @@ int main(int argc, char **argv) {
               ((void (*)(void *))(g_il2cpp_base + 0x1345C00))(slash);
               fprintf(stderr, "[FF9_SHOWMENU] SlideShow.Stop(slashScreen) chamado\n"); fsync(2);
             }
-            /* FF9_NULLSPLASH (opt-in): zera TitleUI.slashScreen (+0x260) p/ limpar o guard
-               "splash ativo" (IsSplashTextActive) sem fade-to-black -> New Game deve prosseguir. */
+            /* FF9_NULLSPLASH (opt-in): zera TitleUI.slashScreen (+0x260). */
             if (getenv("FF9_NULLSPLASH")) {
               *(void **)((char *)g_titleui_this + 0x260) = NULL;
-              fprintf(stderr, "[FF9_SHOWMENU] slashScreen NULLADO (limpa guard)\n"); fsync(2);
+              fprintf(stderr, "[FF9_SHOWMENU] slashScreen NULLADO\n"); fsync(2);
+            }
+            /* 🔑 FF9_BORROWFADE: o guard de OnNewGameButtonClick é `this->fading (UIScene+0x38)
+               != null`. ShowMenuPanel não roda UIScene.Show -> fading null -> New Game no-op.
+               O SlideShow tem honoFading (+0x58); empresta p/ TitleUI.fading -> guard passa. */
+            if (slash && ((uintptr_t)slash >> 40) == 0) {
+              void *hf = *(void **)((char *)slash + 0x58);  /* SlideShow.honoFading */
+              if (hf && ((uintptr_t)hf >> 40) == 0) {
+                if (!*(void **)((char *)g_titleui_this + 0x38))   /* só se fading null */
+                  *(void **)((char *)g_titleui_this + 0x38) = hf;
+                fprintf(stderr, "[FF9_SHOWMENU] fading(+0x38)=honoFading %p (guard New Game)\n", hf); fsync(2);
+              }
             }
             void (*shm)(void *) = (void (*)(void *))(g_il2cpp_base + 0x134346C);
             fprintf(stderr, "[FF9_SHOWMENU] ShowMenuPanel(this=%p) @f=%d\n", (void *)g_titleui_this, f); fsync(2);
