@@ -333,14 +333,18 @@ static void patch_arm_jump(const char *sym, void *target) {
           (unsigned long)a);
 }
 
-/* base/fim do heap da engine (onde libfox e suas alocacoes vivem) — usado p/ validar
-   ponteiros de registlist nos handlers de release diferido (anti-crash de saida).
-   Setado em load_module. */
+/* base/fim do heap da engine (mantido só p/ diagnóstico/log). */
 static uintptr_t g_engine_heap_base = 0, g_engine_heap_end = 0;
+/* 🔑 VALIDADE FROUXA (corrige a REGRESSÃO pós-v4.0 que travava a abertura da fase):
+   as REGISTLIST da engine são malloc'd em endereços tipo 0xab.../0xac... — FORA do
+   arena de 256MB do so_load. A checagem ESTRITA por arena [heap_base,heap_end) rejeitava
+   TODA lista válida -> nenhuma textura era liberada -> a free-list do amTexMgr esgotava
+   -> amTexMgrCreateTexId fazia `str r0,[r3]` com r3=head=NULL -> SIGSEGV (fase não abre).
+   A v4.0 e o 1º fix de saída (a03b5fe) usavam range frouxo e funcionavam. Aqui o
+   discriminador do caso stale (saída) NÃO é o range e sim o `count` fora de [1,65536]. */
 static int sane_engine_ptr(const void *p) {
   uintptr_t v = (uintptr_t)p;
-  return g_engine_heap_base && v >= g_engine_heap_base && v < g_engine_heap_end &&
-         (v & 3) == 0; /* alinhado a 4 */
+  return v > 0x10000UL && v < 0xfffff000UL && (v & 3) == 0; /* userspace + alinhado a 4 */
 }
 /* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
    _amDrawReleaseTexture(node) libera a lista de texturas da cena de forma DIFERIDA
@@ -385,16 +389,17 @@ static void my_amDrawReleaseTexture(void *node) {
   ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
 }
 
-/* 🔊 FIX som do 1up (jingle mudo no gameplay) — CIRÚRGICO: a engine poll-a
-   MediaPlayerisPlaying(canal) por frame e seta bit1=stop na SCB quando "não toca";
-   DmSoundIsStopJingle então manda parar o jingle. Nós patchávamos isto ->0 (pro skip do
-   intro) => TODO canal sempre "parado" => jingle do 1up morto na hora. Mas devolver o estado
-   real de TODOS os canais mudava o comportamento de SFX/BGM (sumiu som da special stage).
-   SOLUÇÃO: só os canais de JINGLE devolvem o estado real; os outros mantêm ->0 (comportamento
-   antigo, preserva os demais sons). Intro segue pulado por willPlayMovie->0 + videoIsPlaying->0. */
+/* 🔊 MediaPlayerisPlaying — VOLTOU AO ESTADO BOM CONHECIDO (v4.0): retorna SEMPRE 0.
+   O patch ->0 é o que pula o intro/vídeo e mantém o comportamento de áudio validado.
+   A tentativa "cirúrgica" (devolver estado real só p/ canais de jingle, p/ o som do 1up)
+   é suspeita de regressão e foi REVERTIDA — estabilidade de entrar/sair de fase vem 1º.
+   Reativável via SONIC_JINGLE1UP=1 se quisermos reavaliar o som do 1up isoladamente. */
 extern int sonic_audio_jingle_playing(int id);
 static int my_MediaPlayerisPlaying(int i) {
-  return sonic_audio_jingle_playing(i);               /* 1 só se canal i for jingle tocando */
+  static int j1up = -1;
+  if (j1up < 0) j1up = getenv("SONIC_JINGLE1UP") ? 1 : 0;
+  if (j1up) return sonic_audio_jingle_playing(i);     /* opt-in: 1 só se canal i for jingle */
+  return 0;                                            /* default v4.0: todo canal "parado" */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
