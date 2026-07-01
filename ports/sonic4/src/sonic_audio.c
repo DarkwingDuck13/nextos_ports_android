@@ -1128,6 +1128,26 @@ static int sa_driver_silent(const char *n) {
       can't make support.system handle" no muOS, ou pulse sem runtime-dir), VARRE
       todos os drivers que aquele SDL expõe e usa o 1º que ABRE de verdade (pula
       "dummy" e o que já falhou). Cobre ALSA/Pulse/PipeWire automaticamente. */
+/* seleciona ESTE driver pro próximo init e tenta abrir o device. 1 = abriu. */
+static int sa_open_named_driver(const char *name, SDL_AudioSpec *want,
+                                SDL_AudioSpec *have) {
+  SDL_QuitSubSystem(SDL_INIT_AUDIO);
+  setenv("SDL_AUDIODRIVER", name, 1);
+  if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+    alog("sonic_audio: init driver=%s falhou: %s\n", name, SDL_GetError());
+    return 0;
+  }
+  const char *cur = SDL_GetCurrentAudioDriver();
+  if (!cur || strcmp(cur, name) != 0) return 0;
+  if (sa_try_open(want, have)) {
+    fprintf(stderr, "sonic_audio: SDL audio aberto (fallback) %dHz %dch samples=%d driver=%s\n",
+            have->freq, have->channels, have->samples, name);
+    return 1;
+  }
+  fprintf(stderr, "sonic_audio: driver=%s nao abriu device: %s\n", name, SDL_GetError());
+  return 0;
+}
+
 static int ensure_audio(void) {
   if (g_audio_init) return g_dev != 0;
 
@@ -1191,25 +1211,31 @@ static int ensure_audio(void) {
             drv ? drv : "?", SDL_GetError());
   }
 
-  /* (2) fallback adaptativo: 1º driver que realmente abre */
+  /* (2) fallback PREFERINDO servidor de som (pipewire/pulse) ANTES do ALSA cru — mesma ordem
+     do alsoft.conf do Bully. Servidor -> default sink = speaker (evita o card ALSA cru por nome,
+     onde o speaker vem busy e cai no HDMI). SONIC_AUDIO_ORDER="a,b,c" sobrescreve a preferência. */
+  {
+    const char *oe = getenv("SONIC_AUDIO_ORDER");
+    char order[128];
+    strncpy(order, (oe && *oe) ? oe : "pipewire,pulseaudio,pulse,alsa", sizeof(order) - 1);
+    order[sizeof(order) - 1] = 0;
+    char *sv = NULL;
+    for (char *tok = strtok_r(order, ",; ", &sv); tok; tok = strtok_r(NULL, ",; ", &sv)) {
+      for (int i = 0; i < ndrv; i++) {
+        const char *name = SDL_GetAudioDriver(i);
+        if (!name || strcmp(name, tok) != 0) continue;
+        if (sa_driver_silent(name)) continue;
+        if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
+        if (sa_open_named_driver(name, &want, &have)) goto opened;
+      }
+    }
+  }
+  /* (3) resto: qualquer driver que abra, na ordem do SDL (cobre nomes fora da preferência) */
   for (int i = 0; i < ndrv; i++) {
     const char *name = SDL_GetAudioDriver(i);
     if (sa_driver_silent(name)) continue;
     if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    setenv("SDL_AUDIODRIVER", name, 1); /* seleciona ESTE pro próximo init — adaptativo, não fixo */
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
-      alog("sonic_audio: init driver=%s falhou: %s\n", name, SDL_GetError());
-      continue;
-    }
-    const char *cur = SDL_GetCurrentAudioDriver();
-    if (!cur || strcmp(cur, name) != 0) continue;
-    if (sa_try_open(&want, &have)) {
-      fprintf(stderr, "sonic_audio: SDL audio aberto (fallback) %dHz %dch samples=%d driver=%s\n",
-              have.freq, have.channels, have.samples, name);
-      goto opened;
-    }
-    fprintf(stderr, "sonic_audio: driver=%s nao abriu device: %s\n", name, SDL_GetError());
+    if (sa_open_named_driver(name, &want, &have)) goto opened;
   }
   unsetenv("SDL_AUDIODRIVER");
   fprintf(stderr, "sonic_audio: NENHUM driver de audio funcional (jogo segue, mas mudo)\n");
