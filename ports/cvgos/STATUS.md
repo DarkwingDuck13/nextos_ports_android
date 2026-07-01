@@ -42,6 +42,19 @@ Com o trap-gate forçado, a UnityMain roda o init MAS usa **FILE\* lixo FIXO 0xe
 - **Raiz**: `[player+0x104]=1` NÃO é setado por sigaction (`CUP_NOSIGH` não impede — 175684× sem o patch). É código próprio da Unity marcando a thread como "não-pronta/trapped". **Forçar o gate = rodar PlayerLoop numa thread que a engine considera não-registrada → estado uninit → ponteiros lixo (FILE\* etc.) → cascata.**
 - **PRÓXIMO PASSO decisivo**: gdb **watchpoint** em `[player+0x104]` (r4 no gate libunity+0x31fe38) p/ achar QUEM escreve o 1 (o "SetThreadTrapped") e por quê; corrigir a RAIZ (registrar a UnityMain / satisfazer a condição) em vez de forçar o gate. Provável ligação com registro de thread no runtime (classe do muro Terraria/FF9). signum=1=SIGHUP — investigar se um SIGHUP real chega (nohup deveria ignorar) ou se 1 é sentinela "uninit".
 
+### 🔬🔬🔬 ROOT REFINADO via gdb (sessão 1, fim) — o trap PROPAGA de um "current thread" GLOBAL
+Desmontando o gate (libunity+0x31fe38) no gdb:
+```
+push {r4,lr}; mov r4,r0
+ldr r3,[r4,#0x104]; cmp r3,#0; beq +0x28   ; se [r4+0x104]!=0 -> LOGA "trapped signum=[r4+0x104]"
++0x28: ldr r0,[GLOBAL_curthread]; cmp r0,#0; cmpne r0,r4; beq +0x64
+       ldr r3,[r0(curthread)+0x104]; str r3,[r4+0x104]   ; COPIA trap do curthread global -> r4
+...return
+```
+- **No 1º gate call `[r4+0x104]=0`** (player r4 NÃO nasce trapado). O gate então **COPIA `[GLOBAL_curthread+0x104]` para `[r4+0x104]`** — ou seja o trap vem de um **objeto "current thread" GLOBAL** (ptr em libunity data, offset fixo carregado via `ldr r0,[pc,#100];ldr r0,[pc,r0]` em gate+0x28/+0x2c). Watchpoint no r4 (0xf5a19500) NÃO disparou (fonte errada) mas "trapped" logou 175k× → confirma que a fonte é o **curthread global**, não o r4.
+- **PRÓXIMO (preciso)**: achar o endereço do objeto curthread global (ler r0 em gate+0x30) e dar **watchpoint em `[curthread+0x104]`** desde cedo (ou achar o offset do ponteiro global em libunity data) p/ pegar o SETTER do 1. Aí: entender a condição (registro da thread no runtime Il2Cpp) e satisfazê-la, OU zerar o curthread+0x104 no boot (menos correto). Helper de debug: **`CVGOS_FIXBASE=1`** mmapa libunity em 0x30000000 (determinismo p/ breakpoints).
+- Ferramentas gdb que funcionaram: `break jni_dump_natives` (após libunity carregar) → `break *(g_unity_base+0x31fe38)` (g_unity_base é símbolo do nosso binário não-stripado).
+
 ### 🔬🔬 MURO REFINADO (sessão 1, meio) — libunity não entra na fase player-run
 Verificado que o my_dlsym da base JÁ resolve `il2cpp_*` do nosso g_m_il2cpp (wired em libunity via set_import+patch_got). PORÉM no run **NÃO há NENHUM `[DLOPEN]`/`[DLSYM] il2cpp`** — ou seja **libunity NUNCA chama dlopen("libil2cpp")/dlsym("il2cpp_init")**. Combinado com **só 6 threads (sem UnityMain/GC/Loading/workers)** e nativeRender a ~7500fps (instantâneo): **libunity inicializa o gráfico (initJni/RecreateGfxState/present) mas NUNCA entra na fase de "run application" / scripting-backend init**. Sem isso: sem UnityMain, sem il2cpp_init, sem 1ª cena → preto.
 - Lifecycle testado igual RE4 (Resume→SurfaceChanged→Focus) — não arranca.

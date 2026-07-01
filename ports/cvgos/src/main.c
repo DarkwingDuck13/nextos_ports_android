@@ -4913,7 +4913,10 @@ int main(int argc, char **argv) {
 
   /* ---- F0: carrega libunity.so ---- */
   size_t hs = (size_t)HEAP_MB * 1024 * 1024;
-  void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  /* CVGOS_FIXBASE: mmap libunity em endereco FIXO (debug: determinismo p/ watchpoint gdb). */
+  void *want = getenv("CVGOS_FIXBASE") ? (void *)0x30000000UL : NULL;
+  int mf = MAP_PRIVATE | MAP_ANONYMOUS | (want ? MAP_FIXED : 0);
+  void *heap = mmap(want, hs, PROT_READ | PROT_WRITE | PROT_EXEC, mf, -1, 0);
   if (heap == MAP_FAILED) { perror("mmap"); return 1; }
   fprintf(stderr, "[F0] heap %dMB @ %p, carregando libunity.so...\n", HEAP_MB, heap);
   if (so_load("libunity.so", heap, hs) < 0) { fprintf(stderr, "so_load libunity FALHOU\n"); return 1; }
