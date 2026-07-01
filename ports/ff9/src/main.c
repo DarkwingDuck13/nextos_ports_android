@@ -4549,6 +4549,99 @@ static int ff9_log_managed_exception_candidate(int n, const char *slot, void *ex
   fsync(2);
   return 1;
 }
+
+/* FF9_SKIPMOVIE (default ON): no so-loader o VideoPlayer Android nao e criado para os
+ * logos/FMV iniciais. MovieMaterial.Load entao ve _videoPlayer == NULL e lanca
+ * NullReferenceException antes de chegar no titulo. Tratamos o movie como "ja terminou":
+ * Load vira no-op benigno, Play agenda o OnFinished para o proximo frame, e queries
+ * basicas retornam valores prontos. FF9_NOSKIPMOVIE restaura o caminho nativo. */
+static void *g_skipmovie_pending_action;
+static int g_skipmovie_pending_frame;
+static int g_skipmovie_calling;
+static volatile uint32_t g_skipmovie_loads, g_skipmovie_plays, g_skipmovie_finishes;
+
+static void ff9_skipmovie_log_key(const char *tag, void *self, void *movie_key) {
+  char key[160] = {0};
+  if (movie_key) ff9_copy_il2cpp_string(movie_key, key, sizeof key);
+  fprintf(stderr, "[SKIPMOVIE] %s #%u self=%p key=\"%s\" f=%d\n",
+          tag, tag[0] == 'L' ? g_skipmovie_loads : g_skipmovie_plays,
+          self, key, g_render_frame);
+  fsync(2);
+}
+
+static void ff9_skipmovie_mark_ready(void *self, void *movie_key) {
+  if (!self || !addr_readable((uintptr_t)self + 0x65)) return;
+  *(float *)((char *)self + 0x20) = 0.05f;       /* Duration */
+  *(uint8_t *)((char *)self + 0x30) = 1;         /* GetFirstFrame */
+  *(uint8_t *)((char *)self + 0x64) = 0;         /* _isPlayCall */
+  *(uint8_t *)((char *)self + 0x65) = 0;         /* _isPauseRetry */
+  if (movie_key && addr_readable((uintptr_t)self + 0x58))
+    *(void **)((char *)self + 0x58) = movie_key; /* _movieKey; string ja mantida pelo caller */
+}
+
+void my_MovieMaterial_Load(void *self, void *movie_key, void *method);
+void my_MovieMaterial_Load(void *self, void *movie_key, void *method) {
+  (void)method;
+  g_skipmovie_loads++;
+  if (g_skipmovie_loads <= 20) ff9_skipmovie_log_key("Load", self, movie_key);
+  ff9_skipmovie_mark_ready(self, movie_key);
+}
+
+void my_MovieMaterial_Play(void *self, void *method);
+void my_MovieMaterial_Play(void *self, void *method) {
+  (void)method;
+  g_skipmovie_plays++;
+  if (g_skipmovie_plays <= 20) ff9_skipmovie_log_key("Play", self, NULL);
+  ff9_skipmovie_mark_ready(self, NULL);
+
+  void *action = NULL;
+  if (self) ff9_safe_read_ptr((char *)self + 0x10, &action); /* OnFinished */
+  if (action) {
+    g_skipmovie_pending_action = action;
+    g_skipmovie_pending_frame = g_render_frame + 1;
+    fprintf(stderr, "[SKIPMOVIE] Play agenda OnFinished=%p para f>=%d\n",
+            action, g_skipmovie_pending_frame);
+  } else {
+    fprintf(stderr, "[SKIPMOVIE] Play sem OnFinished (self=%p)\n", self);
+  }
+  fsync(2);
+}
+
+int my_MovieMaterial_IsPrepared(void *self, void *method);
+int my_MovieMaterial_IsPrepared(void *self, void *method) {
+  (void)self; (void)method;
+  return 1;
+}
+
+float my_MovieMaterial_get_Duration(void *self, void *method);
+float my_MovieMaterial_get_Duration(void *self, void *method) {
+  (void)self; (void)method;
+  return 0.05f;
+}
+
+static void ff9_skipmovie_pump_finish(void) {
+  if (!g_skipmovie_pending_action || !g_il2cpp_base || g_skipmovie_calling ||
+      g_render_frame < g_skipmovie_pending_frame) return;
+
+  void *action = g_skipmovie_pending_action;
+  g_skipmovie_pending_action = NULL;
+  g_skipmovie_calling = 1;
+  g_skipmovie_finishes++;
+  fprintf(stderr, "[SKIPMOVIE] Invoke OnFinished #%u action=%p f=%d\n",
+          g_skipmovie_finishes, action, g_render_frame);
+  fsync(2);
+  ((void (*)(void *, void *))(g_il2cpp_base + 0x1f5d454))(action, NULL); /* System.Action.Invoke */
+  g_skipmovie_calling = 0;
+}
+
+static void ff9_skipmovie_install(uintptr_t base) {
+  hook_arm64(base + 0x149C594, (uintptr_t)my_MovieMaterial_Load);
+  hook_arm64(base + 0x149C748, (uintptr_t)my_MovieMaterial_Play);
+  hook_arm64(base + 0x149C50C, (uintptr_t)my_MovieMaterial_IsPrepared);
+  hook_arm64(base + 0x149B77C, (uintptr_t)my_MovieMaterial_get_Duration);
+  fprintf(stderr, "[SKIPMOVIE] MovieMaterial Load/Play/IsPrepared/Duration hooks instalados\n");
+  fsync(2);
+}
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *));
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *)) {
   static int n = 0;
@@ -6966,6 +7059,19 @@ int main(int argc, char **argv) {
         if (g_logfmt_orig) hook_arm64(g_il2cpp_base + 0x10a6200, (uintptr_t)my_logger_diag);
         lf_hooked = 1;
         fprintf(stderr, "[LOGFMT] logger(0x10a6200) hookado @f=%d orig=%p\n", f, (void *)g_logfmt_orig); fsync(2);
+      }
+      /* FF9_SKIPMOVIE (default ON): VideoPlayer Android fica NULL no so-loader; pula logos/FMV
+         invocando OnFinished no frame seguinte. FF9_NOSKIPMOVIE desliga para comparar. */
+      static int mv_hooked = 0;
+      if (!mv_hooked && !getenv("FF9_NOSKIPMOVIE") && g_il2cpp_base && f >= 180) {
+        extern void ff9_skipmovie_install(uintptr_t);
+        ff9_skipmovie_install(g_il2cpp_base);
+        mv_hooked = 1;
+        fprintf(stderr, "[SKIPMOVIE] default ON @f=%d\n", f); fsync(2);
+      }
+      if (mv_hooked) {
+        extern void ff9_skipmovie_pump_finish(void);
+        ff9_skipmovie_pump_finish();
       }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
