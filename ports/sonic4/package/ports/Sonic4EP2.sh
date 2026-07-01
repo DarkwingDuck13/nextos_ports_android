@@ -121,6 +121,27 @@ fi
 [ -f "$GAMEDIR/simcrash" ] && export SONIC_SIMDEMOCRASH=1
 [ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
 
+# muOS/raw-ALSA sem som: o "default" do ALSA roteia p/ um pipewire que NÃO roda -> falha; e o card
+# do speaker (audiocodec) fica busy -> cai no HDMI = mudo. `touch sonic4ep2/alsa_dmix` escreve um
+# ~/.asoundrc que mapeia default -> dmix (compartilhado) no speaker, ignorando o pipewire quebrado.
+# (só funciona se o muOS não segurar o card em modo EXCLUSIVO; se não resolver, é o muOS não liberar
+# o áudio.) SONIC_DMIX_CARD sobrescreve o nome do card (default: audiocodec).
+if [ -f "$GAMEDIR/alsa_dmix" ]; then
+  _card="${SONIC_DMIX_CARD:-audiocodec}"
+  _rch="$GAMEDIR/.dmixhome"
+  mkdir -p "$_rch"
+  cat > "$_rch/.asoundrc" <<ASND
+pcm.!default { type plug; slave.pcm "dmix_spk"; }
+pcm.dmix_spk {
+    type dmix
+    ipc_key 3521
+    slave { pcm "hw:CARD=$_card"; rate 44100; channels 2; period_size 1024; buffer_size 8192; }
+}
+ASND
+  export HOME="$_rch"
+  echo "alsa_dmix: default -> dmix no speaker (card=$_card), HOME=$_rch"
+fi
+
 ./sonic4
 
 pkill -x gptokeyb 2>/dev/null || true
