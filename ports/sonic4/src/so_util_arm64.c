@@ -393,9 +393,30 @@ void so_execute_init_array(void) {
       int n = (int)(sec_hdr[i].sh_size / 8);
       int (**init_array)() =
           (void *)((uintptr_t)load_base + sec_hdr[i].sh_addr);
-      debugPrintf("so_execute_init_array: %d construtores\n", n);
-      for (int j = 0; j < n; j++) {
+      /* 🔑 PULA OPENSSL_cpuid_setup (probe de CPU-crypto via SIGILL): o jogo é bionic e
+       * aloca um sigjmp_buf do tamanho BIONIC na pilha, mas sigsetjmp roteia pro da GLIBC
+       * (jmp_buf MAIOR) -> estoura o buffer -> corrompe o x30 salvo do caller de
+       * so_execute_init_array -> ret p/ 0 = crash no boot. BoringSSL roda com armcap=0
+       * (caminho C portável), então pular é seguro p/ o jogo (crypto é só F2F/SSL, não
+       * gameplay). SONIC_RUN_CPUID=1 força rodar (debug). SONIC_INITMAX/SKIP p/ bring-up. */
+      uintptr_t cpuid_ctor = so_find_addr_safe("OPENSSL_cpuid_setup");
+      int allow_cpuid = getenv("SONIC_RUN_CPUID") != NULL;
+      const char *em = getenv("SONIC_INITMAX");
+      int nmax = em ? atoi(em) : n;
+      if (nmax < 0 || nmax > n) nmax = n;
+      const char *esk = getenv("SONIC_INITSKIP");
+      debugPrintf("so_execute_init_array: %d construtores (rodando %d)\n", n, nmax);
+      for (int j = 0; j < nmax; j++) {
         if (init_array[j] != 0) {
+          if (!allow_cpuid && cpuid_ctor &&
+              (uintptr_t)init_array[j] == cpuid_ctor) {
+            fprintf(stderr, "  init[%d] OPENSSL_cpuid_setup -> PULADO (sigsetjmp bionic/glibc)\n", j);
+            continue;
+          }
+          if (esk) { char b[16]; snprintf(b, sizeof b, "%d", j);
+            char pat[24]; snprintf(pat, sizeof pat, ",%s,", b);
+            char list[256]; snprintf(list, sizeof list, ",%s,", esk);
+            if (strstr(list, pat)) { fprintf(stderr, "  init[%d] PULADO\n", j); continue; } }
           debugPrintf("  init[%d] @ %p\n", j, (void *)init_array[j]);
           init_array[j]();
         }
