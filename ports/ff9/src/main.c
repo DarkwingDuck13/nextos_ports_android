@@ -1892,7 +1892,15 @@ static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
 /* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
 static void ter_input_hook(void);
-void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_input_hook(); ter_screenshot_maybe(); }
+void ff9_titlepad_tick(void);
+void ff9_titlepad_draw(void);
+void ter_shot_hook(void) {
+  ter_nuke_methods();
+  ter_jobworkers0();
+  ter_input_hook();
+  ff9_titlepad_draw();
+  ter_screenshot_maybe();
+}
 
 /* ===== TER_GAMEPAD: js0 -> nativeInjectEvent (KeyEvent) p/ navegar o menu do Terraria =====
    O Terraria usa InControl, que lê o gamepad via Unity Input (alimentado pelo nativeInjectEvent
@@ -3611,6 +3619,8 @@ static void ter_navspy_log(void) {
 }
 
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  extern void ff9_titlepad_tick(void);
+  extern void ff9_titlepad_draw(void);
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   ter_fix_singleplayer(); /* TER_FIXSP: neutraliza OldSaveSynchronise.CopyOldSaves (tela preta SP) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
@@ -3628,6 +3638,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   if (getenv("TER_MENU")) ter_menu_nuke_updateinput();  /* p/ não clobberar Main.mouse* */
   ter_menu_drive();     /* TER_MENU/TER_MENULOG: dirige/observa Main.mouseX/Y/Left/hasFocus */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
+  ff9_titlepad_draw();
   ter_vkbd_draw();
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
@@ -5433,6 +5444,7 @@ volatile void *g_titleui_this = NULL;
 static uint32_t g_titleui_orig[4];
 static int g_newgame_done = 0;
 static int g_newgame_direct_done = 0;
+static int g_titlepad_sel = 0;
 static void ff9_go_set_active(void *go, int active, const char *tag) {
   if (!go || ((uintptr_t)go >> 40) != 0 || !g_il2cpp_base) return;
   ((void (*)(void *, int, void *))(g_il2cpp_base + 0x25613B0))(go, active, NULL);
@@ -5474,6 +5486,78 @@ void my_TitleUI_Update(void *this_, void *mi) {
   }
   /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
   ((void (*)(void *, void *))a)(this_, mi);   /* roda o Update original deste frame */
+}
+static int ff9_titlepad_enabled(void) {
+  return ff9_gamepad_enabled() && !getenv("FF9_NOTITLEPAD");
+}
+static const char *ff9_titlepad_name(int idx) {
+  static const char *names[] = {"CONTINUE", "NEW GAME", "LOAD GAME", "CLOUD DATA"};
+  return (idx >= 0 && idx < 4) ? names[idx] : "?";
+}
+static void *ff9_titlepad_button_go(int idx) {
+  void *t = (void *)g_titleui_this;
+  if (!t || ((uintptr_t)t >> 40) != 0) return NULL;
+  uintptr_t off = 0;
+  switch (idx) {
+    case 0: off = 0x1C0; break; /* startGameObject / grupo continue */
+    case 1: off = 0x1A8; break; /* newGameButton */
+    case 2: off = 0x1B0; break; /* loadGameButton */
+    case 3: off = 0x1B8; break; /* cloudDataButton em builds FF9 conhecidos */
+  }
+  void *go = off ? *(void **)((char *)t + off) : NULL;
+  return (go && ((uintptr_t)go >> 40) == 0) ? go : NULL;
+}
+static void *ff9_onclick_string(void) {
+  static void *s;
+  if (!s && g_il2cpp_base) {
+    void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0xff7ff0);
+    s = isn("OnClick");
+  }
+  return s;
+}
+static void ff9_titlepad_notify_click(int idx) {
+  void *go = ff9_titlepad_button_go(idx);
+  void *msg = ff9_onclick_string();
+  if (!go || !msg || !g_il2cpp_base) {
+    fprintf(stderr, "[FF9_TITLEPAD] sem GameObject para %s (idx=%d)\n", ff9_titlepad_name(idx), idx);
+    fsync(2);
+    return;
+  }
+  fprintf(stderr, "[FF9_TITLEPAD] UICamera.Notify %s go=%p OnClick\n", ff9_titlepad_name(idx), go);
+  fsync(2);
+  ((void (*)(void *, void *, void *))(g_il2cpp_base + 0x14271F4))(go, msg, NULL);
+}
+void ff9_titlepad_tick(void) {
+  if (!ff9_titlepad_enabled() || !g_titleui_this) return;
+  int moved = 0;
+  if (ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 11)) { g_titlepad_sel = (g_titlepad_sel + 1) & 3; moved = 1; }
+  if (ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 10)) { g_titlepad_sel = (g_titlepad_sel + 3) & 3; moved = 1; }
+  if (moved) {
+    fprintf(stderr, "[FF9_TITLEPAD] selecionado %s (%d)\n", ff9_titlepad_name(g_titlepad_sel), g_titlepad_sel);
+    fsync(2);
+  }
+  int accept = ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 0) ||
+               ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 8);
+  if (!accept) return;
+  if (g_titlepad_sel == 1) {
+    void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x1344634);
+    fprintf(stderr, "[FF9_TITLEPAD] OnNewGameButtonClick(this=%p)\n", (void *)g_titleui_this);
+    fsync(2);
+    ong((void *)g_titleui_this, NULL);
+  } else {
+    ff9_titlepad_notify_click(g_titlepad_sel);
+  }
+}
+void ff9_titlepad_draw(void) {
+  if (!ff9_titlepad_enabled() || !g_titleui_this) return;
+  int sw, sh, osc[4], oen; float occ[4];
+  if (!vk_gl_begin(&sw, &sh, osc, occ, &oen)) return;
+  int y[4] = {386, 455, 524, 592};
+  int yy = y[g_titlepad_sel];
+  int x = sw / 2 - 150;
+  vk_text(sw, sh, x, yy, ">", 4, 1.0f, 0.96f, 0.72f);
+  vk_rect(sw, sh, x + 24, yy + 28, 250, 3, 0.95f, 0.78f, 0.35f, 1.0f);
+  vk_gl_end(osc, occ, oen);
 }
 ff9_touch my_Input_GetTouch(int index, void *mi) {
   (void)index; (void)mi;
@@ -7588,6 +7672,7 @@ int main(int argc, char **argv) {
     if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
     if (getenv("TER_GAMEPAD")) ter_gamepad_poll();   /* js0 -> estado lógico (antes do Update); hook é no swap */
     if (ff9_gamepad_on) ff9_gamepad_poll();          /* FF9: SDL pad/teclado -> Control held/down */
+    if (ff9_gamepad_on) ff9_titlepad_tick();         /* TitleUI/NGUI: D-pad/A antes de perder edges sem swap */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
       if (sigsetjmp(g_render_jmp, 1) == 0) {
@@ -7868,14 +7953,15 @@ int main(int argc, char **argv) {
       { int ng = ter_env_on("FF9_NEWGAME");
         int sm = ter_env_on("FF9_SHOWMENU");  /* fluxo natural: pula o SlashScreen slideshow chamando ShowMenuPanel direto */
         int nc = ter_env_on("FF9_NOTIFYCLICK");  /* dispensa o slideshow via UICamera.Notify(SlideShowHitArea,"OnClick") */
+        int tp = ff9_titlepad_enabled();      /* captura TitleUI p/ navegação Xbox do menu */
         static int ng_hooked = 0;
-        if ((ng || sm || nc) && !ng_hooked && g_il2cpp_base) {
+        if ((ng || sm || nc || tp) && !ng_hooked && g_il2cpp_base) {
           int ngat = getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300;
           if (f >= ngat) {
             memcpy(g_titleui_orig, (void *)(g_il2cpp_base + 0x1348430), 16);  /* salva original */
             hook_arm64(g_il2cpp_base + 0x1348430, (uintptr_t)my_TitleUI_Update);
             ng_hooked = 1;
-            fprintf(stderr, "[FF9_NEWGAME] TitleUI.Update hookado @f=%d (captura this)\n", f); fsync(2);
+            fprintf(stderr, "[FF9_TITLEUI] TitleUI.Update hookado @f=%d (captura this)\n", f); fsync(2);
           }
         }
         /* FF9_SHOWMENU: fluxo natural — com TitleUI this capturado, chama ShowMenuPanel(0x134346C)

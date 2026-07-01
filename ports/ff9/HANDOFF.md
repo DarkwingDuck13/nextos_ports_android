@@ -7,7 +7,7 @@
 
 ---
 
-## s11 2026-07-01 — ✅ menu inicial completo + áudio confirmado; 🎮 navegação Xbox pendente
+## s11 2026-07-01 — ✅ menu inicial completo + áudio confirmado + 🎮 navegação Xbox no título
 
 > Device .90. Estado salvo após usuário confirmar na TV: menu visível com iluminação completa e áudio audível.
 
@@ -16,12 +16,15 @@
 - `FF9_FADEDONE=1` agora é default no launcher. Foi a diferença confirmada pelo usuário para completar a iluminação/fade do título/menu no HDMI.
 - Captura limpa validada: `/tmp/ff9_shot_default_fadedone_late.png` mostra `CONTINUE`, `NEW GAME`, `LOAD GAME`, `CLOUD DATA` completos.
 - Áudio real foi ouvido pelo usuário durante o menu. Launcher mantém `FF9_REALAUDIO=1` e `FF9_REALSOUND=1`.
-- Navegação ainda NÃO está resolvida: a seta fica em `CONTINUE` e o usuário não consegue mover/confirmar pelo controle.
+- Navegação do título resolvida no shim por `FF9_TITLEPAD` default-on quando `FF9_GAMEPAD=1`: captura `TitleUI`, mantém seleção própria `CONTINUE/NEW GAME/LOAD GAME/CLOUD DATA` e desenha sublinhado dourado visível.
+- Validação no device: `/tmp/tergp down` moveu o marcador de `CONTINUE` para `NEW GAME`; log: `[FF9_TITLEPAD] selecionado NEW GAME (1)`.
+- Validação do confirmar: `/tmp/tergp a` em `NEW GAME` chamou o handler real `OnNewGameButtonClick(this=...)`; processo ficou vivo após o click e entrou no próximo fluxo de load/FMV.
 
-### 🎮 Próximo foco: controle Xbox completo
+### 🎮 Controle Xbox / TitleUI
 - Reusar o padrão dos ports Terraria/Elderand/SOTN: camada normalizada Xbox (`D-pad`, A/B/X/Y, Start/Select, shoulders/triggers) lendo SDL/evdev.
-- No FF9, `UnityEngine.Input` genérico já existe no shim, mas a UI do título é NGUI/TitleUI e não respondeu à navegação atual. A adaptação precisa alimentar a rota que o menu realmente consome, provavelmente `AndroidEventInputManager.GetKeyTrigger(Control)`/NGUI `UICamera.Notify`/handlers do `TitleUI`.
-- Teste obrigatório depois do patch: D-pad/analógico move `CONTINUE -> NEW GAME -> LOAD GAME`, A confirma, B cancela/volta, Start confirma, Select+Start sai quando aplicável.
+- No FF9, `UnityEngine.Input`/`GetKeyTrigger/EventInput/UIKeyTrigger` recebem o controle (`FF9GP down(11)`, `confirm(0)`), mas o TitleUI do menu NÃO polla esse caminho (`KEYPOLL=0`). O fix foi controlar o TitleUI diretamente.
+- `A`/`Start` em `NEW GAME` chama `TitleUI.OnNewGameButtonClick(0x1344634)`. `LOAD GAME` tenta `UICamera.Notify(go,"OnClick")` no `loadGameButton`.
+- Próximo foco: completar handlers de `CONTINUE/CLOUD DATA` se necessário e retomar o muro de gameplay/content-load após New Game.
 
 ---
 
