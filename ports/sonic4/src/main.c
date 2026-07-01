@@ -64,6 +64,11 @@ extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim
 static sigjmp_buf g_demo_guard_env;
 static volatile sig_atomic_t g_demo_guard_active = 0;
 static unsigned long g_demo_guard_recovered = 0;
+static int g_demoguard_on = 1;                 /* setado em load_module (SONIC_NO_DEMOGUARD desliga) */
+/* faixa do destrutor ~CStartDemo (ep2) onde o UAF crasha; epílogo = pop {r4,r5,r6,pc}. */
+#define CSD_DTOR_LO 0x4253f8UL
+#define CSD_DTOR_HI 0x4254e0UL
+#define CSD_DTOR_EPILOGUE 0x4254d8UL
 
 static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
   if (g_demo_guard_active && (sig == SIGSEGV || sig == SIGBUS)) {
@@ -71,6 +76,31 @@ static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
     g_demo_guard_recovered++;
     siglongjmp(g_demo_guard_env, 1);          /* recupera: pula de volta pro sigsetjmp */
   }
+#if defined(__arm__)
+  /* 🛡️ DEMOGUARD GERAL: SIGSEGV/SIGBUS DENTRO do ~CStartDemo, por QUALQUER caminho (Act Clear->
+     mapa, ReleaseInstance, delete direto...) = o use-after-free do demo. Recupera redirecionando
+     o PC pro epílogo (pop {r4,r5,r6,pc}): o frame é estável (só push {r4,r5,r6,lr} no início, sem
+     outro mexer no SP), então o pop retorna limpo pro chamador, pulando o resto do destrutor
+     (vaza o objeto corrompido, mas NÃO fecha o jogo). Cobre o crash que o hook do ReleaseInstance
+     não pegava (tester: crash após Act Clear nas fases pesadas, libfox+0x4254b8). */
+  if (g_demoguard_on && (sig == SIGSEGV || sig == SIGBUS) && uc && text_base) {
+    ucontext_t *u = (ucontext_t *)uc;
+    unsigned long off = u->uc_mcontext.arm_pc - (uintptr_t)text_base;
+    if (off >= CSD_DTOR_LO && off < CSD_DTOR_HI) {
+      /* push {r4,r5,r6,lr} é @+0x425400. Antes dele o frame não existe -> retorna via LR (o
+         chamador); depois dele -> retorna via epílogo (pop {r4,r5,r6,pc}). Nos dois casos r4/r5/r6
+         do chamador ficam corretos. Pula o resto do destrutor (vaza o objeto corrompido, sem crash). */
+      if (off < 0x425404UL)
+        u->uc_mcontext.arm_pc = u->uc_mcontext.arm_lr;
+      else
+        u->uc_mcontext.arm_pc = (uintptr_t)text_base + CSD_DTOR_EPILOGUE;
+      g_demo_guard_recovered++;
+      fprintf(stderr, "[DEMOGUARD] SIGSEGV em ~CStartDemo (libfox+0x%lx) -> RECUPERADO #%lu\n",
+              off, g_demo_guard_recovered);
+      return;                                 /* kernel resume no epílogo/caller -> jogo segue */
+    }
+  }
+#endif
   void *bt[48];
   int n = backtrace(bt, 48);
   /* PC/LR exatos do ucontext (armhf) — a instrução do crash mesmo sem unwind da libfox. */
@@ -864,34 +894,31 @@ int main(int argc, char *argv[]) {
                    (void *)my_amDrawReleaseTexture);
     fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (stale-P do exit) ===\n");
   }
-  /* 🛡️ DEMOGUARD (default ON; SONIC_NO_DEMOGUARD desliga): chamada protegida do teardown do
-     attract-demo (CStartDemo) — evita o crash de use-after-free em ~CStartDemo (tester, Electric Road). */
-  if (!getenv("SONIC_NO_DEMOGUARD")) {
+  /* 🛡️ DEMOGUARD (default ON; SONIC_NO_DEMOGUARD desliga): protege o teardown do CStartDemo contra
+     use-after-free. DUAS camadas: (1) hook do ep2::ReleaseInstance (release limpo p/ esse caminho);
+     (2) recuperação GERAL por faixa de PC no crash handler (pega o destrutor por QUALQUER caminho —
+     Act Clear->mapa, delete direto etc; foi o que faltava no crash do tester). */
+  g_demoguard_on = getenv("SONIC_NO_DEMOGUARD") == NULL;
+  if (g_demoguard_on) {
     patch_arm_jump("_ZN2gm10start_demo3ep210CStartDemo15ReleaseInstanceEv",
                    (void *)my_ep2_CStartDemo_ReleaseInstance);
-    fprintf(stderr, "=== DEMOGUARD: ep2::CStartDemo::ReleaseInstance protegido (UAF do demo) ===\n");
+    fprintf(stderr, "=== DEMOGUARD: ~CStartDemo protegido (hook ReleaseInstance + recuperacao geral por PC) ===\n");
   }
-  /* 🧪 SONIC_SIMDEMOCRASH: SIMULA o crash do demo (força o ep2 s_instance = ponteiro garbage e
-     dispara o teardown), no boot. Dois modos p/ demonstrar:
-       - guarda ON (default): RECUPERA e continua pro título -> dá pra JOGAR normal (log: SOBREVIVI).
+  /* 🧪 SONIC_SIMDEMOCRASH: SIMULA o crash do tester chamando o ~CStartDemo DIRETO com um objeto
+     garbage (o caminho REAL do tester NÃO passa pelo ReleaseInstance — ex.: teardown do Act Clear).
+     O crash cai DENTRO do destrutor -> exercita a RECUPERAÇÃO GERAL por faixa de PC:
+       - guarda ON (default): RECUPERA (redireciona pro epílogo/caller) e segue -> dá pra JOGAR.
        - guarda OFF (+SONIC_NO_DEMOGUARD): crash CRU (jogo fecha) -> prova que é a guarda que salva. */
   if (getenv("SONIC_SIMDEMOCRASH")) {
-    void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo3ep210CStartDemo10s_instanceE");
     int guard_off = getenv("SONIC_NO_DEMOGUARD") != NULL;
-    fprintf(stderr, "=== SIMDEMOCRASH: ep2 s_instance@%p = garbage, disparando teardown (guarda=%s) ===\n",
-            (void *)pinst, guard_off ? "OFF (deve FECHAR)" : "ON (deve RECUPERAR)");
-    if (pinst) {
-      *pinst = (void *)0x1;                     /* ponteiro non-null INVÁLIDO = use-after-free simulado */
-      if (guard_off) {
-        /* caminho CRU (sem guarda): deref direto do garbage -> SIGSEGV = o crash EXATO do tester */
-        void *inst = *pinst;
-        void (**vt)(void *) = *(void (***)(void *))inst;
-        vt[0](inst);                            /* CRASH aqui (jogo fecha, vai pro crash.log) */
-      } else {
-        my_ep2_CStartDemo_ReleaseInstance();    /* com guarda -> recupera */
-        fprintf(stderr, "=== SIMDEMOCRASH: SOBREVIVI (recuperado=%lu) -> segue pro titulo ===\n",
-                g_demo_guard_recovered);
-      }
+    uintptr_t dtor = so_find_addr_safe("_ZTv0_n12_N2gm10start_demo3ep210CStartDemoD0Ev");
+    fprintf(stderr, "=== SIMDEMOCRASH: ~CStartDemo@0x%lx com this=garbage (guarda=%s) ===\n",
+            (unsigned long)dtor, guard_off ? "OFF (deve FECHAR)" : "ON (deve RECUPERAR)");
+    if (dtor) {
+      void (*d)(void *) = (void (*)(void *))(dtor & ~(uintptr_t)1);
+      d((void *)0x1);                           /* crash DENTRO do destrutor; guarda ON -> recupera */
+      fprintf(stderr, "=== SIMDEMOCRASH: SOBREVIVI (recuperado=%lu) -> segue ===\n",
+              g_demo_guard_recovered);
     }
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
