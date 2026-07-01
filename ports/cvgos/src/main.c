@@ -592,6 +592,25 @@ static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long o
 /* /proc/cpuinfo + /sys/.../cpu: Unity conta cores p/ dimensionar job workers. */
 static int g_dllog;
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
+/* 🔑 stdio defensivo: o engine (Android/bionic) as vezes passa um FILE* de stdio
+ * bionic/lixo (ex. stdout/stderr bionic, ou campo mal-lido) p/ o stdio da glibc. glibc
+ * faz `ldaex [&FILE->_lock]` (atomic) -> se o FILE* for DESALINHADO (&3 != 0) = lixo,
+ * ldaex faulta SIGBUS e mata a UnityMain no init. Guard: FILE* desalinhado/NULL -> stderr
+ * (log) em vez de crashar. FILE* alinhado (fopen real nosso) segue normal. */
+static int fp_bad(void *s) { return !s || ((uintptr_t)s & 3) != 0; }
+static size_t my_fwrite(const void *p, size_t sz, size_t n, FILE *s) {
+  if (fp_bad(s)) { if (p && sz && n) fwrite(p, sz, n, stderr); return n; }
+  return fwrite(p, sz, n, s);
+}
+static int my_fputs(const char *str, FILE *s) { if (fp_bad(s)) return fputs(str ? str : "", stderr); return fputs(str, s); }
+static int my_fputc(int c, FILE *s) { if (fp_bad(s)) return fputc(c, stderr); return fputc(c, s); }
+static int my_fflush(FILE *s) { if (fp_bad(s)) return 0; return fflush(s); }
+static int my_fprintf(FILE *s, const char *f, ...) {
+  va_list ap; va_start(ap, f); int r = vfprintf(fp_bad(s) ? stderr : s, f, ap); va_end(ap); return r;
+}
+static int my_vfprintf(FILE *s, const char *f, va_list ap) { return vfprintf(fp_bad(s) ? stderr : s, f, ap); }
+static int my_fclose(FILE *s) { if (fp_bad(s)) return 0; return fclose(s); }
+
 static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
     FILE *t = tmpfile(); if (t) { fputs("MemTotal:      524288 kB\nMemFree:       262144 kB\nMemAvailable:  262144 kB\n", t); rewind(t); return t; }
@@ -4922,6 +4941,10 @@ int main(int argc, char **argv) {
     set_import("fdopen", (void *)my_fdopen);
   }
   set_import("fopen", (void *)my_fopen);
+  set_import("fwrite", (void *)my_fwrite); set_import("fputs", (void *)my_fputs);
+  set_import("fputc", (void *)my_fputc); set_import("fflush", (void *)my_fflush);
+  set_import("fprintf", (void *)my_fprintf); set_import("vfprintf", (void *)my_vfprintf);
+  set_import("fclose", (void *)my_fclose);
   set_import("open", (void *)my_open);
   set_import("stat", (void *)my_stat);
   set_import("lstat", (void *)my_lstat);
@@ -5005,6 +5028,10 @@ int main(int argc, char **argv) {
   /* engine checa existência dos arquivos de dados antes de abrir */
   patch_got("open", (void *)my_open);
   patch_got("fopen", (void *)my_fopen);
+  patch_got("fwrite", (void *)my_fwrite); patch_got("fputs", (void *)my_fputs);
+  patch_got("fputc", (void *)my_fputc); patch_got("fflush", (void *)my_fflush);
+  patch_got("fprintf", (void *)my_fprintf); patch_got("vfprintf", (void *)my_vfprintf);
+  patch_got("fclose", (void *)my_fclose);
   patch_got("stat", (void *)my_stat);
   patch_got("lstat", (void *)my_lstat);
   patch_got("stat64", (void *)my_stat64);
@@ -5361,6 +5388,10 @@ int main(int argc, char **argv) {
        crashava. Com my_sigaction + CUP_GCSIG, bloqueamos -> nosso handler válido fica. */
     { extern int my_sigaction(); patch_got("sigaction", (void *)my_sigaction); }
     patch_got("fopen", (void *)my_fopen);
+  patch_got("fwrite", (void *)my_fwrite); patch_got("fputs", (void *)my_fputs);
+  patch_got("fputc", (void *)my_fputc); patch_got("fflush", (void *)my_fflush);
+  patch_got("fprintf", (void *)my_fprintf); patch_got("vfprintf", (void *)my_vfprintf);
+  patch_got("fclose", (void *)my_fclose);
     patch_got("stat", (void *)my_stat);
     patch_got("lstat", (void *)my_lstat);
     patch_got("stat64", (void *)my_stat64);
