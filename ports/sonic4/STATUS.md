@@ -1,5 +1,33 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-06-30 (noite) — v4.2: corrige REGRESSAO (fase nao abria) + sons + release limpa
+Tudo VALIDADO no R36S/ArkOS (.104) pelo usuario. 4 commits no master (sem co-autor):
+- **FASE NAO ABRIA = regressao pos-v4.0 (commit 9a116e1).** O RELSAFE de `_amDrawReleaseTexture`
+  passou a validar a registlist com checagem ESTRITA por arena `[heap_base,heap_end)` do so_load.
+  Mas as REGISTLIST da engine sao **malloc'd em 0xab.../0xac... — FORA do arena** -> TODA lista
+  valida era PULADA -> nenhuma textura liberada -> a free-list do amTexMgr ESGOTAVA -> 
+  `amTexMgrCreateTexId` fazia `str r0,[r3]` com r3=head=NULL -> SIGSEGV (libfox+0x2059ec) -> a
+  fase nem abria. FIX: `sane_engine_ptr` volta a validade FROUXA (`0x10000<p<0xfffff000`, alinhado),
+  aceita malloc (= v4.0 e o 1o fix de saida a03b5fe que funcionavam). O discriminador do caso
+  stale (saida) e o `count` fora de [1,65536], NAO o range. Stride-8 fiel ao nativo (confirmado
+  por disasm: itera count elems de 8 bytes, DecRef no handle). ⚠️LICAO: NAO usar o arena do
+  so_load p/ validar ponteiros da engine — ela aloca via malloc do glibc, fora do arena.
+- **"O fix de audio quebrou tudo" foi DIAGNOSTICO ERRADO.** Quem travava era o texmgr acima.
+  O `my_MediaPlayerisPlaying` cirurgico (estado real so p/ canais jingle "_jin_") foi REABILITADO
+  (default ON, commit 0cd7286). Som do 1up/caixa-de-vida/aneis-suficientes VOLTOU. SONIC_NO_JINGLE1UP=1 reverte.
+- **Sons da special stage (SpStage01 espinhos / SpStage06 arco) mudos = `sfx_map.tsv` DEPLOYADO
+  VELHO (644 linhas).** O repo/package ja tinham o mapa completo (730 linhas, SpStage01-08 do
+  commit 9ba8f16); so a copia no DEVICE estava defasada — deploys de binario nunca atualizavam o
+  mapa. ⚠️LICAO (igual HLM2): ao deployar, copiar TAMBEM o sfx_map.tsv, nao so o binario.
+- **Unlock all fases (commit b8a4764):** launcher exporta SONIC_UNLOCK_ALL=1 se existir o marcador
+  `unlock_all` no gamedir (`touch sonic4ep2/unlock_all`). Release NAO leva o marcador.
+- **v4.2 EMPACOTADA** (Area de trabalho, md5 ec958231): binario compat fe4bcae0 (glibc2.27) +
+  sfx_map 730 linhas + README enxuto padrao PortMaster + launcher sem debug de audio/video
+  (SONIC_AUDIOLOG era opt-in, removido do launcher) + tools/audio_diag.sh removido. Commit 48125b3.
+- 🔌 R36S desta sessao = **ArkOS .104** (IP muda no DHCP; era .150/.104), user ark/ark. **RAM REAL
+  do device = 768MB** (chip topa em 0x30000000; NAO e 1GB — clone mente spec), Mali = memoria
+  unificada (sem VRAM dedicada), CommitLimit ~320MB sem swap -> explica os OOM do heap de 256MB.
+
 ## Sessao 2026-06-30 (tarde) — 2 fixes: fundo do cassino + crash ao sair da fase
 
 ### 1. FIX fundo estourado/duplicado da Electric Road (Episode Metal) — VALIDADO (usuario: "ficou perfeita")

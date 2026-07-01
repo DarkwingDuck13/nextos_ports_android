@@ -91,6 +91,10 @@ if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   fi
 fi
 
+# Audio logging ON (diagnostics for sound issues on devices we can't test). SONIC_AUDIOLOG=0 disables.
+# Video diagnostics (GL vendor/renderer/version) are always printed by the binary.
+export SONIC_AUDIOLOG="${SONIC_AUDIOLOG:-1}"
+
 # Audio: auto by default. Only set this if your device has no sound: alsa | pulseaudio | pipewire
 AUDIO_DRIVER="${AUDIO_DRIVER:-}"
 [ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
