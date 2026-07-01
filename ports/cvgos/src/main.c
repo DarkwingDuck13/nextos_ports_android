@@ -5527,7 +5527,13 @@ int main(int argc, char **argv) {
     mm_probe("pos-RecreateGfxState");
     dbg_sync();
   }
+  /* ordem do RE4 (Unity 2018 JOGAVEL): Resume -> SurfaceChanged -> Focus. */
   if ((fn = jni_find_native("nativeResume"))) ((void (*)(void *, void *))fn)(env, &thiz);
+  if (!getenv("CVGOS_NOSURFCHG") && (fn = jni_find_native("nativeSendSurfaceChangedEvent"))) {
+    fprintf(stderr, "[F2] nativeSendSurfaceChangedEvent...\n");
+    ((void (*)(void *, void *))fn)(env, &thiz);
+    fprintf(stderr, "[F2] nativeSendSurfaceChangedEvent OK\n");
+  }
   if ((fn = jni_find_native("nativeFocusChanged"))) ((void (*)(void *, void *, int))fn)(env, &thiz, 1);
 
   /* dispara a thread de áudio do FMOD (alimenta fmodProcess em paralelo ao
