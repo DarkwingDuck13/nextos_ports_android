@@ -1918,6 +1918,7 @@ static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
 /* estado lógico (Xbox completo): 0=up 1=down 2=left 3=right 4=A 5=B 6=X 7=Y 8=Start 9=Back/Select
    10=LB 11=RB 12=LT 13=RT 14=L3(stick esq) 15=R3(stick dir) */
 static unsigned char g_gp_log[16], g_gp_log_prev[16];
+static void ff9_queue_tap(float x, float y, const char *tag);
 float g_lt_analog, g_rt_analog;   /* gatilhos analógicos 0..1 (LT/RT) */
 static int g_gpev_fd[16], g_gpev_init;
 static unsigned char g_gpev_log[16];
@@ -2144,6 +2145,13 @@ static void ter_gamepad_poll(void) {
           int dx=0, dy=0; if (sscanf(tok+3, "%d:%d", &dx, &dy) == 2) {
             rsx=(short)dx; rsy=(short)dy; rsframes = dur*3;
             fprintf(stderr, "[TGPV] rstick %d,%d x%d\n", dx, dy, rsframes); fsync(2);
+          }
+        }
+        else if (!strncasecmp(tok, "tap:", 4)) {   /* tap:X:Y -> toque absoluto para calibrar UI */
+          int tx=0, ty=0;
+          if (sscanf(tok+4, "%d:%d", &tx, &ty) == 2) {
+            ff9_queue_tap((float)tx, (float)ty, "virt");
+            fprintf(stderr, "[TGPV] tap -> %d,%d\n", tx, ty); fsync(2);
           }
         }
         else { fprintf(stderr, "[TGPV] token desconhecido: %s\n", tok); fsync(2); }
@@ -5845,6 +5853,219 @@ int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attac
   return 1;
 }
 
+static void (*g_bgscene_loadebg_orig)(void *, void *, void *, void *, void *);
+static void (*g_bgscene_genatlas_orig)(void *, void *);
+static void (*g_bgscene_createmats_orig)(void *, void *);
+static void (*g_bgscene_createscene_orig)(void *, void *, int, void *);
+static void (*g_bgscene_createscene_combined_orig)(void *, void *, int, void *);
+static void (*g_fieldmap_updateoverlayall_orig)(void *, void *);
+
+static int ff9_list_count_safe(void *list) {
+  int size = -1;
+  (void)ff9_list_item_safe(list, 0, &size);
+  return size;
+}
+
+static int ff9_dict_count_safe(void *dict) {
+  if (!dict || ((uintptr_t)dict >> 40) || !addr_readable((uintptr_t)dict + 0x24))
+    return -1;
+  return *(int *)((char *)dict + 0x20);
+}
+
+static int ff9_texture_dim_safe(void *tex, int which) {
+  if (!g_il2cpp_base || !tex || ((uintptr_t)tex >> 40))
+    return -1;
+  if (!addr_readable((uintptr_t)tex + 0x10))
+    return -1;
+  uintptr_t off = which ? 0x254acf4 : 0x254ac80; /* Texture.height / width */
+  return ((int (*)(void *, void *))(g_il2cpp_base + off))(tex, NULL);
+}
+
+static void ff9_ebgdiag_overlay(void *overlay_list, int idx, int verbose) {
+  int osz = -1, ssz = -1;
+  void *ov = ff9_list_item_safe(overlay_list, idx, &osz);
+  if (!ov || ((uintptr_t)ov >> 40) || !addr_readable((uintptr_t)ov + 0x80)) {
+    fprintf(stderr, "[FF9_EBGDIAG]   ov[%02d/%d] bad=%p\n", idx, osz, ov);
+    return;
+  }
+  void *sprite_list = *(void **)((char *)ov + 0x60);
+  void *first_sprite = ff9_list_item_safe(sprite_list, 0, &ssz);
+  void *spr_tr = NULL;
+  int spr_w = -1, spr_h = -1, spr_ax = -1, spr_ay = -1, spr_depth = 0;
+  if (first_sprite && !((uintptr_t)first_sprite >> 40) &&
+      addr_readable((uintptr_t)first_sprite + 0x58)) {
+    spr_w = *(uint16_t *)((char *)first_sprite + 0x1c);
+    spr_h = *(uint16_t *)((char *)first_sprite + 0x1a);
+    spr_ax = *(uint16_t *)((char *)first_sprite + 0x28);
+    spr_ay = *(uint16_t *)((char *)first_sprite + 0x2a);
+    spr_depth = *(int *)((char *)first_sprite + 0x20);
+    spr_tr = *(void **)((char *)first_sprite + 0x40);
+  }
+  fprintf(stderr,
+          "[FF9_EBGDIAG]   ov[%02d/%d] flags=0x%02x wh=%ux%u xy=%d,%d z=%u sprites=%d tr=%p created=%d comb=%d first=%p fwh=%dx%d atlas=%d,%d depth=%d ftr=%p\n",
+          idx, osz, *(uint8_t *)((char *)ov + 0x10),
+          *(uint16_t *)((char *)ov + 0x16), *(uint16_t *)((char *)ov + 0x18),
+          *(int16_t *)((char *)ov + 0x1e), *(int16_t *)((char *)ov + 0x20),
+          *(uint16_t *)((char *)ov + 0x12), ssz,
+          *(void **)((char *)ov + 0x68),
+          *(uint8_t *)((char *)ov + 0x71), *(uint8_t *)((char *)ov + 0x70),
+          first_sprite, spr_w, spr_h, spr_ax, spr_ay, spr_depth, spr_tr);
+  if (verbose && first_sprite && ssz > 1) {
+    int last = ssz - 1;
+    void *spr = ff9_list_item_safe(sprite_list, last, &ssz);
+    if (spr && !((uintptr_t)spr >> 40) && addr_readable((uintptr_t)spr + 0x58)) {
+      fprintf(stderr,
+              "[FF9_EBGDIAG]     lastSprite[%d] wh=%ux%u atlas=%u,%u depth=%d tr=%p\n",
+              last,
+              *(uint16_t *)((char *)spr + 0x1c), *(uint16_t *)((char *)spr + 0x1a),
+              *(uint16_t *)((char *)spr + 0x28), *(uint16_t *)((char *)spr + 0x2a),
+              *(int *)((char *)spr + 0x20), *(void **)((char *)spr + 0x40));
+    }
+  }
+}
+
+static void ff9_ebgdiag_scene(const char *tag, void *scene, void *fieldMap, int overlays) {
+  if (!getenv("FF9_EBGDIAG"))
+    return;
+  static unsigned calls;
+  if (!scene || ((uintptr_t)scene >> 40) || !addr_readable((uintptr_t)scene + 0xb8)) {
+    fprintf(stderr, "[FF9_EBGDIAG] %s scene bad=%p field=%p f=%d\n",
+            tag, scene, fieldMap, g_render_frame);
+    fsync(2);
+    return;
+  }
+  char name[128] = {0};
+  void *name_obj = *(void **)((char *)scene + 0x48);
+  ff9_copy_il2cpp_string_live(name_obj, name, sizeof name);
+  void *overlay_list = *(void **)((char *)scene + 0x58);
+  void *anim_list = *(void **)((char *)scene + 0x60);
+  void *mat_list = *(void **)((char *)scene + 0x78);
+  void *atlas = *(void **)((char *)scene + 0x88);
+  int atlas_w = ff9_texture_dim_safe(atlas, 0);
+  int atlas_h = ff9_texture_dim_safe(atlas, 1);
+  int overlay_size = ff9_list_count_safe(overlay_list);
+  int anim_size = ff9_list_count_safe(anim_list);
+  fprintf(stderr,
+          "[FF9_EBGDIAG] %s #%u scene=%p field=%p name=\"%s\" hdr ov=%u anim=%u cam=%u list ov=%d anim=%d spriteCount=%d mats=%p/%d atlas=%p tex=%dx%d atlasWH=%ux%u combine=%d upscale=%d f=%d\n",
+          tag, ++calls, scene, fieldMap, name,
+          *(uint16_t *)((char *)scene + 0x16), *(uint16_t *)((char *)scene + 0x14),
+          *(uint16_t *)((char *)scene + 0x1a), overlay_size, anim_size,
+          *(int *)((char *)scene + 0xa4), mat_list, ff9_dict_count_safe(mat_list),
+          atlas, atlas_w, atlas_h,
+          *(uint32_t *)((char *)scene + 0x98), *(uint32_t *)((char *)scene + 0x9c),
+          *(uint8_t *)((char *)scene + 0xa0), *(uint8_t *)((char *)scene + 0xa8),
+          g_render_frame);
+  if (overlays && overlay_size > 0) {
+    int verbose = getenv("FF9_EBGDIAG_VERBOSE") != NULL;
+    int max = verbose ? overlay_size : (overlay_size < 10 ? overlay_size : 10);
+    for (int i = 0; i < max; i++)
+      ff9_ebgdiag_overlay(overlay_list, i, verbose);
+    if (!verbose && overlay_size > max)
+      fprintf(stderr, "[FF9_EBGDIAG]   ... %d overlays restantes (use FF9_EBGDIAG_VERBOSE=1)\n",
+              overlay_size - max);
+  }
+  fsync(2);
+}
+
+void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, void *method);
+void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, void *method) {
+  char p[192] = {0}, n[96] = {0};
+  ff9_copy_il2cpp_string_live(path, p, sizeof p);
+  ff9_copy_il2cpp_string_live(name, n, sizeof n);
+  fprintf(stderr, "[FF9_EBGDIAG] LoadEBG before self=%p field=%p path=\"%s\" name=\"%s\" f=%d\n",
+          self, fieldMap, p, n, g_render_frame);
+  fsync(2);
+  if (g_bgscene_loadebg_orig)
+    g_bgscene_loadebg_orig(self, fieldMap, path, name, method);
+  ff9_ebgdiag_scene("LoadEBG after", self, fieldMap, 1);
+}
+
+void my_BGSCENE_DEF_GenerateAtlasFromBinary(void *self, void *method);
+void my_BGSCENE_DEF_GenerateAtlasFromBinary(void *self, void *method) {
+  if (g_bgscene_genatlas_orig)
+    g_bgscene_genatlas_orig(self, method);
+  ff9_ebgdiag_scene("GenerateAtlas after", self, NULL, 0);
+}
+
+void my_BGSCENE_DEF_CreateMaterials(void *self, void *method);
+void my_BGSCENE_DEF_CreateMaterials(void *self, void *method) {
+  if (g_bgscene_createmats_orig)
+    g_bgscene_createmats_orig(self, method);
+  ff9_ebgdiag_scene("CreateMaterials after", self, NULL, 0);
+}
+
+void my_BGSCENE_DEF_CreateScene(void *self, void *fieldMap, int useUpscale, void *method);
+void my_BGSCENE_DEF_CreateScene(void *self, void *fieldMap, int useUpscale, void *method) {
+  if (g_bgscene_createscene_orig)
+    g_bgscene_createscene_orig(self, fieldMap, useUpscale, method);
+  ff9_ebgdiag_scene("CreateScene after", self, fieldMap, 1);
+}
+
+void my_BGSCENE_DEF_CreateSceneCombined(void *self, void *fieldMap, int useUpscale, void *method);
+void my_BGSCENE_DEF_CreateSceneCombined(void *self, void *fieldMap, int useUpscale, void *method) {
+  if (getenv("FF9_EBG_SEPARATE") && g_bgscene_createscene_orig) {
+    fprintf(stderr,
+            "[FF9_EBGDIAG] CreateSceneCombined -> CreateScene separado self=%p field=%p upscale=%d f=%d\n",
+            self, fieldMap, useUpscale, g_render_frame);
+    fsync(2);
+    g_bgscene_createscene_orig(self, fieldMap, useUpscale, method);
+    ff9_ebgdiag_scene("CreateSceneSeparate forced after", self, fieldMap, 1);
+    return;
+  }
+  if (g_bgscene_createscene_combined_orig)
+    g_bgscene_createscene_combined_orig(self, fieldMap, useUpscale, method);
+  ff9_ebgdiag_scene("CreateSceneCombined after", self, fieldMap, 1);
+}
+
+void my_FieldMap_UpdateOverlayAll(void *self, void *method);
+void my_FieldMap_UpdateOverlayAll(void *self, void *method) {
+  if (g_fieldmap_updateoverlayall_orig)
+    g_fieldmap_updateoverlayall_orig(self, method);
+  static int n;
+  if (!getenv("FF9_EBGDIAG"))
+    return;
+  if (n < 8 || (g_render_frame > 0 && (g_render_frame % 600) == 0)) {
+    void *scene = NULL;
+    if (self && !((uintptr_t)self >> 40) && addr_readable((uintptr_t)self + 0x38))
+      scene = *(void **)((char *)self + 0x30);
+    ff9_ebgdiag_scene("UpdateOverlayAll after", scene, self, n < 3);
+    n++;
+  }
+}
+
+static void ff9_ebgdiag_install(uintptr_t base) {
+  if (!g_bgscene_loadebg_orig)
+    g_bgscene_loadebg_orig = (void (*)(void *, void *, void *, void *, void *))
+                             mk_tramp(base + 0x1132e38, "BGSCENE_DEF.LoadEBG");
+  if (!g_bgscene_genatlas_orig)
+    g_bgscene_genatlas_orig = (void (*)(void *, void *))
+                              mk_tramp(base + 0x11333d8, "BGSCENE_DEF.GenerateAtlasFromBinary");
+  if (!g_bgscene_createmats_orig)
+    g_bgscene_createmats_orig = (void (*)(void *, void *))
+                                mk_tramp(base + 0x1133ad8, "BGSCENE_DEF.CreateMaterials");
+  if (!g_bgscene_createscene_orig)
+    g_bgscene_createscene_orig = (void (*)(void *, void *, int, void *))
+                                 mk_tramp(base + 0x1135658, "BGSCENE_DEF.CreateScene");
+  if (!g_bgscene_createscene_combined_orig)
+    g_bgscene_createscene_combined_orig = (void (*)(void *, void *, int, void *))
+                                          mk_tramp(base + 0x1133e14, "BGSCENE_DEF.CreateSceneCombined");
+  if (!g_fieldmap_updateoverlayall_orig)
+    g_fieldmap_updateoverlayall_orig = (void (*)(void *, void *))
+                                       mk_tramp(base + 0x113c610, "FieldMap.UpdateOverlayAll");
+  if (g_bgscene_loadebg_orig) hook_arm64(base + 0x1132e38, (uintptr_t)my_BGSCENE_DEF_LoadEBG);
+  if (g_bgscene_genatlas_orig) hook_arm64(base + 0x11333d8, (uintptr_t)my_BGSCENE_DEF_GenerateAtlasFromBinary);
+  if (g_bgscene_createmats_orig) hook_arm64(base + 0x1133ad8, (uintptr_t)my_BGSCENE_DEF_CreateMaterials);
+  if (g_bgscene_createscene_orig) hook_arm64(base + 0x1135658, (uintptr_t)my_BGSCENE_DEF_CreateScene);
+  if (g_bgscene_createscene_combined_orig) hook_arm64(base + 0x1133e14, (uintptr_t)my_BGSCENE_DEF_CreateSceneCombined);
+  if (g_fieldmap_updateoverlayall_orig) hook_arm64(base + 0x113c610, (uintptr_t)my_FieldMap_UpdateOverlayAll);
+  fprintf(stderr,
+          "[FF9_EBGDIAG] hooks Load=%p GenAtlas=%p Mats=%p Scene=%p Combined=%p UpdateAll=%p\n",
+          (void *)g_bgscene_loadebg_orig, (void *)g_bgscene_genatlas_orig,
+          (void *)g_bgscene_createmats_orig, (void *)g_bgscene_createscene_orig,
+          (void *)g_bgscene_createscene_combined_orig, (void *)g_fieldmap_updateoverlayall_orig);
+  fsync(2);
+}
+
 static void ff9_diag_lr(const char *tag, uintptr_t lr) {
   if (!g_il2cpp_base) return;
   if (lr >= g_il2cpp_base && lr < g_il2cpp_base + 0x3000000) {
@@ -6037,6 +6258,26 @@ static volatile uint32_t g_ff9_ctrl_state, g_ff9_ctrl_prev;
 static uint32_t (*g_eventinput_read_orig)(void *);
 static int (*g_uikey_get_orig)(void *, int, void *);
 static int (*g_uikey_trigger_orig)(void *, int, void *);
+static void (*g_bubble_setinput_orig)(void *, void *, void *, uint32_t, void *);
+static void (*g_bubble_initial_orig)(void *, void *, void *, void *, void *, void *);
+static void *g_ff9_bubble_ui;
+static void *g_ff9_bubble_po;
+static void *g_ff9_bubble_coll;
+static uint32_t g_ff9_bubble_button;
+static int g_ff9_bubble_frame = -1;
+volatile int g_tap_phase = 0;       /* >0: frames restantes do clique (3=down,2=held,1=up,0=idle) */
+static float g_tap_x = 640.0f, g_tap_y = 360.0f;
+
+static void ff9_queue_tap(float x, float y, const char *tag) {
+  g_tap_x = x;
+  g_tap_y = y;
+  g_tap_phase = 3;
+  if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG") || getenv("FF9_TAPLOG")) {
+    fprintf(stderr, "[FF9_TAP] queued %s tap x=%.1f y=%.1f f=%d\n",
+            tag ? tag : "manual", g_tap_x, g_tap_y, g_render_frame);
+    fsync(2);
+  }
+}
 
 static int ff9_gamepad_enabled(void) { return getenv("FF9_GAMEPAD") ? 1 : 0; }
 static uint32_t ff9_ctrl_bit(int key) { return (key >= 0 && key < 16) ? (1u << key) : 0; }
@@ -6096,11 +6337,15 @@ static uint32_t ff9_build_ctrl_state(void) {
   return s;
 }
 
+static void ff9_eventinput_feed_buttons(void);
+static void ff9_bubble_feed_confirm(uint32_t down);
 static void ff9_gamepad_poll(void) {
   if (!ff9_gamepad_enabled()) return;
   g_ff9_ctrl_prev = g_ff9_ctrl_state;
   ter_gamepad_poll();
   g_ff9_ctrl_state = ff9_build_ctrl_state();
+  ff9_eventinput_feed_buttons();
+  ff9_bubble_feed_confirm(g_ff9_ctrl_state & ~g_ff9_ctrl_prev);
   if (getenv("FF9_GPLOG")) {
     static const char *nm[16] = {
       "confirm","cancel","menu","special","lb","rb","lt","rt",
@@ -6179,8 +6424,80 @@ static uint32_t ff9_eventinput_bits(void) {
   if (s & ff9_ctrl_bit(3))  b |= 32768u;    /* Square/Special */
   return b;
 }
+static uint32_t ff9_eventinput_button_bits(uint32_t s) {
+  uint32_t b = 0;
+  if (s & ff9_ctrl_bit(9)) b |= 1u;
+  if (s & ff9_ctrl_bit(8)) b |= 8u;
+  if (s & ff9_ctrl_bit(6)) b |= 256u;
+  if (s & ff9_ctrl_bit(7)) b |= 512u;
+  if (s & ff9_ctrl_bit(4)) b |= 1024u;
+  if (s & ff9_ctrl_bit(5)) b |= 2048u;
+  if (s & ff9_ctrl_bit(2)) b |= 4096u;
+  if (s & ff9_ctrl_bit(1)) b |= 8192u;
+  if (s & ff9_ctrl_bit(0)) b |= 16384u;
+  if (s & ff9_ctrl_bit(3)) b |= 32768u;
+  return b;
+}
+void my_BubbleUI_SetInput(void *self, void *po, void *coll, uint32_t buttonCode, void *mi);
+void my_BubbleUI_SetInput(void *self, void *po, void *coll, uint32_t buttonCode, void *mi) {
+  if (g_bubble_setinput_orig) g_bubble_setinput_orig(self, po, coll, buttonCode, mi);
+  g_ff9_bubble_ui = self;
+  g_ff9_bubble_po = po;
+  g_ff9_bubble_coll = coll;
+  g_ff9_bubble_button = buttonCode;
+  g_ff9_bubble_frame = g_render_frame;
+  if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
+    fprintf(stderr, "[FF9BUBBLE] SetInput ui=%p po=%p coll=%p button=0x%x f=%d\n",
+            self, po, coll, buttonCode, g_render_frame);
+    fsync(2);
+  }
+}
+void my_BubbleUI_InitialBubble(void *self, void *po, void *coll, void *flags, void *listener, void *mi);
+void my_BubbleUI_InitialBubble(void *self, void *po, void *coll, void *flags, void *listener, void *mi) {
+  g_ff9_bubble_ui = self;
+  g_ff9_bubble_po = po;
+  g_ff9_bubble_coll = coll;
+  g_ff9_bubble_button = 0x4000u;
+  g_ff9_bubble_frame = g_render_frame;
+  if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
+    fprintf(stderr, "[FF9BUBBLE] InitialBubble ui=%p po=%p coll=%p flags=%p listener=%p button=0x%x f=%d\n",
+            self, po, coll, flags, listener, g_ff9_bubble_button, g_render_frame);
+    fsync(2);
+  }
+  if (g_bubble_initial_orig) g_bubble_initial_orig(self, po, coll, flags, listener, mi);
+}
+static void ff9_bubble_feed_confirm(uint32_t down) {
+  if (!g_il2cpp_base || getenv("FF9_NOBUBBLEPAD")) return;
+  if (!(down & ff9_ctrl_bit(0))) return;
+  if (!g_ff9_bubble_po) return;
+  uint32_t button = g_ff9_bubble_button ? g_ff9_bubble_button : 0x4000u;
+  int age = (g_ff9_bubble_frame >= 0) ? (g_render_frame - g_ff9_bubble_frame) : -1;
+  if (g_ff9_bubble_ui && g_bubble_setinput_orig) {
+    g_bubble_setinput_orig(g_ff9_bubble_ui, g_ff9_bubble_po, g_ff9_bubble_coll, button, NULL);
+    void *current = *(void **)((char *)g_ff9_bubble_ui + 0x68);
+    if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
+      fprintf(stderr, "[FF9BUBBLE] SetInput.inject ui=%p po=%p coll=%p button=0x%x current=%p age=%d f=%d\n",
+              g_ff9_bubble_ui, g_ff9_bubble_po, g_ff9_bubble_coll, button, current, age, g_render_frame);
+      fsync(2);
+    }
+  }
+}
+static void ff9_eventinput_feed_buttons(void) {
+  if (!g_il2cpp_base || getenv("FF9_NOMOBILEINPUT")) return;
+  uint32_t down = g_ff9_ctrl_state & ~g_ff9_ctrl_prev;
+  uint32_t b = ff9_eventinput_button_bits(down);
+  static int last_frame = -1;
+  if (!b || last_frame == g_render_frame) return;
+  last_frame = g_render_frame;
+  ((void (*)(uint32_t, void *))(g_il2cpp_base + 0x112A234))(b, NULL); /* EventInput.ReceiveInput */
+  if (getenv("FF9_GPLOG")) {
+    fprintf(stderr, "[FF9PAD] ReceiveInput add=0x%x f=%d\n", b, g_render_frame);
+    fsync(2);
+  }
+}
 uint32_t my_EventInput_ReadInput(void *mi);
 uint32_t my_EventInput_ReadInput(void *mi) {
+  if (ff9_gamepad_enabled()) ff9_eventinput_feed_buttons();
   uint32_t r = g_eventinput_read_orig ? g_eventinput_read_orig(mi) : 0;
   if (!ff9_gamepad_enabled()) return r;
   uint32_t b = ff9_eventinput_bits();
@@ -6207,8 +6524,6 @@ typedef struct {
   int fingerId; ff9_v2 position, rawPosition, positionDelta; float timeDelta;
   int tapCount, phase, type; float pressure, maxPressure, radius, radiusVar, altitude, azimuth;
 } ff9_touch;
-volatile int g_tap_phase = 0;       /* >0: frames restantes do clique (3=down,2=held,1=up,0=idle) */
-static float g_tap_x = 640.0f, g_tap_y = 360.0f;
 int   my_Input_GetMouseButtonDown(int button, void *mi) { (void)mi; return (button == 0 && g_tap_phase == 3) ? 1 : 0; }
 int   my_Input_GetMouseButton(int button, void *mi)     { (void)mi; return (button == 0 && g_tap_phase >= 2) ? 1 : 0; }
 int   my_Input_GetMouseButtonUp(int button, void *mi)   { (void)mi; return (button == 0 && g_tap_phase == 1) ? 1 : 0; }
@@ -8645,6 +8960,11 @@ int main(int argc, char **argv) {
         extern void ff9_skipmovie_pump_finish(void);
         ff9_skipmovie_pump_finish();
       }
+      static int ebgd_hooked = 0;
+      if (!ebgd_hooked && getenv("FF9_EBGDIAG") && g_il2cpp_base && f >= 180) {
+        ff9_ebgdiag_install(g_il2cpp_base);
+        ebgd_hooked = 1;
+      }
       /* FF9_SOUNDGUARD (default ON): enquanto sdlib/OpenSL ainda estao stubados, alguns eventos
          de campo pedem sound profiles ausentes (ex.: key 136) e abortam o script. No-op temporario
          do dispatch gerenciado para priorizar gameplay visual. FF9_REALSOUND desliga. */
@@ -8740,6 +9060,21 @@ int main(int argc, char **argv) {
             if (g_uikey_trigger_orig)
               hook_arm64(g_il2cpp_base + 0x1269EBC, (uintptr_t)my_UIKeyTrigger_GetKeyTrigger);
             hook_arm64(g_il2cpp_base + 0x1129DF4, (uintptr_t)my_EventInput_GetKey);
+            if (!g_bubble_setinput_orig)
+              g_bubble_setinput_orig = (void (*)(void *, void *, void *, uint32_t, void *))
+                  mk_tramp(g_il2cpp_base + 0x124340C, "BubbleUI.SetInput");
+            if (g_bubble_setinput_orig)
+              hook_arm64(g_il2cpp_base + 0x124340C, (uintptr_t)my_BubbleUI_SetInput);
+            if (!g_bubble_initial_orig)
+              g_bubble_initial_orig = (void (*)(void *, void *, void *, void *, void *, void *))
+                  mk_tramp(g_il2cpp_base + 0x1243534, "BubbleUI.InitialBubble");
+            if (g_bubble_initial_orig)
+              hook_arm64(g_il2cpp_base + 0x1243534, (uintptr_t)my_BubbleUI_InitialBubble);
+            if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
+              fprintf(stderr, "[FF9BUBBLE] hooks SetInput=%p InitialBubble=%p\n",
+                      (void *)g_bubble_setinput_orig, (void *)g_bubble_initial_orig);
+              fsync(2);
+            }
           }
           inj_hooked = 1;
           fprintf(stderr, "[INJECT] GetKeyTrigger%s hook instalado (lazy) @f=%d\n",
@@ -8907,10 +9242,10 @@ int main(int argc, char **argv) {
       }
       /* FF9_TAP=N: dispara um clique (press->hold->release) a cada N frames p/ dispensar o
          disclaimer NGUI. g_tap_phase 3=down,2=held,1=up,0=idle (decrementa por frame). */
+      if (g_tap_phase > 0) g_tap_phase--;
       { const char *tp = getenv("FF9_TAP");
         if (tp && inj_hooked) {
           int per = atoi(tp); if (per < 8) per = 60;
-          if (g_tap_phase > 0) g_tap_phase--;
           if (f > 60 && f % per == 0) { g_tap_phase = 3; fprintf(stderr, "[FF9_TAP] click @f=%d\n", f); fsync(2); }
         }
       }
