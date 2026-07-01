@@ -42,6 +42,24 @@ matar a firula multiarch de áudio. Autorizado 2026-07-01.
     self-modifying-code. Runtime de teste: `/tmp/sonic_arm64_rt` (sonic4 + lib/arm64-v8a/libfox.so).
     Comando: `qemu-aarch64 -L /tmp/tuiroot -E LD_LIBRARY_PATH=... -E SONIC_DEBUG=1 ./sonic4`.
 
+- 🏆 **MARCO 3 — BOOTA E RENDERIZA no Mali-450 REAL (aarch64 nativo), 2026-07-01.** O
+  `.79` (EmuELEC) é aarch64: kernel 64-bit, `ld-linux-aarch64.so.1`, libc/libmali/GLESv2/
+  EGL/SDL2/mpg123/vorbis/libstdc++ TODOS 64-bit, +gdb. Deploy: `sonic4.arm64` +
+  `lib/arm64-v8a/libfox.so` + **OBB v3 `data/data.obb`** (o LPK que o lib v3 espera).
+  **TELA DE TÍTULO RENDERIZA** (Sonic+Tails, "Press any button", inglês) + **áudio
+  pulseaudio** + loop de render ativo. Dois fixes destravaram (ver commits):
+  1. **cpuid ctor** (init[45]=`OPENSSL_cpuid_setup`): probe SIGILL via `sigsetjmp`; jogo
+     bionic aloca sigjmp_buf pequeno, bridge chama sigsetjmp da glibc (jmp_buf maior) →
+     estoura pilha → corrompe x30 do caller → ret p/ 0. `so_execute_init_array` agora
+     PULA esse ctor por símbolo (BoringSSL roda com armcap=0; SONIC_RUN_CPUID=1 força).
+  2. **OBB errado**: usávamos o OBB v2 (`main.22.*`, 570MB) com o lib v3 → `amFsRead`
+     não achava os shaders `NNGLES20SHADER/nnstd_vs.vsh` (LPK v2 sem eles) →
+     `amShaderBuildStd`→`myRemoveShaderComment(NULL)` → crash frame 0. Fix: usar o OBB v3
+     `data.obb` (643MB, extraído de `split_packs.apk` do `.apkm`) via `SONIC_LPK=data/data.obb`.
+  - Launcher arm64: `package/ports/Sonic4EP2-arm64.sh` (roda `sonic4.arm64` + `SONIC_LPK`).
+  - 🎯 **Falta:** input→gameplay (o teste precisa da ES suspensa; abrir pelo menu que o
+    PortMaster suspende sozinho — NÃO parar ES via ssh, regra forte); multi-device; empacotar.
+
 ## Análise da lib arm64 v3 (o que muda vs armv7 v2)
 
 - **Imports (374 total, 77 não-libc):** 65 GLES `gl*`, 12 Android-NDK (`AAsset*`,
