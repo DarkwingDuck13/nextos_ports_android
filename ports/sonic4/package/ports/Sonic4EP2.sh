@@ -96,7 +96,23 @@ fi
 # + crash continuam SEMPRE visíveis. `touch sonic4ep2/audiolog` religa p/ diagnosticar som.
 [ -f "$GAMEDIR/audiolog" ] && export SONIC_AUDIOLOG=1
 
+# muOS/PipeWire 32-bit audio fix (PROVADO na imagem muOS RG35XX-H via qemu-arm).
+# O device roda PipeWire; o SDL2 *32-bit* do muOS so tem backend ALSA, e o ALSA "default"
+# roteia p/ o PipeWire por um plugin. Um processo 32-bit precisa carregar o plugin ALSA, os
+# modulos do PipeWire e os plugins SPA das pastas *32-bit* -- senao pega as 64-bit ("wrong ELF
+# class" / "can't make support.system handle") -> snd_pcm_open("default")=-2 = MUDO (ou HDMI).
+# O muOS le o marcador PORT_32BIT="Y" deste .sh p/ setar as pastas lib32; setamos tambem aqui,
+# guardado por existencia, p/ valer em qualquer fluxo/CFW (inofensivo onde nao ha PipeWire 32-bit).
+PORT_32BIT="Y"
+for _pwl in /usr/lib32 /usr/lib/arm-linux-gnueabihf /usr/local/lib/arm-linux-gnueabihf; do
+  [ -d "$_pwl/pipewire-0.3" ] && export PIPEWIRE_MODULE_DIR="$_pwl/pipewire-0.3"
+  [ -d "$_pwl/spa-0.2" ] && export SPA_PLUGIN_DIR="$_pwl/spa-0.2"
+  [ -e "$_pwl/alsa-lib/libasound_module_pcm_pipewire.so" ] && export ALSA_PLUGIN_DIR="$_pwl/alsa-lib"
+done
+[ -n "$PIPEWIRE_MODULE_DIR" ] && echo "audio: PipeWire 32-bit dirs -> mod=$PIPEWIRE_MODULE_DIR spa=$SPA_PLUGIN_DIR alsaplug=${ALSA_PLUGIN_DIR:-default}"
+
 # Audio: auto by default. Only set this if your device has no sound: alsa | pulseaudio | pipewire
+# (No muOS o SDL 32-bit so tem backend ALSA: use alsa. pulse/pipewire NAO existem no SDL 32-bit de la.)
 AUDIO_DRIVER="${AUDIO_DRIVER:-}"
 [ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
 
@@ -120,27 +136,6 @@ fi
 # Remova os arquivos p/ voltar ao normal. (não vão na release.)
 [ -f "$GAMEDIR/simcrash" ] && export SONIC_SIMDEMOCRASH=1
 [ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
-
-# muOS/raw-ALSA sem som: o "default" do ALSA roteia p/ um pipewire que NÃO roda -> falha; e o card
-# do speaker (audiocodec) fica busy -> cai no HDMI = mudo. `touch sonic4ep2/alsa_dmix` escreve um
-# ~/.asoundrc que mapeia default -> dmix (compartilhado) no speaker, ignorando o pipewire quebrado.
-# (só funciona se o muOS não segurar o card em modo EXCLUSIVO; se não resolver, é o muOS não liberar
-# o áudio.) SONIC_DMIX_CARD sobrescreve o nome do card (default: audiocodec).
-if [ -f "$GAMEDIR/alsa_dmix" ]; then
-  _card="${SONIC_DMIX_CARD:-audiocodec}"
-  _rch="$GAMEDIR/.dmixhome"
-  mkdir -p "$_rch"
-  cat > "$_rch/.asoundrc" <<ASND
-pcm.!default { type plug; slave.pcm "dmix_spk"; }
-pcm.dmix_spk {
-    type dmix
-    ipc_key 3521
-    slave { pcm "hw:CARD=$_card"; rate 44100; channels 2; period_size 1024; buffer_size 8192; }
-}
-ASND
-  export HOME="$_rch"
-  echo "alsa_dmix: default -> dmix no speaker (card=$_card), HOME=$_rch"
-fi
 
 ./sonic4
 
