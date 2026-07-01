@@ -5564,12 +5564,11 @@ int main(int argc, char **argv) {
        (global-metadata nao carrega) -> RecreateGfxState usa classe il2cpp nao-init (garbage)
        -> crash. Chamamos il2cpp_set_data_dir + il2cpp_init NOS MESMOS p/ subir o runtime.
        CVGOS_NOIL2CPPINIT desliga. */
-    if (!getenv("CVGOS_NOIL2CPPINIT")) {
+    if (getenv("CVGOS_IL2CPPINIT_EARLY")) {   /* experimento antigo: crasha (premature) */
       void (*i_setdir)(const char *) = (void *)so_find_addr_safe("il2cpp_set_data_dir");
       void *(*i_init)(const char *) = (void *)so_find_addr_safe("il2cpp_init");
-      fprintf(stderr, "[IL2CPPINIT] set_data_dir=%p init=%p\n", (void*)i_setdir, (void*)i_init);
       if (i_setdir) i_setdir("/storage/roms/ports/cvgos/bin/Data/Managed");
-      if (i_init) { void *d = i_init("IL2CPP Root Domain"); fprintf(stderr, "[IL2CPPINIT] il2cpp_init -> domain=%p\n", d); }
+      if (i_init) { void *d = i_init("IL2CPP Root Domain"); fprintf(stderr, "[IL2CPPINIT-EARLY] domain=%p\n", d); }
       dbg_sync();
     }
     mm_probe("pos-init_array-il2cpp");
@@ -5653,6 +5652,19 @@ int main(int argc, char **argv) {
     ((void (*)(void *, void *, void *))fn)(env, &thiz, &ctx);
     fprintf(stderr, "[F2] initJni OK\n");
     mm_probe("pos-initJni");
+    dbg_sync();
+  }
+  /* 🔑 il2cpp_init APÓS initJni (libunity ja setou memory-manager/plataforma). A libunity
+     nunca dispara o scripting-load sozinha -> subimos o runtime C# aqui p/ RecreateGfxState
+     achar as classes il2cpp inicializadas. CVGOS_NOIL2CPPINIT desliga. */
+  if (!getenv("CVGOS_NOIL2CPPINIT") && g_m_il2cpp) {
+    so_module *c = so_save(); so_use(g_m_il2cpp);
+    void (*i_setdir)(const char *) = (void *)so_find_addr_safe("il2cpp_set_data_dir");
+    void *(*i_init)(const char *) = (void *)so_find_addr_safe("il2cpp_init");
+    so_use(c); free(c);
+    fprintf(stderr, "[IL2CPPINIT] set_data_dir=%p init=%p\n", (void*)i_setdir, (void*)i_init);
+    if (i_setdir) i_setdir("/storage/roms/ports/cvgos/bin/Data/Managed");
+    if (i_init) { void *d = i_init("IL2CPP Root Domain"); fprintf(stderr, "[IL2CPPINIT] domain=%p\n", d); }
     dbg_sync();
   }
   if ((fn = jni_find_native("nativeRecreateGfxState"))) {
