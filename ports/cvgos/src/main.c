@@ -422,6 +422,20 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     g_recover_n++;
     siglongjmp(g_render_jmp, 1);
   }
+  /* 🔑 SIGBUS survival: glibc faz `ldaex [&FILE->_lock]` num FILE* LIXO/desalinhado
+     (stdio bionic do engine) -> SIGBUS mata a UnityMain no init. Pula a chamada:
+     retoma no lr (retorno do caller) com r0=0 (fwrite "escreveu 0"). Logging/stdio
+     nao-critico -> init continua. CVGOS_NOSIGBUSSKIP desliga. */
+  if (sig == SIGBUS && !getenv("CVGOS_NOSIGBUSSKIP") && lr0 && lr0 != pc0) {
+    static volatile unsigned long sbn = 0;
+    uc0->uc_mcontext.arm_pc = lr0;
+    uc0->uc_mcontext.arm_r0 = 0;
+    if (sbn++ < 30)
+      fprintf(stderr, "[SIGBUSSKIP] #%lu pc=0x%lx (fault=%p) -> pula p/ lr=0x%lx\n",
+              sbn, (unsigned long)pc0, si->si_addr, (unsigned long)lr0);
+    if ((sbn & 0x1ff) == 0) dbg_sync();
+    return;  /* resume no caller */
+  }
   /* skipbad: crash em thread NÃO-render (worker/job) → estaciona a thread em vez de
      matar o processo (mantém o jogo vivo p/ a render continuar). */
   if (g_skipbad && sig == SIGSEGV) {
@@ -599,6 +613,7 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
  * (log) em vez de crashar. FILE* alinhado (fopen real nosso) segue normal. */
 static int fp_bad(void *s) { return !s || ((uintptr_t)s & 3) != 0; }
 static size_t my_fwrite(const void *p, size_t sz, size_t n, FILE *s) {
+  { static int fw=0; if (fw++ < 8) fprintf(stderr, "[MYFWRITE] s=%p bad=%d\n", (void*)s, fp_bad(s)); }
   if (fp_bad(s)) { if (p && sz && n) fwrite(p, sz, n, stderr); return n; }
   return fwrite(p, sz, n, s);
 }

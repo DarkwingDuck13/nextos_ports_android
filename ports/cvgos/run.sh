@@ -45,6 +45,8 @@ export CV_LANG=English
 export CUP_FRAMES=999999999
 # 1 CPU visivel -> job-system SINCRONO (jobs rodam inline na main), evita o deadlock
 # do handshake main<->worker que trava o PlayerLoop/scene-load (muro documentado Terraria).
+export CUP_GFXARGS="-force-gles20"
+export CUP_NOSIGH=1
 export CUP_1CORE=1
 # log tudo em run.out (senao stderr vai p/ debug.log e trava init) — igual terraria
 export CUP_NOLOGFILE=1
