@@ -164,6 +164,20 @@ default falhou (ALSA: ... No such file or directory)   <- ALSA sem PCM "default"
 - **A-2:** reforçar a subida de pipewire/pulse (XDG_RUNTIME_DIR) antes do fallback ALSA cru;
   espelhar a ordem `pipewire,pulse,alsa` do Bully na nossa varredura de drivers.
 
+## 5.1 Validação (2026-06-30) — FASE 1/2 implementadas e testadas
+- **On-screen, sem regressão:** `.79` Mali-450 Utgard (ES2 real "OpenGL ES 2.0", gameplay
+  1280x720) e `.104` R36S ArkOS libmali (ES2 ctx, "OpenGL ES 3.2", menu Sylvania). Áudio toca
+  nos dois (pulse/alsa auto). Fixes da v4.2 (fase abre/sai, sons) intactos.
+- **Edge-cases (.104):** `SONIC_GLVER=3` (força ES3) = contexto ES3 ACEITO (device ES3-only não
+  quebra); `SONIC_EXCL_FS=1` (exclusivo) OK.
+- **`ctx_is_gles()` provado num contexto DESKTOP-GL REAL** (os devices ARM só dão GLES, nunca
+  exercitavam o path de rejeição): teste `tools/test_ctxgles.c` no PC — pedir CORE 3.3 →
+  `GL_VERSION="3.3.0 NVIDIA"` → `ctx_is_gles=0` → **REJEITA** (idêntico ao "3.1 Mesa" do Device A);
+  pedir ES2 → `"OpenGL ES 3.2"` → `ctx_is_gles=1` → **ACEITA**. Confirma que o Device A (desktop-GL
+  "3.1 Mesa") seria rejeitado e o loop cairia p/ um contexto GLES real.
+- ⚠️ **Falta só** a validação do pipeline COMPLETO num Panfrost/Mesa ou muOS reais (hardware que
+  não temos): tester roda a v4.3, OU subir ROCKNIX no R36S.
+
 ## 6. Arquivos-chave
 - Sonic vídeo: `src/egl_shim.c` (create_window 76-219, EGL falso 327-355), `src/main.c:644-645`.
 - Sonic áudio: `src/sonic_audio.c` (ensure_audio 1131, sa_try_open 956, prefere-speaker 985).
