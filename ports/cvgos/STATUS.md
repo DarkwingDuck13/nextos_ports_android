@@ -84,3 +84,6 @@ Verificado que o my_dlsym da base JÁ resolve `il2cpp_*` do nosso g_m_il2cpp (wi
 
 ### Deploy
 Device .79 (EmuELEC Mali-450 fbdev). `/storage/roms/ports/cvgos/`: cvgos(bin), lib/(9 .so), bin/Data/(APK data), obb/. Rodar: matar cvgos → `nohup bash run.sh`. fb 1280x**1440** (double-height); validar em `[0:720]` do /dev/fb0 (32bpp BGRA). Não versionar binário/libs.
+
+### ✅ Auditoria de loader LIMPA (sessão 1, fim) — o bug NÃO é do so-loader
+Verificado nesta sessão que a base do loader está correta: **relocs ELF32-ARM OK** (R_ARM_ABS32=S+A p/ defined + resolução por nome p/ UNDEF; R_ARM_RELATIVE=base+A; GLOB_DAT/JUMP_SLOT=S sem somar in-place — lição Shantae respeitada; RELR OK), **BSS zerado** (`memset(load_base,0,load_size)`), **GetEnv/AttachCurrentThread retornam env válido**. Logo o `[this+0x108]=&pthread_mutex_lock_fake` NÃO é corrupção de loader — é a Unity copiando um ptr de tabela-de-função-de-plataforma (relocado certo) e o C++ tratando o objeto como Java-object (dispatch de vtable, provável `this` de tipo errado no grafo). Bug de SEMÂNTICA de object-graph JNI de alto nível → RE multi-sessão. **10 fixes black-box testados e descartados neste turno.**
