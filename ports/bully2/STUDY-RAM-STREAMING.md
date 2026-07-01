@@ -92,7 +92,26 @@ Sessão real de gameplay 2026-07-01 19:40–19:46 (perfil low ativo, RAM 256 ain
 - glibc: binário deployado no R36S = build glibc230 (`build-glibc230.sh`, Docker
   Ubuntu 19.10 arm64). Mali-450 usa `build.sh` (toolchain NextOS).
 
-## 8. Fontes locais dos ports de referência
+## 8. Descobertas do disasm (s-atual, build arm64 v1.4.311)
+
+- **Esse build NÃO consulta `GetDeviceType` via JNI** (log de GetMethodID completo:
+  só app-glue — splash/movie/playlist/http/rockstar/vibrate). O RAM-report fica
+  como defesa p/ outros builds, mas não é a alavanca aqui.
+- **`isPhone` vem de campo Java**: `AND_SystemInitialize` faz
+  `GetFieldID(DeviceInfo, "isPhone", "Z")` + `GetBooleanField` → grava .bss
+  0x125da04. Nossos slots de field eram ret0 → isPhone=0 → **efeitos classe
+  desktop estavam LIGADOS**. Corrigido pelo força-1 (frames 30/300/900).
+  Classe: `com/rockstargames/oswrapper/DeviceInfo`; campos: width, height, isPhone.
+- **`g_StreamingHeapSize` é vestigial**: zero relocations, zero adrp p/ o VA.
+  Não é alavanca nesse build.
+- **`TextureHeapHelper::GetTotalGraphicsMemoryOfSystem` retorna 512MB
+  HARDCODED** (0x20000000, edde08). O engine acha que sempre tem 512MB de
+  VRAM → nunca despeja por conta própria → o EVICT=onlow sintético + half-res
+  GL são mesmo o mecanismo certo (e o TEX_BUDGET_HOOK de 96MB falhou porque o
+  engine compara contra esses getters fixos em mais de um lugar).
+- Gate `IsThereEnoughFreeMemory` = teto fixo 10MB/objeto (cmp #0xa00,lsl#12).
+
+## 9. Fontes locais dos ports de referência
 
 - `/tmp/.../scratchpad/{gtasa_vita,bully_vita,bully-NX}` (clones; copiar se quiser manter)
 - GTA SA acervo: `/home/nextos/gta-sa-deploy/`, `/home/nextos/ports-staging/gtasa-extract/`
