@@ -4570,6 +4570,8 @@ static void ff9_log_throw_stack_ras(int id) {
  * NullReferenceException antes de chegar no titulo. Tratamos o movie como "ja terminou":
  * Load vira no-op benigno, Play agenda o OnFinished para o proximo frame, e queries
  * basicas retornam valores prontos. FF9_NOSKIPMOVIE restaura o caminho nativo. */
+static void ff9_diag_lr(const char *tag, uintptr_t lr);
+static void ff9_diag_stack_ras(const char *tag);
 static void *g_skipmovie_pending_action;
 static int g_skipmovie_pending_frame;
 static int g_skipmovie_calling;
@@ -4599,7 +4601,11 @@ void my_MovieMaterial_Load(void *self, void *movie_key, void *method);
 void my_MovieMaterial_Load(void *self, void *movie_key, void *method) {
   (void)method;
   g_skipmovie_loads++;
-  if (g_skipmovie_loads <= 20) ff9_skipmovie_log_key("Load", self, movie_key);
+  if (g_skipmovie_loads <= 20) {
+    ff9_skipmovie_log_key("Load", self, movie_key);
+    if (g_skipmovie_loads <= 4) ff9_diag_lr("MovieMaterial.Load", (uintptr_t)__builtin_return_address(0));
+    if (g_skipmovie_loads <= 4) ff9_diag_stack_ras("MovieMaterial.Load");
+  }
   ff9_skipmovie_mark_ready(self, movie_key);
 }
 
@@ -4607,7 +4613,11 @@ void my_MovieMaterial_Play(void *self, void *method);
 void my_MovieMaterial_Play(void *self, void *method) {
   (void)method;
   g_skipmovie_plays++;
-  if (g_skipmovie_plays <= 20) ff9_skipmovie_log_key("Play", self, NULL);
+  if (g_skipmovie_plays <= 20) {
+    ff9_skipmovie_log_key("Play", self, NULL);
+    if (g_skipmovie_plays <= 4) ff9_diag_lr("MovieMaterial.Play", (uintptr_t)__builtin_return_address(0));
+    if (g_skipmovie_plays <= 4) ff9_diag_stack_ras("MovieMaterial.Play");
+  }
   ff9_skipmovie_mark_ready(self, NULL);
 
   void *action = NULL;
@@ -4661,6 +4671,8 @@ int my_MBG_IsFinished(void *self, void *method) {
     fprintf(stderr, "[SKIPMOVIE] MBG.IsFinished -> true #%u self=%p f=%d\n",
             g_skipmovie_done_queries, self, g_render_frame);
     fsync(2);
+    if (g_skipmovie_done_queries <= 4) ff9_diag_lr("MBG.IsFinished", (uintptr_t)__builtin_return_address(0));
+    if (g_skipmovie_done_queries <= 4) ff9_diag_stack_ras("MBG.IsFinished");
   }
   return 1;
 }
@@ -4677,6 +4689,8 @@ void my_MBG_SetFinishCallback(void *self, void *callback, void *method) {
     g_skipmovie_pending_frame = g_render_frame + 1;
     fprintf(stderr, "[SKIPMOVIE] MBG.SetFinishCallback agenda OnFinished=%p para f>=%d self=%p movie=%p\n",
             callback, g_skipmovie_pending_frame, self, movie);
+    ff9_diag_lr("MBG.SetFinishCallback", (uintptr_t)__builtin_return_address(0));
+    ff9_diag_stack_ras("MBG.SetFinishCallback");
   } else {
     fprintf(stderr, "[SKIPMOVIE] MBG.SetFinishCallback NULL self=%p movie=%p\n", self, movie);
   }
@@ -4727,6 +4741,62 @@ static void ff9_skipmovie_install(uintptr_t base) {
   fsync(2);
 }
 
+static void (*g_fldfmv_service_orig)(void *, void *);
+
+static int ff9_fldfmv_static_fields(void **out) {
+  if (!out || !g_il2cpp_base) return 0;
+  if (!g_maps_len) maps_snapshot();
+  void *klass = NULL, *fields = NULL;
+  if (!ff9_safe_read_ptr((void *)(g_il2cpp_base + 0x28AC2B8), &klass) || !klass) return 0;
+  if (!ff9_safe_read_ptr((char *)klass + 184, &fields) || !fields) return 0;
+  *out = fields;
+  return 1;
+}
+
+void my_fldfmv_service_spy(void *self, void *method);
+void my_fldfmv_service_spy(void *self, void *method) {
+  static int last_attr = -1, last_status = -1;
+  static unsigned calls;
+  int attr0 = -1, status0 = -1, attr1 = -1, status1 = -1;
+  void *fields = NULL;
+  if (ff9_fldfmv_static_fields(&fields) && addr_readable((uintptr_t)fields + 0x17)) {
+    attr0 = *(int *)((char *)fields + 0x0);
+    status0 = *(int *)((char *)fields + 0x14);
+  }
+  if (calls++ < 12 || attr0 != last_attr || status0 != last_status) {
+    fprintf(stderr, "[FMVSPY] before #%u self=%p attr=0x%x status=%d f=%d\n",
+            calls, self, attr0, status0, g_render_frame);
+    fsync(2);
+  }
+  if (g_fldfmv_service_orig) g_fldfmv_service_orig(self, method);
+  fields = NULL;
+  if (ff9_fldfmv_static_fields(&fields) && addr_readable((uintptr_t)fields + 0x17)) {
+    attr1 = *(int *)((char *)fields + 0x0);
+    status1 = *(int *)((char *)fields + 0x14);
+  }
+  if (calls <= 12 || attr1 != attr0 || status1 != status0 ||
+      attr1 != last_attr || status1 != last_status) {
+    fprintf(stderr, "[FMVSPY] after  #%u self=%p attr=0x%x status=%d f=%d\n",
+            calls, self, attr1, status1, g_render_frame);
+    fsync(2);
+  }
+  last_attr = attr1;
+  last_status = status1;
+}
+
+static void ff9_fmvspy_install(uintptr_t base) {
+  if (!g_fldfmv_service_orig)
+    g_fldfmv_service_orig = (void (*)(void *, void *))mk_tramp(base + 0x1180DEC, "fldfmv.ff9fieldFMVService");
+  if (g_fldfmv_service_orig) {
+    hook_arm64(base + 0x1180DEC, (uintptr_t)my_fldfmv_service_spy);
+    fprintf(stderr, "[FMVSPY] fldfmv.ff9fieldFMVService hookado orig=%p\n",
+            (void *)g_fldfmv_service_orig);
+  } else {
+    fprintf(stderr, "[FMVSPY] mk_tramp falhou; hook OFF\n");
+  }
+  fsync(2);
+}
+
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method);
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method) {
   (void)method;
@@ -4744,10 +4814,10 @@ int my_FieldMap_EBG_animationInit(void *self, void *method) {
   (void)method;
   static int n = 0;
   if (n++ < 8) {
-    fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit noop self=%p\n", self);
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit success-noop self=%p\n", self);
     fsync(2);
   }
-  return 0;
+  return 1;
 }
 
 int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attachX,
@@ -4759,11 +4829,38 @@ int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attac
   (void)method;
   static int n = 0;
   if (n++ < 8) {
-    fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay noop self=%p overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay success-noop self=%p overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
             self, overlayNdx, attachX, attachY, surroundMode, r, g, b);
     fsync(2);
   }
-  return 0;
+  return 1;
+}
+
+static void ff9_diag_lr(const char *tag, uintptr_t lr) {
+  if (!g_il2cpp_base) return;
+  if (lr >= g_il2cpp_base && lr < g_il2cpp_base + 0x3000000) {
+    fprintf(stderr, "[SCENEDIAGBT] %s LR libil2cpp+0x%lx\n",
+            tag, (unsigned long)(lr - g_il2cpp_base));
+  } else {
+    fprintf(stderr, "[SCENEDIAGBT] %s LR 0x%lx\n", tag, (unsigned long)lr);
+  }
+  fsync(2);
+}
+
+static void ff9_diag_stack_ras(const char *tag) {
+  if (!g_il2cpp_base) return;
+  uintptr_t start = ((uintptr_t)&tag) & ~(uintptr_t)7;
+  int hits = 0;
+  for (uintptr_t a = start; a < start + 0x3000 && hits < 14; a += 8) {
+    if (!addr_readable(a) || !addr_readable(a + 7)) break;
+    uintptr_t v = *(uintptr_t *)a;
+    if (v >= g_il2cpp_base && v < g_il2cpp_base + 0x3000000) {
+      fprintf(stderr, "[SCENEDIAGBT] %s sp+0x%lx RA libil2cpp+0x%lx\n",
+              tag, (unsigned long)(a - start), (unsigned long)(v - g_il2cpp_base));
+      hits++;
+    }
+  }
+  fsync(2);
 }
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *));
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *)) {
@@ -7225,6 +7322,13 @@ int main(int argc, char **argv) {
         ff9_skipmovie_install(g_il2cpp_base);
         mv_hooked = 1;
         fprintf(stderr, "[SKIPMOVIE] default ON @f=%d\n", f); fsync(2);
+      }
+      static int fmvspy_hooked = 0;
+      if (!fmvspy_hooked && !getenv("FF9_NOFMVSPY") && g_il2cpp_base && f >= 180) {
+        extern void ff9_fmvspy_install(uintptr_t);
+        ff9_fmvspy_install(g_il2cpp_base);
+        fmvspy_hooked = 1;
+        fprintf(stderr, "[FMVSPY] default ON @f=%d\n", f); fsync(2);
       }
       if (mv_hooked) {
         extern void ff9_skipmovie_pump_finish(void);
