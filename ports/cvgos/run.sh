@@ -42,7 +42,7 @@ export CV_DATADIR="$GAMEDIR/assets/bin/Data"
 export CV_OBB="$GAMEDIR/obb/jp.konami.castlevania/main.110.jp.konami.castlevania.obb"
 export CV_UNITY_ARGS="-force-gfx-direct -force-gles20"
 export CV_LANG=English
-export CV_FRAMES=999999999
+export CUP_FRAMES=999999999
 # 1 CPU visivel -> job-system SINCRONO (jobs rodam inline na main), evita o deadlock
 # do handshake main<->worker que trava o PlayerLoop/scene-load (muro documentado Terraria).
 export CUP_1CORE=1
