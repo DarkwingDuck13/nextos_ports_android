@@ -255,9 +255,12 @@ static void tex_runtime_init(void) {
   if (__atomic_load_n(&g_tex_half_runtime, __ATOMIC_RELAXED) >= 0)
     return;
 
+  /* PADRAO DE INSTALACAO LIMPA = LOW (min_dim 256): da folga em devices 1GB.
+   * Perfil salvo (texture_profile.cfg) e BULLY2_TEXTURE_PROFILE ainda tem
+   * prioridade; Medium/High continuam disponiveis pelo menu. */
   int enabled = 1;
-  int min_dim = 512;
-  const char *label = "medium";
+  int min_dim = 256;
+  const char *label = "low";
   const char *half_env = first_env("BULLY2_TEX_HALF", "BULLY_TEX_HALF");
   const char *min_env = first_env("BULLY2_TEX_HALF_MIN", "BULLY_TEX_HALF_MIN");
 
@@ -281,11 +284,11 @@ static void tex_runtime_init(void) {
     }
     if (profile && !parse_start_texture_profile(profile, &enabled, &min_dim,
                                                 &label)) {
-      fprintf(stderr, "[tex] unsupported startup profile=%s; using medium\n",
+      fprintf(stderr, "[tex] unsupported startup profile=%s; using low\n",
               profile);
       enabled = 1;
-      min_dim = 512;
-      label = "medium";
+      min_dim = 256;
+      label = "low";
     }
   }
   if (min_dim < 256)
