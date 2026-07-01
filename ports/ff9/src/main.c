@@ -4440,6 +4440,78 @@ float my_get_deltaTime(void) {
  * No-op (ret) suprime o log -> o erro (não-fatal?) é ignorado e o fluxo segue. Experimental. */
 long my_logger_noop(void);
 long my_logger_noop(void) { return 0; }
+
+/* FF9_LOGFMT: o logger do il2cpp (0x10a6200) crasha formatando um %s lixo (= um thunk gerado lido
+ * como string). Logamos arg0/arg1 (provável String de formato/mensagem) ANTES de seguir, p/ revelar
+ * O QUE o content-load tenta logar (qual asset/método/erro). Trampolim mk_tramp (prólogo paciasp/
+ * sub/stp/stp não tem PC-rel) -> chama o original depois (caller usa o resultado). */
+static void *(*g_logfmt_orig)(void *, void *, void *, void *, void *, void *, void *, void *);
+static void log_il2cpp_str(int n, int c, void *s) {
+  char buf[200];
+  if (!s || ((uintptr_t)s >> 40) != 0) return;
+  int len = *(int *)((char *)s + 0x10);
+  if (len <= 0 || len > 199) return;
+  unsigned short *ch = (unsigned short *)((char *)s + 0x14);
+  for (int i = 0; i < len; i++) { unsigned short w = ch[i]; if (w == 0) { buf[i] = 0; len = i; break; } buf[i] = (w < 0x80) ? (char)w : '?'; }
+  buf[len] = 0;
+  fprintf(stderr, "[LOGFMT] #%d arg%d=\"%s\"\n", n, c, buf); fsync(2);
+}
+/* dump como C char* (readability check via os primeiros bytes) */
+static void log_cstr(int n, int c, void *p) {
+  if (!p || ((uintptr_t)p >> 40) != 0) return;
+  char *s = (char *)p;
+  /* checa printabilidade dos primeiros bytes */
+  int ok = 0;
+  for (int i = 0; i < 64; i++) { unsigned char ch = s[i]; if (ch == 0) { ok = i > 0; break; } if (ch < 0x20 || ch > 0x7e) { ok = 0; break; } ok = 1; }
+  if (ok) { char buf[128]; int i = 0; for (; i < 127 && s[i]; i++) buf[i] = s[i]; buf[i] = 0; fprintf(stderr, "[LOGFMT] #%d carg%d=\"%s\"\n", n, c, buf); fsync(2); }
+}
+void *my_logger_diag(void *a0, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *a7);
+void *my_logger_diag(void *a0, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *a7) {
+  static int n = 0;
+  if (n++ < 25) {
+    log_il2cpp_str(n, 0, a0); log_il2cpp_str(n, 1, a1);
+    log_cstr(n, 0, a0); log_cstr(n, 1, a1); log_cstr(n, 2, a2); log_cstr(n, 3, a3);
+    fprintf(stderr, "[LOGFMT] #%d ptrs a0=%p a1=%p a2=%p a3=%p\n", n, a0, a1, a2, a3); fsync(2);
+  }
+  if (g_logfmt_orig) return g_logfmt_orig(a0, a1, a2, a3, a4, a5, a6, a7);
+  return 0;
+}
+
+/* FF9_LOGEXC: o content scene-load LANÇA uma exceção gerenciada (il2cpp joga como C++
+ * Il2CppExceptionWrapper) e o unwinding C++ no so-loader estoura a pilha (stack overflow no
+ * tombstone). Hookamos il2cpp_raise_exception(0xff7be0) p/ LOGAR a classe+mensagem da exceção
+ * ANTES do throw -> revela O QUE falha no content-load. Padrão save-16/restaura/relança. */
+static unsigned char g_raise_orig[16];
+static int g_raise_saved = 0;
+void my_log_exception(void *ex);
+void my_log_exception(void *ex) {
+  static int n = 0;
+  if (ex && ((uintptr_t)ex >> 40) == 0 && n++ < 30) {
+    void *(*objcls)(void *) = (void *(*)(void *))(g_il2cpp_base + 0xff7f80);
+    const char *(*clsname)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0xff76e4);
+    void *klass = objcls(ex);
+    const char *cn = (klass && ((uintptr_t)klass >> 40) == 0) ? clsname(klass) : "?";
+    char msg[160]; msg[0] = 0;
+    void *str = *(void **)((char *)ex + 0x18);  /* System.Exception._message */
+    if (str && ((uintptr_t)str >> 40) == 0) {
+      int len = *(int *)((char *)str + 0x10);
+      unsigned short *chars = (unsigned short *)((char *)str + 0x14);
+      if (len > 0 && len < 159) { for (int i = 0; i < len; i++) msg[i] = (char)(chars[i] & 0xff); msg[len] = 0; }
+    }
+    fprintf(stderr, "[LOGEXC] #%d %s: \"%s\"\n", n, cn ? cn : "?", msg); fsync(2);
+  }
+  /* relança: restaura o prólogo e chama o raise original (noreturn -> não volta). */
+  if (g_raise_saved) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t w = g_il2cpp_base + 0xff7be0;
+    void *pw = (void *)(w & ~((uintptr_t)pgsz - 1));
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+    memcpy((void *)w, g_raise_orig, 16);
+    mprotect(pw, pgsz * 2, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)w, (char *)w + 16);
+    ((void (*)(void *))w)(ex);
+  }
+}
 static void (*g_uitw_orig)(void *);
 void my_UITweener_Update(void *self);
 void my_UITweener_Update(void *self) {
@@ -5957,6 +6029,18 @@ int main(int argc, char **argv) {
     ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ p/ libil2cpp tb */
     so_record_phdr("libil2cpp.so");   /* p/ o dl_iterate_phdr custom (unwind) */
     if (so_register_eh_frame() == 0) fprintf(stderr, "[EH] .eh_frame libil2cpp registrado (exceções C++)\n");
+    /* 🔑🔑 EXCEÇÕES C++: libil2cpp tem unwinder ESTÁTICO próprio (__cxa_throw/__gxx_personality_v0)
+       que acha o .eh_frame de cada módulo via dl_iterate_phdr. O import dl_iterate_phdr@LIBC estava
+       resolvido p/ stub_dl_iterate_phdr (RETORNA 0 = 0 módulos) -> o unwinder NÃO acha o .eh_frame do
+       PRÓPRIO libil2cpp -> exceção gerenciada (Il2CppExceptionWrapper) não acha o landing pad ->
+       std::terminate ("terminating with uncaught exception"). FIX: repatcha o GOT p/ o NOSSO
+       dl_iterate_phdr custom (main.c:45), que reporta g_so_mods (libil2cpp/libunity com PT_GNU_EH_FRAME)
+       + os módulos reais -> o unwinder acha o .eh_frame -> as exceções do content-load são CAPTURADAS
+       pelos try/catch do il2cpp (em vez de terminar o processo). FF9_NOEHFIX desliga. */
+    if (!getenv("FF9_NOEHFIX")) {
+      if (patch_got("dl_iterate_phdr", (void *)&dl_iterate_phdr))
+        fprintf(stderr, "[EHFIX] dl_iterate_phdr do libil2cpp -> custom (unwinder acha .eh_frame)\n");
+    }
     /* il2cpp abre o global-metadata.dat via open() -> intercepta p/ redirecionar.
        patch_got opera no modulo ATIVO (=il2cpp agora). Tb dlopen/dlsym/log. */
     patch_got("open", (void *)my_open);
@@ -6740,12 +6824,32 @@ int main(int argc, char **argv) {
          de vsync (Time.time congelado); com o pump correto NÃO precisa. Opt-in só p/ diagnóstico.) */
       /* FF9_NOLOGGER: no-opa a func de log variádica (0x10a6200) que crasha no %s lixo do
          scene-load. Experimental — pode quebrar outros usos da func. */
+      /* FF9_LOGEXC: loga a exceção que o content scene-load lança (raiz do stack-overflow). */
+      static int le_hooked = 0;
+      if (!le_hooked && getenv("FF9_LOGEXC") && g_il2cpp_base && f >= 180) {
+        extern void my_log_exception(void *);
+        memcpy(g_raise_orig, (void *)(g_il2cpp_base + 0xff7be0), 16);
+        g_raise_saved = 1;
+        hook_arm64(g_il2cpp_base + 0xff7be0, (uintptr_t)my_log_exception);
+        le_hooked = 1;
+        fprintf(stderr, "[LOGEXC] il2cpp_raise_exception(0xff7be0) hookado @f=%d\n", f); fsync(2);
+      }
       static int nl_hooked = 0;
       if (!nl_hooked && getenv("FF9_NOLOGGER") && g_il2cpp_base && f >= 180) {
         extern long my_logger_noop(void);
         hook_arm64(g_il2cpp_base + 0x10a6200, (uintptr_t)my_logger_noop);
         nl_hooked = 1;
         fprintf(stderr, "[NOLOGGER] il2cpp logger(0x10a6200) -> ret @f=%d\n", f); fsync(2);
+      }
+      /* FF9_LOGFMT: loga a format-string do logger 0x10a6200 (revela o erro do content-load). */
+      static int lf_hooked = 0;
+      if (!lf_hooked && getenv("FF9_LOGFMT") && g_il2cpp_base && f >= 180) {
+        extern void *my_logger_diag(void *, void *, void *, void *, void *, void *, void *, void *);
+        g_logfmt_orig = (void *(*)(void *, void *, void *, void *, void *, void *, void *, void *))
+                        mk_tramp(g_il2cpp_base + 0x10a6200, "il2cpp_logger");
+        if (g_logfmt_orig) hook_arm64(g_il2cpp_base + 0x10a6200, (uintptr_t)my_logger_diag);
+        lf_hooked = 1;
+        fprintf(stderr, "[LOGFMT] logger(0x10a6200) hookado @f=%d orig=%p\n", f, (void *)g_logfmt_orig); fsync(2);
       }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
