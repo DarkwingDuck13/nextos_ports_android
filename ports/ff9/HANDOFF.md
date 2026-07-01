@@ -7,6 +7,28 @@
 
 ---
 
+## s16 2026-07-01 — ✅ menu restaurado + achado real sobre áudio dos FMVs iniciais
+
+> Device .90. Run atual deixado parado no menu inicial: `run_menu_restore.log`.
+
+### ✅ Estado validado
+- Binário limpo/rebuildado e redeployado depois de descartar dois experimentos não validados:
+  - tentativa de misturar `EventInput.GetWorldTriggerButton` no Confirm do campo retornou zero e foi removida;
+  - tentativa de alterar o player externo de FMV para outro pipeline de `pacat` foi revertida.
+- Fluxo do título recuperado: `FMV000.mp4` tocou inteiro (`Play pid=8067`, `terminou status=0x0`) e retornou ao menu.
+- Captura real do framebuffer confirma menu com brilho correto e `NEW GAME` visível: `/tmp/ff9_menu_restore_top.png`.
+- O processo ficou vivo/renderizando no menu, sem selecionar New Game.
+
+### Áudio dos vídeos
+- `ffmpeg -i` no device mostrou que `FMV000.mp4` e `FMV001.mp4` possuem apenas stream de vídeo H.264; não existe stream de áudio nesses MP4.
+- Teste isolado `ffmpeg -t 5 -i FMV000.mp4 -vn ... | pacat` falhou corretamente com `Output file does not contain any stream`.
+- Conclusão: ausência de som nesses FMVs iniciais não é falha do `pacat`; o áudio, se existir no Android original, deve vir por eventos/sdlib separados do MP4. O caminho de som do jogo em si segue abrindo: `[SL] SDL audio aberto: 44100Hz 2ch 2048 samples (driver=pulseaudio)`.
+
+### Próximo foco
+- Manter o menu/fade atual intacto.
+- Investigar os eventos de som/sdlib disparados durante `FMV001`/New Game, especialmente o `KeyNotFoundException` de som key `136` já visto em sessoes anteriores.
+- Depois retomar gameplay no primeiro campo e descobrir o trigger correto da sala escura sem pular videos.
+
 ## s15 2026-07-01 — ✅ FMVs nativas preservadas + raiz do preto estreitada (EBG mesh/material)
 
 > Device .90. Testes sem pular videos, seguindo fluxo: FF logo/disclaimer/title -> New Game -> `FMV001.mp4` -> field `FBG_N00_TSHP_MAP002_TH_CGR_1`.
