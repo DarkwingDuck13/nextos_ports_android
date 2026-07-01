@@ -63,7 +63,12 @@ fi
 
 "$GAMEDIR/tools/ensure-bully-menu-patch.sh" "$GAMEDIR" || true
 
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+# Alguns devices (ArkOS RK3326/Mali-G31) mantem a libmali que casa com o kernel
+# (DDK r13p0, EGL/GLES/GBM) em /usr/local/lib/<triplet>, NAO no path padrao. O
+# libMali.so default e antigo (r6p0 -> reporta /dev/mali0 API 10.6) e falha contra
+# kernels novos ("not of a compatible version"). Prepender esse dir faz o loader
+# resolver libEGL.so.1/libGLESv2.so.2 para o blob compativel e o contexto GL sobe.
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
 [ -n "$sdl_controllerconfig" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
