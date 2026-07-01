@@ -42,10 +42,14 @@
  * libc -> exceção C++ não acha o landing pad -> std::terminate -> abort (asset loading).
  * Como o EXE é -rdynamic e carrega 1º, este símbolo INTERPÕE o da libc: reportamos os
  * módulos do dynamic linker (via o real, RTLD_NEXT) + os NOSSOS (g_so_mods). */
+int g_dlph_calls = 0;
 int dl_iterate_phdr(int (*cb)(struct dl_phdr_info *, size_t, void *), void *data) {
   static int (*real)(int (*)(struct dl_phdr_info *, size_t, void *), void *);
   if (!real) real = (void *)dlsym(RTLD_NEXT, "dl_iterate_phdr");
+  int dbg = getenv("FF9_DLPHLOG") && g_dlph_calls < 6;
+  g_dlph_calls++;
   int r = real ? real(cb, data) : 0;
+  if (dbg) fprintf(stderr, "[DLPH] call#%d real_r=%d nmods=%d\n", g_dlph_calls, r, g_so_nmods);
   if (r) return r;
   for (int i = 0; i < g_so_nmods; i++) {
     struct dl_phdr_info info; memset(&info, 0, sizeof info);
@@ -53,6 +57,16 @@ int dl_iterate_phdr(int (*cb)(struct dl_phdr_info *, size_t, void *), void *data
     info.dlpi_name = g_so_mods[i].name;
     info.dlpi_phdr = (const ElfW(Phdr) *)g_so_mods[i].ph;
     info.dlpi_phnum = (ElfW(Half))g_so_mods[i].phnum;
+    if (dbg) {
+      fprintf(stderr, "[DLPH]   mod[%d]=%s base=0x%lx phnum=%d\n", i, g_so_mods[i].name, (unsigned long)info.dlpi_addr, info.dlpi_phnum);
+      for (int p = 0; p < info.dlpi_phnum; p++) {
+        const ElfW(Phdr) *ph = &info.dlpi_phdr[p];
+        if (ph->p_type == PT_LOAD || ph->p_type == PT_GNU_EH_FRAME)
+          fprintf(stderr, "[DLPH]     ph[%d] type=%s vaddr=0x%lx->run=0x%lx memsz=0x%lx flags=%d\n", p,
+                  ph->p_type == PT_LOAD ? "LOAD" : "EH_FRAME", (unsigned long)ph->p_vaddr,
+                  (unsigned long)(info.dlpi_addr + ph->p_vaddr), (unsigned long)ph->p_memsz, ph->p_flags);
+      }
+    }
     r = cb(&info, sizeof info, data);
     if (r) return r;
   }
