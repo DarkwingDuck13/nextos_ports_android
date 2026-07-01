@@ -14,12 +14,12 @@ y = t
 start = enter
 back = esc
 
-# Device shoulder/trigger naming varies; this mirrors the validated Bully layout.
-# On the test pads physical L2/R2 arrive as l1/r1, so they cycle items.
-l1 = f
-l2 = u
-r1 = g
-r2 = i
+# Mapeamento PADRAO (gamecontrollerdb): l1/r1=bumbers L1/R1, l2/r2=gatilhos L2/R2,
+# l3/r3=cliques dos analogicos. MIRA=L1, ATIRA=R1, trocar arma=L2/R2.
+l1 = u
+l2 = f
+r1 = i
+r2 = g
 l3 = n
 r3 = m
 
