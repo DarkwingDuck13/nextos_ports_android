@@ -86,17 +86,24 @@ static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
   if (g_demoguard_on && (sig == SIGSEGV || sig == SIGBUS) && uc && text_base) {
     ucontext_t *u = (ucontext_t *)uc;
     unsigned long off = u->uc_mcontext.arm_pc - (uintptr_t)text_base;
+    unsigned long newpc = 0;
     if (off >= CSD_DTOR_LO && off < CSD_DTOR_HI) {
-      /* push {r4,r5,r6,lr} é @+0x425400. Antes dele o frame não existe -> retorna via LR (o
-         chamador); depois dele -> retorna via epílogo (pop {r4,r5,r6,pc}). Nos dois casos r4/r5/r6
-         do chamador ficam corretos. Pula o resto do destrutor (vaza o objeto corrompido, sem crash). */
-      if (off < 0x425404UL)
-        u->uc_mcontext.arm_pc = u->uc_mcontext.arm_lr;
-      else
-        u->uc_mcontext.arm_pc = (uintptr_t)text_base + CSD_DTOR_EPILOGUE;
+      /* ~CStartDemo: push {r4,r5,r6,lr} @+0x425400. Antes do push -> retorna via LR (chamador);
+         depois -> epílogo (pop {r4,r5,r6,pc}). Nos dois casos r4/r5/r6 do chamador ficam corretos. */
+      newpc = (off < 0x425404UL) ? u->uc_mcontext.arm_lr
+                                 : (uintptr_t)text_base + CSD_DTOR_EPILOGUE;
+    } else if (off >= 0x205f20UL && off < 0x205f64UL) {
+      /* amTexMgrDecRef (LEAF, sem push, termina em bx lr): handle de textura corrompido no teardown
+         de fase pesada (cassino/Sky Fortress) -> indexa base+handle*24 fora da tabela -> SIGSEGV.
+         Função leaf -> recupera retornando via LR (pula o DecRef desse handle; a textura vaza, mas
+         NÃO fecha o jogo). Callee-saved (r4-r6) intactos (só usa r0/r2/r3). */
+      newpc = u->uc_mcontext.arm_lr;
+    }
+    if (newpc) {
+      u->uc_mcontext.arm_pc = newpc;
       g_demo_guard_recovered++;
-      fprintf(stderr, "[DEMOGUARD] SIGSEGV em ~CStartDemo (libfox+0x%lx) -> RECUPERADO #%lu\n",
-              off, g_demo_guard_recovered);
+      fprintf(stderr, "[DEMOGUARD] SIGSEGV em libfox+0x%lx (in_draw=%d) -> RECUPERADO #%lu\n",
+              off, sonic_in_draw_frame, g_demo_guard_recovered);
       return;                                 /* kernel resume no epílogo/caller -> jogo segue */
     }
   }

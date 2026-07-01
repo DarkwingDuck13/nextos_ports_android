@@ -91,9 +91,10 @@ if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   fi
 fi
 
-# Audio logging ON (diagnostics for sound issues on devices we can't test). SONIC_AUDIOLOG=0 disables.
-# Video diagnostics (GL vendor/renderer/version) are always printed by the binary.
-export SONIC_AUDIOLOG="${SONIC_AUDIOLOG:-1}"
+# Audio logging OFF por padrão (o log pesado de PlaySound/StopSound — centenas de linhas/seg via
+# tee no SD — derruba a performance das fases pesadas). Banners de driver + vídeo (GL) + DEMOGUARD
+# + crash continuam SEMPRE visíveis. `touch sonic4ep2/audiolog` religa p/ diagnosticar som.
+[ -f "$GAMEDIR/audiolog" ] && export SONIC_AUDIOLOG=1
 
 # Audio: auto by default. Only set this if your device has no sound: alsa | pulseaudio | pipewire
 AUDIO_DRIVER="${AUDIO_DRIVER:-}"
