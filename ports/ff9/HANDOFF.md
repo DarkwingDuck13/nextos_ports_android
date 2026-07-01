@@ -7,6 +7,23 @@
 
 ---
 
+## s13 2026-07-01 — ✅ fluxo real ate gameplay controlavel pos-FMV001
+
+> Device .90. Validado em `run_real_latch.log`, sem pular videos (`FF9_NOSKIPMOVIE=1`).
+
+### ✅ Avancos validados
+- `FMV000.mp4` e `FMV001.mp4` tocaram inteiros pelo caminho FFmpeg externo, ambos terminaram com `status=0x0` e callback gerenciado.
+- `FIELDNRE` default-on patcha `EventCollision.IsNPCTalkable` em `libil2cpp+0x1122ca8`: remove o `NullReferenceException` recorrente em `0x1122cac` e preserva `player=1` no controller.
+- `FF9_TITLEPAD` agora desarma depois do primeiro click no menu. Antes, apertar `A` no campo chamava `TitleUI.OnNewGameButtonClick` de novo; agora o input fica livre para gameplay.
+- Campo pos-FMV001 esta controlavel: no fluxo real, segurar direita moveu o player de `x=25` para `x=168` (`bits=0x20`, `moving=1`) sem novo `TITLEPAD`.
+- Framebuffer validado em `/tmp/ff9_real_latch_field.png`: Zidane e NPC aparecem no campo, UI viva, processo a 60 FPS.
+
+### Proximo muro
+- Fundo do campo ainda fica majoritariamente preto/escuro; personagens e bordas aparecem. Proximo foco e recuperar background/iluminacao do field sem perder o fluxo real de videos.
+- `KeyNotFoundException` de som key `136` ainda aparece durante New Game. Continua nao fatal com `FF9_NOLOGGER=1`, mas som de campo ainda precisa de tratamento fino.
+
+---
+
 ## s12 2026-07-01 — ✅ vídeos reais + New Game até campo renderizando personagem/UI
 
 > Device .90. Estado validado em framebuffer real, com `FF9_NOSKIPMOVIE=1`.

@@ -5706,6 +5706,16 @@ static void ff9_fieldstate_install(uintptr_t base) {
   fsync(2);
 }
 
+static void ff9_field_nre_patch(uintptr_t base) {
+  uintptr_t a = base + 0x1122ca8;
+  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
+  mprotect((void *)(a & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)(base + 0x1122ca8) = 0x14000001u; /* b 0x1122cac */
+  *(uint32_t *)(base + 0x1122cac) = 0xaa1f03e8u; /* mov x8, xzr */
+  *(uint32_t *)(base + 0x1122cb0) = 0x17fffff1u; /* b 0x1122c74 */
+  __builtin___clear_cache((char *)(base + 0x1122ca8), (char *)(base + 0x1122cb4));
+}
+
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method);
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method) {
   (void)method;
@@ -5719,12 +5729,70 @@ int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg
 }
 
 int my_FieldMap_EBG_animationInit(void *self, void *method);
+static void *ff9_list_item_safe(void *list, int idx, int *size_out) {
+  if (size_out) *size_out = -1;
+  if (!list || ((uintptr_t)list >> 40) || idx < 0 || !addr_readable((uintptr_t)list + 0x20))
+    return NULL;
+  void *items = *(void **)((char *)list + 0x10);
+  int size = *(int *)((char *)list + 0x18);
+  if (size_out) *size_out = size;
+  if (!items || ((uintptr_t)items >> 40) || idx >= size ||
+      !addr_readable((uintptr_t)items + 0x20 + (uintptr_t)idx * 8))
+    return NULL;
+  uintptr_t max_len = *(uintptr_t *)((char *)items + 0x18);
+  if ((uintptr_t)idx >= max_len) return NULL;
+  return *(void **)((char *)items + 0x20 + (uintptr_t)idx * 8);
+}
+
 int my_FieldMap_EBG_animationInit(void *self, void *method) {
   (void)method;
   static int n = 0;
+  void *scene = NULL;
+  if (self && !((uintptr_t)self >> 40) && addr_readable((uintptr_t)self + 0x68))
+    scene = *(void **)((char *)self + 0x30);
+  if (!scene || ((uintptr_t)scene >> 40) || !addr_readable((uintptr_t)scene + 0x68)) {
+    if (n++ < 8) {
+      fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit skip scene=%p self=%p\n", scene, self);
+      fsync(2);
+    }
+    return 1;
+  }
+
+  int anim_count = *(uint16_t *)((char *)scene + 0x14);
+  void *overlay_list = *(void **)((char *)scene + 0x58);
+  void *anim_list = *(void **)((char *)scene + 0x60);
+  int overlay_size = -1, anim_size = -1;
+  (void)ff9_list_item_safe(overlay_list, 0, &overlay_size);
+  (void)ff9_list_item_safe(anim_list, 0, &anim_size);
   if (n++ < 8) {
-    fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit success-noop self=%p\n", self);
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit safe self=%p scene=%p animCount=%d animSize=%d overlaySize=%d\n",
+            self, scene, anim_count, anim_size, overlay_size);
     fsync(2);
+  }
+  for (int i = 0; i < anim_count; i++) {
+    int list_size = -1, frame_size = -1;
+    void *anim = ff9_list_item_safe(anim_list, i, &list_size);
+    if (!anim || ((uintptr_t)anim >> 40) || !addr_readable((uintptr_t)anim + 0x38)) {
+      if (n < 16) fprintf(stderr, "[FF9_FIELDGUARD] anim skip i=%d size=%d anim=%p\n", i, list_size, anim);
+      continue;
+    }
+    *(uint8_t *)((char *)anim + 0x10) = 1;
+    *(uint64_t *)((char *)anim + 0x1c) = 0x10000000000ull;
+
+    void *frame_list = *(void **)((char *)anim + 0x30);
+    void *frame = ff9_list_item_safe(frame_list, 0, &frame_size);
+    if (!frame || ((uintptr_t)frame >> 40) || !addr_readable((uintptr_t)frame + 0x12)) {
+      if (n < 16) fprintf(stderr, "[FF9_FIELDGUARD] anim frame skip i=%d frameSize=%d frame=%p\n", i, frame_size, frame);
+      continue;
+    }
+    int target = *(uint8_t *)((char *)frame + 0x10);
+    void *overlay = ff9_list_item_safe(overlay_list, target, &overlay_size);
+    if (!overlay || ((uintptr_t)overlay >> 40) || !addr_readable((uintptr_t)overlay + 0x18)) {
+      if (n < 16) fprintf(stderr, "[FF9_FIELDGUARD] overlay skip anim=%d target=%d overlaySize=%d overlay=%p\n",
+                          i, target, overlay_size, overlay);
+      continue;
+    }
+    *(uint8_t *)((char *)overlay + 0x10) |= 2;
   }
   return 1;
 }
@@ -5737,9 +5805,41 @@ int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attac
                                       int b, void *method) {
   (void)method;
   static int n = 0;
+  if (!self || ((uintptr_t)self >> 40) || !addr_readable((uintptr_t)self + 0x150)) {
+    if (n++ < 8) fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay skip bad self=%p\n", self);
+    fsync(2);
+    return 1;
+  }
+  uint16_t attach_count = *(uint16_t *)((char *)self + 0x142);
+  void *attach_list = *(void **)((char *)self + 0x148);
+  void *entry = NULL;
+  uintptr_t len = 0;
+  if (attach_list && !((uintptr_t)attach_list >> 40) &&
+      addr_readable((uintptr_t)attach_list + 0x20)) {
+    len = *(uintptr_t *)((char *)attach_list + 0x18);
+    if ((uintptr_t)attach_count < len &&
+        addr_readable((uintptr_t)attach_list + 0x20 + (uintptr_t)attach_count * 8))
+      entry = *(void **)((char *)attach_list + 0x20 + (uintptr_t)attach_count * 8);
+  }
+  if (!entry || ((uintptr_t)entry >> 40) || !addr_readable((uintptr_t)entry + 0x20)) {
+    if (n++ < 8) {
+      fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay skip count=%u len=%lu entry=%p overlay=%u\n",
+              attach_count, (unsigned long)len, entry, overlayNdx);
+      fsync(2);
+    }
+    return 1;
+  }
+  *(int8_t *)((char *)entry + 0x10) = (int8_t)surroundMode;
+  *(uint8_t *)((char *)entry + 0x11) = (uint8_t)r;
+  *(uint8_t *)((char *)entry + 0x12) = (uint8_t)g;
+  *(uint8_t *)((char *)entry + 0x13) = (uint8_t)b;
+  *(int16_t *)((char *)entry + 0x14) = (int16_t)overlayNdx;
+  *(int16_t *)((char *)entry + 0x16) = (int16_t)attachX;
+  *(int16_t *)((char *)entry + 0x18) = (int16_t)attachY;
+  *(uint16_t *)((char *)self + 0x142) = (uint16_t)(attach_count + 1);
   if (n++ < 8) {
-    fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay success-noop self=%p overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
-            self, overlayNdx, attachX, attachY, surroundMode, r, g, b);
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay safe count=%u/%lu overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
+            attach_count, (unsigned long)len, overlayNdx, attachX, attachY, surroundMode, r, g, b);
     fsync(2);
   }
   return 1;
@@ -6133,6 +6233,7 @@ static uint32_t g_titleui_orig[4];
 static int g_newgame_done = 0;
 static int g_newgame_direct_done = 0;
 static int g_titlepad_sel = 0;
+static int g_titlepad_active = 0;
 static int g_titlehide_calling = 0;
 void my_TitleUI_Hide_fast(void *self, void *callback, void *method);
 void my_TitleUI_Hide_fast(void *self, void *callback, void *method) {
@@ -6177,6 +6278,7 @@ static void ff9_title_timer_patch(uintptr_t base) {
 }
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
+  g_titlepad_active = 1;
   uintptr_t a = g_il2cpp_base + 0x1348430;
   long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
   mprotect((void *)(a & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
@@ -6238,7 +6340,7 @@ static void ff9_titlepad_notify_click(int idx) {
   ((void (*)(void *, void *, void *))(g_il2cpp_base + 0x14271F4))(go, msg, NULL);
 }
 void ff9_titlepad_tick(void) {
-  if (!ff9_titlepad_enabled() || !g_titleui_this) return;
+  if (!ff9_titlepad_enabled() || !g_titlepad_active || !g_titleui_this) return;
   int moved = 0;
   if (ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 11)) { g_titlepad_sel = (g_titlepad_sel + 1) & 3; moved = 1; }
   if (ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 10)) { g_titlepad_sel = (g_titlepad_sel + 3) & 3; moved = 1; }
@@ -6249,6 +6351,7 @@ void ff9_titlepad_tick(void) {
   int accept = ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 0) ||
                ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, 8);
   if (!accept) return;
+  g_titlepad_active = 0;
   if (g_titlepad_sel == 1) {
     void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x1344634);
     fprintf(stderr, "[FF9_TITLEPAD] OnNewGameButtonClick(this=%p)\n", (void *)g_titleui_this);
@@ -6259,7 +6362,7 @@ void ff9_titlepad_tick(void) {
   }
 }
 void ff9_titlepad_draw(void) {
-  if (!ff9_titlepad_enabled() || !g_titleui_this) return;
+  if (!ff9_titlepad_enabled() || !g_titlepad_active || !g_titleui_this) return;
   int sw, sh, osc[4], oen; float occ[4];
   if (!vk_gl_begin(&sw, &sh, osc, occ, &oen)) return;
   int y[4] = {386, 455, 524, 592};
@@ -8553,8 +8656,8 @@ int main(int argc, char **argv) {
         sndg_hooked = 1;
         fprintf(stderr, "[FF9_SOUNDGUARD] FF9Snd dispatch -> noop @f=%d\n", f); fsync(2);
       }
-      /* FF9_FIELDGUARD (default ON): campos podem pedir EBG animation/overlay que ainda nao
-         carregou por completo no so-loader; no-op evita abortar EventEngine durante New Game. */
+      /* FF9_FIELDGUARD (default ON): campos podem pedir EBG animation/overlay com listas
+         parcialmente carregadas; aplica bounds-check e mantem EventEngine vivo. */
       static int fldg_hooked = 0;
       if (!fldg_hooked && !getenv("FF9_NOFIELDGUARD") && g_il2cpp_base && f >= 180) {
         extern int my_FieldMap_EBG_animationInit(void *, void *);
@@ -8562,7 +8665,13 @@ int main(int argc, char **argv) {
         hook_arm64(g_il2cpp_base + 0x113ded0, (uintptr_t)my_FieldMap_EBG_animationInit);
         hook_arm64(g_il2cpp_base + 0x113e658, (uintptr_t)my_FieldMap_EBG_charAttachOverlay);
         fldg_hooked = 1;
-        fprintf(stderr, "[FF9_FIELDGUARD] EBG animation/overlay -> noop @f=%d\n", f); fsync(2);
+        fprintf(stderr, "[FF9_FIELDGUARD] EBG animation/overlay -> safe @f=%d\n", f); fsync(2);
+      }
+      static int fnre_hooked = 0;
+      if (!fnre_hooked && !getenv("FF9_NOFIELDNREFIX") && g_il2cpp_base && f >= 180) {
+        ff9_field_nre_patch(g_il2cpp_base);
+        fnre_hooked = 1;
+        fprintf(stderr, "[FF9_FIELDNRE] 0x1122ca8 null target -> return NULL @f=%d\n", f); fsync(2);
       }
       static int fstate_hooked = 0;
       if (!fstate_hooked && (getenv("FF9_FIELDSTATE") || getenv("FF9_FORCECONTROL")) &&
