@@ -4904,6 +4904,13 @@ int main(int argc, char **argv) {
     sd.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART; sigaction(SIGUSR1, &sd, 0); }
 
   fprintf(stderr, "=== Cuphead Unity 2017.4 IL2CPP (arm64 GLES2) so-loader ===\n");
+  /* 🔑 SIGHUP: o "main thread trapped; signum=1" = a Unity registra o SINAL que trapou a
+     thread (1=SIGHUP) em curthread->trap; o gate (libunity+0x31fe38) propaga isso e faz
+     nativeRender BAILAR. Ignoramos SIGHUP (nohup deveria, mas garantimos) p/ o handler da
+     Unity nunca marcar trap=1. CVGOS_NOSIGHUPIGN desliga. */
+  if (!getenv("CVGOS_NOSIGHUPIGN")) { signal(SIGHUP, SIG_IGN);
+    sigset_t hm; sigemptyset(&hm); sigaddset(&hm, SIGHUP); sigprocmask(SIG_BLOCK, &hm, NULL);
+    fprintf(stderr, "[SIGHUP] ignorado+bloqueado (anti-trap)\n"); }
 
   /* GL/EGL/z visíveis p/ dlsym(RTLD_DEFAULT) do Unity */
   dlopen("libz.so.1", RTLD_NOW | RTLD_GLOBAL);

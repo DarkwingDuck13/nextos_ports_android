@@ -76,6 +76,7 @@ int my_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_siga
    * handler pega o fault ORIGINAL (em vez do re-raise do crash handler do Unity). */
   if (getenv("CUP_NOSIGH") && (sig==4||sig==5||sig==6||sig==7||sig==8||sig==11)) { (void)oldact; return 0; }
   if (sig==10) { (void)oldact; return 0; }  /* SIGUSR1 = nosso diag_handler; jogo NÃO sobrescreve */
+  if (sig==1 && !getenv("CVGOS_NOSIGHUPIGN")) { (void)oldact; return 0; }  /* SIGHUP: nao deixa a Unity marcar trap=1 */
   /* CUP_GCSIG: não deixa o engine/GC sobrescrever nossos handlers de SIGPWR(30)/
      SIGXCPU(24) — nossas threads usam o protocolo de suspensão que NÃO mata. */
   if (getenv("CUP_GCSIG") && (sig==30||sig==24)) { (void)oldact; return 0; }
