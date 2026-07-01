@@ -4919,6 +4919,7 @@ float my_Input_GetAxis(void *nm, void *mi)             { (void)nm; (void)mi; ret
 volatile void *g_titleui_this = NULL;
 static uint32_t g_titleui_orig[4];
 static int g_newgame_done = 0;
+static int g_newgame_direct_done = 0;
 static void ff9_go_set_active(void *go, int active, const char *tag) {
   if (!go || ((uintptr_t)go >> 40) != 0 || !g_il2cpp_base) return;
   ((void (*)(void *, int, void *))(g_il2cpp_base + 0x25613B0))(go, active, NULL);
@@ -7358,6 +7359,15 @@ int main(int argc, char **argv) {
           void (*ong)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x1344634);
           fprintf(stderr, "[FF9_NEWGAME] OnNewGameButtonClick(this=%p) do render loop\n", (void *)g_titleui_this); fsync(2);
           ong((void *)g_titleui_this, NULL);
+        }
+        if (ng && g_titleui_this && g_newgame_done && !g_newgame_direct_done &&
+            !getenv("FF9_NODIRECTNG") && f >= ngameat + 60) {
+          g_newgame_direct_done = 1;
+          void (*cb)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0x134C25C);
+          fprintf(stderr, "[FF9_NEWGAME] callback pos-fade direto (0x134C25C) this=%p @f=%d\n",
+                  (void *)g_titleui_this, f);
+          fsync(2);
+          cb((void *)g_titleui_this, NULL);
         }
       }
       /* FF9_TAP=N: dispara um clique (press->hold->release) a cada N frames p/ dispensar o
