@@ -60,6 +60,50 @@ matar a firula multiarch de áudio. Autorizado 2026-07-01.
   - 🎯 **Falta:** input→gameplay (o teste precisa da ES suspensa; abrir pelo menu que o
     PortMaster suspende sozinho — NÃO parar ES via ssh, regra forte); multi-device; empacotar.
 
+## 🏁 ONDE PAROU (2026-07-01, fim da sessão — pediu resumo)
+
+**JOGÁVEL no Mali-450 .79 (aarch64):** boota, renderiza título, **áudio OK, controle OK**
+(igual armv7), entra em fase, joga. Tudo commitado (até `e28eebf`). Device .79 limpo, ES intacta.
+
+**Setup no device (.79):** `sonic4.arm64` + `lib/arm64-v8a/libfox.so` (v3.0.0) + `data/data.obb`
+(OBB v3, 643MB) + launcher `Sonic4EP2-arm64.sh` (cópia fiel da v4.5). Abrir pelo MENU (PortMaster
+suspende a ES). Log: `/roms/ports/sonic4ep2/log_arm64.txt`.
+
+**Fixes já portados p/ arm64/v3:** tabela de alias de mangling v2→v3 (`so_util_arm64.c`, m/l→j/i,
+thunks _ZThn20_→_ZThn40_) faz 18/26 hooks que faltavam aplicarem (post-fx, tone-map, shadows,
+save/backup, amThreadCheckDraw...); DEMOGUARD ramo aarch64 (faixas derivadas de símbolo);
+special-stage seguro; launcher = v4.5.
+
+### 🔴 2 BUGS QUE FALTAM (ambos de RENDER, precisam do usuário testar + logs):
+
+**BUG 1 — Luz branca estourada + replicação no cassino (Electric Road/Episode Metal).**
+Sintoma (confirmado pelo usuário no arm64): fundo estoura BRANCO + "milhares de Sonics/moedas/bolas
+CLONADOS" horizontalmente. **Ao apertar START (pause) fica CORRETO** (congela) — clássico do bug de
+acúmulo cross-frame só no gameplay. No **armv7 v4.5 o `SONIC_CLEARALL` resolve** (commit 9c1a1ed).
+No arm64 v3 o CLEARALL **ENGATA** (confirmei `[CLEAR] fbo=2` rodando, wrappers glClear/glBindFramebuffer
+bound) MAS **NÃO resolve**. => a estrutura de FBO/render do v3 difere do v2: o buffer que acumula a
+luz aditiva é OUTRO FBO (ou caminho não-FBO) que o CLEARALL não pega no v3.
+  - PRÓXIMO: rodar com `SONIC_CLEARLOG=1`/FBO-STATS no v3 e comparar a estrutura de FBO com a do v2
+    (STUDY_CASSINO_BUG.md tem o FBO-STATS do v2: FBO 2 limpo/frame, FBO 0 nunca, FBO 3/5 sub-limpos).
+    Achar QUAL FBO acumula a luz no v3 e ajustar o CLEARALL (talvez limpar TODOS os fb, não só <64,
+    ou o fb específico). Suspeito forte não-testado (STUDY_CASSINO): **ToneMapAdapte** (auto-exposição);
+    o hook `SsConstTonemapIsEnable`/`SONIC_FORCETONEMAP` AGORA resolve via alias — TESTAR ligar.
+
+**BUG 2 — "Return to Stage Select" = TELA PRETA (novo, v3-specific).**
+Dentro da fase, aperta "return to stage select": **retorna pro stage-select (a lógica volta, ouve o
+áudio/controle respondendo) MAS a tela fica PRETA** (não renderiza nada). No armv7 o RELSAFE
+(`_amDrawReleaseTexture`, commit a03b5fe) consertou o crash desse caminho; no arm64 o RELSAFE aplica
+(vi no boot log) e NÃO crasha — mas em vez de crashar, fica preto.
+  - PRÓXIMO: após o return, o que para de renderizar? Provável: o teardown/recriação do render target
+    (FBO/contexto) na volta ao stage-select deixa o fb sem bind ou sem present. Instrumentar o
+    DrawFrame/present após o return (contar draws/clears; ver se o egl_shim ainda apresenta). Pode ser
+    o mesmo caminho do RELSAFE mas no v3 a lista de textura/registlist tem layout diferente → some tudo.
+
+### Ferramentas de debug disponíveis (envs)
+`SONIC_CLEARLOG=1` (loga glClear+FBO), `SONIC_GLLOG`, `SONIC_INPUTLOG`, `SONIC_FORCETONEMAP`,
+`SONIC_CLEARALL_RGB=r,g,b`, `SONIC_NOGODRAY`, `SONIC_THREADDRAW=0/1`, `SONIC_DEBUG=1` (loader),
+`SONIC_INITMAX/INITSKIP` (bring-up ctors). gdb+gdbserver no device.
+
 ## Análise da lib arm64 v3 (o que muda vs armv7 v2)
 
 - **Imports (374 total, 77 não-libc):** 65 GLES `gl*`, 12 Android-NDK (`AAsset*`,
