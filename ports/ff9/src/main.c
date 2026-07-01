@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <SDL2/SDL.h>
+#include <linux/input.h>
 
 #include "so_util.h"
 #include "imports.h"
@@ -1901,6 +1902,57 @@ static short g_gp_axis[24]; static unsigned char g_gp_btn[24];
    10=LB 11=RB 12=LT 13=RT 14=L3(stick esq) 15=R3(stick dir) */
 static unsigned char g_gp_log[16], g_gp_log_prev[16];
 float g_lt_analog, g_rt_analog;   /* gatilhos analógicos 0..1 (LT/RT) */
+static int g_gpev_fd[16], g_gpev_init;
+static unsigned char g_gpev_log[16];
+
+static int ter_evdev_key_to_log(int code) {
+  switch (code) {
+    case KEY_UP: case KEY_KP8: return 0;
+    case KEY_DOWN: case KEY_KP2: return 1;
+    case KEY_LEFT: case KEY_KP4: return 2;
+    case KEY_RIGHT: case KEY_KP6: return 3;
+    case KEY_ENTER: case KEY_KPENTER: case KEY_SPACE: case KEY_OK: return 4;
+    case KEY_BACK: case KEY_BACKSPACE: case KEY_ESC: return 5;
+    case KEY_X: return 6;
+    case KEY_Y: case KEY_MENU: return 7;
+    case KEY_PLAYPAUSE: return 8;
+    case KEY_SELECT: return 9;
+    case KEY_Q: return 10;
+    case KEY_E: return 11;
+  }
+  return -1;
+}
+
+static void ter_evdev_poll(void) {
+  if (!getenv("TER_GP_EVDEV")) return;
+  if (!g_gpev_init) {
+    g_gpev_init = 1;
+    for (int i = 0; i < 16; i++) {
+      char p[32];
+      snprintf(p, sizeof p, "/dev/input/event%d", i);
+      g_gpev_fd[i] = open(p, O_RDONLY | O_NONBLOCK);
+      if (g_gpev_fd[i] >= 0 && getenv("TER_GPEVLOG")) {
+        fprintf(stderr, "[TGPEV] abriu %s fd=%d\n", p, g_gpev_fd[i]);
+        fsync(2);
+      }
+    }
+  }
+  for (int i = 0; i < 16; i++) if (g_gpev_fd[i] >= 0) {
+    struct input_event ev;
+    while (read(g_gpev_fd[i], &ev, sizeof ev) == (int)sizeof ev) {
+      if (ev.type != EV_KEY) continue;
+      int idx = ter_evdev_key_to_log(ev.code);
+      if (idx < 0) continue;
+      g_gpev_log[idx] = ev.value ? 1 : 0;
+      if (getenv("TER_GPEVLOG")) {
+        fprintf(stderr, "[TGPEV] event%d key=%d -> log[%d]=%d\n",
+                i, ev.code, idx, g_gpev_log[idx]);
+        fsync(2);
+      }
+    }
+  }
+  for (int i = 0; i < 16; i++) if (g_gpev_log[i]) g_gp_log[i] = 1;
+}
 /* lê o js0 e recalcula o estado lógico (1×/frame); guarda o anterior p/ edge (GetKeyDown). */
 static void ter_cursor_ensure_init(void);
 static void ter_gamepad_poll(void) {
@@ -2015,6 +2067,7 @@ static void ter_gamepad_poll(void) {
       if (getenv("TER_GP_R3")) g_gp_log[15] = g_gp_btn[atoi(getenv("TER_GP_R3"))&31]; else g_gp_log[15]=0;
     }
   }
+  ter_evdev_poll();
   /* cursor do mouse: analógico direito (3,4 default) E esquerdo movem o cursor (point-and-click do menu) */
   extern float g_cursor_x, g_cursor_y;
   int rx = getenv("TER_GP_RX") ? atoi(getenv("TER_GP_RX")) : 3;
