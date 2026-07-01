@@ -1,0 +1,3 @@
+back = esc
+start = enter
+# SELECT+START handled by hotkey below (esc+enter combo = quit)

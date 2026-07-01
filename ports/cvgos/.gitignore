@@ -1,0 +1,6 @@
+cvgos
+game/
+*.raw
+run.out
+debug.log
+launch.out
