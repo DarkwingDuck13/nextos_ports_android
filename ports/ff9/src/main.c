@@ -2016,7 +2016,13 @@ static void ff9_fb_scanout_fix(void) {
       ioctl(fbfd, FBIOPAN_DISPLAY, &vi);
     }
   } else if (mode == 2 && fbmap) {
-    memcpy(fbmap + half, fbmap, half);
+    /* espelha a metade FRONT (indicada pelo yoffset do driver) pra outra: a TV mostra
+       alguma das duas — com o front nas duas, ela sempre mostra o frame novo. */
+    struct fb_var_screeninfo vi;
+    unsigned yoff = 0;
+    if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) == 0) yoff = vi.yoffset;
+    if (yoff >= 720) memcpy(fbmap, fbmap + half, half);
+    else memcpy(fbmap + half, fbmap, half);
   }
 }
 void ter_shot_hook(void) {
