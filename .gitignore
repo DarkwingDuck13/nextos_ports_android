@@ -93,3 +93,4 @@ ports/ff9/bin/Data/
 ports/*/katanazero
 ports/*/*.zero
 options.ini
+ports/sonic4/device_libs_3.0.0_arm64/
