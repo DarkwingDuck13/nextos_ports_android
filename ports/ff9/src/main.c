@@ -4873,6 +4873,81 @@ static void ff9_fmvspy_install(uintptr_t base) {
   fsync(2);
 }
 
+static int (*g_eventengine_service_orig)(void *, void *);
+static void (*g_fmac_update_movement_orig)(void *, void *);
+static void *g_eventengine_this;
+static uint32_t ff9_eventinput_bits(void);
+int my_EventEngine_ServiceEvents(void *self, void *method);
+int my_EventEngine_ServiceEvents(void *self, void *method) {
+  g_eventengine_this = self;
+  if (getenv("FF9_FORCECONTROL") && self && ((uintptr_t)self >> 40) == 0 && g_il2cpp_base) {
+    ((void (*)(void *, int, void *))(g_il2cpp_base + 0x159AC18))(self, 1, NULL);
+  }
+  int r = g_eventengine_service_orig ? g_eventengine_service_orig(self, method) : 0;
+  if (getenv("FF9_FIELDSTATE") && self && ((uintptr_t)self >> 40) == 0 && (g_render_frame % 120) == 0) {
+    int user = -1, gmode = -1;
+    if (addr_readable((uintptr_t)self + 0x84)) {
+      gmode = *(int *)((char *)self + 0x84);
+      user = ((int (*)(void *, void *))(g_il2cpp_base + 0x15895B4))(self, NULL);
+    }
+    int mov = ((int (*)(void *))(g_il2cpp_base + 0x1128DF8))(NULL);
+    fprintf(stderr, "[FF9_FIELDSTATE] f=%d ee=%p Service=%d gMode=%d user=%d movement=%d\n",
+            g_render_frame, self, r, gmode, user, mov);
+    fsync(2);
+  }
+  return r;
+}
+
+void my_FieldMapActorController_UpdateMovement(void *self, void *method);
+void my_FieldMapActorController_UpdateMovement(void *self, void *method) {
+  float bx = 0.0f, by = 0.0f, bz = 0.0f;
+  int is_player = 0, is_active = 0, is_moving0 = 0;
+  if (self) {
+    bx = *(float *)((char *)self + 0x6C);
+    by = *(float *)((char *)self + 0x70);
+    bz = *(float *)((char *)self + 0x74);
+    is_player = *(uint8_t *)((char *)self + 0x68);
+    is_moving0 = *(uint8_t *)((char *)self + 0x110);
+    is_active = *(uint8_t *)((char *)self + 0x188);
+  }
+  if (g_fmac_update_movement_orig) g_fmac_update_movement_orig(self, method);
+  uint32_t bits = ff9_eventinput_bits();
+  if (getenv("FF9_FIELDSTATE") && self &&
+      (bits || (is_player && (g_render_frame % 120) == 0) ||
+       (!is_player && (g_render_frame % 600) == 0))) {
+    float ax = *(float *)((char *)self + 0x6C);
+    float ay = *(float *)((char *)self + 0x70);
+    float az = *(float *)((char *)self + 0x74);
+    int is_moving1 = *(uint8_t *)((char *)self + 0x110);
+    fprintf(stderr,
+            "[FF9_FMAC] f=%d self=%p player=%d active=%d moving=%d->%d bits=0x%x pos=(%.2f,%.2f,%.2f)->(%.2f,%.2f,%.2f)\n",
+            g_render_frame, self, is_player, is_active, is_moving0, is_moving1,
+            bits, bx, by, bz, ax, ay, az);
+    fsync(2);
+  }
+}
+
+static void ff9_fieldstate_install(uintptr_t base) {
+  if (!g_eventengine_service_orig)
+    g_eventengine_service_orig = (int (*)(void *, void *))mk_tramp(base + 0x1582680, "EventEngine.ServiceEvents");
+  if (!g_fmac_update_movement_orig)
+    g_fmac_update_movement_orig = (void (*)(void *, void *))mk_tramp(base + 0x115430C, "FieldMapActorController.UpdateMovement");
+  if (g_eventengine_service_orig) {
+    hook_arm64(base + 0x1582680, (uintptr_t)my_EventEngine_ServiceEvents);
+    fprintf(stderr, "[FF9_FIELDSTATE] EventEngine.ServiceEvents hookado orig=%p%s\n",
+            (void *)g_eventengine_service_orig,
+            getenv("FF9_FORCECONTROL") ? " forcecontrol=ON" : "");
+  } else {
+    fprintf(stderr, "[FF9_FIELDSTATE] mk_tramp falhou; hook OFF\n");
+  }
+  if (g_fmac_update_movement_orig) {
+    hook_arm64(base + 0x115430C, (uintptr_t)my_FieldMapActorController_UpdateMovement);
+    fprintf(stderr, "[FF9_FIELDSTATE] FieldMapActorController.UpdateMovement hookado orig=%p\n",
+            (void *)g_fmac_update_movement_orig);
+  }
+  fsync(2);
+}
+
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method);
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method) {
   (void)method;
@@ -5102,6 +5177,8 @@ void *my_getbasepath(int location) {
 volatile int g_inject_ctrl = -1;
 static volatile uint32_t g_ff9_ctrl_state, g_ff9_ctrl_prev;
 static uint32_t (*g_eventinput_read_orig)(void *);
+static int (*g_uikey_get_orig)(void *, int, void *);
+static int (*g_uikey_trigger_orig)(void *, int, void *);
 
 static int ff9_gamepad_enabled(void) { return getenv("FF9_GAMEPAD") ? 1 : 0; }
 static uint32_t ff9_ctrl_bit(int key) { return (key >= 0 && key < 16) ? (1u << key) : 0; }
@@ -5189,6 +5266,27 @@ int my_GetKeyTrigger(void *thiz, int key, void *mi) {
   if (ff9_gamepad_enabled() && ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, key))
     return 1;
   return 0;
+}
+int my_UIKeyTrigger_GetKey(void *thiz, int key, void *mi);
+int my_UIKeyTrigger_GetKey(void *thiz, int key, void *mi) {
+  int r = g_uikey_get_orig ? g_uikey_get_orig(thiz, key, mi) : 0;
+  ff9_keylog_once("UIKey.GetKey", key);
+  if (ff9_gamepad_enabled() && ff9_ctrl_has(g_ff9_ctrl_state, key))
+    return 1;
+  return r ? 1 : 0;
+}
+int my_UIKeyTrigger_GetKeyTrigger(void *thiz, int key, void *mi);
+int my_UIKeyTrigger_GetKeyTrigger(void *thiz, int key, void *mi) {
+  int r = g_uikey_trigger_orig ? g_uikey_trigger_orig(thiz, key, mi) : 0;
+  ff9_keylog_once("UIKey.GetKeyTrigger", key);
+  if (key == g_inject_ctrl) {
+    g_inject_ctrl = -1;
+    if (getenv("FF9_INJLOG")) { fprintf(stderr, "[INJECT] UIKeyTrigger.GetKeyTrigger(%d)->true\n", key); fsync(2); }
+    return 1;
+  }
+  if (ff9_gamepad_enabled() && ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, key))
+    return 1;
+  return r ? 1 : 0;
 }
 int my_EventInput_GetKey(int key, int isTriggerMode, void *mi);
 int my_EventInput_GetKey(int key, int isTriggerMode, void *mi) {
@@ -7561,6 +7659,13 @@ int main(int argc, char **argv) {
         fldg_hooked = 1;
         fprintf(stderr, "[FF9_FIELDGUARD] EBG animation/overlay -> noop @f=%d\n", f); fsync(2);
       }
+      static int fstate_hooked = 0;
+      if (!fstate_hooked && (getenv("FF9_FIELDSTATE") || getenv("FF9_FORCECONTROL")) &&
+          g_il2cpp_base && f >= 180) {
+        extern void ff9_fieldstate_install(uintptr_t);
+        ff9_fieldstate_install(g_il2cpp_base);
+        fstate_hooked = 1;
+      }
       /* FF9_TITLETIMERFIX (default ON): em fluxos forçados o TitleUI.Timer pode existir com
          timeoutAction NULL; Timer.Update lança NRE todo frame e estoura a stack do il2cpp. */
       static int tmr_hooked = 0;
@@ -7600,15 +7705,25 @@ int main(int argc, char **argv) {
           if (ff9_gamepad_on) {
             extern int my_EventInput_GetKey(int, int, void *);
             extern uint32_t my_EventInput_ReadInput(void *);
+            extern int my_UIKeyTrigger_GetKey(void *, int, void *);
+            extern int my_UIKeyTrigger_GetKeyTrigger(void *, int, void *);
             if (!g_eventinput_read_orig)
               g_eventinput_read_orig = (uint32_t (*)(void *))mk_tramp(g_il2cpp_base + 0x111E770, "EventInput.ReadInput");
             if (g_eventinput_read_orig)
               hook_arm64(g_il2cpp_base + 0x111E770, (uintptr_t)my_EventInput_ReadInput);
+            if (!g_uikey_get_orig)
+              g_uikey_get_orig = (int (*)(void *, int, void *))mk_tramp(g_il2cpp_base + 0x1269AAC, "UIKeyTrigger.GetKey");
+            if (g_uikey_get_orig)
+              hook_arm64(g_il2cpp_base + 0x1269AAC, (uintptr_t)my_UIKeyTrigger_GetKey);
+            if (!g_uikey_trigger_orig)
+              g_uikey_trigger_orig = (int (*)(void *, int, void *))mk_tramp(g_il2cpp_base + 0x1269EBC, "UIKeyTrigger.GetKeyTrigger");
+            if (g_uikey_trigger_orig)
+              hook_arm64(g_il2cpp_base + 0x1269EBC, (uintptr_t)my_UIKeyTrigger_GetKeyTrigger);
             hook_arm64(g_il2cpp_base + 0x1129DF4, (uintptr_t)my_EventInput_GetKey);
           }
           inj_hooked = 1;
           fprintf(stderr, "[INJECT] GetKeyTrigger%s hook instalado (lazy) @f=%d\n",
-                  ff9_gamepad_on ? " + EventInput.GetKey" : "", f); fsync(2);
+                  ff9_gamepad_on ? " + EventInput/UIKeyTrigger" : "", f); fsync(2);
           /* FF9_TAP: hooka UnityEngine.Input (touch/mouse) p/ simular tap no NGUI/disclaimer */
           if (getenv("FF9_TAP")) {
             if (getenv("FF9_TAPX")) g_tap_x = (float)atoi(getenv("FF9_TAPX"));
