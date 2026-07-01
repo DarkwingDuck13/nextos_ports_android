@@ -69,6 +69,12 @@ static int g_demoguard_on = 1;                 /* setado em load_module (SONIC_N
 #define CSD_DTOR_LO 0x4253f8UL
 #define CSD_DTOR_HI 0x4254e0UL
 #define CSD_DTOR_EPILOGUE 0x4254d8UL
+/* Faixas DERIVADAS de símbolo (offsets relativos a text_base) — auto-adaptam entre
+ * versões/arquiteturas (v2 armv7 vs v3 arm64). Setadas em load_module a partir dos
+ * símbolos ep2::CStartDemo::~ (dtor) e amTexMgrDecRef. 0 = não-derivado (usa #defines
+ * do armv7 no fallback). Ver sonic_demoguard_derive_ranges(). */
+static unsigned long g_csd_lo = 0, g_csd_hi = 0;          /* dtor ~CStartDemo ep2 */
+static unsigned long g_texdec_lo = 0, g_texdec_hi = 0;    /* amTexMgrDecRef (leaf) */
 
 static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
   if (g_demo_guard_active && (sig == SIGSEGV || sig == SIGBUS)) {
@@ -76,38 +82,47 @@ static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
     g_demo_guard_recovered++;
     siglongjmp(g_demo_guard_env, 1);          /* recupera: pula de volta pro sigsetjmp */
   }
-#if defined(__arm__)
-  /* 🛡️ DEMOGUARD GERAL: SIGSEGV/SIGBUS DENTRO do ~CStartDemo, por QUALQUER caminho (Act Clear->
-     mapa, ReleaseInstance, delete direto...) = o use-after-free do demo. Recupera redirecionando
-     o PC pro epílogo (pop {r4,r5,r6,pc}): o frame é estável (só push {r4,r5,r6,lr} no início, sem
-     outro mexer no SP), então o pop retorna limpo pro chamador, pulando o resto do destrutor
-     (vaza o objeto corrompido, mas NÃO fecha o jogo). Cobre o crash que o hook do ReleaseInstance
-     não pegava (tester: crash após Act Clear nas fases pesadas, libfox+0x4254b8). */
+  /* 🛡️ DEMOGUARD GERAL: SIGSEGV/SIGBUS DENTRO do ~CStartDemo (Act Clear->mapa, delete direto...)
+     OU do amTexMgrDecRef (teardown de fase pesada) = use-after-free. Recupera retornando via LR
+     (pula o resto da função corrompida; vaza o objeto, mas NÃO fecha o jogo). Cobre o que o hook
+     do ReleaseInstance/sigsetjmp não pega. Faixas: armv7 usa os #defines (v2); arm64 usa as faixas
+     DERIVADAS de simbolo (g_csd e g_texdec, setadas em load_module) - auto-adapta ao v3. */
   if (g_demoguard_on && (sig == SIGSEGV || sig == SIGBUS) && uc && text_base) {
     ucontext_t *u = (ucontext_t *)uc;
-    unsigned long off = u->uc_mcontext.arm_pc - (uintptr_t)text_base;
-    unsigned long newpc = 0;
-    if (off >= CSD_DTOR_LO && off < CSD_DTOR_HI) {
-      /* ~CStartDemo: push {r4,r5,r6,lr} @+0x425400. Antes do push -> retorna via LR (chamador);
-         depois -> epílogo (pop {r4,r5,r6,pc}). Nos dois casos r4/r5/r6 do chamador ficam corretos. */
-      newpc = (off < 0x425404UL) ? u->uc_mcontext.arm_lr
-                                 : (uintptr_t)text_base + CSD_DTOR_EPILOGUE;
-    } else if (off >= 0x205f20UL && off < 0x205f64UL) {
-      /* amTexMgrDecRef (LEAF, sem push, termina em bx lr): handle de textura corrompido no teardown
-         de fase pesada (cassino/Sky Fortress) -> indexa base+handle*24 fora da tabela -> SIGSEGV.
-         Função leaf -> recupera retornando via LR (pula o DecRef desse handle; a textura vaza, mas
-         NÃO fecha o jogo). Callee-saved (r4-r6) intactos (só usa r0/r2/r3). */
-      newpc = u->uc_mcontext.arm_lr;
-    }
+    unsigned long newpc = 0, off = 0, lr = 0;
+#if defined(__arm__)
+    off = u->uc_mcontext.arm_pc - (uintptr_t)text_base;
+    lr  = u->uc_mcontext.arm_lr;
+    unsigned long csd_lo = g_csd_lo ? g_csd_lo : CSD_DTOR_LO;
+    unsigned long csd_hi = g_csd_hi ? g_csd_hi : CSD_DTOR_HI;
+    unsigned long tex_lo = g_texdec_lo ? g_texdec_lo : 0x205f20UL;
+    unsigned long tex_hi = g_texdec_hi ? g_texdec_hi : 0x205f64UL;
+    if (off >= csd_lo && off < csd_hi)
+      newpc = (!g_csd_lo && off < 0x425404UL) ? lr
+                                              : (uintptr_t)text_base + CSD_DTOR_EPILOGUE;
+    else if (off >= tex_lo && off < tex_hi) newpc = lr;
+#elif defined(__aarch64__)
+    off = u->uc_mcontext.pc - (uintptr_t)text_base;
+    lr  = u->uc_mcontext.regs[30];
+    /* arm64: recupera retornando via LR (x30). Confiável no amTexMgrDecRef (leaf). No dtor é
+       best-effort (o sigsetjmp guard do ReleaseInstance é a camada primária). Só faixas derivadas. */
+    if ((g_texdec_lo && off >= g_texdec_lo && off < g_texdec_hi) ||
+        (g_csd_lo && off >= g_csd_lo && off < g_csd_hi))
+      newpc = lr;
+#endif
     if (newpc) {
+#if defined(__arm__)
       u->uc_mcontext.arm_pc = newpc;
+#elif defined(__aarch64__)
+      u->uc_mcontext.pc = newpc;
+#endif
       g_demo_guard_recovered++;
       fprintf(stderr, "[DEMOGUARD] SIGSEGV em libfox+0x%lx (in_draw=%d) -> RECUPERADO #%lu\n",
               off, sonic_in_draw_frame, g_demo_guard_recovered);
-      return;                                 /* kernel resume no epílogo/caller -> jogo segue */
+      return;                                 /* kernel resume no caller -> jogo segue */
     }
+    (void)off; (void)lr;
   }
-#endif
   void *bt[48];
   int n = backtrace(bt, 48);
   /* PC/LR exatos do ucontext (armhf) — a instrução do crash mesmo sem unwind da libfox. */
@@ -910,6 +925,25 @@ int main(int argc, char *argv[]) {
     patch_arm_jump("_ZN2gm10start_demo3ep210CStartDemo15ReleaseInstanceEv",
                    (void *)my_ep2_CStartDemo_ReleaseInstance);
     fprintf(stderr, "=== DEMOGUARD: ~CStartDemo protegido (hook ReleaseInstance + recuperacao geral por PC) ===\n");
+#ifdef __aarch64__
+    /* arm64/v3: as faixas de PC da recuperacao geral NAO sao os #defines v2 -> derivar
+       dos simbolos (auto-adapta). dtor ep2 = span dos D0/D1/D2; amTexMgrDecRef = leaf. */
+    {
+      uintptr_t tb = (uintptr_t)text_base, lo = 0, hi = 0;
+      const char *dts[] = { "_ZN2gm10start_demo3ep210CStartDemoD1Ev",
+                            "_ZN2gm10start_demo3ep210CStartDemoD0Ev",
+                            "_ZN2gm10start_demo3ep210CStartDemoD2Ev" };
+      for (unsigned i = 0; i < 3; i++) {
+        uintptr_t a = so_find_addr_safe(dts[i]) & ~(uintptr_t)1;
+        if (a) { uintptr_t o = a - tb; if (!lo || o < lo) lo = o; if (o > hi) hi = o; }
+      }
+      if (lo) { g_csd_lo = lo; g_csd_hi = hi + 0x260; } /* +0x260 cobre o D2 (o maior) */
+      uintptr_t td = so_find_addr_safe("amTexMgrDecRef") & ~(uintptr_t)1;
+      if (td) { g_texdec_lo = td - tb; g_texdec_hi = g_texdec_lo + 0x80; }
+      fprintf(stderr, "=== DEMOGUARD arm64: csd=[0x%lx,0x%lx) texdec=[0x%lx,0x%lx) ===\n",
+              g_csd_lo, g_csd_hi, g_texdec_lo, g_texdec_hi);
+    }
+#endif
   }
   /* 🧪 SONIC_SIMDEMOCRASH: SIMULA o crash do tester chamando o ~CStartDemo DIRETO com um objeto
      garbage (o caminho REAL do tester NÃO passa pelo ReleaseInstance — ex.: teardown do Act Clear).

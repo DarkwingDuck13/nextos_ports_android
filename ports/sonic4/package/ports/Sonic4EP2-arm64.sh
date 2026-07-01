@@ -33,7 +33,11 @@ export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/arm64-v8a:/usr/lib:/lib:$LD_LIBRAR
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SONIC_DATADIR="$GAMEDIR"
 export SONIC_LPK=data/data.obb
-export SONIC_NO_CRASHLOG=1
+# Electric Road/Casino render fix (hook de GL, funciona no v3). Desliga: SONIC_NO_CLEARALL.
+[ -z "$SONIC_NO_CLEARALL" ] && export SONIC_CLEARALL=1
+# Testing aids (não entram na release): unlock_all / simcrash / no_demoguard
+[ -f "$GAMEDIR/unlock_all" ] && export SONIC_UNLOCK_ALL=1
+[ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
 
 $ESUDO chmod +x "$GAMEDIR/sonic4.arm64" 2>/dev/null || chmod +x "$GAMEDIR/sonic4.arm64"
 $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
