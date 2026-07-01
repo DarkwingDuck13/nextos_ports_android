@@ -5247,14 +5247,16 @@ static void ff9_extmovie_play(void *self) {
     waitpid(g_extmovie_pid, NULL, 0);
     g_extmovie_pid = 0;
   }
-  char cmd[1400];
+  char cmd[1800];
   snprintf(cmd, sizeof cmd,
+           "AP=; if ffmpeg -hide_banner -i '%s' 2>&1 | grep -q 'Audio:'; then "
            "( ffmpeg -hide_banner -loglevel error -i '%s' -vn -f s16le -ar 48000 -ac 2 - 2>/dev/null "
            "| pacat --rate=48000 --channels=2 --format=s16le ) & AP=$!; "
+           "fi; "
            "ffmpeg -hide_banner -loglevel error -re -an -i '%s' "
            "-vf 'scale=1280:720,format=bgra' -pix_fmt bgra -f fbdev /dev/fb0 2>/dev/null; "
-           "kill $AP 2>/dev/null; wait $AP 2>/dev/null",
-           g_extmovie_path, g_extmovie_path);
+           "VS=$?; if [ -n \"$AP\" ]; then kill $AP 2>/dev/null; wait $AP 2>/dev/null; fi; exit $VS",
+           g_extmovie_path, g_extmovie_path, g_extmovie_path);
   pid_t pid = fork();
   if (pid < 0) {
     fprintf(stderr, "[EXTMOVIE] fork falhou path=%s\n", g_extmovie_path);

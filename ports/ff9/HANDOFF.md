@@ -7,6 +7,24 @@
 
 ---
 
+## s17 2026-07-01 — ✅ regressão do no-skip isolada e corrigida no player externo
+
+> Device .90. Validado em `run_noskip_audiofix2.log` com `FF9_NOSKIPMOVIE=1`.
+
+### ✅ Fix validado
+- Regressão confirmada: o baseline default (`./run.sh`, `SKIPMOVIE default ON`) continuava com menu e som OK; o problema aparecia no caminho de vídeo real (`FF9_NOSKIPMOVIE=1`).
+- Causa prática no player externo: ele sempre abria `ffmpeg -vn | pacat` mesmo para MP4 sem stream de áudio. `FMV000.mp4` e `FMV001.mp4` são vídeo-only; isso criava pipeline de áudio inútil e interferia na rota HDMI/Pulse/sdlib percebida no menu.
+- Patch: `ff9_extmovie_play` agora detecta `Audio:` antes de iniciar `pacat`. Para MP4 silencioso, toca só o vídeo no fbdev e preserva o sink de áudio do jogo.
+- Validação final:
+  - `FMV000.mp4` tocou real e terminou `status=0x0`;
+  - `pacat` não ficou ativo para o MP4 silencioso;
+  - sink-input Pulse do jogo seguiu ativo (`s16le 2ch 44100Hz`);
+  - menu voltou após a FMV com opções visíveis na captura `/tmp/ff9_noskip_audiofix2_menu_top.png`.
+
+### Próximo foco
+- Revalidar visual/áudio no HDMI do usuário enquanto o run `run_noskip_audiofix2.log` está parado no menu.
+- Se confirmado, seguir o fluxo no-skip: `down + A` -> `FMV001` -> campo, mantendo o mesmo fix de áudio opcional.
+
 ## s16 2026-07-01 — ✅ menu restaurado + achado real sobre áudio dos FMVs iniciais
 
 > Device .90. Run atual deixado parado no menu inicial: `run_menu_restore.log`.
