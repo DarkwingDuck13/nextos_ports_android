@@ -765,6 +765,23 @@ static const unsigned char *w_glGetString(unsigned name) {
     if (e && *e)
       return (const unsigned char *)e;
   }
+  /* GL_VERSION (0x1F02) / GL_SHADING_LANGUAGE_VERSION (0x8B8C): FORCA o caminho ES2.
+   * libGame.so tem RendererES2 E RendererES3 e escolhe pela versao GL reportada.
+   * Em Mali-G31 o contexto (mesmo pedido como ES2) reporta "OpenGL ES 3.2" -> o motor
+   * instancia RendererES3 (glTexStorage2D imutavel + shaders ES3), caminho que o bully2
+   * nao emula -> render preto. Reportando "OpenGL ES 2.0" o motor usa RendererES2
+   * (glTexImage2D + GLSL 1.00), que roda no proprio contexto ES3.2 (backward-compat).
+   * Desliga com BULLY2_REAL_GL_VERSION=1. */
+  if (getenv("BULLY2_REAL_GL_VERSION") == NULL) {
+    if (name == 0x1F02) {
+      const char *e = getenv("BULLY2_GL_VERSION");
+      return (const unsigned char *)((e && *e) ? e : "OpenGL ES 2.0");
+    }
+    if (name == 0x8B8C) {
+      const char *e = getenv("BULLY2_GLSL_VERSION");
+      return (const unsigned char *)((e && *e) ? e : "OpenGL ES GLSL ES 1.00");
+    }
+  }
   const unsigned char *r = real ? real(name) : NULL;
   return r ? r : (const unsigned char *)"";
 }
@@ -1131,6 +1148,27 @@ static void my_glDrawBuffers(int n, const unsigned *b) {
     r_glDrawBuffers(n, b);
 }
 
+/* KMSDRM: o eglSwapBuffers CRU nao faz page-flip (so SDL_GL_SwapWindow faz o
+ * drmModePageFlip). O jogo (RenderThread) presenta chamando eglSwapBuffers DIRETO
+ * nos objetos EGL que ele seeda (OS_EGL globals) -> essa chamada resolve p/ nosso
+ * import. Em KMSDRM roteamos p/ bully_swap_buffers() (SDL_GL_SwapWindow); em
+ * mali/fbdev mantemos o raw (Amlogic-old intacto) + screenshot sob demanda.
+ * SEM este hook o present do jogo nunca chega no scanout -> tela preta (com audio). */
+extern void bully_swap_buffers(void);
+extern int bully_is_kmsdrm(void);
+extern void bully_maybe_screenshot(void);
+static unsigned (*real_eglSwapBuffers)(void *, void *) = NULL;
+static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  if (bully_is_kmsdrm()) {
+    bully_swap_buffers();
+    return 1;
+  }
+  bully_maybe_screenshot();
+  if (!real_eglSwapBuffers)
+    real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+  return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
+}
+
 static void *(*real_eglGetProcAddress)(const char *) = NULL;
 static void *my_eglGetProcAddress(const char *name) {
   if (!real_eglGetProcAddress)
@@ -1261,6 +1299,7 @@ DynLibFunction bully_stub_table[] = {
     {"AAsset_getRemainingLength64", (uintptr_t)aa_getRemainingLength64},
     {"AAsset_close", (uintptr_t)aa_close},
     {"eglGetProcAddress", (uintptr_t)my_eglGetProcAddress},
+    {"eglSwapBuffers", (uintptr_t)my_eglSwapBuffers},
     {"glGetString", (uintptr_t)w_glGetString},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexParameteri", (uintptr_t)my_glTexParameteri},
