@@ -613,7 +613,6 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
  * (log) em vez de crashar. FILE* alinhado (fopen real nosso) segue normal. */
 static int fp_bad(void *s) { return !s || ((uintptr_t)s & 3) != 0; }
 static size_t my_fwrite(const void *p, size_t sz, size_t n, FILE *s) {
-  { static int fw=0; if (fw++ < 8) fprintf(stderr, "[MYFWRITE] s=%p bad=%d\n", (void*)s, fp_bad(s)); }
   if (fp_bad(s)) { if (p && sz && n) fwrite(p, sz, n, stderr); return n; }
   return fwrite(p, sz, n, s);
 }
