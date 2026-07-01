@@ -27,6 +27,21 @@ matar a firula multiarch de áudio. Autorizado 2026-07-01.
     do sysroot do próprio cross-gcc (uintptr_t=64-bit). SEM `softfp_shim` (arm64 não tem
     split softfp/hardfp — floats em regs FP nativamente).
 
+- ✅ **MARCO 2 — loader PROVADO na lib arm64 real** (smoke-test `qemu-aarch64 -L /tmp/tuiroot`
+  com os libs aarch64 reais do TrimUI: SDL2 2.30/EGL/GLES/libmali). O `sonic4.arm64` roda,
+  aloca o heap de 256MB e o `so_util_arm64` faz **tudo**: `so_load` (ELF64, 8 PT, PT_LOAD R-X
+  @0x0 + RW- @0xae3de0), **29153 símbolos**, **0 relocs ignoradas** (todas R_AARCH64 tratadas,
+  sem TLS pendente), e **os 46 construtores do `.init_array` RODARAM (concluído 46)** sem crash.
+  - **Muro atual:** crash **durante os 46 construtores** — o `fprintf` de `main.c:695` (logo
+    após `so_execute_init_array()`) NÃO chega a imprimir, e o backtrace tem endereços FORA da
+    lib (offset ~0x1d6xxxxx num heap de 256MB). Ou seja: um construtor C++ estático spawna uma
+    **thread** que crasha assíncrona (a main imprime "concluído (46)" e a thread morre). O
+    registro PC=0/regs=0 é artefato do qemu-user (não popula o ucontext do guest). Isso é
+    **limitação do qemu-user** com threading do jogo, NÃO bug provado do loader. → **Precisa do
+    device arm64 REAL** (gdb) pra passar disso; qemu não reproduz fielmente threads/JNI/
+    self-modifying-code. Runtime de teste: `/tmp/sonic_arm64_rt` (sonic4 + lib/arm64-v8a/libfox.so).
+    Comando: `qemu-aarch64 -L /tmp/tuiroot -E LD_LIBRARY_PATH=... -E SONIC_DEBUG=1 ./sonic4`.
+
 ## Análise da lib arm64 v3 (o que muda vs armv7 v2)
 
 - **Imports (374 total, 77 não-libc):** 65 GLES `gl*`, 12 Android-NDK (`AAsset*`,
