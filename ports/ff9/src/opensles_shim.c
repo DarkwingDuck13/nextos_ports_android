@@ -989,7 +989,11 @@ static SLresult engine_CreateOutputMix(void *self, void **pMix,
   (void)self; (void)numInterfaces; (void)pInterfaceIds; (void)pInterfaceRequired;
   fprintf(stderr, "[SL] CreateOutputMix\n");
   init_outmix();
-  if (pMix) *pMix = &g_outmix_ptr;
+  if (pMix) {
+    *pMix = &g_outmix_ptr;
+    fprintf(stderr, "[SL] CreateOutputMix -> obj=%p itf=%p vt0=%p\n",
+            *pMix, g_outmix_ptr, g_outmix_vtable[0]);
+  }
   return SL_RESULT_SUCCESS;
 }
 
@@ -1056,6 +1060,7 @@ static SLresult engine_obj_Realize(void *self, SLBoolean async) { (void)self; (v
 static SLresult engine_obj_GetInterface(void *self, SLInterfaceID iid, void **pInterface) {
   (void)self;
   if (iid == sl_IID_ENGINE) {
+    { static int n; if (n++ < 4) fprintf(stderr, "[SL] engine GetInterface(ENGINE) -> %p\n", (void *)&g_engine_itf_ptr); }
     if (pInterface) *pInterface = &g_engine_itf_ptr;
   } else {
     static void *stub_vtable[8];
@@ -1066,6 +1071,8 @@ static SLresult engine_obj_GetInterface(void *self, SLInterfaceID iid, void **pI
       stub_ptr = stub_vtable;
       inited = 1;
     }
+    { static int n; if (n++ < 8) fprintf(stderr, "[SL] engine GetInterface(iid=%p desconhecido; ENGINE=%p) -> stub\n",
+                                         (void *)iid, (void *)sl_IID_ENGINE); }
     if (pInterface) *pInterface = &stub_ptr;
   }
   return SL_RESULT_SUCCESS;

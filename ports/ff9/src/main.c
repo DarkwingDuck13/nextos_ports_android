@@ -5426,6 +5426,19 @@ ff9_touch my_Input_GetTouch(int index, void *mi) {
 }
 
 static char g_dl_sl; /* sentinela do handle de libOpenSLES (FMOD → opensles_shim) */
+static void install_opensl_imports(void) {
+  set_import("slCreateEngine", (void *)slCreateEngine_shim);
+  set_import("SL_IID_ENGINE", (void *)&sl_IID_ENGINE);
+  set_import("SL_IID_PLAY", (void *)&sl_IID_PLAY);
+  set_import("SL_IID_VOLUME", (void *)&sl_IID_VOLUME);
+  set_import("SL_IID_BUFFERQUEUE", (void *)&sl_IID_BUFFERQUEUE);
+  set_import("SL_IID_ANDROIDSIMPLEBUFFERQUEUE", (void *)&sl_IID_BUFFERQUEUE);
+  set_import("SL_IID_EFFECTSEND", (void *)&sl_IID_EFFECTSEND);
+  set_import("SL_IID_ANDROIDEFFECTSEND", (void *)&sl_IID_EFFECTSEND);
+  set_import("SL_IID_ANDROIDCONFIGURATION", (void *)&sl_IID_ANDROIDCONFIGURATION);
+  set_import("SL_IID_ENGINECAPABILITIES", (void *)&sl_IID_ENGINECAPABILITIES);
+  set_import("SL_IID_ENVIRONMENTALREVERB", (void *)&sl_IID_ENVIRONMENTALREVERB);
+}
 static void *my_dlopen(const char *nm, int flag) {
   if (g_dllog) fprintf(stderr, "[dlopen] \"%s\"\n", nm ? nm : "(null)");
   /* il2cpp: nosso modulo ja' carregado (F1). Casa "il2cpp" em qualquer forma. */
@@ -5520,6 +5533,12 @@ static void *my_dlsym(void *h, const char *nm) {
     fprintf(stderr, "[DLSYM:sd-stub] %s\n", nm);
     return (void *)sd_stub;
   }
+  if (h == &g_dl_sdlib && getenv("FF9_REALAUDIO")) {
+    extern void sd_set_java_vm_stub(void *);
+    extern void sd_set_asset_manager_from_java_stub(void *);
+    if (!strcmp(nm, "SdSoundSystem_SetJavaVM")) return (void *)sd_set_java_vm_stub;
+    if (!strcmp(nm, "SdSoundSystem_SetAssetManagerFromJava")) return (void *)sd_set_asset_manager_from_java_stub;
+  }
   /* P/Invoke das libs nativas FF9: resolve no módulo correspondente */
   { so_module *aux = NULL;
     if (h == &g_dl_sdlib)  aux = g_m_sdlib;
@@ -5550,6 +5569,14 @@ static int my_dlclose(void *h) { (void)h; return 0; }
  * p/ carregar a cena (imagem) sem crash. Som fica mudo (resolver depois). */
 long sd_stub();
 long sd_stub() { return 1; }
+void sd_set_java_vm_stub(void *vm);
+void sd_set_java_vm_stub(void *vm) {
+  static int n; if (n++ < 4) fprintf(stderr, "[DLSYM:sd-real] SdSoundSystem_SetJavaVM(%p) -> noop\n", vm);
+}
+void sd_set_asset_manager_from_java_stub(void *asset_mgr);
+void sd_set_asset_manager_from_java_stub(void *asset_mgr) {
+  static int n; if (n++ < 4) fprintf(stderr, "[DLSYM:sd-real] SdSoundSystem_SetAssetManagerFromJava(%p) -> noop\n", asset_mgr);
+}
 
 /* Carrega uma lib nativa P/Invoke do FF9 (sdlib_android/SpecialEffect/burst) no nosso
  * so-loader: so_load + relocate + resolve (imports libc via dynlib_functions) + GOT
@@ -5565,6 +5592,7 @@ static so_module *load_ff9_aux_lib(const char *fname, size_t heap_mb) {
   if (heap == MAP_FAILED) { fprintf(stderr, "[AUX] %s: mmap falhou\n", fname); so_use(prev); free(prev); return NULL; }
   if (so_load(fname, heap, hs) < 0) { fprintf(stderr, "[AUX] %s: so_load FALHOU\n", fname); so_use(prev); free(prev); return NULL; }
   so_relocate();
+  install_opensl_imports();
   so_resolve(dynlib_functions, dynlib_numfunctions, 0);
   ctype_resolve();
   so_register_eh_frame();
@@ -6392,6 +6420,7 @@ int main(int argc, char **argv) {
 
   fprintf(stderr, "[F0] resolvendo %zu imports...\n", dynlib_numfunctions);
   { extern void recon_fill_passthrough(void); recon_fill_passthrough(); }  /* preenche passthrough via dlsym (tabela gerada) */
+  install_opensl_imports();
   if (so_resolve(dynlib_functions, dynlib_numfunctions, 0) < 0) { fprintf(stderr, "resolve FALHOU\n"); return 1; }
   ctype_init(); ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ (bionic) p/ libunity */
   so_record_phdr("libunity.so");   /* p/ o dl_iterate_phdr custom (unwind de exceções C++) */
@@ -6772,6 +6801,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[F1] libil2cpp: text=%p+%zu\n", text_base, text_size);
     so_relocate();
     { extern void recon_fill_passthrough(void); recon_fill_passthrough(); }
+    install_opensl_imports();
     so_resolve(dynlib_functions, dynlib_numfunctions, 0);
     ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ p/ libil2cpp tb */
     so_record_phdr("libil2cpp.so");   /* p/ o dl_iterate_phdr custom (unwind) */
