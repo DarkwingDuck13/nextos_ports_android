@@ -4726,6 +4726,45 @@ static void ff9_skipmovie_install(uintptr_t base) {
   fprintf(stderr, "[SKIPMOVIE] MovieMaterial+MBG video-finished hooks instalados\n");
   fsync(2);
 }
+
+int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method);
+int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method) {
+  (void)method;
+  static int n = 0;
+  if (n++ < 12) {
+    fprintf(stderr, "[FF9_SOUNDGUARD] dispatch noop parm=%d obj=%d args=%d,%d,%d\n",
+            parmType, objNo, arg1, arg2, arg3);
+    fsync(2);
+  }
+  return 0;
+}
+
+int my_FieldMap_EBG_animationInit(void *self, void *method);
+int my_FieldMap_EBG_animationInit(void *self, void *method) {
+  (void)method;
+  static int n = 0;
+  if (n++ < 8) {
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_animationInit noop self=%p\n", self);
+    fsync(2);
+  }
+  return 0;
+}
+
+int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attachX,
+                                      int attachY, int surroundMode, int r, int g,
+                                      int b, void *method);
+int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attachX,
+                                      int attachY, int surroundMode, int r, int g,
+                                      int b, void *method) {
+  (void)method;
+  static int n = 0;
+  if (n++ < 8) {
+    fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay noop self=%p overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
+            self, overlayNdx, attachX, attachY, surroundMode, r, g, b);
+    fsync(2);
+  }
+  return 0;
+}
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *));
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *)) {
   static int n = 0;
@@ -7190,6 +7229,28 @@ int main(int argc, char **argv) {
       if (mv_hooked) {
         extern void ff9_skipmovie_pump_finish(void);
         ff9_skipmovie_pump_finish();
+      }
+      /* FF9_SOUNDGUARD (default ON): enquanto sdlib/OpenSL ainda estao stubados, alguns eventos
+         de campo pedem sound profiles ausentes (ex.: key 136) e abortam o script. No-op temporario
+         do dispatch gerenciado para priorizar gameplay visual. FF9_REALSOUND desliga. */
+      static int sndg_hooked = 0;
+      if (!sndg_hooked && !getenv("FF9_REALSOUND") && g_il2cpp_base && f >= 180) {
+        extern int my_FF9Snd_Dispatch_Noop(int, int, int, int, int, void *);
+        hook_arm64(g_il2cpp_base + 0x13a2fec, (uintptr_t)my_FF9Snd_Dispatch_Noop);
+        hook_arm64(g_il2cpp_base + 0x13a9330, (uintptr_t)my_FF9Snd_Dispatch_Noop);
+        sndg_hooked = 1;
+        fprintf(stderr, "[FF9_SOUNDGUARD] FF9Snd dispatch -> noop @f=%d\n", f); fsync(2);
+      }
+      /* FF9_FIELDGUARD (default ON): campos podem pedir EBG animation/overlay que ainda nao
+         carregou por completo no so-loader; no-op evita abortar EventEngine durante New Game. */
+      static int fldg_hooked = 0;
+      if (!fldg_hooked && !getenv("FF9_NOFIELDGUARD") && g_il2cpp_base && f >= 180) {
+        extern int my_FieldMap_EBG_animationInit(void *, void *);
+        extern int my_FieldMap_EBG_charAttachOverlay(void *, uint32_t, int, int, int, int, int, int, void *);
+        hook_arm64(g_il2cpp_base + 0x113ded0, (uintptr_t)my_FieldMap_EBG_animationInit);
+        hook_arm64(g_il2cpp_base + 0x113e658, (uintptr_t)my_FieldMap_EBG_charAttachOverlay);
+        fldg_hooked = 1;
+        fprintf(stderr, "[FF9_FIELDGUARD] EBG animation/overlay -> noop @f=%d\n", f); fsync(2);
       }
       /* FF9_TITLETIMERFIX (default ON): em fluxos forçados o TitleUI.Timer pode existir com
          timeoutAction NULL; Timer.Update lança NRE todo frame e estoura a stack do il2cpp. */
