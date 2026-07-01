@@ -4903,6 +4903,12 @@ float my_Input_GetAxis(void *nm, void *mi)             { (void)nm; (void)mi; ret
 volatile void *g_titleui_this = NULL;
 static uint32_t g_titleui_orig[4];
 static int g_newgame_done = 0;
+static void ff9_go_set_active(void *go, int active, const char *tag) {
+  if (!go || ((uintptr_t)go >> 40) != 0 || !g_il2cpp_base) return;
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x25613B0))(go, active, NULL);
+  fprintf(stderr, "[FF9_UI] %s=%p SetActive(%d)\n", tag, go, active);
+  fsync(2);
+}
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
   /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
@@ -7251,6 +7257,15 @@ int main(int argc, char **argv) {
             void (*shm)(void *) = (void (*)(void *))(g_il2cpp_base + 0x134346C);
             fprintf(stderr, "[FF9_SHOWMENU] ShowMenuPanel(this=%p) @f=%d\n", (void *)g_titleui_this, f); fsync(2);
             shm((void *)g_titleui_this);
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x190), 0, "ScreenFadeGameObject");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x240), 0, "SlideShowFadingObject");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0xA8), 0, "SlideShowObject");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0xB0), 0, "SlideShowHitArea");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x48), 1, "MenuPanelObject");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x50), 1, "MenuGroupPanel");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x1C0), 1, "startGameObject");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x1A8), 1, "newGameButton");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x1B0), 1, "loadGameButton");
           }
         }
         /* 🔑 FF9_NOTIFYCLICK: dispensa o SlashScreen slideshow pela ROTA NGUI CORRETA. A UICamera
