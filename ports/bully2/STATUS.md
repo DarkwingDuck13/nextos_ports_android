@@ -309,3 +309,31 @@ Shadows:
 - O progressor da primeira execucao cobre a extracao e tambem a geracao de
   `assets/bully2_patch.zip`; a tela so mostra `EXTRACTION COMPLETE` depois que
   o patch de menu foi criado.
+
+## Sessao 2026-07-01 — estudo RAM/streaming + patches low-memory (R36S)
+
+Estudo completo em `STUDY-RAM-STREAMING.md`. Commits `5cb142f` + `7982b9e`.
+
+Aplicado e validado no R36S-clone (639MB, ArkOS, 192.168.31.126):
+
+- `isPhone` (.bss 0x125da04) estava **0** — engine lia campo Java
+  `DeviceInfo.isPhone` via GetFieldID/GetBooleanField e nossos slots eram ret0
+  → efeitos classe desktop ligados. Agora forcado 1 (frames 30/300/900,
+  `BULLY2_FORCE_PHONE=0` desliga). Log: `[devtype] isPhone 0->1`.
+- Pin de threads (>=4 cores, `BULLY2_THREAD_PIN=0` desliga): GameMain→core1,
+  RenderThread→core2, CDStreamThread→core3. Log: `[thr] pin ...`.
+- Slots JNI estaticos (GetStaticMethodID/CallStatic*) e log de GetMethodID.
+- `GetDeviceType` agora RAM-aware (auto /proc/meminfo; `BULLY2_DEVICE_RAM_MB`
+  override) — esse build arm64 nao consulta via JNI (lista completa no estudo),
+  fica como defesa.
+- `BULLY2_FPS_LIMIT=15..120` opcional (pacing no present, default off).
+
+Fatos novos do disasm: `GetTotalGraphicsMemoryOfSystem`=512MB hardcoded (engine
+nunca despeja sozinho → EVICT sintetico + half-res GL confirmados como o caminho
+certo); `g_StreamingHeapSize` vestigial; gate `IsThereEnoughFreeMemory`=10MB fixo.
+
+Validacao: boot ok, gameplay real confirmado por screenshot (briga no campo,
+minimapa, NPCs), controle nativo SDL ok, usuario aprovou ("rodando bem").
+Baseline pre-patch: RSS ~215MB + swap sistema ~465MB (com ES) / RSS 464MB (sem
+ES). Perfil pos-patch coletado em scratchpad (comparacao na proxima sessao se
+o teste do usuario continuar).
