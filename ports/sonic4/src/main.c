@@ -449,7 +449,7 @@ static void **g_cstartdemo_s_instance = 0;
 static void my_ep2_CStartDemo_ReleaseInstance(void) {
   if (!g_cstartdemo_s_instance)
     g_cstartdemo_s_instance =
-        (void **)so_find_addr_safe("_ZN2gm10start_demo10CStartDemo10s_instanceE");
+        (void **)so_find_addr_safe("_ZN2gm10start_demo3ep210CStartDemo10s_instanceE");
   void **pinst = g_cstartdemo_s_instance;
   if (!pinst) return;
   void *inst = *pinst;
@@ -873,7 +873,7 @@ int main(int argc, char *argv[]) {
     /* 🧪 SONIC_SIMDEMOCRASH: simula o crash — força s_instance = ponteiro garbage e chama o
        ReleaseInstance. SEM guarda -> crash em ~CStartDemo; COM guarda -> recupera e segue. */
     if (getenv("SONIC_SIMDEMOCRASH")) {
-      void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo10CStartDemo10s_instanceE");
+      void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo3ep210CStartDemo10s_instanceE");
       fprintf(stderr, "=== SIMDEMOCRASH: s_instance@%p, forcando garbage e chamando ReleaseInstance ===\n",
               (void *)pinst);
       if (pinst) {
