@@ -412,17 +412,21 @@ static int GetDeviceType(void) {
 }
 
 /* Flag global isPhone do libGame (.bss, VA 0x125da04 no build arm64
- * v1.4.311 — mesmo build do bully-NX, que força 1 no Switch). Com phone=1 o
- * engine evita efeitos classe desktop. AND_SystemInitialize grava a flag na
- * init; checamos em alguns frames e forçamos 1 se divergir. So escreve se o
- * valor lido for 0 ou 1 (sanidade do offset). */
+ * v1.4.311). Investigado por disasm: o UNICO leitor e OS_SystemForm ->
+ * SystemServicesES::GetScreenType, ou seja controla so o LAYOUT de UI
+ * (phone = menu de pause agrupa Status/Inventory/Stats/Upgrades/Photos num
+ * hub "Info"; tablet = itens diretos no menu). NAO controla efeitos nesse
+ * build (a justificativa do bully-NX nao se aplica). Default = tablet (0,
+ * como o engine ja inicializa via nossos field-stubs); BULLY2_FORCE_PHONE=1
+ * opta pelo layout phone. So escreve se o valor lido for 0 ou 1 (sanidade
+ * do offset). */
 static void maybe_force_phone_flag(int frame) {
   static int done;
   if (done || !text_base)
     return;
   if (frame != 30 && frame != 300 && frame != 900)
     return;
-  if (!env_default_enabled("BULLY2_FORCE_PHONE")) {
+  if (!env_enabled("BULLY2_FORCE_PHONE")) {
     done = 1;
     return;
   }
