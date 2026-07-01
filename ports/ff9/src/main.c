@@ -4559,6 +4559,7 @@ static void *g_skipmovie_pending_action;
 static int g_skipmovie_pending_frame;
 static int g_skipmovie_calling;
 static volatile uint32_t g_skipmovie_loads, g_skipmovie_plays, g_skipmovie_finishes;
+static volatile uint32_t g_skipmovie_done_queries;
 
 static void ff9_skipmovie_log_key(const char *tag, void *self, void *movie_key) {
   char key[160] = {0};
@@ -4619,6 +4620,48 @@ float my_MovieMaterial_get_Duration(void *self, void *method) {
   return 0.05f;
 }
 
+float my_MovieMaterial_get_PlayPosition(void *self, void *method);
+float my_MovieMaterial_get_PlayPosition(void *self, void *method) {
+  (void)self; (void)method;
+  return 0.05f;
+}
+
+int my_MovieMaterial_get_Frame(void *self, void *method);
+int my_MovieMaterial_get_Frame(void *self, void *method) {
+  (void)self; (void)method;
+  return 1;
+}
+
+int my_MovieMaterial_get_TotalFrame(void *self, void *method);
+int my_MovieMaterial_get_TotalFrame(void *self, void *method) {
+  (void)self; (void)method;
+  return 1;
+}
+
+int my_MBG_IsFinished(void *self, void *method);
+int my_MBG_IsFinished(void *self, void *method) {
+  (void)method;
+  g_skipmovie_done_queries++;
+  if (g_skipmovie_done_queries <= 20) {
+    fprintf(stderr, "[SKIPMOVIE] MBG.IsFinished -> true #%u self=%p f=%d\n",
+            g_skipmovie_done_queries, self, g_render_frame);
+    fsync(2);
+  }
+  return 1;
+}
+
+int my_MBG_GetFrame(void *self, void *method);
+int my_MBG_GetFrame(void *self, void *method) {
+  (void)self; (void)method;
+  return 1;
+}
+
+int my_MBG_GetFrameCount(void *self, void *method);
+int my_MBG_GetFrameCount(void *self, void *method) {
+  (void)self; (void)method;
+  return 1;
+}
+
 static void ff9_skipmovie_pump_finish(void) {
   if (!g_skipmovie_pending_action || !g_il2cpp_base || g_skipmovie_calling ||
       g_render_frame < g_skipmovie_pending_frame) return;
@@ -4638,8 +4681,15 @@ static void ff9_skipmovie_install(uintptr_t base) {
   hook_arm64(base + 0x149C594, (uintptr_t)my_MovieMaterial_Load);
   hook_arm64(base + 0x149C748, (uintptr_t)my_MovieMaterial_Play);
   hook_arm64(base + 0x149C50C, (uintptr_t)my_MovieMaterial_IsPrepared);
+  hook_arm64(base + 0x149B708, (uintptr_t)my_MovieMaterial_get_PlayPosition);
   hook_arm64(base + 0x149B77C, (uintptr_t)my_MovieMaterial_get_Duration);
-  fprintf(stderr, "[SKIPMOVIE] MovieMaterial Load/Play/IsPrepared/Duration hooks instalados\n");
+  hook_arm64(base + 0x149B890, (uintptr_t)my_MovieMaterial_get_Frame);
+  hook_arm64(base + 0x149B908, (uintptr_t)my_MovieMaterial_get_TotalFrame);
+  hook_arm64(base + 0x118483C, (uintptr_t)my_MBG_IsFinished);
+  hook_arm64(base + 0x11848A4, (uintptr_t)my_MBG_IsFinished);
+  hook_arm64(base + 0x1180DCC, (uintptr_t)my_MBG_GetFrame);
+  hook_arm64(base + 0x1181474, (uintptr_t)my_MBG_GetFrameCount);
+  fprintf(stderr, "[SKIPMOVIE] MovieMaterial+MBG video-finished hooks instalados\n");
   fsync(2);
 }
 __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *));
