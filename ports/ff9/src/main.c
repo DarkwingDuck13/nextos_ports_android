@@ -1493,6 +1493,13 @@ static int g_drawspy = 0;       /* roteamento de gl* ligado (TEXHALF e/ou DRAWSP
 static int g_drawdiag = 0;      /* DIAGNÓSTICO dos DRAWS (ring + glGetIntegerv/draw) — SÓ com CUP_DRAWSPY.
                                  * ⚠️ ds_enter faz 4 glGetIntegerv POR DRAW = sync CPU↔GPU no Mali =
                                  * mata a performance. NUNCA em produção (TEXHALF sozinho NÃO liga isto). */
+static int g_ff9_texdump = 0;   /* FF9_TEXDUMP: amostra atlases RGBA grandes sem ligar drawdiag */
+static int g_ff9_texdump_write = 0;
+static int g_ff9_texdump_at = 0;
+static int g_ff9_texdump_max = 12;
+static int g_ff9_texdump_seen = 0;
+static int g_ff9_texdump_written = 0;
+static int g_ff9_texdump_texture_only = 0;
 volatile int g_render_frame = -1;          /* setado no render loop (F2) */
 static void (*ds_r_DrawElements)(unsigned, int, unsigned, const void *);
 static void (*ds_r_DrawArrays)(unsigned, int, int);
@@ -1717,12 +1724,85 @@ static int gl_bpp(unsigned fmt, unsigned type) {
   return 0;  /* desconhecido -> não mexe */
 }
 static unsigned char ds_shift[DS_MAXTEXID];  /* fator de downscale (log2) por tex id */
+
+static void ff9_texdump_probe(int tex_id, int w, int h, int ifmt, unsigned fmt,
+                              unsigned type, const void *px) {
+  if (!g_ff9_texdump || !px || w < 1024 || h < 1024 || fmt != 0x1908 || type != 0x1401)
+    return;
+  if (g_ff9_texdump_at > 0 && g_render_frame >= 0 && g_render_frame < g_ff9_texdump_at)
+    return;
+  if (g_ff9_texdump_seen >= g_ff9_texdump_max)
+    return;
+
+  int seq = ++g_ff9_texdump_seen;
+  const unsigned char *q = px;
+  size_t n = (size_t)w * (size_t)h;
+  size_t step = n / 262144;
+  if (step < 1) step = 1;
+
+  size_t sample = 0, black = 0, rgbnz = 0, a0 = 0, a255 = 0, anz = 0, opaque_rgbnz = 0;
+  unsigned rmax = 0, gmax = 0, bmax = 0, amax = 0;
+  for (size_t i = 0; i < n; i += step) {
+    const unsigned char *p = q + i * 4;
+    unsigned r = p[0], g = p[1], b = p[2], a = p[3];
+    int has_rgb = (r | g | b) != 0;
+    sample++;
+    if (!has_rgb) black++; else rgbnz++;
+    if (a == 0) a0++;
+    if (a == 255) a255++;
+    if (a != 0) anz++;
+    if (a == 255 && has_rgb) opaque_rgbnz++;
+    if (r > rmax) rmax = r;
+    if (g > gmax) gmax = g;
+    if (b > bmax) bmax = b;
+    if (a > amax) amax = a;
+  }
+
+  fprintf(stderr,
+          "[FF9_TEXDUMP] #%d id=%d %dx%d ifmt=0x%X sample=%zu rgbnz=%zu%% black=%zu%% a0=%zu%% a255=%zu%% anz=%zu%% opaque_rgbnz=%zu%% max=%u,%u,%u,%u f=%d\n",
+          seq, tex_id, w, h, ifmt, sample,
+          sample ? (rgbnz * 100 / sample) : 0,
+          sample ? (black * 100 / sample) : 0,
+          sample ? (a0 * 100 / sample) : 0,
+          sample ? (a255 * 100 / sample) : 0,
+          sample ? (anz * 100 / sample) : 0,
+          sample ? (opaque_rgbnz * 100 / sample) : 0,
+          rmax, gmax, bmax, amax, g_render_frame);
+  fsync(2);
+
+  if (!g_ff9_texdump_write || g_ff9_texdump_written >= 4)
+    return;
+  char path[128];
+  snprintf(path, sizeof path, "/tmp/ff9_tex_%02d_f%d_id%d_%dx%d.rgba",
+           ++g_ff9_texdump_written, g_render_frame, tex_id, w, h);
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) {
+    fprintf(stderr, "[FF9_TEXDUMP] write open failed path=%s errno=%d\n", path, errno);
+    fsync(2);
+    return;
+  }
+  size_t left = n * 4;
+  const unsigned char *p = q;
+  while (left > 0) {
+    size_t chunk = left > (1u << 20) ? (1u << 20) : left;
+    ssize_t wr = write(fd, p, chunk);
+    if (wr <= 0) break;
+    p += wr;
+    left -= (size_t)wr;
+  }
+  close(fd);
+  fprintf(stderr, "[FF9_TEXDUMP] wrote %s bytes=%zu/%zu\n", path, n * 4 - left, n * 4);
+  fsync(2);
+}
+
 static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b, unsigned fmt, unsigned type, const void *px) {
-  if (lvl == 0 && tgt == 0x0DE1) ds_rectex(w, h, "tex");
+  if (lvl == 0 && tgt == 0x0DE1 && !g_ff9_texdump_texture_only) ds_rectex(w, h, "tex");
   if (g_drawdiag && lvl == 0 && tgt == 0x0DE1 && w >= 256) {
     fprintf(stderr, "[TEXFMT] id=%d %dx%d ifmt=0x%X fmt=0x%X type=0x%X px=%c f=%d\n",
             ds_geti(0x8069), w, h, ifmt, fmt, type, px ? 'Y' : 'N', g_render_frame); fsync(2);
   }
+  if (lvl == 0 && tgt == 0x0DE1)
+    ff9_texdump_probe(ds_geti(0x8069), w, h, ifmt, fmt, type, px);
   /* CUP_TEXSTAT: o canal alpha dos atlases grandes é real ou zerado? */
   if (getenv("CUP_TEXSTAT") && lvl == 0 && tgt == 0x0DE1 && w >= 1024 && px && fmt == 0x1908 && type == 0x1401) {
     const unsigned char *q = px;
@@ -3681,6 +3761,11 @@ static void *ds_route(const char *nm, void *real) {
     r_glShaderSource = real; return (void *)my_glShaderSource;
   }
   if (!g_drawspy) return real;
+  if (g_ff9_texdump_texture_only) {
+    if (!strcmp(nm, "glTexImage2D")) { ds_r_TexImage2D = real; w = (void *)my_glTexImage2D; }
+    if (w != real) { fprintf(stderr, "[DS] route %s (real=%p texdump-only)\n", nm, real); fsync(2); }
+    return w;
+  }
   /* TEXTURAS (TEXHALF) — só estas precisam do roteamento em produção */
   if (!strcmp(nm, "glTexImage2D"))   { ds_r_TexImage2D = real;   w = (void *)my_glTexImage2D; }
   else if (!strcmp(nm, "glCompressedTexImage2D")) { ds_r_CompTexImage2D = real; w = (void *)my_glCompTexImage2D; }
@@ -3701,8 +3786,18 @@ static void ds_init(void) {
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
   int want_drawcount = getenv("CUP_DRAWCOUNT") != NULL;
   int want_texstat = getenv("CUP_TEXSTAT") != NULL;
-  if (!getenv("CUP_DRAWSPY") && !want_drawcount && !want_texstat && !g_texhalf && !rs_enabled()) return;
-  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY/TEXHALF/DRAWCOUNT/TEXSTAT) */
+  g_ff9_texdump = ter_env_on("FF9_TEXDUMP");
+  int want_broad_glroute = getenv("CUP_DRAWSPY") || want_drawcount ||
+                           want_texstat || g_texhalf || rs_enabled();
+  if (g_ff9_texdump) {
+    g_ff9_texdump_write = ter_env_on("FF9_TEXDUMP_WRITE");
+    g_ff9_texdump_at = ter_env_positive_int_main("FF9_TEXDUMP_AT");
+    int max = ter_env_positive_int_main("FF9_TEXDUMP_MAX");
+    if (max > 0) g_ff9_texdump_max = max;
+    g_ff9_texdump_texture_only = !want_broad_glroute;
+  }
+  if (!want_broad_glroute && !g_ff9_texdump) return;
+  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY/TEXHALF/DRAWCOUNT/TEXSTAT/FF9_TEXDUMP) */
   g_drawdiag = getenv("CUP_DRAWSPY") ? 1 : 0;  /* ⚠️ ring + glGetIntegerv/draw — só em diag */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;
   const char *sp = getenv("CUP_SKIPPROG");
@@ -3712,8 +3807,9 @@ static void ds_init(void) {
       g_skipprog[g_nskipprog++] = atoi(t);
   }
   if (g_drawdiag || getenv("CUP_DRAWCOUNT")) { pthread_t th; pthread_create(&th, NULL, ds_watchdog, NULL); }
-  fprintf(stderr, "[DS] roteamento ON (texhalf=%d drawdiag=%d skipfbo=%d)\n",
-          g_texhalf, g_drawdiag, g_skipfbo);
+  fprintf(stderr, "[DS] roteamento ON (texhalf=%d drawdiag=%d skipfbo=%d texdump=%d at=%d write=%d max=%d texonly=%d)\n",
+          g_texhalf, g_drawdiag, g_skipfbo, g_ff9_texdump, g_ff9_texdump_at,
+          g_ff9_texdump_write, g_ff9_texdump_max, g_ff9_texdump_texture_only);
 }
 
 /* my_eglGetProcAddress: o Unity resolve as funções GL/extensões via
@@ -5858,9 +5954,17 @@ int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attac
   *(int16_t *)((char *)entry + 0x14) = (int16_t)overlayNdx;
   *(int16_t *)((char *)entry + 0x16) = (int16_t)attachX;
   *(int16_t *)((char *)entry + 0x18) = (int16_t)attachY;
-  if (!(surroundMode & 0x80) && g_il2cpp_base)
+  int skip_border = getenv("FF9_EBG_SKIPBORDER") != NULL;
+  int skip_black_border = getenv("FF9_EBG_SKIPBLACKBORDER") && !r && !g && !b;
+  if (!(surroundMode & 0x80) && g_il2cpp_base && !skip_border && !skip_black_border) {
     ((void (*)(void *, uint32_t, int, int, int))(g_il2cpp_base + 0x1139724))
-        (self, overlayNdx, r, g, b);
+        (self, overlayNdx, r, g, b); /* FieldMap.CreateBorder */
+  } else if ((skip_border || skip_black_border) && n < 12) {
+    fprintf(stderr,
+            "[FF9_FIELDGUARD] CreateBorder skip overlay=%u mode=%d rgb=%d,%d,%d all=%d black=%d\n",
+            overlayNdx, surroundMode, r, g, b, skip_border, skip_black_border);
+    fsync(2);
+  }
   *(uint16_t *)((char *)self + 0x142) = (uint16_t)(attach_count + 1);
   if (n++ < 8) {
     fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay safe count=%u/%lu overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
@@ -5875,6 +5979,7 @@ static void (*g_bgscene_genatlas_orig)(void *, void *);
 static void (*g_bgscene_createmats_orig)(void *, void *);
 static void (*g_bgscene_createscene_orig)(void *, void *, int, void *);
 static void (*g_bgscene_createscene_combined_orig)(void *, void *, int, void *);
+static void (*g_bgscene_createsprites_orig)(void *, void *, int, uint32_t, void *, void *);
 static void (*g_fieldmap_updateoverlayall_orig)(void *, void *);
 
 static int ff9_list_count_safe(void *list) {
@@ -5919,11 +6024,13 @@ static void ff9_ebgdiag_overlay(void *overlay_list, int idx, int verbose) {
     spr_tr = *(void **)((char *)first_sprite + 0x40);
   }
   fprintf(stderr,
-          "[FF9_EBGDIAG]   ov[%02d/%d] flags=0x%02x wh=%ux%u xy=%d,%d z=%u sprites=%d tr=%p created=%d comb=%d first=%p fwh=%dx%d atlas=%d,%d depth=%d ftr=%p\n",
+          "[FF9_EBGDIAG]   ov[%02d/%d] flags=0x%02x wh=%ux%u xy=%d,%d z=%u hdrSprites=%u loc=0x%x prm=0x%x sprites=%d tr=%p created=%d comb=%d first=%p fwh=%dx%d atlas=%d,%d depth=%d ftr=%p\n",
           idx, osz, *(uint8_t *)((char *)ov + 0x10),
           *(uint16_t *)((char *)ov + 0x16), *(uint16_t *)((char *)ov + 0x18),
           *(int16_t *)((char *)ov + 0x1e), *(int16_t *)((char *)ov + 0x20),
-          *(uint16_t *)((char *)ov + 0x12), ssz,
+          *(uint16_t *)((char *)ov + 0x12),
+          *(uint16_t *)((char *)ov + 0x3a),
+          *(uint32_t *)((char *)ov + 0x3c), *(uint32_t *)((char *)ov + 0x40), ssz,
           *(void **)((char *)ov + 0x68),
           *(uint8_t *)((char *)ov + 0x71), *(uint8_t *)((char *)ov + 0x70),
           first_sprite, spr_w, spr_h, spr_ax, spr_ay, spr_depth, spr_tr);
@@ -5989,6 +6096,20 @@ void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, 
   char p[192] = {0}, n[96] = {0};
   ff9_copy_il2cpp_string_live(path, p, sizeof p);
   ff9_copy_il2cpp_string_live(name, n, sizeof n);
+  if (getenv("FF9_EBG_NOUPFM")) {
+    int scene_up = -1, field_up = -1;
+    if (self && !((uintptr_t)self >> 40) && addr_readable((uintptr_t)self + 0xa9)) {
+      scene_up = *(uint8_t *)((char *)self + 0xa8);
+      *(uint8_t *)((char *)self + 0xa8) = 0;
+    }
+    if (fieldMap && !((uintptr_t)fieldMap >> 40) && addr_readable((uintptr_t)fieldMap + 0x151)) {
+      field_up = *(uint8_t *)((char *)fieldMap + 0x150);
+      *(uint8_t *)((char *)fieldMap + 0x150) = 0;
+    }
+    fprintf(stderr, "[FF9_EBGDIAG] NOUPFM force path=\"%s\" name=\"%s\" sceneUp=%d fieldUp=%d\n",
+            p, n, scene_up, field_up);
+    fsync(2);
+  }
   fprintf(stderr, "[FF9_EBGDIAG] LoadEBG before self=%p field=%p path=\"%s\" name=\"%s\" f=%d\n",
           self, fieldMap, p, n, g_render_frame);
   fsync(2);
@@ -6034,6 +6155,35 @@ void my_BGSCENE_DEF_CreateSceneCombined(void *self, void *fieldMap, int useUpsca
   ff9_ebgdiag_scene("CreateSceneCombined after", self, fieldMap, 1);
 }
 
+void my_BGSCENE_DEF_CreateSeparateSprites(void *self, void *fieldMap, int useUpscale,
+                                          uint32_t ovrNdx, void *spriteIdx, void *method);
+void my_BGSCENE_DEF_CreateSeparateSprites(void *self, void *fieldMap, int useUpscale,
+                                          uint32_t ovrNdx, void *spriteIdx, void *method) {
+  int idx_count = ff9_list_count_safe(spriteIdx);
+  int hdr_sprites = -1, list_sprites = -1;
+  void *overlay = NULL;
+  if (self && !((uintptr_t)self >> 40) && addr_readable((uintptr_t)self + 0x60)) {
+    void *overlay_list = *(void **)((char *)self + 0x58);
+    overlay = ff9_list_item_safe(overlay_list, (int)ovrNdx, NULL);
+    if (overlay && !((uintptr_t)overlay >> 40) && addr_readable((uintptr_t)overlay + 0x68)) {
+      hdr_sprites = *(uint16_t *)((char *)overlay + 0x3a);
+      list_sprites = ff9_list_count_safe(*(void **)((char *)overlay + 0x60));
+    }
+  }
+  if (getenv("FF9_EBGDIAG")) {
+    static int n;
+    if (n < 40 || getenv("FF9_EBGDIAG_VERBOSE")) {
+      fprintf(stderr,
+              "[FF9_EBGDIAG] CreateSeparateSprites before #%d self=%p field=%p ov=%u upscale=%d spriteIdx=%p/%d overlay=%p hdrSprites=%d listSprites=%d f=%d\n",
+              ++n, self, fieldMap, ovrNdx, useUpscale, spriteIdx, idx_count,
+              overlay, hdr_sprites, list_sprites, g_render_frame);
+      fsync(2);
+    }
+  }
+  if (g_bgscene_createsprites_orig)
+    g_bgscene_createsprites_orig(self, fieldMap, useUpscale, ovrNdx, spriteIdx, method);
+}
+
 void my_FieldMap_UpdateOverlayAll(void *self, void *method);
 void my_FieldMap_UpdateOverlayAll(void *self, void *method) {
   if (g_fieldmap_updateoverlayall_orig)
@@ -6066,6 +6216,9 @@ static void ff9_ebgdiag_install(uintptr_t base) {
   if (!g_bgscene_createscene_combined_orig)
     g_bgscene_createscene_combined_orig = (void (*)(void *, void *, int, void *))
                                           mk_tramp(base + 0x1133e14, "BGSCENE_DEF.CreateSceneCombined");
+  if (!g_bgscene_createsprites_orig)
+    g_bgscene_createsprites_orig = (void (*)(void *, void *, int, uint32_t, void *, void *))
+                                   mk_tramp(base + 0x11377c8, "BGSCENE_DEF.CreateSeparateSprites");
   if (!g_fieldmap_updateoverlayall_orig)
     g_fieldmap_updateoverlayall_orig = (void (*)(void *, void *))
                                        mk_tramp(base + 0x113c610, "FieldMap.UpdateOverlayAll");
@@ -6074,12 +6227,14 @@ static void ff9_ebgdiag_install(uintptr_t base) {
   if (g_bgscene_createmats_orig) hook_arm64(base + 0x1133ad8, (uintptr_t)my_BGSCENE_DEF_CreateMaterials);
   if (g_bgscene_createscene_orig) hook_arm64(base + 0x1135658, (uintptr_t)my_BGSCENE_DEF_CreateScene);
   if (g_bgscene_createscene_combined_orig) hook_arm64(base + 0x1133e14, (uintptr_t)my_BGSCENE_DEF_CreateSceneCombined);
+  if (g_bgscene_createsprites_orig) hook_arm64(base + 0x11377c8, (uintptr_t)my_BGSCENE_DEF_CreateSeparateSprites);
   if (g_fieldmap_updateoverlayall_orig) hook_arm64(base + 0x113c610, (uintptr_t)my_FieldMap_UpdateOverlayAll);
   fprintf(stderr,
-          "[FF9_EBGDIAG] hooks Load=%p GenAtlas=%p Mats=%p Scene=%p Combined=%p UpdateAll=%p\n",
+          "[FF9_EBGDIAG] hooks Load=%p GenAtlas=%p Mats=%p Scene=%p Combined=%p Sprites=%p UpdateAll=%p\n",
           (void *)g_bgscene_loadebg_orig, (void *)g_bgscene_genatlas_orig,
           (void *)g_bgscene_createmats_orig, (void *)g_bgscene_createscene_orig,
-          (void *)g_bgscene_createscene_combined_orig, (void *)g_fieldmap_updateoverlayall_orig);
+          (void *)g_bgscene_createscene_combined_orig, (void *)g_bgscene_createsprites_orig,
+          (void *)g_fieldmap_updateoverlayall_orig);
   fsync(2);
 }
 

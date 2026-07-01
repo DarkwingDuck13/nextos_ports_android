@@ -7,6 +7,23 @@
 
 ---
 
+## s15 2026-07-01 — ✅ FMVs nativas preservadas + raiz do preto estreitada (EBG mesh/material)
+
+> Device .90. Testes sem pular videos, seguindo fluxo: FF logo/disclaimer/title -> New Game -> `FMV001.mp4` -> field `FBG_N00_TSHP_MAP002_TH_CGR_1`.
+
+### ✅ Avancos validados
+- `FF9_TEXDUMP` adicionado como diagnostico opt-in leve de `glTexImage2D`, com modo `texdump-only` para nao ligar roteamento GL amplo nem travar o boot.
+- Fluxo no-skip validado de novo: `FMV000.mp4` tocou inteira, menu recebeu `down + A`, `FMV001.mp4` tocou inteira e retornou ao field.
+- Atlas real do field foi capturado: textura RGBA `2048x2048`, id 22/variante, com RGB e alpha reais. Portanto o centro preto NAO e asset faltando nem upload de textura vazio.
+- `FF9_EBG_SEPARATE=1` forçou `CreateSceneCombined -> CreateScene`, mas a tela continuou com centro preto. Isso reduz a suspeita de "combine path global" simples.
+- `FF9_EBG_SKIPBLACKBORDER=1` pulou `CreateBorder overlay=17 rgb=0,0,0`, mas a imagem ficou igual. O retangulo preto nao era apenas essa borda preta.
+- `FF9_NOFIELDGUARD=1` agora sobrevive ate o field e gameplay: o player moveu com `right` (`bits=0x20`, pos mudou para ~`168,-1020`). Porem a captura ficou visualmente pior, sem Zidane renderizado, entao remover o guard inteiro nao e o fix.
+
+### Estado visual / proximo foco
+- O atlas contem o background real; a tela ainda mostra UI/paredes e centro escuro/preto. O proximo foco real e mesh/material/depth/shader do EBG, ou um guard mais cirurgico que chame partes nativas sem perder os modelos.
+- O primeiro field do FF9 tambem e uma sala escura do roteiro; input Confirm chega no field (`bits=0x4000`), mas no ponto testado nao disparou dialogo. Ainda precisa seguir a interacao do gameplay ate acender/progredir a cena.
+- Evidencias locais uteis: `/tmp/ff9_field_atlas_rgb.png`, `/tmp/ff9_field_atlas_alpha.png`, `/tmp/ff9_skipblack_top.png`, `/tmp/ff9_nofieldguard2_top.png`.
+
 ## s14 2026-07-01 — ✅ fluxo sem skip validado de novo + input de campo via EventInput
 
 > Device .90. Validado em `run_bubbleproc_clean.log`, com `FF9_NOSKIPMOVIE=1`, `FF9_FIELDSTATE=1`, `FF9_FORCECONTROL=1`, `FF9_GPLOG=1`, `FF9_BUBBLELOG=1`, `FF9_EBGDIAG=1`.
