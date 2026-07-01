@@ -1046,6 +1046,13 @@ static void *my_memalign(unsigned long alignment, unsigned long size) {
   if (p && getenv("CVGOS_ZEROALLOC")) memset(p, 0, size ? size : 1);
   return p;
 }
+static int g_zeroalloc = 0;   /* cache do env (malloc e' hot) */
+static void *my_malloc(size_t n) {
+  void *p = malloc(n);
+  if (p && g_zeroalloc) memset(p, 0, n);
+  return p;
+}
+static void *my_realloc(void *o, size_t n) { return realloc(o, n); }
 static unsigned long my_strlcat(char *dst, const char *src, unsigned long sz) {
   unsigned long dl = strnlen(dst, sz), sl = strlen(src);
   if (dl == sz) return sz + sl;
@@ -5011,7 +5018,9 @@ int main(int argc, char **argv) {
   set_import("statfs", (void *)my_statfs64);
   set_import("strlcpy", (void *)my_strlcpy);
   set_import("strlcat", (void *)my_strlcat);
+  g_zeroalloc = getenv("CVGOS_ZEROALLOC") ? 1 : 0;
   set_import("memalign", (void *)my_memalign);
+  if (g_zeroalloc) { set_import("malloc", (void *)my_malloc); set_import("realloc", (void *)my_realloc); }
   set_import("syscall", (void *)my_syscall);
   set_import("pthread_kill", (void *)my_pthread_kill);
   set_import("__memmove_chk", (void *)my_memmove_chk);
@@ -5098,11 +5107,13 @@ int main(int argc, char **argv) {
   patch_got("strlcpy", (void *)my_strlcpy);
   patch_got("strlcat", (void *)my_strlcat);
   patch_got("memalign", (void *)my_memalign);
+  if (g_zeroalloc) { patch_got("malloc", (void *)my_malloc); }
   patch_got("syscall", (void *)my_syscall);
   patch_got("pthread_kill", (void *)my_pthread_kill);
   { void *ss = dlsym(RTLD_DEFAULT, "__sigsetjmp"); if (ss) patch_got("sigsetjmp", ss); }
   { void *p2 = dlsym(RTLD_DEFAULT, "pthread_cond_timedwait_relative_np"); if (p2) patch_got("pthread_cond_timedwait_relative_np", p2); }
   patch_got("memalign", (void *)my_memalign);
+  if (g_zeroalloc) { patch_got("malloc", (void *)my_malloc); }
   patch_got("syscall", (void *)my_syscall);
   patch_got("pthread_kill", (void *)my_pthread_kill);
   { void *ss = dlsym(RTLD_DEFAULT, "__sigsetjmp"); if (ss) patch_got("sigsetjmp", ss); }
