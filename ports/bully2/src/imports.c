@@ -102,6 +102,8 @@ typedef struct {
   int orig_w;
   int orig_h;
   int half_storage;
+  unsigned char cutout;   /* 1 = textura de recorte (alpha vazado): NUNCA mipmap (halo preto) */
+  unsigned char has_mips; /* 1 = geramos glGenerateMipmap nesta base -> pode LINEAR_MIPMAP_LINEAR */
   uint32_t level_bytes[16];
   uint32_t total;
   unsigned alive;
@@ -204,6 +206,25 @@ static unsigned bound_tex_for_target(unsigned target) {
   if (target == 0x8513 || target_is_cube_face(target))
     return g_bound_cube;
   return 0;
+}
+
+static int is_pot(int x) { return x > 0 && (x & (x - 1)) == 0; }
+
+static void tex_mark_cutout(unsigned id, int cut) {
+  if (id && id < g_texinfo_cap)
+    g_texinfo[id].cutout = cut ? 1 : 0;
+}
+static int tex_bound_2d_cutout(void) {
+  unsigned id = g_bound_2d;
+  return (id && id < g_texinfo_cap) ? g_texinfo[id].cutout : 0;
+}
+static void tex_mark_has_mips(unsigned id, int v) {
+  if (id && id < g_texinfo_cap)
+    g_texinfo[id].has_mips = v ? 1 : 0;
+}
+static int tex_bound_2d_has_mips(void) {
+  unsigned id = g_bound_2d;
+  return (id && id < g_texinfo_cap) ? g_texinfo[id].has_mips : 0;
 }
 
 static int bytes_per_pixel(unsigned ifmt, unsigned fmt, unsigned type) {
@@ -842,13 +863,32 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
   free(patched);
 }
 
+/* TRILINEAR nos perfis Low/Medium (default ON): sem isso, o half path descarta a
+ * cadeia de mipmap (so nivel 0 rebaixado) e e obrigado a usar GL_LINEAR -> ruas/
+ * texturas serrilham a distancia. Com trilinear, geramos a cadeia via
+ * glGenerateMipmap na base rebaixada e liberamos LINEAR_MIPMAP_LINEAR.
+ * Desliga com BULLY2_TRILINEAR=0 (volta ao GL_LINEAR puro). */
+static int bully2_trilinear(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = first_env("BULLY2_TRILINEAR", "BULLY_TRILINEAR");
+    v = (e && (e[0] == '0' || e[0] == 'n' || e[0] == 'N')) ? 0 : 1;
+  }
+  return v;
+}
+
 static void (*real_glTexParameteri)(unsigned, unsigned, int) = NULL;
 static void my_glTexParameteri(unsigned target, unsigned pname, int param) {
   if (!real_glTexParameteri)
     real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
   if (pname == 0x813D)
     return;
-  if ((getenv("BULLY2_FORCE_LINEAR") || tex_half_enabled()) &&
+  /* Em half mode, LINEAR_MIPMAP_* so e permitido em texturas que REALMENTE tem a
+   * cadeia (has_mips=1, gerada por nos so nas opacas POT). Todo o resto -> GL_LINEAR:
+   * cutout, NPOT, render-to-texture (minimapa), UI/menu, prédios/lonas sem mip. Isso
+   * evita textura mipmap-incompleta = PRETO. FORCE_LINEAR forca linear em tudo. */
+  if ((getenv("BULLY2_FORCE_LINEAR") ||
+       (tex_half_enabled() && !tex_bound_2d_has_mips())) &&
       (pname == 0x2801 || pname == 0x2800) &&
       param >= 0x2700 && param <= 0x2703)
     param = 0x2601;
@@ -1048,6 +1088,26 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
   void *half = NULL;
   int bpp = bytes_per_pixel(track_ifmt, fmt, type);
 
+  /* CUTOUT (alpha vazado: folhas/cercas/portoes): mipmap mistura o RGB preto dos
+   * texels transparentes -> HALO PRETO. Detecta por scan barato do alpha e marca
+   * a textura p/ NUNCA receber mipmap (fica LINEAR). So p/ TEXTURE_2D, nivel 0. */
+  if (bully2_trilinear() && lvl == 0 && px && tgt == 0x0DE1) {
+    /* base nova -> invalida a cadeia antiga; so volta a ter mips se gerarmos abaixo */
+    tex_mark_has_mips(g_bound_2d, 0);
+    int is_cutout = 0;
+    if (type == 0x8033 || type == 0x8034) {
+      is_cutout = 1;
+    } else if (fmt == 0x1908 && type == 0x1401 && w > 0 && h > 0) {
+      int n = w * h, step = n > 4096 ? n / 4096 : 1, tr = 0;
+      for (int i = 0; i < n; i += step)
+        if (((const unsigned char *)px)[(size_t)i * 4 + 3] < 250)
+          if (++tr > 8)
+            break;
+      is_cutout = (tr > 8);
+    }
+    tex_mark_cutout(g_bound_2d, is_cutout);
+  }
+
   if (tex_half_enabled() && lvl > 0)
     return;
 
@@ -1070,7 +1130,13 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
       if (!real_glTexParameteri)
         real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
       if (real_glTexParameteri) {
-        real_glTexParameteri(tgt, 0x2801, 0x2601);
+        /* MIN: trilinear (LINEAR_MIPMAP_LINEAR) so nas OPACAS e POT (cadeia
+         * gerada abaixo). Cutout -> GL_LINEAR (mipmap = halo preto). NPOT -> GL_LINEAR
+         * (Utgard/ES2 nao mipmapa NPOT: glGenerateMipmap falha -> textura incompleta =
+         * PRETO; ex.: fundos de loading e decais do mapa). MAG sempre LINEAR. */
+        int tri = bully2_trilinear() && !tex_bound_2d_cutout() &&
+                  is_pot(hw) && is_pot(hh);
+        real_glTexParameteri(tgt, 0x2801, tri ? 0x2703 : 0x2601);
         real_glTexParameteri(tgt, 0x2800, 0x2601);
       }
     }
@@ -1078,6 +1144,20 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
 
   if (real_glTexImage2D)
     real_glTexImage2D(tgt, lvl, ifmt, rw, rh, bord, fmt, type, rpx);
+  /* TRILINEAR: a base rebaixada perdeu os niveis>0 (descartados acima). Gera a
+   * cadeia de mipmap a partir dela p/ que LINEAR_MIPMAP_LINEAR funcione (tira o
+   * serrilhado das ruas). So p/ TEXTURE_2D uncompressed, OPACA (cutout=halo preto)
+   * e POT (Utgard nao mipmapa NPOT -> incompleta = preto). */
+  if (half && bully2_trilinear() && tgt == 0x0DE1 && !tex_bound_2d_cutout() &&
+      is_pot(rw) && is_pot(rh)) {
+    static void (*r_genmip)(unsigned) = NULL;
+    if (!r_genmip)
+      r_genmip = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+    if (r_genmip) {
+      r_genmip(tgt);
+      tex_mark_has_mips(g_bound_2d, 1); /* cadeia completa -> pode trilinear */
+    }
+  }
   free(half);
   tex_set_level(bound_tex_for_target(tgt), tgt, lvl, track_ifmt, rw, rh,
                 tex_level_size(rw, rh, bpp));
