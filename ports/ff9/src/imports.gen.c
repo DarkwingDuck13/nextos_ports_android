@@ -198,7 +198,7 @@ long stub___sF(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __sF\\n")
 long stub_shutdown(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] shutdown\\n"); return 0; }
 long stub_sigaction(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigaction\\n"); return 0; }
 long stub_signal(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] signal\\n"); return 0; }
-long stub_sigsuspend(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sigsuspend\\n"); return 0; }
+long stub_sigsuspend(void){ return 0; }
 long stub_sincos(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sincos\\n"); return 0; }
 long stub_sincosf(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] sincosf\\n"); return 0; }
 long stub_slCreateEngine(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] slCreateEngine\\n"); return 0; }

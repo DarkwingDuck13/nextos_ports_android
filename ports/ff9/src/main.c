@@ -4575,6 +4575,7 @@ static void ff9_diag_stack_ras(const char *tag);
 static void *g_skipmovie_pending_action;
 static int g_skipmovie_pending_frame;
 static int g_skipmovie_calling;
+static int g_skipmovie_no_callback_frame;
 static volatile uint32_t g_skipmovie_loads, g_skipmovie_plays, g_skipmovie_finishes;
 static volatile uint32_t g_skipmovie_done_queries;
 
@@ -4625,9 +4626,11 @@ void my_MovieMaterial_Play(void *self, void *method) {
   if (action) {
     g_skipmovie_pending_action = action;
     g_skipmovie_pending_frame = g_render_frame + 1;
+    g_skipmovie_no_callback_frame = 0;
     fprintf(stderr, "[SKIPMOVIE] Play agenda OnFinished=%p para f>=%d\n",
             action, g_skipmovie_pending_frame);
   } else {
+    g_skipmovie_no_callback_frame = g_render_frame;
     fprintf(stderr, "[SKIPMOVIE] Play sem OnFinished (self=%p)\n", self);
   }
   fsync(2);
@@ -4743,13 +4746,81 @@ static void ff9_skipmovie_install(uintptr_t base) {
 
 static void (*g_fldfmv_service_orig)(void *, void *);
 
-static int ff9_fldfmv_static_fields(void **out) {
-  if (!out || !g_il2cpp_base) return 0;
-  if (!g_maps_len) maps_snapshot();
-  void *klass = NULL, *fields = NULL;
-  if (!ff9_safe_read_ptr((void *)(g_il2cpp_base + 0x28AC2B8), &klass) || !klass) return 0;
-  if (!ff9_safe_read_ptr((char *)klass + 184, &fields) || !fields) return 0;
-  *out = fields;
+static void *ff9_static_field(const char *ns, const char *cn, const char *fn) {
+  if (!g_il2cpp_base || !cn || !fn) return NULL;
+  void *(*dom_get)(void) = (void *)(g_il2cpp_base + 0xff7bb0);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(g_il2cpp_base + 0xff7bbc);
+  void *(*asm_img)(const void *) = (void *)(g_il2cpp_base + 0xff7680);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0xff76b8);
+  void (*cls_init)(void *) = (void *)(g_il2cpp_base + 0xff7fd8);
+  void *(*getf)(void *, const char *) = (void *)(g_il2cpp_base + 0xff76d8);
+  size_t (*fld_off)(void *) = (void *)(g_il2cpp_base + 0xff7d80);
+  void *domain = dom_get();
+  if (!domain) return NULL;
+  size_t na = 0;
+  const void **as = dom_asms(domain, &na);
+  if (!as || !na) return NULL;
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(as[i]);
+    if (!img) continue;
+    void *cls = cls_from_name(img, ns ? ns : "", cn);
+    if (!cls) continue;
+    cls_init(cls);
+    void *field = getf(cls, fn);
+    if (field) {
+      fprintf(stderr, "[FIELD] %s%s%s.%s off=0x%zx field=%p\n",
+              ns && *ns ? ns : "", ns && *ns ? "." : "", cn, fn,
+              fld_off ? fld_off(field) : 0, field);
+      fsync(2);
+      return field;
+    }
+  }
+  fprintf(stderr, "[FIELD] %s%s%s.%s nao encontrado\n",
+          ns && *ns ? ns : "", ns && *ns ? "." : "", cn, fn);
+  fsync(2);
+  return NULL;
+}
+
+static int ff9_static_get_i32(void *field, int *out) {
+  if (!g_il2cpp_base || !field || !out) return 0;
+  void (*sget)(void *, void *) = (void *)(g_il2cpp_base + 0xff7d9c);
+  *out = 0;
+  sget(field, out);
+  return 1;
+}
+
+static int g_fldfmv_fields_tried, g_fldfmv_fields_ok;
+static void *g_fldfmv_attr_field, *g_fldfmv_status_field;
+
+static int ff9_fldfmv_resolve_statics(void) {
+  if (!g_il2cpp_base) return 0;
+  if (!g_fldfmv_fields_tried) {
+    g_fldfmv_fields_tried = 1;
+    g_fldfmv_attr_field = ff9_static_field("", "fldfmv", "ff9fieldFMVAttr");
+    g_fldfmv_status_field = ff9_static_field("", "fldfmv", "fmvStatus");
+    g_fldfmv_fields_ok = g_fldfmv_attr_field && g_fldfmv_status_field;
+    fprintf(stderr, "[FMVSPY] static fields %s attr=%p status=%p\n",
+            g_fldfmv_fields_ok ? "OK" : "FALHOU",
+            g_fldfmv_attr_field, g_fldfmv_status_field);
+    fsync(2);
+  }
+  return g_fldfmv_fields_ok;
+}
+
+static int ff9_fldfmv_static_i32s(int *attr, int *status) {
+  if (!attr || !status || !ff9_fldfmv_resolve_statics()) return 0;
+  int a = 0, s = 0;
+  if (!ff9_static_get_i32(g_fldfmv_attr_field, &a) ||
+      !ff9_static_get_i32(g_fldfmv_status_field, &s)) return 0;
+  *attr = a;
+  *status = s;
+  return 1;
+}
+
+static int ff9_fldfmv_set_status(int status) {
+  if (!ff9_fldfmv_resolve_statics()) return 0;
+  void (*sset)(void *, void *) = (void *)(g_il2cpp_base + 0xff7da0);
+  sset(g_fldfmv_status_field, &status);
   return 1;
 }
 
@@ -4757,22 +4828,27 @@ void my_fldfmv_service_spy(void *self, void *method);
 void my_fldfmv_service_spy(void *self, void *method) {
   static int last_attr = -1, last_status = -1;
   static unsigned calls;
+  static unsigned forced;
   int attr0 = -1, status0 = -1, attr1 = -1, status1 = -1;
-  void *fields = NULL;
-  if (ff9_fldfmv_static_fields(&fields) && addr_readable((uintptr_t)fields + 0x17)) {
-    attr0 = *(int *)((char *)fields + 0x0);
-    status0 = *(int *)((char *)fields + 0x14);
-  }
+  ff9_fldfmv_static_i32s(&attr0, &status0);
   if (calls++ < 12 || attr0 != last_attr || status0 != last_status) {
     fprintf(stderr, "[FMVSPY] before #%u self=%p attr=0x%x status=%d f=%d\n",
             calls, self, attr0, status0, g_render_frame);
     fsync(2);
   }
   if (g_fldfmv_service_orig) g_fldfmv_service_orig(self, method);
-  fields = NULL;
-  if (ff9_fldfmv_static_fields(&fields) && addr_readable((uintptr_t)fields + 0x17)) {
-    attr1 = *(int *)((char *)fields + 0x0);
-    status1 = *(int *)((char *)fields + 0x14);
+  ff9_fldfmv_static_i32s(&attr1, &status1);
+  if (!getenv("FF9_NOFMVFORCE") && g_skipmovie_no_callback_frame &&
+      g_render_frame >= g_skipmovie_no_callback_frame + 1 &&
+      (status1 == 5 || status1 == 6)) {
+    if (ff9_fldfmv_set_status(8)) {  /* FF9FIELD_FMVSERVICE_COMPLETE */
+      status1 = 8;
+      if (forced++ < 8) {
+        fprintf(stderr, "[FMVSPY] force fmvStatus=8 (sem OnFinished) f=%d attr=0x%x prev=%d\n",
+                g_render_frame, attr1, status0);
+        fsync(2);
+      }
+    }
   }
   if (calls <= 12 || attr1 != attr0 || status1 != status0 ||
       attr1 != last_attr || status1 != last_status) {
@@ -6796,11 +6872,12 @@ int main(int argc, char **argv) {
     __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
     fprintf(stderr, "[SKIPTASKWAIT] libunity+0x2f37b0 cbnz->b (pula a wait do job-queue)\n");
   }
-  /* TER_INLINETASK: instala um trampolim no TOPO do loop de espera do per-object task (0x2f37a4)
+  /* TER_INLINETASK (default ON; TER_NOINLINETASK desliga): instala um trampolim no TOPO do loop
+     de espera do per-object task (0x2f37a4)
      que chama ter_inline_task(obj) (finge a conclusão: seta o nó + incrementa c10360) e então
      executa a instrução original + volta. Destrava per-object task (frame 2) E WaitForJobGroup
      (frame 3) sem depender do dispatch p/ workers. (Substitui o SKIPTASKWAIT — NÃO usar ambos.) */
-  if (getenv("TER_INLINETASK") && g_unity_base) {
+  if (!getenv("TER_NOINLINETASK") && !getenv("TER_SKIPTASKWAIT") && g_unity_base) {
     extern void ter_inline_task(void *);
     long pgsz = sysconf(_SC_PAGESIZE);
     uintptr_t patch = g_unity_base + 0x2f37a4;
