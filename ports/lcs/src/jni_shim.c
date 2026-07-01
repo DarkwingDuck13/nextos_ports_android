@@ -1528,7 +1528,14 @@ static int lcs_fade_required_finishes(void) {
     int v = lcs_env_int("LCS_FADE_AFTER_FINISHES", 0);
     return v < 0 ? 0 : v;
   }
-  return lcs_env_flag("LCS_FE25") ? lcs_fe25_required_finishes() : 0;
+  /* s9 fix: isto NAO dependia mais de LCS_FE25 (que nao e default em nenhum script) ->
+   * need ficava sempre 0 -> lcs_gameplay_fade_hack_allowed()/lcs_intro_transition_fade_blocked()
+   * liberavam o fade-hack na hora que !cutscene_active, sem nenhuma carencia. Isso revelava
+   * gameplay/HUD no instante em que ms_running/ms_cutsceneProcessing caiam entre cutscene1 e
+   * cutscene2 (e antes da cutscene1, na janela de loading) -> flash de "gameplay fantasma" e
+   * tela preta sem cutscene visivel. Default agora usa o mesmo N de FE25 (2 finishes) mesmo
+   * sem LCS_FE25 setado -> o gate so libera DEPOIS das 2 cutscenes + LCS_GAMEPLAY_RELEASE_DELAY. */
+  return lcs_fe25_required_finishes();
 }
 
 static unsigned long lcs_cutscene_force_window(void) {
