@@ -7,6 +7,47 @@
 
 ---
 
+## s18 2026-07-01 — 🎯 tese do evento de abertura + FF9_SNDSAFE (pendente validação: device caiu)
+
+> Device .90 CAIU (sem ping; provável wedge por grep pesado nos logs gigantes com o jogo a 60fps —
+> NÃO rodar grep em /storage/roms/ff9/*.log com o jogo aberto; copiar o log pro desktop primeiro).
+> Commits: bb67f7d (ETBLOG+deploy.sh), 0806fa4 (SNDSAFE+run_diag.sh). Binário buildado local.
+
+### 🧭 TESE (reinterpretação do "fundo preto do campo")
+- A primeira sala do FF9 **É ESCURA no jogo original** (evento do fósforo). As "paredes" laterais
+  visíveis são a moldura decorativa do port mobile. O centro preto pode estar ~correto.
+- O muro REAL é o **evento de abertura que não roda**: nenhum diálogo ("Sure is dark...") aparece.
+  O comentário do FF9_SOUNDGUARD já registrava: *sound profile ausente (key 136) ABORTA o script*.
+  Com FF9_REALSOUND=1 (default atual) o dispatch real lança KeyNotFoundException → ServiceEvents
+  aborta todo frame → script congela ANTES do 1º diálogo → sem fósforo, sem naming, "campo preto"
+  com controle só por causa do FORCECONTROL.
+
+### ✅ Feito nesta sessão (offline, pós-queda)
+1. **FF9_SNDSAFE** (default ON com REALSOUND; FF9_NOSNDSAFE desliga): os 2 dispatch de som
+   (0x13a2fec/0x13a9330) agora rodam via `il2cpp_runtime_invoke` (export 0xff7fd4) → exceção
+   managed é capturada+logada (`[FF9_SNDSAFE] exceção capturada ... : msg`) e vira no-op só
+   daquele som; sons presentes tocam normal. Anti-recursão por flag __thread (runtime_invoke
+   re-entra no methodPointer hookado → desvia pro trampolim). Unbox do retorno em +0x10.
+2. **FF9_ETBLOG**: hooks ETb.NewMesWin(0x111EF34)/MesWinActive(0x11204C4) — revela se o script
+   pede janela de diálogo e se está pollando espera.
+3. **FF9_FORCECONTROL=0 agora desliga de verdade** (ff9_env_on; antes qualquer valor contava ON).
+4. **deploy.sh** (kill→rm→scp→md5) e **run_diag.sh** (skip-movie rápido, FORCECONTROL=0,
+   LOGTHROW+ETBLOG+FIELDSTATE+LOGFMT+NOLOGGER → run_diag.log).
+5. Controle físico: **USB Gamepad plugado detectado e mapeado** no run vivo pré-queda
+   (`SDL_NumJoysticks=1`, mapping 0810:0001 correto). Fluxo dirigido validado na TV:
+   menu → New Game → FMV001 inteira → campo com Zidane (captura fbnow2.png).
+
+### ▶️ AO VOLTAR O DEVICE (roteiro)
+1. `./deploy.sh` (local ports/ff9).
+2. `ssh root@DEV 'nohup sh /storage/roms/ff9/run_diag.sh >/dev/null 2>&1 &'` — esperar campo.
+3. Ler run_diag.log: procurar `[FF9_SNDSAFE] exceção` (qual banco/key falta), `[FF9ETB] NewMesWin`
+   (script pediu diálogo = evento ANDANDO) e FIELDSTATE gMode/user.
+4. Se evento rodar: validar fósforo/diálogo/naming na tela; depois run no-skip completo (FMVs
+   reais) + pad físico + som — fluxo demo completo.
+5. Se ainda travar: LOGTHROW aponta a exceção seguinte; iterar.
+
+---
+
 ## s17 2026-07-01 — ✅ regressão do no-skip isolada e corrigida no player externo
 
 > Device .90. Validado em `run_noskip_audiofix2.log` com `FF9_NOSKIPMOVIE=1`.
