@@ -81,13 +81,19 @@ if [ -z "$ALSOFT_CONF" ] && [ -f "$GAMEDIR/alsoft.conf" ]; then
   export ALSOFT_CONF="$GAMEDIR/alsoft.conf"
 fi
 
-$ESUDO chmod 666 /dev/uinput 2>/dev/null || true
-if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
-  export BULLY2_INPUT=gptk
-  $GPTOKEYB "bully" -c "$GAMEDIR/bully.gptk" &
-elif command -v gptokeyb >/dev/null 2>&1; then
-  export BULLY2_INPUT=gptk
-  gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
+# Input padrao = caminho SDL nativo do binario (gamepad direto, L1=mira
+# R1=tiro L2/R2=itens). gptokeyb vira opt-in (BULLY2_USE_GPTK=1): o check
+# antigo `set -- $GPTOKEYB; [ -x "$1" ]` testava o literal "sudo" e falhava
+# sempre, entao o gptokeyb nunca subia de qualquer forma.
+if [ "${BULLY2_USE_GPTK:-0}" = "1" ]; then
+  $ESUDO chmod 666 /dev/uinput 2>/dev/null || true
+  if [ -n "$GPTOKEYB" ] && [ -x "$controlfolder/gptokeyb" ]; then
+    export BULLY2_INPUT=gptk
+    $GPTOKEYB "bully" -c "$GAMEDIR/bully.gptk" &
+  elif command -v gptokeyb >/dev/null 2>&1; then
+    export BULLY2_INPUT=gptk
+    gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
+  fi
 fi
 
 ./bully
