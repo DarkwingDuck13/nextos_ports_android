@@ -4665,6 +4665,24 @@ int my_MBG_IsFinished(void *self, void *method) {
   return 1;
 }
 
+void my_MBG_SetFinishCallback(void *self, void *callback, void *method);
+void my_MBG_SetFinishCallback(void *self, void *callback, void *method) {
+  (void)method;
+  void *movie = NULL;
+  if (self) ff9_safe_read_ptr((char *)self + 0x38, &movie); /* MBG.movieMaterial */
+  if (movie && ((uintptr_t)movie >> 40) == 0 && addr_readable((uintptr_t)movie + 0x18))
+    *(void **)((char *)movie + 0x10) = callback; /* MovieMaterial.OnFinished */
+  if (callback) {
+    g_skipmovie_pending_action = callback;
+    g_skipmovie_pending_frame = g_render_frame + 1;
+    fprintf(stderr, "[SKIPMOVIE] MBG.SetFinishCallback agenda OnFinished=%p para f>=%d self=%p movie=%p\n",
+            callback, g_skipmovie_pending_frame, self, movie);
+  } else {
+    fprintf(stderr, "[SKIPMOVIE] MBG.SetFinishCallback NULL self=%p movie=%p\n", self, movie);
+  }
+  fsync(2);
+}
+
 int my_MBG_GetFrame(void *self, void *method);
 int my_MBG_GetFrame(void *self, void *method) {
   (void)self; (void)method;
@@ -4700,6 +4718,7 @@ static void ff9_skipmovie_install(uintptr_t base) {
   hook_arm64(base + 0x149B77C, (uintptr_t)my_MovieMaterial_get_Duration);
   hook_arm64(base + 0x149B890, (uintptr_t)my_MovieMaterial_get_Frame);
   hook_arm64(base + 0x149B908, (uintptr_t)my_MovieMaterial_get_TotalFrame);
+  hook_arm64(base + 0x1180404, (uintptr_t)my_MBG_SetFinishCallback);
   hook_arm64(base + 0x118483C, (uintptr_t)my_MBG_IsFinished);
   hook_arm64(base + 0x11848A4, (uintptr_t)my_MBG_IsFinished);
   hook_arm64(base + 0x1180DCC, (uintptr_t)my_MBG_GetFrame);
