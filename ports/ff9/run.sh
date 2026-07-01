@@ -34,6 +34,13 @@ if { [ -z "${TER_SCREEN_W:-}" ] || [ -z "${TER_SCREEN_H:-}" ]; } && [ -r /sys/cl
   case "$_sh" in ''|*[!0-9]*) _sh= ;; esac
   [ -n "$_sw" ] && [ -n "$_sh" ] && export TER_SCREEN_W="$_sw" TER_SCREEN_H="$_sh"
 fi
+if [ -n "${TER_SCREEN_W:-}" ] && [ -n "${TER_SCREEN_H:-}" ]; then
+  _x2=$((TER_SCREEN_W - 1)); _y2=$((TER_SCREEN_H - 1))
+  [ -w /sys/class/graphics/fb0/blank ] && echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null || true
+  [ -w /sys/class/graphics/fb0/window_axis ] && echo "0 0 $_x2 $_y2" > /sys/class/graphics/fb0/window_axis 2>/dev/null || true
+  [ -w /sys/class/graphics/fb0/free_scale_axis ] && echo "0 0 $_x2 $_y2" > /sys/class/graphics/fb0/free_scale_axis 2>/dev/null || true
+  [ -w /sys/class/graphics/fb0/free_scale ] && echo 0 > /sys/class/graphics/fb0/free_scale 2>/dev/null || true
+fi
 
 # --- boot mínimo FF9 ---
 # TER_NOSTORAGEPATCH: NÃO aplicar o NOP 0x2d8fac (offset do libunity Terraria 2021, errado p/ 2022).
