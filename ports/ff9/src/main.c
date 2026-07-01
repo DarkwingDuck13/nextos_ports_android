@@ -4491,6 +4491,92 @@ void *my_logger_diag(void *a0, void *a1, void *a2, void *a3, void *a4, void *a5,
   return 0;
 }
 
+/* FF9_LOGTHROW: captura o throw C++ real do Il2CppExceptionWrapper. O scene-load
+ * atual chega em __cxa_throw sem passar por il2cpp_raise_exception; logar aqui revela
+ * a classe/mensagem gerenciada antes do unwinder falhar e chamar std::terminate. */
+static void (*g_cxa_throw_orig)(void *, void *, void (*)(void *));
+static int ff9_safe_read_ptr(void *addr, void **out) {
+  uintptr_t a = (uintptr_t)addr;
+  if (!addr || !addr_readable(a) || !addr_readable(a + sizeof(void *) - 1)) return 0;
+  *out = *(void **)addr;
+  return 1;
+}
+static int ff9_copy_cstr(void *p, char *out, int cap) {
+  if (!p || !out || cap <= 0) return 0;
+  uintptr_t a = (uintptr_t)p;
+  int n = 0;
+  for (; n < cap - 1; n++) {
+    if (!addr_readable(a + n)) break;
+    unsigned char ch = ((unsigned char *)p)[n];
+    if (!ch) break;
+    if (ch < 0x20 || ch > 0x7e) return 0;
+    out[n] = (char)ch;
+  }
+  if (n <= 0) return 0;
+  out[n] = 0;
+  return 1;
+}
+static int ff9_copy_il2cpp_string(void *s, char *out, int cap) {
+  if (!s || !out || cap <= 0) return 0;
+  uintptr_t a = (uintptr_t)s;
+  if (!addr_readable(a + 0x10) || !addr_readable(a + 0x13)) return 0;
+  int len = *(int *)((char *)s + 0x10);
+  if (len <= 0 || len >= cap || !addr_readable(a + 0x14) ||
+      !addr_readable(a + 0x14 + (uintptr_t)(len - 1) * 2 + 1)) return 0;
+  unsigned short *chars = (unsigned short *)((char *)s + 0x14);
+  for (int i = 0; i < len; i++) {
+    unsigned short w = chars[i];
+    out[i] = (w >= 0x20 && w < 0x7f) ? (char)w : '?';
+  }
+  out[len] = 0;
+  return 1;
+}
+static int ff9_log_managed_exception_candidate(int n, const char *slot, void *ex) {
+  void *klass = NULL, *namep = NULL, *nsp = NULL;
+  char name[96], ns[96], msg[192];
+  if (!ff9_safe_read_ptr(ex, &klass) || !klass) return 0;
+  if (!ff9_safe_read_ptr((char *)klass + 0x10, &namep)) return 0;
+  if (!ff9_copy_cstr(namep, name, sizeof name)) return 0;
+  ns[0] = 0;
+  if (ff9_safe_read_ptr((char *)klass + 0x18, &nsp))
+    ff9_copy_cstr(nsp, ns, sizeof ns);
+  msg[0] = 0;
+  void *mstr = NULL;
+  if (ff9_safe_read_ptr((char *)ex + 0x18, &mstr))
+    ff9_copy_il2cpp_string(mstr, msg, sizeof msg);
+  fprintf(stderr, "[LOGTHROW] #%d %s ex=%p klass=%p type=%s%s%s msg=\"%s\"\n",
+          n, slot, ex, klass, ns[0] ? ns : "", ns[0] ? "." : "", name, msg);
+  fsync(2);
+  return 1;
+}
+__attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *));
+__attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void (*dest)(void *)) {
+  static int n = 0;
+  int id = ++n;
+  if (id <= 80) {
+    if (!g_maps_len) maps_snapshot();
+    char tin[160] = {0};
+    void *namep = NULL;
+    if (ff9_safe_read_ptr((char *)tinfo + 8, &namep))
+      ff9_copy_cstr(namep, tin, sizeof tin);
+    void *wrapped = NULL;
+    ff9_safe_read_ptr(thrown, &wrapped);
+    fprintf(stderr, "[LOGTHROW] #%d thrown=%p wrapped=%p tinfo=%p typeinfo=\"%s\" dest=%p\n",
+            id, thrown, wrapped, tinfo, tin, (void *)dest);
+    if (!ff9_log_managed_exception_candidate(id, "wrapped", wrapped))
+      ff9_log_managed_exception_candidate(id, "direct", thrown);
+    if (thrown && addr_readable((uintptr_t)thrown)) {
+      uintptr_t *q = (uintptr_t *)thrown;
+      fprintf(stderr, "[LOGTHROW] #%d qwords=%016lx %016lx %016lx %016lx\n", id,
+              (unsigned long)q[0], (unsigned long)q[1],
+              (unsigned long)q[2], (unsigned long)q[3]);
+    }
+    fsync(2);
+  }
+  g_cxa_throw_orig(thrown, tinfo, dest);
+  __builtin_trap();
+}
+
 /* FF9_LOGEXC: o content scene-load LANÇA uma exceção gerenciada (il2cpp joga como C++
  * Il2CppExceptionWrapper) e o unwinding C++ no so-loader estoura a pilha (stack overflow no
  * tombstone). Hookamos il2cpp_raise_exception(0xff7be0) p/ LOGAR a classe+mensagem da exceção
@@ -6847,6 +6933,22 @@ int main(int argc, char **argv) {
         hook_arm64(g_il2cpp_base + 0xff7be0, (uintptr_t)my_log_exception);
         le_hooked = 1;
         fprintf(stderr, "[LOGEXC] il2cpp_raise_exception(0xff7be0) hookado @f=%d\n", f); fsync(2);
+      }
+      /* FF9_LOGTHROW: hook no __cxa_throw real (0x10a5824). Captura Il2CppExceptionWrapper
+         direto, inclusive quando o raise gerenciado não passa por il2cpp_raise_exception. */
+      static int lt_hooked = 0;
+      if (!lt_hooked && getenv("FF9_LOGTHROW") && g_il2cpp_base && f >= 180) {
+        extern void my_cxa_throw_diag(void *, void *, void (*)(void *));
+        g_cxa_throw_orig = (void (*)(void *, void *, void (*)(void *)))
+                           mk_tramp(g_il2cpp_base + 0x10a5824, "__cxa_throw");
+        if (g_cxa_throw_orig) {
+          hook_arm64(g_il2cpp_base + 0x10a5824, (uintptr_t)my_cxa_throw_diag);
+          fprintf(stderr, "[LOGTHROW] __cxa_throw(0x10a5824) hookado @f=%d orig=%p\n",
+                  f, (void *)g_cxa_throw_orig);
+        } else {
+          fprintf(stderr, "[LOGTHROW] mk_tramp falhou; hook OFF\n");
+        }
+        lt_hooked = 1; fsync(2);
       }
       static int nl_hooked = 0;
       if (!nl_hooked && getenv("FF9_NOLOGGER") && g_il2cpp_base && f >= 180) {
