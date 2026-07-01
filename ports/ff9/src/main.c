@@ -22,11 +22,14 @@
 #include <pthread.h>
 #include <signal.h>
 #include <ucontext.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <SDL2/SDL.h>
 #include <linux/input.h>
+#include <linux/fb.h>
 
 #include "so_util.h"
 #include "imports.h"
@@ -4479,18 +4482,28 @@ int my_getanybuttondown(void *self) {
  * onde deployamos os bundles -> LoadFromFile abre o arquivo de verdade.
  * Cria a string il2cpp 1× via il2cpp_string_new (não chama o original). */
 static void *g_sa_string = NULL;
+static void *g_sa_movie_string = NULL;
 void *my_streamingAssetsPath(void);
 void *my_streamingAssetsPath(void) {
-  if (!g_sa_string && g_il2cpp_base) {
+  if (!g_il2cpp_base) return NULL;
+  /* MovieMaterial.Load monta "streamingAssetsPath/assets/ma/<FMV>.mp4".
+   * O resto do jogo ainda precisa de bin/Data para AssetBundles/aobb. */
+  uintptr_t lr = (uintptr_t)__builtin_return_address(0);
+  int movie = (lr >= g_il2cpp_base + 0x149c680 && lr < g_il2cpp_base + 0x149c710);
+  void **slot = movie ? &g_sa_movie_string : &g_sa_string;
+  if (!*slot) {
     /* il2cpp_string_new resolvido por NOME (export; FF9 != Cuphead offset). */
     void *(*isn)(const char *) = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new");
     if (!isn) isn = (void *(*)(const char *))(g_il2cpp_base + 0xff7ff0); /* fallback export RVA */
-    const char *p = getenv("CUP_SAPATH"); if (!p) p = "/storage/roms/ff9/bin/Data";
-    g_sa_string = isn(p);
-    fprintf(stderr, "[SAPATH] streamingAssetsPath -> \"%s\" (il2cpp str=%p, isn=%p)\n", p, g_sa_string, (void*)isn);
+    const char *p = movie ? getenv("FF9_MOVIEPATH") : getenv("CUP_SAPATH");
+    if (!p) p = movie ? "/storage/roms/ff9" : "/storage/roms/ff9/bin/Data";
+    *slot = isn(p);
+    fprintf(stderr, "[SAPATH] streamingAssetsPath%s -> \"%s\" (lr=0x%lx str=%p)\n",
+            movie ? "[movie]" : "", p,
+            g_il2cpp_base ? (unsigned long)(lr - g_il2cpp_base) : (unsigned long)lr, *slot);
     fsync(2);
   }
-  return g_sa_string;
+  return *slot;
 }
 /* 🔑 FF9_FAKEAUTH: TitleUI.WaitForSocialLoginProcess (coroutine de boot) fica YIELDando até
  * SiliconStudio.Social.IsSocialPlatformAuthenticated() (0x1482d30) retornar true. No so-loader
@@ -4601,6 +4614,11 @@ static int ff9_copy_il2cpp_string(void *s, char *out, int cap) {
   out[len] = 0;
   return 1;
 }
+static int ff9_copy_il2cpp_string_live(void *s, char *out, int cap) {
+  if (ff9_copy_il2cpp_string(s, out, cap)) return 1;
+  maps_snapshot();
+  return ff9_copy_il2cpp_string(s, out, cap);
+}
 static int ff9_log_managed_exception_candidate(int n, const char *slot, void *ex) {
   void *klass = NULL, *namep = NULL, *nsp = NULL;
   char name[96], ns[96], msg[192];
@@ -4632,6 +4650,672 @@ static void ff9_log_throw_stack_ras(int id) {
       hits++;
     }
   }
+  fsync(2);
+}
+
+/* FF9_MOVIEFIX: quando o caminho nativo dos FMVs fica ligado, MovieMaterial.Load
+ * pode chegar com _videoPlayer == NULL. O prefab Android espera que o componente
+ * exista no GameObject; no so-loader isso falha. Em vez de pular o video, anexa um
+ * UnityEngine.Video.VideoPlayer real no GameObject e deixa o Load original seguir. */
+struct ff9_il2_api {
+  int ok;
+  void *(*domain_get)(void);
+  const void **(*domain_get_assemblies)(void *, size_t *);
+  void *(*assembly_get_image)(const void *);
+  size_t (*image_get_class_count)(void *);
+  void *(*image_get_class)(void *, size_t);
+  void *(*class_from_name)(void *, const char *, const char *);
+  const char *(*class_get_name)(void *);
+  const char *(*class_get_namespace)(void *);
+  void *(*class_get_methods)(void *, void **);
+  void *(*class_get_method_from_name)(void *, const char *, int);
+  void *(*class_get_fields)(void *, void **);
+  const char *(*field_get_name)(void *);
+  size_t (*field_get_offset)(void *);
+  void *(*field_get_type)(void *);
+  const char *(*method_get_name)(void *);
+  unsigned (*method_get_param_count)(void *);
+  void *(*method_get_param)(void *, unsigned);
+  const char *(*method_get_param_name)(void *, unsigned);
+  void *(*method_get_return_type)(void *);
+  char *(*type_get_name)(void *);
+  void *(*class_get_type)(void *);
+  void *(*type_get_object)(void *);
+  void *(*object_get_class)(void *);
+  void *(*runtime_invoke)(void *, void *, void **, void **);
+};
+static struct ff9_il2_api F9I;
+
+static int ff9_il2_resolve(void) {
+  if (F9I.ok) return 1;
+  if (!g_il2cpp_base) return 0;
+#define F9I_FN(name, rva) F9I.name = (void *)(g_il2cpp_base + (rva))
+  F9I_FN(domain_get, 0xff7bb0);
+  F9I_FN(domain_get_assemblies, 0xff7bbc);
+  F9I_FN(assembly_get_image, 0xff7680);
+  F9I_FN(image_get_class_count, 0xff8298);
+  F9I_FN(image_get_class, 0xff82ac);
+  F9I_FN(class_from_name, 0xff76b8);
+  F9I_FN(class_get_name, 0xff76e4);
+  F9I_FN(class_get_namespace, 0xff76e8);
+  F9I_FN(class_get_methods, 0xff76dc);
+  F9I_FN(class_get_method_from_name, 0xff76e0);
+  F9I_FN(class_get_fields, 0xff76c4);
+  F9I_FN(field_get_name, 0xff7d74);
+  F9I_FN(field_get_offset, 0xff7d80);
+  F9I_FN(field_get_type, 0xff7d84);
+  F9I_FN(method_get_name, 0xff7ef4);
+  F9I_FN(method_get_param_count, 0xff7f04);
+  F9I_FN(method_get_param, 0xff7f08);
+  F9I_FN(method_get_param_name, 0xff7f4c);
+  F9I_FN(method_get_return_type, 0xff7ee8);
+  F9I_FN(type_get_name, 0xff8070);
+  F9I_FN(class_get_type, 0xff7764);
+  F9I_FN(type_get_object, 0xff8064);
+  F9I_FN(object_get_class, 0xff7f80);
+  F9I_FN(runtime_invoke, 0xff7fd4);
+#undef F9I_FN
+  F9I.ok = 1;
+  return 1;
+}
+
+static void *ff9_il2_find_class(const char *ns, const char *cn) {
+  if (!ff9_il2_resolve() || !cn) return NULL;
+  void *dom = F9I.domain_get();
+  if (!dom) return NULL;
+  size_t na = 0;
+  const void **as = F9I.domain_get_assemblies(dom, &na);
+  if (!as || !na) return NULL;
+  for (size_t i = 0; i < na; i++) {
+    void *img = F9I.assembly_get_image(as[i]);
+    if (!img) continue;
+    void *cls = F9I.class_from_name(img, ns ? ns : "", cn);
+    if (cls) return cls;
+  }
+  return NULL;
+}
+
+static void *ff9_il2_find_method_any(const char *ns, const char *cn, const char *mn, int argc) {
+  void *cls = ff9_il2_find_class(ns, cn);
+  return (cls && F9I.class_get_method_from_name) ? F9I.class_get_method_from_name(cls, mn, argc) : NULL;
+}
+
+static const char *ff9_obj_class_name(void *obj, char *buf, size_t cap) {
+  if (!buf || cap == 0) return "?";
+  buf[0] = 0;
+  if (!obj || !ff9_il2_resolve()) {
+    snprintf(buf, cap, "%s", obj ? "?" : "(null)");
+    return buf;
+  }
+  void *cls = F9I.object_get_class ? F9I.object_get_class(obj) : NULL;
+  if (!cls && addr_readable((uintptr_t)obj)) cls = *(void **)obj;
+  const char *ns = cls && F9I.class_get_namespace ? F9I.class_get_namespace(cls) : NULL;
+  const char *cn = cls && F9I.class_get_name ? F9I.class_get_name(cls) : NULL;
+  snprintf(buf, cap, "%s%s%s", ns && *ns ? ns : "", ns && *ns ? "." : "", cn ? cn : "?");
+  return buf;
+}
+
+static int ff9_obj_is_class(void *obj, const char *ns, const char *cn) {
+  if (!obj || !ff9_il2_resolve()) return 0;
+  void *cls = F9I.object_get_class ? F9I.object_get_class(obj) : NULL;
+  if (!cls) return 0;
+  const char *ons = F9I.class_get_namespace ? F9I.class_get_namespace(cls) : "";
+  const char *ocn = F9I.class_get_name ? F9I.class_get_name(cls) : "";
+  return ons && ocn && !strcmp(ons, ns ? ns : "") && !strcmp(ocn, cn);
+}
+
+static void ff9_il2_log_exception(const char *tag, void *ex) {
+  if (!ex) return;
+  char cls[128], msg[192];
+  msg[0] = 0;
+  void *mstr = NULL;
+  if (ff9_safe_read_ptr((char *)ex + 0x18, &mstr))
+    ff9_copy_il2cpp_string(mstr, msg, sizeof msg);
+  fprintf(stderr, "[IL2CPP] %s exception=%p type=%s msg=\"%s\"\n",
+          tag, ex, ff9_obj_class_name(ex, cls, sizeof cls), msg);
+  fsync(2);
+}
+
+static void ff9_il2_dump_class(const char *spec) {
+  if (!spec || !*spec || !ff9_il2_resolve()) return;
+  char ns[160] = {0}, cn[160] = {0};
+  const char *colon = strchr(spec, ':');
+  if (colon) {
+    size_t n = (size_t)(colon - spec);
+    if (n >= sizeof ns) n = sizeof ns - 1;
+    memcpy(ns, spec, n);
+    snprintf(cn, sizeof cn, "%s", colon + 1);
+  } else {
+    snprintf(cn, sizeof cn, "%s", spec);
+  }
+  void *cls = ff9_il2_find_class(ns, cn);
+  if (!cls) {
+    fprintf(stderr, "[DUMPCLS] %s:%s nao encontrada\n", ns, cn);
+    fsync(2);
+    return;
+  }
+  fprintf(stderr, "[DUMPCLS] %s:%s cls=%p\n=== CAMPOS ===\n", ns, cn, cls);
+  void *it = NULL, *fi = NULL;
+  int n = 0;
+  while ((fi = F9I.class_get_fields(cls, &it)) && n++ < 240) {
+    void *ty = F9I.field_get_type ? F9I.field_get_type(fi) : NULL;
+    char *tn = ty && F9I.type_get_name ? F9I.type_get_name(ty) : NULL;
+    fprintf(stderr, "  F off=0x%zx %-36s %s\n",
+            F9I.field_get_offset ? F9I.field_get_offset(fi) : 0,
+            F9I.field_get_name ? F9I.field_get_name(fi) : "?",
+            tn ? tn : "?");
+  }
+  fprintf(stderr, "=== METODOS ===\n");
+  it = NULL;
+  void *mm = NULL;
+  n = 0;
+  while ((mm = F9I.class_get_methods(cls, &it)) && n++ < 300) {
+    void *mp = *(void **)mm;
+    unsigned pc = F9I.method_get_param_count ? F9I.method_get_param_count(mm) : 0;
+    void *rt = F9I.method_get_return_type ? F9I.method_get_return_type(mm) : NULL;
+    char *rtn = rt && F9I.type_get_name ? F9I.type_get_name(rt) : NULL;
+    fprintf(stderr, "  M %s(", F9I.method_get_name ? F9I.method_get_name(mm) : "?");
+    for (unsigned i = 0; i < pc && i < 8; i++) {
+      void *pt = F9I.method_get_param ? F9I.method_get_param(mm, i) : NULL;
+      char *ptn = pt && F9I.type_get_name ? F9I.type_get_name(pt) : NULL;
+      fprintf(stderr, "%s%s", i ? "," : "", ptn ? ptn : "?");
+    }
+    fprintf(stderr, ") -> %s code=il2cpp+0x%lx method=%p\n",
+            rtn ? rtn : "?", mp ? (unsigned long)((uintptr_t)mp - g_il2cpp_base) : 0UL, mm);
+  }
+  fsync(2);
+}
+
+static void ff9_il2_methfind(const char *needle) {
+  if (!needle || !*needle || !ff9_il2_resolve()) return;
+  void *dom = F9I.domain_get();
+  size_t na = 0;
+  const void **as = dom ? F9I.domain_get_assemblies(dom, &na) : NULL;
+  fprintf(stderr, "[METHFIND] FF9 metodos contendo \"%s\"\n", needle);
+  int hits = 0;
+  for (size_t ai = 0; as && ai < na && hits < 180; ai++) {
+    void *img = F9I.assembly_get_image(as[ai]);
+    if (!img || !F9I.image_get_class_count || !F9I.image_get_class) continue;
+    size_t cc = F9I.image_get_class_count(img);
+    for (size_t ci = 0; ci < cc && hits < 180; ci++) {
+      void *cls = F9I.image_get_class(img, ci);
+      if (!cls) continue;
+      void *it = NULL, *mm = NULL;
+      while ((mm = F9I.class_get_methods(cls, &it)) && hits < 180) {
+        const char *mn = F9I.method_get_name ? F9I.method_get_name(mm) : NULL;
+        if (!mn || !strstr(mn, needle)) continue;
+        void *mp = *(void **)mm;
+        fprintf(stderr, "  %s%s%s.%s argc=%u code=il2cpp+0x%lx method=%p\n",
+                F9I.class_get_namespace(cls) ? F9I.class_get_namespace(cls) : "",
+                F9I.class_get_namespace(cls) && *F9I.class_get_namespace(cls) ? "." : "",
+                F9I.class_get_name(cls) ? F9I.class_get_name(cls) : "?",
+                mn, F9I.method_get_param_count ? F9I.method_get_param_count(mm) : 0,
+                mp ? (unsigned long)((uintptr_t)mp - g_il2cpp_base) : 0UL, mm);
+        hits++;
+      }
+    }
+  }
+  fprintf(stderr, "[METHFIND] hits=%d\n", hits);
+  fsync(2);
+}
+
+static void ff9_il2_find_method_rva(unsigned long want) {
+  if (!want || !ff9_il2_resolve()) return;
+  void *dom = F9I.domain_get();
+  size_t na = 0;
+  const void **as = dom ? F9I.domain_get_assemblies(dom, &na) : NULL;
+  int hits = 0;
+  for (size_t ai = 0; as && ai < na && hits < 12; ai++) {
+    void *img = F9I.assembly_get_image(as[ai]);
+    if (!img || !F9I.image_get_class_count || !F9I.image_get_class) continue;
+    size_t cc = F9I.image_get_class_count(img);
+    for (size_t ci = 0; ci < cc && hits < 12; ci++) {
+      void *cls = F9I.image_get_class(img, ci);
+      if (!cls) continue;
+      void *it = NULL, *mm = NULL;
+      while ((mm = F9I.class_get_methods(cls, &it)) && hits < 12) {
+        void *mp = *(void **)mm;
+        if (mp && (unsigned long)((uintptr_t)mp - g_il2cpp_base) == want) {
+          fprintf(stderr, "[FINDM] il2cpp+0x%lx -> %s%s%s.%s argc=%u method=%p\n",
+                  want,
+                  F9I.class_get_namespace(cls) ? F9I.class_get_namespace(cls) : "",
+                  F9I.class_get_namespace(cls) && *F9I.class_get_namespace(cls) ? "." : "",
+                  F9I.class_get_name(cls) ? F9I.class_get_name(cls) : "?",
+                  F9I.method_get_name ? F9I.method_get_name(mm) : "?",
+                  F9I.method_get_param_count ? F9I.method_get_param_count(mm) : 0, mm);
+          hits++;
+        }
+      }
+    }
+  }
+  if (!hits) fprintf(stderr, "[FINDM] il2cpp+0x%lx nao encontrado\n", want);
+  fsync(2);
+}
+
+static void ff9_il2_diag_env_once(void) {
+  const char *dump = getenv("FF9_DUMPCLS");
+  if (dump) ff9_il2_dump_class(dump);
+  const char *mf = getenv("FF9_METHFIND");
+  if (mf) ff9_il2_methfind(mf);
+  const char *fm = getenv("FF9_FINDM");
+  if (fm) ff9_il2_find_method_rva(strtoul(fm, NULL, 0));
+}
+
+struct ff9_movie_rec { void *self, *target, *go; };
+static struct ff9_movie_rec g_movie_recs[16];
+static unsigned g_movie_rec_pos;
+static void (*g_movie_ctor_orig)(void *, void *, void *);
+static void (*g_movie_load_orig)(void *, void *, void *);
+
+static void ff9_write_ref(void *slot, void *value) {
+  if (!slot) return;
+  void *before = *(void **)slot;
+  *(void **)slot = value;
+  void *mid = *(void **)slot;
+  if (g_il2cpp_base)
+    ((void (*)(void *, void *))(g_il2cpp_base + 0x10170ec))(slot, value);
+  void *after = *(void **)slot;
+  fprintf(stderr, "[MOVIEFIX] write_ref slot=%p before=%p value=%p mid=%p after=%p\n",
+          slot, before, value, mid, after);
+  fsync(2);
+}
+
+static void *ff9_component_get_gameObject(void *component) {
+  if (!component || !g_il2cpp_base) return NULL;
+  return ((void *(*)(void *, void *))(g_il2cpp_base + 0x255e72c))(component, NULL);
+}
+
+static void ff9_movie_remember(void *self, void *target, void *go) {
+  if (!self) return;
+  for (unsigned i = 0; i < sizeof g_movie_recs / sizeof g_movie_recs[0]; i++) {
+    if (g_movie_recs[i].self == self) {
+      g_movie_recs[i].target = target;
+      if (go) g_movie_recs[i].go = go;
+      return;
+    }
+  }
+  struct ff9_movie_rec *r = &g_movie_recs[g_movie_rec_pos++ % (sizeof g_movie_recs / sizeof g_movie_recs[0])];
+  r->self = self;
+  r->target = target;
+  r->go = go;
+}
+
+static void *ff9_movie_known_go(void *self) {
+  if (!self) return NULL;
+  for (unsigned i = 0; i < sizeof g_movie_recs / sizeof g_movie_recs[0]; i++)
+    if (g_movie_recs[i].self == self && g_movie_recs[i].go) return g_movie_recs[i].go;
+  void *f38 = NULL;
+  if (ff9_safe_read_ptr((char *)self + 0x38, &f38) && ff9_obj_is_class(f38, "UnityEngine", "GameObject"))
+    return f38;
+  return NULL;
+}
+
+static void ff9_movie_log_fields(const char *tag, void *self, void *target, void *go) {
+  static unsigned logs;
+  if (!getenv("FF9_MOVIESPY") && logs >= 16) return;
+  logs++;
+  void *f38 = NULL, *f40 = NULL, *f48 = NULL, *f50 = NULL, *f58 = NULL;
+  if (self) {
+    f38 = *(void **)((char *)self + 0x38);
+    f40 = *(void **)((char *)self + 0x40);
+    f48 = *(void **)((char *)self + 0x48);
+    f50 = *(void **)((char *)self + 0x50);
+    f58 = *(void **)((char *)self + 0x58);
+  }
+  char cs[128], c38[128], c40[128], c48[128], c50[128], ct[128], cg[128];
+  fprintf(stderr,
+          "[MOVIEFIX] %s self=%p(%s) target=%p(%s) go=%p(%s) f38=%p(%s) f40=%p(%s) f48=%p(%s) f50=%p(%s) f58=%p f=%d\n",
+          tag, self, ff9_obj_class_name(self, cs, sizeof cs),
+          target, ff9_obj_class_name(target, ct, sizeof ct),
+          go, ff9_obj_class_name(go, cg, sizeof cg),
+          f38, ff9_obj_class_name(f38, c38, sizeof c38),
+          f40, ff9_obj_class_name(f40, c40, sizeof c40),
+          f48, ff9_obj_class_name(f48, c48, sizeof c48),
+          f50, ff9_obj_class_name(f50, c50, sizeof c50),
+          f58, g_render_frame);
+  fsync(2);
+}
+
+static void *ff9_gameobject_get_or_add_videoplayer(void *go) {
+  if (!go || !ff9_il2_resolve()) return NULL;
+  void *vp_cls = ff9_il2_find_class("UnityEngine.Video", "VideoPlayer");
+  void *go_cls = ff9_il2_find_class("UnityEngine", "GameObject");
+  if (!vp_cls || !go_cls) {
+    fprintf(stderr, "[MOVIEFIX] class lookup falhou go_cls=%p vp_cls=%p\n", go_cls, vp_cls);
+    fsync(2);
+    return NULL;
+  }
+  void *vp_type = F9I.type_get_object(F9I.class_get_type(vp_cls));
+  void *args[1] = { vp_type };
+  void *exc = NULL;
+  void *get = F9I.class_get_method_from_name(go_cls, "GetComponent", 1);
+  if (get) {
+    void *cur = F9I.runtime_invoke(get, go, args, &exc);
+    if (exc) { ff9_il2_log_exception("GameObject.GetComponent(VideoPlayer)", exc); exc = NULL; }
+    if (cur) {
+      fprintf(stderr, "[MOVIEFIX] GetComponent(VideoPlayer) -> %p\n", cur);
+      fsync(2);
+      return cur;
+    }
+  }
+  void *add = F9I.class_get_method_from_name(go_cls, "Internal_AddComponentWithType", 1);
+  if (!add) add = F9I.class_get_method_from_name(go_cls, "AddComponent", 1);
+  if (!add) {
+    fprintf(stderr, "[MOVIEFIX] AddComponent(Type) nao encontrado\n");
+    fsync(2);
+    return NULL;
+  }
+  void *vp = F9I.runtime_invoke(add, go, args, &exc);
+  if (exc) {
+    ff9_il2_log_exception("GameObject.AddComponent(VideoPlayer)", exc);
+    return NULL;
+  }
+  fprintf(stderr, "[MOVIEFIX] AddComponent(VideoPlayer) go=%p -> %p method=il2cpp+0x%lx\n",
+          go, vp, *(void **)add ? (unsigned long)((uintptr_t)*(void **)add - g_il2cpp_base) : 0UL);
+  fsync(2);
+  return vp;
+}
+
+static void ff9_movie_configure_videoplayer(void *self, void *vp) {
+  if (!self || !vp || !g_il2cpp_base) return;
+  void *rt = *(void **)((char *)self + 0x48);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x278090c))(vp, 1, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780e9c))(vp, 0, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780a1c))(vp, 3, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780994))(vp, 2, NULL);
+  if (rt) ((void (*)(void *, void *, void *))(g_il2cpp_base + 0x27809d8))(vp, rt, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780b1c))(vp, 0, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780de0))(vp, 0, NULL);
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x2780ad8))(vp, 1, NULL);
+  fprintf(stderr, "[MOVIEFIX] VideoPlayer configurado vp=%p rt=%p\n", vp, rt);
+  fsync(2);
+}
+
+static int ff9_extmovie_enabled(void) {
+  if (getenv("FF9_NOEXTMOVIE")) return 0;
+  return getenv("FF9_EXTMOVIE") || getenv("FF9_NOSKIPMOVIE");
+}
+
+static int g_extmovie_fbfd = -2;
+static struct fb_var_screeninfo g_extmovie_vi;
+static int g_extmovie_vi_ok;
+static pid_t g_extmovie_pid;
+static void *g_extmovie_action;
+static int g_extmovie_calling;
+static char g_extmovie_path[320];
+static int g_extmovie_loaded;
+static int g_extmovie_started;
+static int g_extmovie_finished;
+static int g_extmovie_start_frame;
+static int g_extmovie_total_frames = 3600;
+static volatile uint32_t g_extmovie_mbg_queries;
+static volatile uint32_t g_extmovie_mbg_callbacks;
+
+static int ff9_extmovie_current_frame(void) {
+  if (!g_extmovie_started) return 0;
+  int fr = g_render_frame - g_extmovie_start_frame;
+  if (fr < 0) fr = 0;
+  if (g_extmovie_finished) fr = g_extmovie_total_frames;
+  if (fr > g_extmovie_total_frames) fr = g_extmovie_total_frames;
+  return fr;
+}
+
+static int ff9_extmovie_done(void) {
+  if (g_extmovie_pid > 0) return 0;
+  if (g_extmovie_loaded || g_extmovie_started) return g_extmovie_finished;
+  return 1;
+}
+
+static void ff9_extmovie_pan(int yoff) {
+  if (g_extmovie_fbfd == -2) {
+    g_extmovie_fbfd = open("/dev/fb0", O_RDWR);
+    if (g_extmovie_fbfd >= 0 && ioctl(g_extmovie_fbfd, FBIOGET_VSCREENINFO, &g_extmovie_vi) == 0) {
+      g_extmovie_vi_ok = 1;
+      fprintf(stderr, "[EXTMOVIE] fb0 %ux%u virtual %ux%u yoff=%u\n",
+              g_extmovie_vi.xres, g_extmovie_vi.yres,
+              g_extmovie_vi.xres_virtual, g_extmovie_vi.yres_virtual,
+              g_extmovie_vi.yoffset);
+    } else {
+      if (g_extmovie_fbfd >= 0) close(g_extmovie_fbfd);
+      g_extmovie_fbfd = -1;
+      g_extmovie_vi_ok = 0;
+    }
+  }
+  if (g_extmovie_fbfd < 0 || !g_extmovie_vi_ok) return;
+  if (g_extmovie_vi.yres_virtual < g_extmovie_vi.yres + (unsigned)yoff) return;
+  g_extmovie_vi.yoffset = (unsigned)yoff;
+  ioctl(g_extmovie_fbfd, FBIOPAN_DISPLAY, &g_extmovie_vi);
+}
+
+static void ff9_extmovie_key(void *movie_key, char *key, size_t cap) {
+  if (!key || !cap) return;
+  key[0] = 0;
+  if (movie_key) ff9_copy_il2cpp_string_live(movie_key, key, (int)cap);
+  if (!key[0]) snprintf(key, cap, "%s", getenv("FF9_EXTMOVIE_DEFAULT") ? getenv("FF9_EXTMOVIE_DEFAULT") : "FMV000");
+  char *slash = strrchr(key, '/');
+  char *base = slash ? slash + 1 : key;
+  if (!strstr(base, ".mp4") && strlen(key) + 4 < cap) strcat(key, ".mp4");
+}
+
+static void ff9_extmovie_load(void *self, void *movie_key) {
+  char key[160], cls[128];
+  ff9_extmovie_key(movie_key, key, sizeof key);
+  const char *root = getenv("FF9_MOVIEPATH");
+  if (!root) root = "/storage/roms/ff9";
+  if (key[0] == '/') snprintf(g_extmovie_path, sizeof g_extmovie_path, "%s", key);
+  else snprintf(g_extmovie_path, sizeof g_extmovie_path, "%s/assets/ma/%s", root, key);
+  int slen = -1;
+  maps_snapshot();
+  if (movie_key && addr_readable((uintptr_t)movie_key + 0x10)) slen = *(int *)((char *)movie_key + 0x10);
+  g_extmovie_loaded = 1;
+  g_extmovie_started = 0;
+  g_extmovie_finished = 0;
+  g_extmovie_start_frame = g_render_frame;
+  if (self) {
+    *(float *)((char *)self + 0x20) = 9999.0f;
+    *(uint8_t *)((char *)self + 0x30) = 1;
+    *(uint8_t *)((char *)self + 0x64) = 0;
+    *(uint8_t *)((char *)self + 0x65) = 0;
+    if (movie_key) ff9_write_ref((char *)self + 0x58, movie_key);
+  }
+  fprintf(stderr, "[EXTMOVIE] Load self=%p key=\"%s\" keyObj=%p(%s) strlen=%d path=%s exists=%d f=%d\n",
+          self, key, movie_key, ff9_obj_class_name(movie_key, cls, sizeof cls), slen,
+          g_extmovie_path, access(g_extmovie_path, R_OK) == 0, g_render_frame);
+  fsync(2);
+}
+
+static void ff9_extmovie_play(void *self) {
+  void *action = NULL;
+  if (self) action = *(void **)((char *)self + 0x10);
+  if (!action) action = g_extmovie_action;
+  g_extmovie_action = action;
+  if (!g_extmovie_path[0] || access(g_extmovie_path, R_OK) != 0) {
+    fprintf(stderr, "[EXTMOVIE] sem arquivo para tocar path=%s action=%p\n", g_extmovie_path, action);
+    g_extmovie_started = 1;
+    g_extmovie_finished = 1;
+    fsync(2);
+    return;
+  }
+  if (g_extmovie_pid > 0) {
+    kill(-g_extmovie_pid, SIGKILL);
+    waitpid(g_extmovie_pid, NULL, 0);
+    g_extmovie_pid = 0;
+  }
+  char cmd[1400];
+  snprintf(cmd, sizeof cmd,
+           "( ffmpeg -hide_banner -loglevel error -i '%s' -vn -f s16le -ar 48000 -ac 2 - 2>/dev/null "
+           "| pacat --rate=48000 --channels=2 --format=s16le ) & AP=$!; "
+           "ffmpeg -hide_banner -loglevel error -re -an -i '%s' "
+           "-vf 'scale=1280:720,format=bgra' -pix_fmt bgra -f fbdev /dev/fb0 2>/dev/null; "
+           "kill $AP 2>/dev/null; wait $AP 2>/dev/null",
+           g_extmovie_path, g_extmovie_path);
+  pid_t pid = fork();
+  if (pid < 0) {
+    fprintf(stderr, "[EXTMOVIE] fork falhou path=%s\n", g_extmovie_path);
+    g_extmovie_started = 1;
+    g_extmovie_finished = 1;
+    fsync(2);
+    return;
+  }
+  if (pid == 0) {
+    setsid();
+    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+  g_extmovie_pid = pid;
+  g_extmovie_started = 1;
+  g_extmovie_finished = 0;
+  g_extmovie_start_frame = g_render_frame;
+  ff9_extmovie_pan(720);
+  fprintf(stderr, "[EXTMOVIE] Play pid=%d action=%p path=%s\n", (int)pid, action, g_extmovie_path);
+  fsync(2);
+}
+
+static int ff9_extmovie_pump(void) {
+  if (g_extmovie_pid <= 0) return 0;
+  int status = 0;
+  pid_t r = waitpid(g_extmovie_pid, &status, WNOHANG);
+  if (r == 0) {
+    ff9_extmovie_pan(720);
+    return 1;
+  }
+  if (r != g_extmovie_pid) return 1;
+  fprintf(stderr, "[EXTMOVIE] terminou pid=%d status=0x%x action=%p f=%d\n",
+          (int)g_extmovie_pid, status, g_extmovie_action, g_render_frame);
+  g_extmovie_pid = 0;
+  g_extmovie_finished = 1;
+  ff9_extmovie_pan(0);
+  if (g_extmovie_action && g_il2cpp_base && !g_extmovie_calling) {
+    void *action = g_extmovie_action;
+    g_extmovie_action = NULL;
+    g_extmovie_calling = 1;
+    ((void (*)(void *, void *))(g_il2cpp_base + 0x1f5d454))(action, NULL);
+    g_extmovie_calling = 0;
+  }
+  fsync(2);
+  return 0;
+}
+
+static int ff9_movie_ensure_videoplayer(void *self) {
+  if (!self) return 0;
+  void *vp = *(void **)((char *)self + 0x40);
+  if (vp) return 1;
+  void *go = ff9_movie_known_go(self);
+  if (!go) {
+    fprintf(stderr, "[MOVIEFIX] sem GameObject para self=%p\n", self);
+    fsync(2);
+    return 0;
+  }
+  vp = ff9_gameobject_get_or_add_videoplayer(go);
+  if (!vp) return 0;
+  ff9_write_ref((char *)self + 0x40, vp);
+  ff9_movie_configure_videoplayer(self, vp);
+  ff9_movie_log_fields("attached", self, NULL, go);
+  return 1;
+}
+
+void my_MovieMaterial_ctor_fix(void *self, void *target, void *method);
+void my_MovieMaterial_ctor_fix(void *self, void *target, void *method) {
+  if (g_movie_ctor_orig) g_movie_ctor_orig(self, target, method);
+  void *go = NULL;
+  if (target) go = ff9_component_get_gameObject(target);
+  ff9_movie_remember(self, target, go);
+  ff9_movie_log_fields("ctor", self, target, go);
+}
+
+void my_MovieMaterial_Load_fix(void *self, void *movie_key, void *method);
+void my_MovieMaterial_Load_fix(void *self, void *movie_key, void *method) {
+  static unsigned n;
+  char key[160] = {0};
+  if (movie_key) ff9_copy_il2cpp_string(movie_key, key, sizeof key);
+  fprintf(stderr, "[MOVIEFIX] Load #%u self=%p key=\"%s\" f=%d\n", ++n, self, key, g_render_frame);
+  fsync(2);
+  if (ff9_extmovie_enabled()) {
+    (void)method;
+    ff9_extmovie_load(self, movie_key);
+    return;
+  }
+  ff9_movie_ensure_videoplayer(self);
+  if (g_movie_load_orig) g_movie_load_orig(self, movie_key, method);
+}
+
+void my_MovieMaterial_Play_fix(void *self, void *method);
+void my_MovieMaterial_Play_fix(void *self, void *method) {
+  (void)method;
+  if (ff9_extmovie_enabled()) {
+    ff9_extmovie_play(self);
+    return;
+  }
+  ((void (*)(void *, void *))(g_il2cpp_base + 0x149C748))(self, method);
+}
+
+int my_MovieMaterial_IsPrepared(void *self, void *method);
+float my_MovieMaterial_get_Duration(void *self, void *method);
+float my_MovieMaterial_get_PlayPosition(void *self, void *method);
+int my_MovieMaterial_get_Frame(void *self, void *method);
+int my_MovieMaterial_get_TotalFrame(void *self, void *method);
+int my_MBG_IsFinished_ext(void *self, void *method);
+void my_MBG_SetFinishCallback_ext(void *self, void *callback, void *method);
+int my_MBG_GetFrame_ext(void *self, void *method);
+int my_MBG_GetFrameCount_ext(void *self, void *method);
+int my_MBG_IsFinished_ext(void *self, void *method) {
+  (void)method;
+  int done = ff9_extmovie_done();
+  g_extmovie_mbg_queries++;
+  if (g_extmovie_mbg_queries <= 30) {
+    fprintf(stderr, "[EXTMOVIE] MBG.IsFinished -> %d #%u self=%p pid=%d loaded=%d started=%d finished=%d f=%d\n",
+            done, g_extmovie_mbg_queries, self, (int)g_extmovie_pid,
+            g_extmovie_loaded, g_extmovie_started, g_extmovie_finished, g_render_frame);
+    fsync(2);
+  }
+  return done;
+}
+void my_MBG_SetFinishCallback_ext(void *self, void *callback, void *method) {
+  (void)method;
+  void *movie = NULL;
+  if (self) ff9_safe_read_ptr((char *)self + 0x38, &movie); /* MBG.movieMaterial */
+  maps_snapshot();
+  if (movie && ((uintptr_t)movie >> 40) == 0 && addr_readable((uintptr_t)movie + 0x18))
+    ff9_write_ref((char *)movie + 0x10, callback);          /* MovieMaterial.OnFinished */
+  if (callback) g_extmovie_action = callback;
+  g_extmovie_mbg_callbacks++;
+  if (g_extmovie_mbg_callbacks <= 30) {
+    fprintf(stderr, "[EXTMOVIE] MBG.SetFinishCallback #%u callback=%p self=%p movie=%p pid=%d done=%d f=%d\n",
+            g_extmovie_mbg_callbacks, callback, self, movie, (int)g_extmovie_pid,
+            ff9_extmovie_done(), g_render_frame);
+    fsync(2);
+  }
+}
+int my_MBG_GetFrame_ext(void *self, void *method) {
+  (void)self; (void)method;
+  return ff9_extmovie_current_frame();
+}
+int my_MBG_GetFrameCount_ext(void *self, void *method) {
+  (void)self; (void)method;
+  return g_extmovie_total_frames;
+}
+static void ff9_moviefix_install(uintptr_t base) {
+  if (getenv("FF9_NOMOVIEFIX")) return;
+  g_movie_ctor_orig = (void (*)(void *, void *, void *))mk_tramp(base + 0x149B940, "MovieMaterial..ctor");
+  g_movie_load_orig = (void (*)(void *, void *, void *))mk_tramp(base + 0x149C594, "MovieMaterial.Load");
+  if (g_movie_ctor_orig) hook_arm64(base + 0x149B940, (uintptr_t)my_MovieMaterial_ctor_fix);
+  if (g_movie_load_orig) hook_arm64(base + 0x149C594, (uintptr_t)my_MovieMaterial_Load_fix);
+  if (ff9_extmovie_enabled()) {
+    hook_arm64(base + 0x149C748, (uintptr_t)my_MovieMaterial_Play_fix);
+    hook_arm64(base + 0x149C50C, (uintptr_t)my_MovieMaterial_IsPrepared);
+    hook_arm64(base + 0x149B708, (uintptr_t)my_MovieMaterial_get_PlayPosition);
+    hook_arm64(base + 0x149B77C, (uintptr_t)my_MovieMaterial_get_Duration);
+    hook_arm64(base + 0x149B890, (uintptr_t)my_MovieMaterial_get_Frame);
+    hook_arm64(base + 0x149B908, (uintptr_t)my_MovieMaterial_get_TotalFrame);
+    hook_arm64(base + 0x1180404, (uintptr_t)my_MBG_SetFinishCallback_ext);
+    hook_arm64(base + 0x118483C, (uintptr_t)my_MBG_IsFinished_ext);
+    hook_arm64(base + 0x11848A4, (uintptr_t)my_MBG_IsFinished_ext);
+    hook_arm64(base + 0x1180DCC, (uintptr_t)my_MBG_GetFrame_ext);
+    hook_arm64(base + 0x1181474, (uintptr_t)my_MBG_GetFrameCount_ext);
+  }
+  fprintf(stderr, "[MOVIEFIX] hooks %s ctor=%p load=%p\n",
+          getenv("FF9_NOSKIPMOVIE") ? "no caminho nativo" : "diagnostico",
+          (void *)g_movie_ctor_orig, (void *)g_movie_load_orig);
   fsync(2);
 }
 
@@ -4715,24 +5399,28 @@ int my_MovieMaterial_IsPrepared(void *self, void *method) {
 float my_MovieMaterial_get_Duration(void *self, void *method);
 float my_MovieMaterial_get_Duration(void *self, void *method) {
   (void)self; (void)method;
+  if (ff9_extmovie_enabled()) return g_extmovie_finished ? 0.05f : 9999.0f;
   return 0.05f;
 }
 
 float my_MovieMaterial_get_PlayPosition(void *self, void *method);
 float my_MovieMaterial_get_PlayPosition(void *self, void *method) {
   (void)self; (void)method;
+  if (ff9_extmovie_enabled()) return g_extmovie_finished ? 0.05f : 0.0f;
   return 0.05f;
 }
 
 int my_MovieMaterial_get_Frame(void *self, void *method);
 int my_MovieMaterial_get_Frame(void *self, void *method) {
   (void)self; (void)method;
+  if (ff9_extmovie_enabled()) return ff9_extmovie_current_frame();
   return 1;
 }
 
 int my_MovieMaterial_get_TotalFrame(void *self, void *method);
 int my_MovieMaterial_get_TotalFrame(void *self, void *method) {
   (void)self; (void)method;
+  if (ff9_extmovie_enabled()) return g_extmovie_total_frames;
   return 1;
 }
 
@@ -5445,6 +6133,18 @@ static uint32_t g_titleui_orig[4];
 static int g_newgame_done = 0;
 static int g_newgame_direct_done = 0;
 static int g_titlepad_sel = 0;
+static int g_titlehide_calling = 0;
+void my_TitleUI_Hide_fast(void *self, void *callback, void *method);
+void my_TitleUI_Hide_fast(void *self, void *callback, void *method) {
+  (void)method;
+  fprintf(stderr, "[TITLEHIDE] TitleUI.Hide bypass self=%p callback=%p\n", self, callback);
+  fsync(2);
+  if (callback && g_il2cpp_base && !g_titlehide_calling) {
+    g_titlehide_calling = 1;
+    ((void (*)(void *, void *))(g_il2cpp_base + 0x1f5d454))(callback, NULL); /* System.Action.Invoke */
+    g_titlehide_calling = 0;
+  }
+}
 static void ff9_go_set_active(void *go, int active, const char *tag) {
   if (!go || ((uintptr_t)go >> 40) != 0 || !g_il2cpp_base) return;
   ((void (*)(void *, int, void *))(g_il2cpp_base + 0x25613B0))(go, active, NULL);
@@ -7683,6 +8383,12 @@ int main(int argc, char **argv) {
     if (getenv("TER_GAMEPAD")) ter_gamepad_poll();   /* js0 -> estado lógico (antes do Update); hook é no swap */
     if (ff9_gamepad_on) ff9_gamepad_poll();          /* FF9: SDL pad/teclado -> Control held/down */
     if (ff9_gamepad_on) ff9_titlepad_tick();         /* TitleUI/NGUI: D-pad/A antes de perder edges sem swap */
+    if (ff9_extmovie_pump()) {
+      SDL_Event ev; while (SDL_PollEvent(&ev)) {}
+      if (gamepad_on) gp_frame_end();
+      usleep(16000);
+      continue;
+    }
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
       if (sigsetjmp(g_render_jmp, 1) == 0) {
@@ -7801,6 +8507,21 @@ int main(int argc, char **argv) {
         lf_hooked = 1;
         fprintf(stderr, "[LOGFMT] logger(0x10a6200) hookado @f=%d orig=%p\n", f, (void *)g_logfmt_orig); fsync(2);
       }
+      static int il2diag_done = 0;
+      if (!il2diag_done && g_il2cpp_base && f >= 180 &&
+          (getenv("FF9_DUMPCLS") || getenv("FF9_METHFIND") || getenv("FF9_FINDM"))) {
+        ff9_il2_diag_env_once();
+        il2diag_done = 1;
+      }
+      /* FF9_MOVIEFIX: no caminho nativo de FMV, garante um VideoPlayer real no
+         MovieMaterial antes do Load setar url/Prepare/Play. Nao instala quando
+         SKIPMOVIE esta ativo, porque ambos hookam MovieMaterial.Load. */
+      static int mfix_hooked = 0;
+      if (!mfix_hooked && (getenv("FF9_NOSKIPMOVIE") || getenv("FF9_MOVIEFIX") || getenv("FF9_MOVIESPY")) &&
+          g_il2cpp_base && f >= 180) {
+        ff9_moviefix_install(g_il2cpp_base);
+        mfix_hooked = 1;
+      }
       /* FF9_SKIPMOVIE (default ON): VideoPlayer Android fica NULL no so-loader; pula logos/FMV
          invocando OnFinished no frame seguinte. FF9_NOSKIPMOVIE desliga para comparar. */
       static int mv_hooked = 0;
@@ -7858,6 +8579,12 @@ int main(int argc, char **argv) {
         ff9_title_timer_patch(g_il2cpp_base);
         tmr_hooked = 1;
         fprintf(stderr, "[TITLETIMER] TitleUI/Timer null guards -> ret @f=%d\n", f); fsync(2);
+      }
+      static int thide_hooked = 0;
+      if (!thide_hooked && !getenv("FF9_NOTITLEHIDEFAST") && g_il2cpp_base && f >= 180) {
+        hook_arm64(g_il2cpp_base + 0x134384c, (uintptr_t)my_TitleUI_Hide_fast);
+        thide_hooked = 1;
+        fprintf(stderr, "[TITLEHIDE] TitleUI.Hide -> invoke callback direto @f=%d\n", f); fsync(2);
       }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {

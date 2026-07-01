@@ -7,6 +7,24 @@
 
 ---
 
+## s12 2026-07-01 — ✅ vídeos reais + New Game até campo renderizando personagem/UI
+
+> Device .90. Estado validado em framebuffer real, com `FF9_NOSKIPMOVIE=1`.
+
+### ✅ Avanços validados
+- `FMV000.mp4` toca por FFmpeg externo no framebuffer inferior (`/dev/fb0` yoffset 720), com áudio via `pacat`, e ao terminar chama o callback gerenciado (`EXTMOVIE terminou ... status=0x0`) sem voltar ao preto.
+- `New Game` agora passa pelo fade quebrado do título: `TitleUI.Hide(0x134384c)` foi trocado por bypass que invoca o `Action` callback direto. O NRE anterior de `TitleUI.Hide` sumiu.
+- `FMV001.mp4` toca real depois de `New Game` (`Load key="FMV001.mp4"`, `Play pid=...`, `terminou status=0x0`) e retorna ao jogo.
+- Pós-FMV001 chega em campo: framebuffer mostra Zidane + UI (`pause/help/Menu`) e segue vivo por milhares de frames.
+- Controle virtual/TitlePad continua funcionando: `baixo + A` seleciona `NEW GAME`; no campo, segurar direção altera o estado visual/atores.
+
+### Próximo muro
+- Campo ainda fica com fundo preto. Log mostra `FF9_FIELDGUARD` no-opando `EBG_animationInit` e `EBG_charAttachOverlay`; próximo foco é trocar esse guard por implementação/patch seguro que permita background/overlays em vez de só sobreviver.
+- `KeyNotFoundException` de som key `136` ainda aparece no fluxo, mas por enquanto não mata o processo com `FF9_NOLOGGER=1`.
+- `NullReferenceException` em `0x1122cac` ainda aparece perto do FMV/field, mas o processo sobrevive; investigar se impacta o fundo.
+
+---
+
 ## s11 2026-07-01 — ✅ menu inicial completo + áudio confirmado + 🎮 navegação Xbox no título
 
 > Device .90. Estado salvo após usuário confirmar na TV: menu visível com iluminação completa e áudio audível.
