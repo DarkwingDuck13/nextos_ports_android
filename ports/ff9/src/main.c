@@ -5100,18 +5100,143 @@ void *my_getbasepath(int location) {
  * input real (sem controle/touch) GetKeyTrigger sempre devolveria false, então não chamamos o
  * original. Control: Confirm=0 Cancel=1 Menu=2 Up=10 Down=11 Left=12 Right=13. */
 volatile int g_inject_ctrl = -1;
+static volatile uint32_t g_ff9_ctrl_state, g_ff9_ctrl_prev;
+static uint32_t (*g_eventinput_read_orig)(void *);
+
+static int ff9_gamepad_enabled(void) { return getenv("FF9_GAMEPAD") ? 1 : 0; }
+static uint32_t ff9_ctrl_bit(int key) { return (key >= 0 && key < 16) ? (1u << key) : 0; }
+static int ff9_ctrl_has(uint32_t st, int key) { uint32_t b = ff9_ctrl_bit(key); return b && (st & b); }
+
+static void ff9_keylog_once(const char *tag, int key) {
+  if (!getenv("FF9_KEYLOG")) return;
+  static unsigned char seen[2][256];
+  int bank = (tag && tag[0] == 'E') ? 1 : 0;
+  unsigned idx = (unsigned)(key & 0xff);
+  if (!seen[bank][idx]) {
+    seen[bank][idx] = 1;
+    fprintf(stderr, "[KEYPOLL] %s key=%d\n", tag ? tag : "?", key);
+    fsync(2);
+  }
+}
+
+static uint32_t ff9_build_ctrl_state(void) {
+  uint32_t s = 0;
+  int th = getenv("FF9_GPTH") ? atoi(getenv("FF9_GPTH")) : 12000;
+  if (th < 2000) th = 2000;
+
+  if (g_gp_log[4]) s |= ff9_ctrl_bit(0);   /* Confirm / A */
+  if (g_gp_log[5]) s |= ff9_ctrl_bit(1);   /* Cancel / B */
+  if (g_gp_log[7]) s |= ff9_ctrl_bit(2);   /* Menu / Y */
+  if (g_gp_log[6]) s |= ff9_ctrl_bit(3);   /* Special / X */
+  if (g_gp_log[10]) s |= ff9_ctrl_bit(4);
+  if (g_gp_log[11]) s |= ff9_ctrl_bit(5);
+  if (g_gp_log[12]) s |= ff9_ctrl_bit(6);
+  if (g_gp_log[13]) s |= ff9_ctrl_bit(7);
+  if (g_gp_log[8]) s |= ff9_ctrl_bit(8);   /* Pause / Start */
+  if (g_gp_log[9]) s |= ff9_ctrl_bit(9);   /* Select / Back */
+  if (g_gp_log[0] || g_gp_axis[1] < -th) s |= ff9_ctrl_bit(10);
+  if (g_gp_log[1] || g_gp_axis[1] >  th) s |= ff9_ctrl_bit(11);
+  if (g_gp_log[2] || g_gp_axis[0] < -th) s |= ff9_ctrl_bit(12);
+  if (g_gp_log[3] || g_gp_axis[0] >  th) s |= ff9_ctrl_bit(13);
+
+  const Uint8 *ks = SDL_GetKeyboardState(NULL);
+  if (ks) {
+    if (ks[SDL_SCANCODE_RETURN] || ks[SDL_SCANCODE_KP_ENTER] ||
+        ks[SDL_SCANCODE_SPACE] || ks[SDL_SCANCODE_Z])
+      s |= ff9_ctrl_bit(0);
+    if (ks[SDL_SCANCODE_ESCAPE] || ks[SDL_SCANCODE_BACKSPACE] || ks[SDL_SCANCODE_X])
+      s |= ff9_ctrl_bit(1);
+    if (ks[SDL_SCANCODE_TAB] || ks[SDL_SCANCODE_M])
+      s |= ff9_ctrl_bit(2);
+    if (ks[SDL_SCANCODE_C])
+      s |= ff9_ctrl_bit(3);
+    if (ks[SDL_SCANCODE_Q]) s |= ff9_ctrl_bit(4);
+    if (ks[SDL_SCANCODE_E]) s |= ff9_ctrl_bit(5);
+    if (ks[SDL_SCANCODE_P]) s |= ff9_ctrl_bit(8);
+    if (ks[SDL_SCANCODE_UP] || ks[SDL_SCANCODE_W]) s |= ff9_ctrl_bit(10);
+    if (ks[SDL_SCANCODE_DOWN] || ks[SDL_SCANCODE_S]) s |= ff9_ctrl_bit(11);
+    if (ks[SDL_SCANCODE_LEFT] || ks[SDL_SCANCODE_A]) s |= ff9_ctrl_bit(12);
+    if (ks[SDL_SCANCODE_RIGHT] || ks[SDL_SCANCODE_D]) s |= ff9_ctrl_bit(13);
+  }
+  return s;
+}
+
+static void ff9_gamepad_poll(void) {
+  if (!ff9_gamepad_enabled()) return;
+  g_ff9_ctrl_prev = g_ff9_ctrl_state;
+  ter_gamepad_poll();
+  g_ff9_ctrl_state = ff9_build_ctrl_state();
+  if (getenv("FF9_GPLOG")) {
+    static const char *nm[16] = {
+      "confirm","cancel","menu","special","lb","rb","lt","rt",
+      "pause","select","up","down","left","right","dpad","none"
+    };
+    uint32_t down = g_ff9_ctrl_state & ~g_ff9_ctrl_prev;
+    for (int i = 0; i < 16; i++) if (down & (1u << i)) {
+      fprintf(stderr, "[FF9GP] %s(%d) DOWN\n", nm[i], i);
+      fsync(2);
+    }
+  }
+}
+
 int my_GetKeyTrigger(void *thiz, int key, void *mi);
 int my_GetKeyTrigger(void *thiz, int key, void *mi) {
   (void)thiz; (void)mi;
   /* FF9_KEYLOG: loga (deduped) TODO Control que a UI (disclaimer/menu) pollar via
      GetKeyTrigger -> revela qual input dispensa o disclaimer. */
-  if (getenv("FF9_KEYLOG")) {
-    static unsigned char seen[256];
-    unsigned idx = (unsigned)(key & 0xff);
-    if (!seen[idx]) { seen[idx] = 1; fprintf(stderr, "[KEYPOLL] UI poll GetKeyTrigger(key=%d)\n", key); fsync(2); }
-  }
+  ff9_keylog_once("Android.GetKeyTrigger", key);
   if (key == g_inject_ctrl) { g_inject_ctrl = -1; if (getenv("FF9_INJLOG")) { fprintf(stderr, "[INJECT] GetKeyTrigger(%d)->true\n", key); fsync(2); } return 1; }
+  if (ff9_gamepad_enabled() && ff9_ctrl_has(g_ff9_ctrl_state & ~g_ff9_ctrl_prev, key))
+    return 1;
   return 0;
+}
+int my_EventInput_GetKey(int key, int isTriggerMode, void *mi);
+int my_EventInput_GetKey(int key, int isTriggerMode, void *mi) {
+  (void)mi;
+  ff9_keylog_once("EventInput.GetKey", key);
+  if (key == g_inject_ctrl) {
+    g_inject_ctrl = -1;
+    if (getenv("FF9_INJLOG")) { fprintf(stderr, "[INJECT] EventInput.GetKey(%d,%d)->true\n", key, isTriggerMode); fsync(2); }
+    return 1;
+  }
+  if (!ff9_gamepad_enabled()) return 0;
+  uint32_t st = (key >= 10 && key <= 13) ? g_ff9_ctrl_state :
+                isTriggerMode ? (g_ff9_ctrl_state & ~g_ff9_ctrl_prev) : g_ff9_ctrl_state;
+  return ff9_ctrl_has(st, key) ? 1 : 0;
+}
+static uint32_t ff9_eventinput_bits(void) {
+  uint32_t s = g_ff9_ctrl_state;
+  uint32_t b = 0;
+  if (s & ff9_ctrl_bit(9))  b |= 1u;        /* Select */
+  if (s & ff9_ctrl_bit(8))  b |= 8u;        /* Start/Pause */
+  if (s & ff9_ctrl_bit(10)) b |= 16u;       /* Up */
+  if (s & ff9_ctrl_bit(13)) b |= 32u;       /* Right */
+  if (s & ff9_ctrl_bit(11)) b |= 64u;       /* Down */
+  if (s & ff9_ctrl_bit(12)) b |= 128u;      /* Left */
+  if (s & ff9_ctrl_bit(6))  b |= 256u;      /* L2 */
+  if (s & ff9_ctrl_bit(7))  b |= 512u;      /* R2 */
+  if (s & ff9_ctrl_bit(4))  b |= 1024u;     /* L1 */
+  if (s & ff9_ctrl_bit(5))  b |= 2048u;     /* R1 */
+  if (s & ff9_ctrl_bit(2))  b |= 4096u;     /* Triangle/Menu */
+  if (s & ff9_ctrl_bit(1))  b |= 8192u;     /* Circle/Cancel */
+  if (s & ff9_ctrl_bit(0))  b |= 16384u;    /* X/Confirm */
+  if (s & ff9_ctrl_bit(3))  b |= 32768u;    /* Square/Special */
+  return b;
+}
+uint32_t my_EventInput_ReadInput(void *mi);
+uint32_t my_EventInput_ReadInput(void *mi) {
+  uint32_t r = g_eventinput_read_orig ? g_eventinput_read_orig(mi) : 0;
+  if (!ff9_gamepad_enabled()) return r;
+  uint32_t b = ff9_eventinput_bits();
+  if (b && getenv("FF9_GPLOG")) {
+    static uint32_t last_b;
+    if (b != last_b) {
+      fprintf(stderr, "[FF9PAD] ReadInput orig=0x%x add=0x%x -> 0x%x\n", r, b, r | b);
+      fsync(2);
+      last_b = b;
+    }
+  }
+  return r | b;
 }
 /* ===== FF9_TAP: simular TOQUE (mouse) p/ dispensar o disclaimer NGUI "tap to continue" =====
  * O disclaimer (Health&Safety) é NGUI/UICamera e lê Unity Input (touch/mouse), NÃO o
@@ -7168,6 +7293,7 @@ int main(int argc, char **argv) {
      diagnosticar agendado-vs-completado. */
   int jobspy = getenv("TER_JOBSPY") ? 1 : 0;
   int gamepad_on = getenv("CUP_GAMEPAD") ? 1 : 0;
+  int ff9_gamepad_on = ff9_gamepad_enabled();
   extern void gp_poll(void); extern void gp_frame_end(void);
   /* CUP_LOADYIELD=us: durante o boot/load, cede CPU aos WORKER threads (sched_yield+usleep)
      ANTES de cada frame integrar, p/ os jobs async COMPLETAREM antes da integração forçada
@@ -7274,6 +7400,7 @@ int main(int argc, char **argv) {
     }
     if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
     if (getenv("TER_GAMEPAD")) ter_gamepad_poll();   /* js0 -> estado lógico (antes do Update); hook é no swap */
+    if (ff9_gamepad_on) ff9_gamepad_poll();          /* FF9: SDL pad/teclado -> Control held/down */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
       if (sigsetjmp(g_render_jmp, 1) == 0) {
@@ -7470,8 +7597,18 @@ int main(int argc, char **argv) {
         if (f >= hat) {
           extern int my_GetKeyTrigger(void *, int, void *);
           hook_arm64(g_il2cpp_base + 0x12BF390, (uintptr_t)my_GetKeyTrigger);
+          if (ff9_gamepad_on) {
+            extern int my_EventInput_GetKey(int, int, void *);
+            extern uint32_t my_EventInput_ReadInput(void *);
+            if (!g_eventinput_read_orig)
+              g_eventinput_read_orig = (uint32_t (*)(void *))mk_tramp(g_il2cpp_base + 0x111E770, "EventInput.ReadInput");
+            if (g_eventinput_read_orig)
+              hook_arm64(g_il2cpp_base + 0x111E770, (uintptr_t)my_EventInput_ReadInput);
+            hook_arm64(g_il2cpp_base + 0x1129DF4, (uintptr_t)my_EventInput_GetKey);
+          }
           inj_hooked = 1;
-          fprintf(stderr, "[INJECT] GetKeyTrigger hook instalado (lazy) @f=%d\n", f); fsync(2);
+          fprintf(stderr, "[INJECT] GetKeyTrigger%s hook instalado (lazy) @f=%d\n",
+                  ff9_gamepad_on ? " + EventInput.GetKey" : "", f); fsync(2);
           /* FF9_TAP: hooka UnityEngine.Input (touch/mouse) p/ simular tap no NGUI/disclaimer */
           if (getenv("FF9_TAP")) {
             if (getenv("FF9_TAPX")) g_tap_x = (float)atoi(getenv("FF9_TAPX"));
