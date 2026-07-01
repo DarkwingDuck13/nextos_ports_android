@@ -6614,6 +6614,29 @@ static uint32_t ff9_eventinput_button_bits(uint32_t s) {
   if (s & ff9_ctrl_bit(3)) b |= 32768u;
   return b;
 }
+/* FF9_ETBLOG: instrumenta o fluxo de mensagem do script de campo (evento de abertura).
+   ETb.NewMesWin = o script PEDIU uma janela de texto (se nunca loga, o script não chegou
+   no diálogo); ETb.MesWinActive = o script está POLLANDO a janela (esperando fechar). */
+static void (*g_etb_newmeswin_orig)(void *, int, int, int, void *, void *);
+static int (*g_etb_meswinactive_orig)(void *, int, void *);
+void my_ETb_NewMesWin(void *self, int mes, int num, int flags, void *po, void *mi);
+void my_ETb_NewMesWin(void *self, int mes, int num, int flags, void *po, void *mi) {
+  fprintf(stderr, "[FF9ETB] NewMesWin mes=%d num=%d flags=0x%x po=%p f=%d\n",
+          mes, num, flags, po, g_render_frame);
+  fsync(2);
+  if (g_etb_newmeswin_orig) g_etb_newmeswin_orig(self, mes, num, flags, po, mi);
+}
+int my_ETb_MesWinActive(void *self, int num, void *mi);
+int my_ETb_MesWinActive(void *self, int num, void *mi) {
+  int r = g_etb_meswinactive_orig ? g_etb_meswinactive_orig(self, num, mi) : 0;
+  static int n = 0;
+  if (n < 40 || (g_render_frame % 300) == 0) {
+    n++;
+    fprintf(stderr, "[FF9ETB] MesWinActive num=%d -> %d f=%d\n", num, r, g_render_frame);
+    fsync(2);
+  }
+  return r;
+}
 void my_BubbleUI_SetInput(void *self, void *po, void *coll, uint32_t buttonCode, void *mi);
 void my_BubbleUI_SetInput(void *self, void *po, void *coll, uint32_t buttonCode, void *mi) {
   if (g_bubble_setinput_orig) g_bubble_setinput_orig(self, po, coll, buttonCode, mi);
@@ -9273,6 +9296,23 @@ int main(int argc, char **argv) {
             if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
               fprintf(stderr, "[FF9BUBBLE] hooks SetInput=%p InitialBubble=%p\n",
                       (void *)g_bubble_setinput_orig, (void *)g_bubble_initial_orig);
+              fsync(2);
+            }
+            if (getenv("FF9_ETBLOG")) {
+              extern void my_ETb_NewMesWin(void *, int, int, int, void *, void *);
+              extern int my_ETb_MesWinActive(void *, int, void *);
+              if (!g_etb_newmeswin_orig)
+                g_etb_newmeswin_orig = (void (*)(void *, int, int, int, void *, void *))
+                    mk_tramp(g_il2cpp_base + 0x111EF34, "ETb.NewMesWin");
+              if (g_etb_newmeswin_orig)
+                hook_arm64(g_il2cpp_base + 0x111EF34, (uintptr_t)my_ETb_NewMesWin);
+              if (!g_etb_meswinactive_orig)
+                g_etb_meswinactive_orig = (int (*)(void *, int, void *))
+                    mk_tramp(g_il2cpp_base + 0x11204C4, "ETb.MesWinActive");
+              if (g_etb_meswinactive_orig)
+                hook_arm64(g_il2cpp_base + 0x11204C4, (uintptr_t)my_ETb_MesWinActive);
+              fprintf(stderr, "[FF9ETB] hooks NewMesWin=%p MesWinActive=%p\n",
+                      (void *)g_etb_newmeswin_orig, (void *)g_etb_meswinactive_orig);
               fsync(2);
             }
           }
