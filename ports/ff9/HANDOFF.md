@@ -7,6 +7,29 @@
 
 ---
 
+## s10 2026-07-01 — ✅ launcher default chega em gameplay + áudio real + controles virtuais/evdev
+
+> Device .90. Commits: 853d0da, 234c206, 0574222.
+
+### ✅ Estado atual validado
+- `run.sh` agora usa por default o caminho validado: OBB real + splash/menu/new-game + `FF9_REALAUDIO=1`/`FF9_REALSOUND=1` + `FF9_GAMEPAD=1`/`FF9_FORCECONTROL=1`.
+- Áudio real sdlib/OpenSL/SDL confirmado no launcher default: `slCreateEngine`, `CreateOutputMix`, `CreateAudioPlayer`, `SDL audio aberto: 44100Hz 2ch`, `bq_Enqueue ... (PCM fluindo!)`.
+- Gameplay confirmado pelo framebuffer real (`/dev/fb0`, 1280x720 BGRA), não só por `shot.ppm`: campo inicial renderiza com UI de tempo/pausa e Zidane visível.
+- Input virtual default: `TER_GPVIRT=1`, comando via `/tmp/tergp` (`right`, `left`, etc.) é consumido por `TGPV` e move o personagem no campo.
+- Input físico ampliado: `TER_GP_EVDEV=1` no launcher; a camada de input abre `/dev/input/event0..15` e mapeia teclado/CEC/IR (`setas`, `OK/Enter/Espaço`, `Voltar/Esc`, `Menu`, `Select`, `PlayPause`) para o mesmo `g_gp_log` usado pelo FF9.
+- No device atual não existe `/dev/input/js0`; SDL reporta `SDL_NumJoysticks=0`. O caminho evdev é essencial para remoto/teclado nesse hardware.
+
+### Arquivos úteis de evidência local
+- `/home/nextos/ff9_virtual_compare.png`: comparação antes/depois de input virtual.
+- `/home/nextos/ff9_fb0_after_right.png`: captura real do framebuffer.
+- `/home/nextos/ff9_fb0_after_right_bright.png`: mesma captura clareada para visualizar melhor o campo escuro.
+
+### Próximo foco sugerido
+- Testar os botões físicos reais do controle/remote no device com `TER_GPEVLOG=1` para calibrar códigos extras, se algum botão vier diferente.
+- Depois reduzir ruído de log (`CallObjectMethod(getDevices)`) e manter só logs de diagnóstico opt-in.
+
+---
+
 ## s8 2026-06-30 — 🐛 New Game addr fix + ✅ DISCLAIMER RENDERIZA COMPLETO (FASTTWEEN) + muros mapeados
 
 > Device .90. Commits: a025dc5, 38656dd, efa922f, 55d7f10, 0cbf5e9, 9e09a37, 0a49d17, 054732c.
