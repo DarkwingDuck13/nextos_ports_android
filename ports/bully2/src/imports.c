@@ -1144,12 +1144,14 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
 
   if (real_glTexImage2D)
     real_glTexImage2D(tgt, lvl, ifmt, rw, rh, bord, fmt, type, rpx);
-  /* TRILINEAR: a base rebaixada perdeu os niveis>0 (descartados acima). Gera a
-   * cadeia de mipmap a partir dela p/ que LINEAR_MIPMAP_LINEAR funcione (tira o
-   * serrilhado das ruas). So p/ TEXTURE_2D uncompressed, OPACA (cutout=halo preto)
-   * e POT (Utgard nao mipmapa NPOT -> incompleta = preto). */
-  if (half && bully2_trilinear() && tgt == 0x0DE1 && !tex_bound_2d_cutout() &&
-      is_pot(rw) && is_pot(rh)) {
+  /* TRILINEAR (Low/Medium): em half mode os niveis>0 do jogo foram descartados
+   * acima -> geramos a cadeia com glGenerateMipmap p/ que LINEAR_MIPMAP_LINEAR
+   * funcione (tira o serrilhado). Cobre TODA textura 2D uncompressed com dados,
+   * OPACA (cutout=halo preto) e POT (Utgard nao mipmapa NPOT = preto) -- rebaixada
+   * (ruas/predios grandes) OU nao (texturas pequenas < min_dim). High nao entra
+   * aqui (usa os mips nativos do jogo). */
+  if (lvl == 0 && rpx && tex_half_enabled() && bully2_trilinear() &&
+      tgt == 0x0DE1 && !tex_bound_2d_cutout() && is_pot(rw) && is_pot(rh)) {
     static void (*r_genmip)(unsigned) = NULL;
     if (!r_genmip)
       r_genmip = (void (*)(unsigned))dlsym(RTLD_DEFAULT, "glGenerateMipmap");
