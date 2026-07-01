@@ -73,6 +73,19 @@ static int has_real_gl = 0;
 
 SDL_Window *egl_shim_get_window(void) { return egl_window; }
 
+/* Lê o GL_VERSION do contexto CURRENT e diz se é GLES (contém "ES"). Usado p/ REJEITAR
+   um contexto DESKTOP-GL: no Mesa/Panfrost, pedir ES pode devolver "3.1 Mesa" (desktop) que
+   cria OK mas não roda shader GLSL ES -> tela preta. Rejeitando, o loop tenta a próxima
+   versão até pegar um "OpenGL ES ..." real. SONIC_ALLOW_DESKTOP_GL desliga a rejeição. */
+static int ctx_is_gles(void) {
+  const unsigned char *(*p)(unsigned int) =
+      (const unsigned char *(*)(unsigned int))SDL_GL_GetProcAddress("glGetString");
+  if (!p) return 1;                 /* sem como checar -> aceita (não piora nada) */
+  const char *v = (const char *)p(0x1F02); /* GL_VERSION */
+  if (!v) return 1;
+  return (strstr(v, "ES") != NULL || strstr(v, "es") != NULL);
+}
+
 void egl_shim_create_window(void) {
   /* 🟢 FIX ROCKNIX/Mesa "sem video" (default ON; SONIC_NO_FORCE_GLES desliga):
      em devices Mesa/Panfrost (ROCKNIX, handhelds RK open-source) o SDL pode devolver
@@ -108,14 +121,17 @@ void egl_shim_create_window(void) {
      não temos. Regra #6: nada de driver hardcoded — só negociação dos
      atributos GL padrão do SDL; um contexto ES3 roda um engine ES2 sem
      problema (compatível pra trás). */
-  /* Preferência de versão: ES3 primeiro (device com ES3 real pega ES3 — pedido
-     do NextOS), caindo p/ ES2 (Mali-450 Utgard, ES2-only). SONIC_GLVER=2 força
-     só ES2; =3 força só ES3; sem env = adaptativo ES3->ES2. */
+  /* Preferência de versão: ES2 PRIMEIRO (a engine libfox é ES2/GLSL-ES-1.00; é o que
+     Crazy Taxi e Bully pedem e é o que dá GLES REAL no Mesa/Panfrost). Cai p/ ES3 depois
+     (inofensivo em device ES3-real; ES2 roda lá sem problema). ⚠️ ES3-primeiro fazia o
+     Mesa devolver um contexto DESKTOP-GL "3.1 Mesa" que passava como sucesso -> shaders
+     GLSL ES não compilam = tela preta (Device A/ROCKNIX). SONIC_GLVER=2 força só ES2;
+     =3 força só ES3; sem env = adaptativo ES2->ES3. */
   int vers[2], nver;
   { const char *gv = sonic_env("SONIC_GLVER");
     if (gv && gv[0] == '2')      { vers[0] = 2; nver = 1; }
     else if (gv && gv[0] == '3') { vers[0] = 3; nver = 1; }
-    else                          { vers[0] = 3; vers[1] = 2; nver = 2; } }
+    else                          { vers[0] = 2; vers[1] = 3; nver = 2; } }
   /* depth/stencil sao fixados na criacao da JANELA -> 1 janela por combo; as
      versoes ES sao testadas na MESMA janela (sem recriar) p/ nao estressar o
      fbdev Mali do .79 (no caso comum cria uma janela so). */
@@ -134,20 +150,34 @@ void egl_shim_create_window(void) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, vers[0]);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 
+    /* Janela FULLSCREEN_DESKTOP (borderless, sem modeset) — como o Bully. O exclusivo
+       (SDL_WINDOW_FULLSCREEN) faz mode-set que pode dar EGL_BAD_MATCH em kmsdrm/wayland.
+       SONIC_EXCL_FS=1 volta pro exclusivo (escape p/ o fbdev Mali .79 se precisar). */
+    Uint32 fsflag = sonic_env("SONIC_EXCL_FS") ? SDL_WINDOW_FULLSCREEN
+                                               : SDL_WINDOW_FULLSCREEN_DESKTOP;
     egl_window = SDL_CreateWindow(
         PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_WIDTH, SCREEN_HEIGHT,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+        SDL_WINDOW_OPENGL | fsflag);
     if (!egl_window) {
       fprintf(stderr, "egl_shim: depth%d stencil%d: SDL_CreateWindow FALHOU: %s\n",
               dsc[d].depth, dsc[d].stencil, SDL_GetError());
       continue;
     }
+    int allow_desktop = sonic_env("SONIC_ALLOW_DESKTOP_GL") != 0;
     for (int v = 0; v < nver && !egl_share_root; v++) {
       SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, vers[v]);
       SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
       egl_share_root = gl_createcontext(egl_window);
       if (egl_share_root) {
+        /* rejeita contexto DESKTOP-GL (não-ES) e tenta a próxima versão -> pega GLES real */
+        if (!allow_desktop && !ctx_is_gles()) {
+          fprintf(stderr, "egl_shim: ES%d deu contexto DESKTOP-GL (sem 'ES') -> REJEITADO, tenta proxima\n",
+                  vers[v]);
+          SDL_GL_DeleteContext(egl_share_root);
+          egl_share_root = NULL;
+          continue;
+        }
         fprintf(stderr, "egl_shim: GL context OK -> ES%d depth%d stencil%d (window %dx%d)\n",
                 vers[v], dsc[d].depth, dsc[d].stencil, SCREEN_WIDTH, SCREEN_HEIGHT);
         break;
