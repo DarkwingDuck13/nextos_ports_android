@@ -440,16 +440,33 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
      exceção/log C++ da Unity (dispara ao construir java.lang.Error no RecreateGfxState
      por causa do nosso JNIEnv fake). Retoma no caller (lr) com r0=0. Cap alto p/ evitar
      loop infinito. So na thread NÃO-render (a render tem recovery proprio). */
-  if ((sig == SIGSEGV || sig == SIGILL) && getenv("CVGOS_CRASHSKIP") && lr0 && lr0 != pc0) {
+  if ((sig == SIGSEGV || sig == SIGILL) && getenv("CVGOS_CRASHSKIP")) {
     static volatile unsigned long csn = 0;
-    if (csn < 5000) {
-      uc0->uc_mcontext.arm_pc = lr0;
-      uc0->uc_mcontext.arm_r0 = 0;
+    if (csn < 200000) {
+      /* CIRÚRGICO: decodifica a instrução ARM que faltou. Se for LOAD (ldr/ldrb/etc),
+         zera o registrador destino e AVANÇA pc+4 (pula só o load ruim, mantém o fluxo).
+         Se for STORE, só pc+4. Fallback: pula p/ lr. */
+      uint32_t insn = 0; int handled = 0;
+      if (addr_readable(pc0)) insn = *(uint32_t *)pc0;
+      unsigned cc = (insn >> 26) & 0x3;      /* 01 = single data transfer */
+      if (cc == 0x1) {
+        int is_load = (insn >> 20) & 1;
+        int rd = (insn >> 12) & 0xf;
+        if (is_load) {                        /* zera Rd */
+          uint32_t *R = &uc0->uc_mcontext.arm_r0;   /* r0..r10 contíguos no glibc arm */
+          if (rd <= 10) R[rd] = 0;
+          else if (rd == 11) uc0->uc_mcontext.arm_fp = 0;
+          else if (rd == 12) uc0->uc_mcontext.arm_ip = 0;
+        }
+        uc0->uc_mcontext.arm_pc = pc0 + 4;    /* pula a instrução */
+        handled = 1;
+      }
+      if (!handled) { if (lr0 && lr0 != pc0) { uc0->uc_mcontext.arm_pc = lr0; uc0->uc_mcontext.arm_r0 = 0; } else uc0->uc_mcontext.arm_pc = pc0 + 4; }
       if (csn++ < 40)
-        fprintf(stderr, "[CRASHSKIP] #%lu sig=%d pc=0x%lx fault=%p -> lr=0x%lx\n",
-                csn, sig, (unsigned long)pc0, si->si_addr, (unsigned long)lr0);
+        fprintf(stderr, "[CRASHSKIP] #%lu sig=%d pc=0x%lx fault=%p insn=0x%x %s\n",
+                csn, sig, (unsigned long)pc0, si->si_addr, insn, handled ? "skip-load" : "jmp-lr");
       else csn++;
-      if ((csn & 0x3ff) == 0) dbg_sync();
+      if ((csn & 0xfff) == 0) dbg_sync();
       return;
     }
   }
@@ -5543,6 +5560,18 @@ int main(int argc, char **argv) {
     so_execute_init_array();
     g_m_il2cpp = so_save();
     fprintf(stderr, "[F1] libil2cpp carregado OK\n");
+    /* 🔑 il2cpp_init: a libunity NUNCA dlopen/dlsym il2cpp_init -> runtime C# fica MORTO
+       (global-metadata nao carrega) -> RecreateGfxState usa classe il2cpp nao-init (garbage)
+       -> crash. Chamamos il2cpp_set_data_dir + il2cpp_init NOS MESMOS p/ subir o runtime.
+       CVGOS_NOIL2CPPINIT desliga. */
+    if (!getenv("CVGOS_NOIL2CPPINIT")) {
+      void (*i_setdir)(const char *) = (void *)so_find_addr_safe("il2cpp_set_data_dir");
+      void *(*i_init)(const char *) = (void *)so_find_addr_safe("il2cpp_init");
+      fprintf(stderr, "[IL2CPPINIT] set_data_dir=%p init=%p\n", (void*)i_setdir, (void*)i_init);
+      if (i_setdir) i_setdir("/storage/roms/ports/cvgos/bin/Data/Managed");
+      if (i_init) { void *d = i_init("IL2CPP Root Domain"); fprintf(stderr, "[IL2CPPINIT] il2cpp_init -> domain=%p\n", d); }
+      dbg_sync();
+    }
     mm_probe("pos-init_array-il2cpp");
     dbg_sync();
   } else {
