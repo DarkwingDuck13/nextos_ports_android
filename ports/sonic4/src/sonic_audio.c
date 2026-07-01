@@ -954,9 +954,19 @@ static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
 }
 
 static int sa_try_open(SDL_AudioSpec *want, SDL_AudioSpec *have) {
-  /* 1) tenta o device "default" (NULL) — funciona na maioria. */
+  /* 1) tenta o device "default" (NULL) — funciona na maioria (igual aos ports padrao do PortMaster
+     e ao Crazy Taxi: abre o default e pronto). */
   g_dev = SDL_OpenAudioDevice(NULL, 0, want, have, 0);
   if (g_dev) return 1;
+  /* 🔑 SIMPLIFICADO: por PADRAO paramos aqui (default falhou = mudo, sem forcar nada). A varredura
+     de card NOMEADO abaixo (batocera/knulli sem PCM default) era o que, no muOS, mandava o som pro
+     HDMI (speaker busy -> proximo card = HDMI). So roda se SONIC_AUDIO_ENUM=1. O jeito certo p/
+     "sem som" e o AUDIO_DRIVER (alsa/pulse/pipewire) no launcher, nao brigar com o card. */
+  if (!getenv("SONIC_AUDIO_ENUM")) {
+    fprintf(stderr, "sonic_audio: default nao abriu (%s); enum de card DESLIGADA (SONIC_AUDIO_ENUM=1 liga). "
+            "Se faltar som, use AUDIO_DRIVER=alsa|pulse|pipewire.\n", SDL_GetError());
+    return 0;
+  }
   /* 2) "default" falhou. Em varios batocera/knulli o ALSA NAO tem PCM "default"
      definido -> "Couldn't open audio device: No such file or directory", e o som
      fica num card especifico (hw:0...). Enumera os devices de SAIDA que o driver
