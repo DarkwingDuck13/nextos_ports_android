@@ -113,6 +113,13 @@ fi
 # Testing aid: `touch sonic4ep2/unlock_all` unlocks every stage (not shipped in releases).
 [ -f "$GAMEDIR/unlock_all" ] && export SONIC_UNLOCK_ALL=1
 
+# Testing aid: `touch sonic4ep2/simcrash` simula o crash de use-after-free do attract-demo no boot.
+#   - com a guarda (padrão): RECUPERA e vai pro título (dá pra jogar) -> veja "SOBREVIVI" no log.txt.
+#   - +`touch sonic4ep2/no_demoguard`: crash CRU (fecha) -> prova que a guarda salva.
+# Remova os arquivos p/ voltar ao normal. (não vão na release.)
+[ -f "$GAMEDIR/simcrash" ] && export SONIC_SIMDEMOCRASH=1
+[ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
+
 ./sonic4
 
 pkill -x gptokeyb 2>/dev/null || true

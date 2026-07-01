@@ -870,16 +870,27 @@ int main(int argc, char *argv[]) {
     patch_arm_jump("_ZN2gm10start_demo3ep210CStartDemo15ReleaseInstanceEv",
                    (void *)my_ep2_CStartDemo_ReleaseInstance);
     fprintf(stderr, "=== DEMOGUARD: ep2::CStartDemo::ReleaseInstance protegido (UAF do demo) ===\n");
-    /* 🧪 SONIC_SIMDEMOCRASH: simula o crash — força s_instance = ponteiro garbage e chama o
-       ReleaseInstance. SEM guarda -> crash em ~CStartDemo; COM guarda -> recupera e segue. */
-    if (getenv("SONIC_SIMDEMOCRASH")) {
-      void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo3ep210CStartDemo10s_instanceE");
-      fprintf(stderr, "=== SIMDEMOCRASH: s_instance@%p, forcando garbage e chamando ReleaseInstance ===\n",
-              (void *)pinst);
-      if (pinst) {
-        *pinst = (void *)0x1;                 /* ponteiro non-null INVÁLIDO = UAF simulado */
-        my_ep2_CStartDemo_ReleaseInstance();  /* deve RECUPERAR (guarda) em vez de fechar */
-        fprintf(stderr, "=== SIMDEMOCRASH: SOBREVIVI (recuperado=%lu) ===\n", g_demo_guard_recovered);
+  }
+  /* 🧪 SONIC_SIMDEMOCRASH: SIMULA o crash do demo (força o ep2 s_instance = ponteiro garbage e
+     dispara o teardown), no boot. Dois modos p/ demonstrar:
+       - guarda ON (default): RECUPERA e continua pro título -> dá pra JOGAR normal (log: SOBREVIVI).
+       - guarda OFF (+SONIC_NO_DEMOGUARD): crash CRU (jogo fecha) -> prova que é a guarda que salva. */
+  if (getenv("SONIC_SIMDEMOCRASH")) {
+    void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo3ep210CStartDemo10s_instanceE");
+    int guard_off = getenv("SONIC_NO_DEMOGUARD") != NULL;
+    fprintf(stderr, "=== SIMDEMOCRASH: ep2 s_instance@%p = garbage, disparando teardown (guarda=%s) ===\n",
+            (void *)pinst, guard_off ? "OFF (deve FECHAR)" : "ON (deve RECUPERAR)");
+    if (pinst) {
+      *pinst = (void *)0x1;                     /* ponteiro non-null INVÁLIDO = use-after-free simulado */
+      if (guard_off) {
+        /* caminho CRU (sem guarda): deref direto do garbage -> SIGSEGV = o crash EXATO do tester */
+        void *inst = *pinst;
+        void (**vt)(void *) = *(void (***)(void *))inst;
+        vt[0](inst);                            /* CRASH aqui (jogo fecha, vai pro crash.log) */
+      } else {
+        my_ep2_CStartDemo_ReleaseInstance();    /* com guarda -> recupera */
+        fprintf(stderr, "=== SIMDEMOCRASH: SOBREVIVI (recuperado=%lu) -> segue pro titulo ===\n",
+                g_demo_guard_recovered);
       }
     }
   }
