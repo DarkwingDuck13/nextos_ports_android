@@ -4925,6 +4925,12 @@ static void ff9_go_set_active(void *go, int active, const char *tag) {
   fprintf(stderr, "[FF9_UI] %s=%p SetActive(%d)\n", tag, go, active);
   fsync(2);
 }
+static void ff9_component_set_visible(void *component, int visible, const char *tag) {
+  if (!component || ((uintptr_t)component >> 40) != 0 || !g_il2cpp_base) return;
+  ((void (*)(void *, int, void *))(g_il2cpp_base + 0x255DBFC))(component, visible, NULL);
+  void *go = ((void *(*)(void *, void *))(g_il2cpp_base + 0x255E72C))(component, NULL);
+  ff9_go_set_active(go, visible, tag);
+}
 void my_TitleUITimer_Update(void *self, void *mi);
 void my_TitleUITimer_Update(void *self, void *mi) {
   (void)mi;
@@ -7306,6 +7312,9 @@ int main(int argc, char **argv) {
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x240), 0, "SlideShowFadingObject");
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0xA8), 0, "SlideShowObject");
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0xB0), 0, "SlideShowHitArea");
+            ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x90), 0, "SquareEnixButton");
+            ff9_component_set_visible(*(void **)((char *)g_titleui_this + 0x250), 0, "SpashText");
+            ff9_component_set_visible(*(void **)((char *)g_titleui_this + 0x258), 0, "LogoSprite");
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x48), 1, "MenuPanelObject");
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x50), 1, "MenuGroupPanel");
             ff9_go_set_active(*(void **)((char *)g_titleui_this + 0x1C0), 1, "startGameObject");
