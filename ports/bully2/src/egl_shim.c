@@ -4,10 +4,12 @@
 #include <GLES2/gl2.h>
 #include <SDL2/SDL.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static SDL_Window *g_win;
@@ -140,10 +142,46 @@ void bully_maybe_screenshot(void) {
   fprintf(stderr, "[shot] %dx%d salvo em /dev/shm/bully_shot.raw\n", w, h);
 }
 
+/* BULLY2_FPS_LIMIT=30 (ou 15..120): pacing absoluto no present. O CTimer do
+ * engine mede a duracao real do frame, entao a logica adapta sozinha. Se um
+ * frame atrasar alem do slot, ressincroniza sem acumular debito. Default off. */
+static void bully_fps_limit_pace(void) {
+  static long frame_ns = -1;
+  if (frame_ns == -1) {
+    const char *e = getenv("BULLY2_FPS_LIMIT");
+    if (!e || !*e)
+      e = getenv("BULLY_FPS_LIMIT");
+    int fps = e ? atoi(e) : 0;
+    frame_ns = (fps >= 15 && fps <= 120) ? 1000000000L / fps : 0;
+    if (frame_ns)
+      fprintf(stderr, "[gl] fps limit=%d\n", fps);
+  }
+  if (!frame_ns)
+    return;
+  static struct timespec next;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  if (next.tv_sec == 0 && next.tv_nsec == 0)
+    next = now;
+  next.tv_nsec += frame_ns;
+  while (next.tv_nsec >= 1000000000L) {
+    next.tv_nsec -= 1000000000L;
+    next.tv_sec++;
+  }
+  if (now.tv_sec > next.tv_sec ||
+      (now.tv_sec == next.tv_sec && now.tv_nsec >= next.tv_nsec)) {
+    next = now;
+    return;
+  }
+  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) == EINTR)
+    ;
+}
+
 void bully_swap_buffers(void) {
   if (!g_win)
     return;
   bully_maybe_screenshot();
+  bully_fps_limit_pace();
   /* fbdev/mali (NAO kmsdrm): presenta via eglSwapBuffers CRU no surface atual --
    * mesmo caminho que o jogo usa e que CHEGA no /dev/fb0. KMSDRM/wayland precisam
    * do page-flip do SDL (drmModePageFlip), senao o buffer GBM nunca vai pro scanout

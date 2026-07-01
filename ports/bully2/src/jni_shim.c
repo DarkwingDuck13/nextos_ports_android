@@ -4,6 +4,7 @@
 #include <malloc.h>
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -349,8 +350,100 @@ static int use_gptk(void) {
   return g_gptk_mode;
 }
 
+static int device_mem_total_mb(void) {
+  static int mb = -2;
+  if (mb != -2)
+    return mb;
+  mb = -1;
+  FILE *f = fopen("/proc/meminfo", "r");
+  if (f) {
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+      unsigned long kb;
+      if (sscanf(line, "MemTotal: %lu kB", &kb) == 1) {
+        mb = (int)(kb / 1024);
+        break;
+      }
+    }
+    fclose(f);
+  }
+  return mb;
+}
+
+/* RAM reportada ao engine em GetDeviceType bits[31:6]. O engine War Drum
+ * dimensiona pools de streaming/textura/densidade por esse valor e liga o
+ * modo low-memory interno abaixo de 256 MB (bully_vita reporta 160 no Vita
+ * de 512 MB; bully-NX reporta 1024 no Switch). Reportar 2048 fixo fazia o
+ * engine gastar como celular de 2 GB em handheld de 1 GB. */
+static int device_ram_report_mb(void) {
+  static int mb = -1;
+  if (mb >= 0)
+    return mb;
+  const char *e = getenv("BULLY2_DEVICE_RAM_MB");
+  if (!e || !*e)
+    e = getenv("BULLY_DEVICE_RAM_MB");
+  if (e && *e) {
+    mb = atoi(e);
+    if (mb < 128)
+      mb = 128;
+    if (mb > 4096)
+      mb = 4096;
+    fprintf(stderr, "[devtype] RAM reportada=%d MB (env)\n", mb);
+    return mb;
+  }
+  int total = device_mem_total_mb();
+  if (total <= 0)
+    mb = 2048; /* sem /proc/meminfo: comportamento antigo */
+  else if (total < 800)
+    mb = 192; /* R36S-clone 639 MB: modo low-memory do engine */
+  else if (total < 1280)
+    mb = 256; /* 1 GB: um degrau acima do gate low-memory */
+  else if (total < 2048)
+    mb = 512;
+  else
+    mb = 1024;
+  fprintf(stderr, "[devtype] MemTotal=%d MB -> RAM reportada=%d MB\n", total,
+          mb);
+  return mb;
+}
+
 static int GetDeviceType(void) {
-  return (2048 << 6) | (3 << 2) | 0x1;
+  return (device_ram_report_mb() << 6) | (3 << 2) | 0x1;
+}
+
+/* Flag global isPhone do libGame (.bss, VA 0x125da04 no build arm64
+ * v1.4.311 — mesmo build do bully-NX, que força 1 no Switch). Com phone=1 o
+ * engine evita efeitos classe desktop. AND_SystemInitialize grava a flag na
+ * init; checamos em alguns frames e forçamos 1 se divergir. So escreve se o
+ * valor lido for 0 ou 1 (sanidade do offset). */
+static void maybe_force_phone_flag(int frame) {
+  static int done;
+  if (done || !text_base)
+    return;
+  if (frame != 30 && frame != 300 && frame != 900)
+    return;
+  if (!env_default_enabled("BULLY2_FORCE_PHONE")) {
+    done = 1;
+    return;
+  }
+  volatile int *is_phone = (volatile int *)((uintptr_t)text_base + 0x125da04);
+  int v = *is_phone;
+  if (v == 1) {
+    fprintf(stderr, "[devtype] isPhone=1 (ok) frame=%d\n", frame);
+    done = 1;
+    return;
+  }
+  if (v == 0) {
+    *is_phone = 1;
+    fprintf(stderr, "[devtype] isPhone 0->1 (forcado) frame=%d\n", frame);
+    done = 1;
+    return;
+  }
+  fprintf(stderr,
+          "[devtype] isPhone valor inesperado %d (offset divergente?) — nao "
+          "escrevo\n",
+          v);
+  done = 1;
 }
 
 static int swapBuffers(void) {
@@ -791,8 +884,11 @@ static int GetMethodID(void *e, void *c, const char *name, const char *sig) {
   (void)c;
   (void)sig;
   for (unsigned i = 0; i < sizeof(method_ids) / sizeof(method_ids[0]); i++)
-    if (strcmp(name, method_ids[i].name) == 0)
+    if (strcmp(name, method_ids[i].name) == 0) {
+      fprintf(stderr, "[jni] GetMethodID %s -> %d\n", name, method_ids[i].id);
       return method_ids[i].id;
+    }
+  fprintf(stderr, "[jni] GetMethodID %s -> DESCONHECIDO\n", name ? name : "?");
   return 0x7777;
 }
 
@@ -997,6 +1093,21 @@ static void build_env(void) {
   SET(0x1C0, CallFloatMethodV);
   SET(0x1E8, CallVoidMethod);
   SET(0x1F0, CallVoidMethodV);
+  /* Variantes ESTATICAS (jclass no lugar do jobject, mesma aridade): antes
+   * caiam em ret0 silencioso — se o engine pedir GetDeviceType/GetGamepad*
+   * por CallStaticIntMethod recebia 0 (RAM=0, nao-phone). Roteia tudo pro
+   * mesmo dispatcher das versoes de instancia. */
+  SET(0x388, GetMethodID);       /* GetStaticMethodID (113) */
+  SET(0x390, CallObjectMethod);  /* CallStaticObjectMethod (114) */
+  SET(0x398, CallObjectMethodV); /* (115) */
+  SET(0x3A8, CallBooleanMethod); /* CallStaticBooleanMethod (117) */
+  SET(0x3B0, CallBooleanMethodV);
+  SET(0x428, CallIntMethod); /* CallStaticIntMethod (133) */
+  SET(0x430, CallIntMethodV);
+  SET(0x468, CallFloatMethod); /* CallStaticFloatMethod (141) */
+  SET(0x470, CallFloatMethodV);
+  SET(0x4B0, CallVoidMethod); /* CallStaticVoidMethod (150) */
+  SET(0x4B8, CallVoidMethodV);
   SET(0x538, NewStringUTF);
   SET(0x548, GetStringUTFChars);
   SET(0x550, ret0);
@@ -3548,6 +3659,39 @@ static void *os_thread_entry(void *p) {
   return (void *)(intptr_t)ret;
 }
 
+/* Afinidade por thread do engine (receita bully_vita: GameMain, RenderThread
+ * e CDStreamThread em cores dedicados; streaming nunca disputa com render).
+ * Default: ligado em devices com >=4 cores; BULLY2_THREAD_PIN=0 desliga. */
+static void pin_engine_thread(pthread_t t, const char *name) {
+  static int mode = -1;
+  static long ncores;
+  if (mode < 0) {
+    ncores = sysconf(_SC_NPROCESSORS_ONLN);
+    const char *e = getenv("BULLY2_THREAD_PIN");
+    if (e && strcmp(e, "0") == 0)
+      mode = 0;
+    else
+      mode = (ncores >= 4) ? 1 : 0;
+    fprintf(stderr, "[thr] pin mode=%d cores=%ld\n", mode, ncores);
+  }
+  if (!mode || !name)
+    return;
+  int core = -1;
+  if (strcmp(name, "CDStreamThread") == 0)
+    core = 3;
+  else if (strcmp(name, "RenderThread") == 0)
+    core = 2;
+  else if (strcmp(name, "GameMain") == 0)
+    core = 1;
+  if (core < 0 || core >= ncores)
+    return;
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  CPU_SET(core, &set);
+  if (pthread_setaffinity_np(t, sizeof(set), &set) == 0)
+    fprintf(stderr, "[thr] pin '%s' -> core %d\n", name, core);
+}
+
 static void *my_OS_ThreadLaunch(unsigned (*func)(void *), void *arg, unsigned r2,
                                 const char *name, int r4, int prio) {
   (void)r2;
@@ -3573,6 +3717,7 @@ static void *my_OS_ThreadLaunch(unsigned (*func)(void *), void *arg, unsigned r2
   }
   h[0x69] = 1;
   memcpy(h + 0x28, &t, sizeof(t));
+  pin_engine_thread(t, name);
   fprintf(stderr, "[thr] OS_ThreadLaunch '%s' -> %p\n", name ? name : "?",
           (void *)h);
   return h;
@@ -3909,6 +4054,7 @@ void jni_load(void) {
 
     maybe_auto_set_shadow(f);
     maybe_runtime_texture_profile(f);
+    maybe_force_phone_flag(f);
     OnDrawFrame(fake_env, NULL, 1.0f / 60.0f);
     texture_profile_reload_tick(f);
     if (f > 300 && (f % 300) == 0)
