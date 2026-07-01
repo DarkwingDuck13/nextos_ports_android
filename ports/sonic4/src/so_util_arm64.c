@@ -436,12 +436,53 @@ uintptr_t so_find_addr(const char *symbol) {
   return 0;
 }
 
-uintptr_t so_find_addr_safe(const char *symbol) {
+/* Alias de mangling v2(armv7)->v3(arm64): os fixes do main.c referenciam os símbolos da
+ * libfox v2.0.0, onde inteiros mangleiam 'm'(unsigned long)/'l'(long); na v3.0.0 arm64 os
+ * MESMOS métodos usam 'j'(unsigned int)/'i'(int), e thunks de vtable dobram o offset
+ * (_ZThn20_->_ZThn40_, ponteiro 4->8 bytes). Sem isso, 26 hooks (post-fx/tone-map/shadow/
+ * save-backup/stage-unlock) NÃO aplicam na v3 e os bugs "corrigidos no 32b" voltam.
+ * Só no loader arm64 -> não afeta o armv7. */
+static const char *so_arm64_v3_alias(const char *sym) {
+  static const struct { const char *v2, *v3; } A[] = {
+    {"_Z14GsUserIsEnablem", "_Z14GsUserIsEnablej"},
+    {"_Z16GsUserSetupStartmm", "_Z16GsUserSetupStartjj"},
+    {"_Z17amThreadCheckDrawl", "_Z17amThreadCheckDrawi"},
+    {"_Z18AoStorageLoadStartmPvmmm", "_Z18AoStorageLoadStartjPvjjj"},
+    {"_Z18SsDrawObjectShadowmP10NNS_OBJECTP12_NNS_TEXLISTy", "_Z18SsDrawObjectShadowjP10NNS_OBJECTP12_NNS_TEXLISTy"},
+    {"_Z19_amPostEFExecEffectl", "_Z19_amPostEFExecEffecti"},
+    {"_Z21amPostEFLightMaskDrawmPA16_fS0_", "_Z21amPostEFLightMaskDrawjPA16_fS0_"},
+    {"_Z22amPostEFDistortionDrawmPA16_fS0_", "_Z22amPostEFDistortionDrawjPA16_fS0_"},
+    {"_Z23SsConstTonemapIsEnablev", "_Z22SsConstTonemapIsEnablev"},
+    {"_Z24SsDrawMotionObjectShadowmP10AMS_MOTIONP12_NNS_TEXLISTy", "_Z24SsDrawMotionObjectShadowjP10AMS_MOTIONP12_NNS_TEXLISTy"},
+    {"_Z26AoAccountSetCurrentIdStartm", "_Z26AoAccountSetCurrentIdStartj"},
+    {"_ZN2gs4user5CUtil13SetSaveEnableEml", "_ZN2gs4user5CUtil13SetSaveEnableEji"},
+    {"_ZN2gs4user5CUtil14CopyBackupCompEm", "_ZN2gs4user5CUtil14CopyBackupCompEj"},
+    {"_ZN2gs4user5CUtil9GetBackupEm", "_ZN2gs4user5CUtil9GetBackupEj"},
+    {"_ZN2gs6backup7utility12IsStageClearEm21tag_GSE_MAIN_STAGE_ID", "_ZN2gs6backup7utility12IsStageClearEj21tag_GSE_MAIN_STAGE_ID"},
+    {"_ZN2gs6backup7utility15IsStageUnlockedEm21tag_GSE_MAIN_STAGE_ID", "_ZN2gs6backup7utility15IsStageUnlockedEj21tag_GSE_MAIN_STAGE_ID"},
+    {"_ZN2gs6backup9SProgress14CreateInstanceEm", "_ZN2gs6backup9SProgress14CreateInstanceEj"},
+    {"_ZThn20_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE", "_ZThn40_NK2dm8resource20CResourceManagerTask7IsValidENS0_12EDemoEventID4TypeE"},
+    {0, 0}
+  };
+  for (int i = 0; A[i].v2; i++)
+    if (strcmp(sym, A[i].v2) == 0) return A[i].v3;
+  return NULL;
+}
+
+static uintptr_t so_find_addr_raw(const char *symbol) {
   for (int i = 0; i < num_syms; i++) {
     char *name = dynstrtab + syms[i].st_name;
     if (strcmp(name, symbol) == 0)
       return (uintptr_t)load_base + syms[i].st_value;
   }
+  return 0;
+}
+
+uintptr_t so_find_addr_safe(const char *symbol) {
+  uintptr_t a = so_find_addr_raw(symbol);
+  if (a) return a;
+  const char *alias = so_arm64_v3_alias(symbol);
+  if (alias) return so_find_addr_raw(alias);
   return 0;
 }
 
