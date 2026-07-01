@@ -428,7 +428,14 @@ static uintptr_t g_engine_heap_base = 0, g_engine_heap_end = 0;
    discriminador do caso stale (saída) NÃO é o range e sim o `count` fora de [1,65536]. */
 static int sane_engine_ptr(const void *p) {
   uintptr_t v = (uintptr_t)p;
+#ifdef __aarch64__
+  /* LP64: malloc do glibc vive ACIMA de 4GB (0x7f...). O teto antigo de 32-bit
+     (0xfffff000) rejeitava TODA lista válida no arm64 -> nenhuma textura liberada
+     -> free-list do amTexMgr (1024 slots) esgotava no reload -> TELA PRETA. */
+  return v > 0x10000UL && v < (1UL << 48) && (v & 7) == 0;
+#else
   return v > 0x10000UL && v < 0xfffff000UL && (v & 3) == 0; /* userspace + alinhado a 4 */
+#endif
 }
 /* 🛡️ FIX do crash ao SAIR da fase (Return to Stage Select fecha o jogo):
    _amDrawReleaseTexture(node) libera a lista de texturas da cena de forma DIFERIDA
@@ -442,9 +449,51 @@ static int sane_engine_ptr(const void *p) {
    destruição da cena, então não há o que liberar). Idêntica ao original no caminho bom. */
 static void (*g_real_TexMgrDecRef)(unsigned) = 0;
 static unsigned long g_relsafe_ok = 0, g_relsafe_skip = 0;
+#ifdef __aarch64__
+/* registro de SNAPSHOTS in-flight do RELSAFE64 (enqueue copia a lista p/ buffer nosso;
+   exec reconhece, libera e dá free). Single-thread (GameProcess/DrawFrame no mesmo loop). */
+#define RELSNAP_MAX 512
+static void *g_relsnap[RELSNAP_MAX];
+static int g_relsnap_n = 0;
+static void relsnap_track(void *p) {
+  if (g_relsnap_n < RELSNAP_MAX) g_relsnap[g_relsnap_n++] = p;
+}
+static int relsnap_untrack(void *p) {
+  for (int i = 0; i < g_relsnap_n; i++)
+    if (g_relsnap[i] == p) { g_relsnap[i] = g_relsnap[--g_relsnap_n]; return 1; }
+  return 0;
+}
+#endif
 static void my_amDrawReleaseTexture(void *node) {
   if (!node) return;
   void *P = ((void **)node)[1];                    /* P = [node+4] = lista {count, array} */
+#ifdef __aarch64__
+  if (P && relsnap_untrack(P)) {
+    /* snapshot NOSSO (RELSAFE64): sempre válido, layout {u32 count, pad, array=P+16}. */
+    unsigned scount = *(unsigned *)P;
+    const unsigned char *sa = *(const unsigned char **)((char *)P + 8);
+    if (!g_real_TexMgrDecRef)
+      g_real_TexMgrDecRef = (void (*)(unsigned))so_find_addr_safe("amTexMgrDecRef");
+    for (unsigned i = 0; i < scount; i++) {
+      unsigned h = *(const unsigned *)(sa + (size_t)i * 8);
+      if (h && h < 4096 && g_real_TexMgrDecRef) g_real_TexMgrDecRef(h);
+    }
+    free(P);
+    g_relsafe_ok++;
+    *(unsigned long *)node = 0;
+    return;
+  }
+  /* arm64: TODO release legítimo virou snapshot no enqueue (RELSAFE64). P não-rastreado
+     aqui = lista STALE (ou fluxo desconhecido) -> NUNCA DecRef (conteúdo pode ser lixo
+     "plausível" e mataria texturas vivas — foi o que sumiu com os sprites do título).
+     Pular = leak raro e inofensivo. */
+  g_relsafe_skip++;
+  if (g_relsafe_skip <= 20)
+    fprintf(stderr, "[RELSAFE64] release exec com P nao-rastreado (%p) pulado #%lu\n",
+            P, g_relsafe_skip);
+  *(unsigned long *)node = 0;
+  return;
+#endif
   long count = -1; void *array = 0;
   if (P && sane_engine_ptr(P)) {
     count = (long)((unsigned *)P)[0];              /* [P+0] = count */
@@ -470,8 +519,130 @@ static void my_amDrawReleaseTexture(void *node) {
               "(count=%ld P=%p array=%p) skip#%lu\n", count, (void *)P,
               (void *)array, g_relsafe_skip);
   }
+#ifdef __aarch64__
+  *(unsigned long *)node = 0;   /* v3: campo cmd é de 8 bytes (str xzr) — zerar inteiro */
+#else
   ((unsigned *)node)[0] = 0;                       /* node->field0 = 0 (igual ao original) */
+#endif
 }
+
+#ifdef __aarch64__
+/* ---- 🛡️ RELSAFE64: fix RAIZ do "return to stage select / restart = TELA PRETA" (v3/arm64) ----
+   O release de textura da cena é DIFERIDO: GameProcess enfileira o comando 2
+   (_amDrawReleaseTexture) no ring do amDraw via amDrawRegistCommand1 e o DrawFrame drena
+   (amDrawExecRegist). O payload (0x58 bytes) é copiado POR VALOR no enqueue, mas ele contém
+   um PONTEIRO P = {u32 count, pad, void *array} que aponta pros dados da CENA — e o
+   GameProcess libera a cena na MESMA passada (nosso loop é single-thread) -> no exec o P
+   está STALE: ou lê count/handles lixo (SIGSEGV storm em amTexMgrDecRef, mascarado pelo
+   DEMOGUARD -> DecRef em slots errados) ou o RELSAFE antigo pulava tudo (leak -> a tabela
+   de 1024 slots do amTexMgr esgota -> amTexMgrCreateTexId falha no reload -> TELA PRETA).
+   FIX: interceptar o ENQUEUE (amDrawRegistCommand1). NESSE instante P ainda é VÁLIDO:
+   fazemos os amTexMgrDecRef JÁ (só decrementa refcount numa tabela global; zero GL — seguro
+   em qualquer thread) e enfileiramos o comando 0 (_amDrawRegistNop) no lugar, preservando a
+   semântica do ring (índice/contador/payload idênticos). O exec nunca mais toca memória
+   liberada. Endereços do ctx/tabela são DERIVADOS dos próprios bytes da lib carregada
+   (decode ADRP+LDR/ADD) e o hook SÓ arma se a tabela verificar (table[0]=Nop,
+   table[2]=ReleaseTexture) — à prova de versão. SONIC_NO_RELSAFE desliga junto. */
+static void **g_regist_ctx_pp;
+static void (*g_texdecref64)(unsigned);
+static unsigned long g_reltex_sync, g_reltex_bad, g_reltex_badhandle;
+
+/* decode ADRP + (LDR imm | ADD imm) nas primeiras insns de `fn` -> endereço do global. */
+static uintptr_t a64_find_global(uintptr_t fn, int want_add, int max_insn) {
+  if (!fn) return 0;
+  uint32_t *p = (uint32_t *)(fn & ~(uintptr_t)1);
+  for (int i = 0; i + 1 < max_insn; i++) {
+    uint32_t a = p[i];
+    if ((a & 0x9f000000u) != 0x90000000u) continue;              /* ADRP rd, page */
+    unsigned rd = a & 31;
+    int64_t imm21 = ((int64_t)((a >> 5) & 0x7ffff) << 2) | ((a >> 29) & 3);
+    imm21 = (imm21 << 43) >> 43;                                  /* sign-extend 21b */
+    uintptr_t page = ((uintptr_t)(p + i) & ~0xfffUL) + ((uintptr_t)imm21 << 12);
+    uint32_t b = p[i + 1];
+    if (!want_add && (b & 0xffc00000u) == 0xf9400000u && ((b >> 5) & 31) == rd)
+      return page + (uintptr_t)(((b >> 10) & 0xfff) << 3);        /* LDR Xt,[rd,#imm] */
+    if (want_add && (b & 0xffc00000u) == 0x91000000u && ((b >> 5) & 31) == rd)
+      return page + (uintptr_t)((b >> 10) & 0xfff);               /* ADD rd,rd,#imm */
+  }
+  return 0;
+}
+
+static int my_amDrawRegistCommand1(int cmd, void *src, unsigned long size) {
+  /* SNAPSHOT do release (cmd 2 = _amDrawReleaseTexture): NO ENQUEUE a lista P ainda é
+     válida -> copiamos {count, handles} p/ buffer NOSSO e trocamos o P do payload pelo
+     snapshot. O DecRef continua acontecendo NO EXEC (depois dos draws do frame que ainda
+     usam as texturas — timing original preservado; DecRef adiantado matava os sprites
+     do título/menu), só que lendo memória estável em vez da cena liberada. */
+  void *snap = NULL;
+  if (cmd == 2 && src) {
+    void *P = *(void **)src;
+    long count = -1; unsigned char *array = NULL;
+    if (P && sane_engine_ptr(P)) {
+      count = (long)*(unsigned *)P;            /* [P+0] = count */
+      array = *(unsigned char **)((char *)P + 8); /* [P+8] = array (stride 8, handle u32) */
+    }
+    if (count > 0 && count <= 65536 && array && sane_engine_ptr(array)) {
+      snap = malloc(16 + (size_t)count * 8);
+      if (snap) {
+        *(unsigned *)snap = (unsigned)count;
+        *(void **)((char *)snap + 8) = (char *)snap + 16;
+        memcpy((char *)snap + 16, array, (size_t)count * 8);
+        relsnap_track(snap);
+        g_reltex_sync++;
+      }
+    } else if (P) {
+      g_reltex_bad++;
+      if (g_reltex_bad <= 20)
+        fprintf(stderr, "[RELSAFE64] lista invalida ja no ENQUEUE (P=%p count=%ld) #%lu\n",
+                P, count, g_reltex_bad);
+    }
+  }
+  /* réplica fiel do amDrawRegistCommand1 v3 (RE 0x3aaed8) */
+  void *ctx = g_regist_ctx_pp ? *g_regist_ctx_pp : NULL;
+  if (!ctx) { fprintf(stderr, "[RELSAFE64] ctx NULL no enqueue!\n"); return -1; }
+  int idx = *(int *)((char *)ctx + 0x210c);
+  char *entry = (char *)ctx + (long)idx * 0xa0;
+  *(long *)(entry + 0x2118) = (long)cmd;
+  char *dst = entry + 0x2120;
+  if (src) { if ((void *)dst != src) memcpy(dst, src, size ? size : 0x58); }
+  else memset(dst, 0, 0x58);
+  if (snap) *(void **)dst = snap;              /* payload aponta pro snapshot estável */
+  *(int *)((char *)ctx + 0x210c) = (idx + 1) & 511;
+  *(unsigned *)((char *)ctx + 0x70) += 1;
+  return idx;
+}
+
+/* deriva ctx/tabela e arma o hook; retorna 1 se armado. */
+static int sonic_install_relsafe64(void) {
+  uintptr_t reg1 = so_find_addr_safe("_Z20amDrawRegistCommand1iPvm");
+  uintptr_t exec = so_find_addr_safe("_Z16amDrawExecRegistv");
+  uintptr_t nop  = so_find_addr_safe("_Z16_amDrawRegistNopP14AMS_REGISTLIST");
+  uintptr_t rel  = so_find_addr_safe("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST");
+  if (!reg1 || !exec || !nop || !rel) {
+    fprintf(stderr, "AVISO: RELSAFE64 sem simbolos (reg1=%lx exec=%lx)\n",
+            (unsigned long)reg1, (unsigned long)exec);
+    return 0;
+  }
+  uintptr_t ctx_pp = a64_find_global(reg1, 0, 12);
+  uintptr_t table  = a64_find_global(exec, 1, 60);
+  if (!ctx_pp || !table) {
+    fprintf(stderr, "AVISO: RELSAFE64 nao derivou ctx/tabela (ctx_pp=%lx table=%lx)\n",
+            (unsigned long)ctx_pp, (unsigned long)table);
+    return 0;
+  }
+  void **tab = (void **)table;
+  if ((uintptr_t)tab[0] != (nop & ~(uintptr_t)1) || (uintptr_t)tab[2] != (rel & ~(uintptr_t)1)) {
+    fprintf(stderr, "AVISO: RELSAFE64 tabela NAO verificou (t0=%p esperado=%lx, t2=%p esperado=%lx)\n",
+            tab[0], (unsigned long)nop, tab[2], (unsigned long)rel);
+    return 0;
+  }
+  g_regist_ctx_pp = (void **)ctx_pp;
+  patch_arm_jump("_Z20amDrawRegistCommand1iPvm", (void *)my_amDrawRegistCommand1);
+  fprintf(stderr, "=== RELSAFE64: DecRef sincrono no ENQUEUE (cmd2->NOP) armado; "
+                  "ctx_pp=%p table=%p ===\n", (void *)ctx_pp, (void *)table);
+  return 1;
+}
+#endif
 
 /* 🔊 FIX som do 1up/jingle (mudo no gameplay) — CIRÚRGICO, DEFAULT ON.
    A engine poll-a MediaPlayerisPlaying(canal) por frame; quando "não toca" seta bit1=stop
@@ -885,6 +1056,16 @@ int main(int argc, char *argv[]) {
     patch_retval("_ZN12F2FExtension12isEnoughtAgeEv", 1);
     patch_ret0("_ZN12F2FExtension16isConsentCountryEv");
     patch_ret0("_ZN12F2FExtension19getIsConsentCountryEv");
+#ifdef __aarch64__
+    /* v3 refatorou o consent p/ F2FExtension::Legal (isConsentCountry não existe mais).
+       O título pol a Legal::isCompleteAllState() (byte __f2f_legal_is_complete_all_state)
+       que só vira 1 via callbacks Java do fluxo legal/consent que NÃO temos -> o tap
+       do título nunca avança pro menu. Forçar completo + age gate feito. */
+    patch_retval("_ZN12F2FExtension5Legal18isCompleteAllStateEv", 1);
+    patch_retval("_ZN12F2FExtension3Age15haveDoneAgeGateEv", 1);
+    patch_retval("_ZN12F2FExtension28INTERNAL_F2F_haveUserConsentEv", 1);
+    patch_ret0("_ZN12F2FExtension5Legal13CONSENT_Legal26NEED_TO_SHOW_POPUP_IMPROVEEv");
+#endif
   }
 
   if (!getenv("SONIC_NOSPLIT_DRAW_PHASE"))
@@ -915,6 +1096,11 @@ int main(int argc, char *argv[]) {
     patch_arm_jump("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST",
                    (void *)my_amDrawReleaseTexture);
     fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (stale-P do exit) ===\n");
+#ifdef __aarch64__
+    /* v3/arm64: o fix raiz é no ENQUEUE (RELSAFE64). O hook do exec acima vira só
+       cinto-de-segurança (com o enqueue transformado em NOP ele nem é chamado). */
+    sonic_install_relsafe64();
+#endif
   }
   /* 🛡️ DEMOGUARD (default ON; SONIC_NO_DEMOGUARD desliga): protege o teardown do CStartDemo contra
      use-after-free. DUAS camadas: (1) hook do ep2::ReleaseInstance (release limpo p/ esse caminho);
@@ -1199,6 +1385,17 @@ int main(int argc, char *argv[]) {
      sinalizamos "terminado" cedo p/ a engine seguir pro título/menu. */
   void (*introCB)(JEnv, void *) =
       (void *)so_find_addr_safe("Java_com_sega_f2fextension_f2fextensionInterface_callBackIntroVideo");
+#ifdef __aarch64__
+  /* v3: NÃO existe callBackIntroVideo. O intro video SETA o bit PAUSE_INTRO_VIDEO (0x80)
+     no mask de pause do F2F App (App::activeGame(false, 0x80), visto no ALOG) e o Java
+     tocaria o .mp4 e chamaria F2FAndroidJNI_activeGame(true, 0x80) ao terminar. Sem a
+     camada de vídeo o bit fica PRESO -> F2F App "pausado" -> título não vai pro menu.
+     Fix: retomar nós mesmos (mask &= ~0x80) periodicamente nos primeiros frames. */
+  void (*f2f_app_active)(int, unsigned) = (void *)so_find_addr_safe(
+      "_ZN12F2FExtension3App10activeGameEbNS0_12REASON_PAUSEE");
+  if (!f2f_app_active)
+    fprintf(stderr, "AVISO: App::activeGame nao encontrado (resume intro-video off)\n");
+#endif
   /* callback do ad intersticial: ao selecionar Start, onMainMenuToMainGame chama
      showInterstitial que GUARDA um callback (que cria o jogo/world map) e espera o
      ad fechar (callbackInterstitialAds do Java). Sem ad Java, disparamos nós: chamar
@@ -1265,6 +1462,12 @@ int main(int argc, char *argv[]) {
     fox.SetPadData(env, thiz, -5, 0, 0, 0, 0, 0);
   }
 
+  /* 🔎 SONIC_STATELOG: loga por segundo os gates do fluxo título->menu (debug). */
+  int (*gs_setup_done)(unsigned) = (void *)so_find_addr_safe("_Z22GsUserSetupIsCompletedj");
+  if (!gs_setup_done) gs_setup_done = (void *)so_find_addr_safe("_Z22GsUserSetupIsCompletedm");
+  int (*gs_user_enable)(unsigned) = (void *)so_find_addr_safe("_Z14GsUserIsEnablem");
+  int (*sjni_upshell)(void) = (void *)so_find_addr_safe("_Z18SJni_IsUpshellShowv");
+
   fprintf(stderr, "=== entrando no loop principal (GameProcess/DrawFrame) ===\n");
   unsigned long frame = 0;
   int prev_a = 0;             /* borda de A p/ disparar interCB 1x por seleção */
@@ -1302,6 +1505,19 @@ int main(int argc, char *argv[]) {
       (void *)so_find_addr_safe("_Z16SetContinueStarti");
   int sonic_continue_mode = 2;
   { const char *cm = getenv("SONIC_CONTINUE_MODE"); if (cm && *cm) sonic_continue_mode = atoi(cm); }
+  /* 🔑 v3/arm64: a flag de continue vive em memória malloc'd — quem a INICIALIZA no
+     Android é o Java (foxActivity chama SetContinueFlag no boot). Sem isso ela nasce
+     LIXO (ex.: -2123654856) e CStateWaitViewPausing::Next só trata 1/2 (outro valor =
+     preso pra sempre no título) e o continue-drive (que espera 0) nunca age. Chamar o
+     updateContinueFlag(0) = o mesmo init que o Java faria. Inofensivo no v2 (já era 0). */
+  int **cont_slot = NULL;
+#ifdef __aarch64__
+  /* o slot [b7d830] é re-apontado pelo init do engine p/ uma struct malloc'd (lixo).
+     Derivamos o SLOT das instruções do isContinueStart e sanitizamos o valor por
+     frame no loop (lixo -> 0), aí o continue-drive v2 volta a funcionar. */
+  cont_slot = (int **)a64_find_global((uintptr_t)sonic_isContinueStart, 0, 8);
+  fprintf(stderr, "=== continue slot=%p ===\n", (void *)cont_slot);
+#endif
   int sonic_continue_disabled = getenv("SONIC_NO_CONTINUE_DRIVE") != NULL;
   long sonic_continue_log_n = 0;
   /* 🗺️ SONIC_WARP_STAGE=N: warp direto pra fase N. Força sm_select_stage_id=N (o ID
@@ -1468,6 +1684,56 @@ int main(int argc, char *argv[]) {
         mask |= FOX_A_GAME;
       }
     }
+    /* 🔎 SONIC_INPUTSEQ="F:MASK:LEN,F:MASK:LEN,..." (debug): injeta MASK (bits FOX)
+       do frame F por LEN frames. Roteiro determinístico p/ reproduzir fluxos
+       (entrar na fase, pausar, navegar o pause menu) sem controle físico. */
+    {
+      static int seq_n = -1;
+      static long seq_f[48], seq_len[48]; static int seq_m[48];
+      if (seq_n < 0) {
+        seq_n = 0;
+        const char *s = getenv("SONIC_INPUTSEQ");
+        if (s) {
+          char *dup = strdup(s), *save = NULL;
+          for (char *tk = strtok_r(dup, ",", &save); tk && seq_n < 48;
+               tk = strtok_r(NULL, ",", &save)) {
+            long f0 = 0, ln = 4; unsigned mm = 0;
+            if (sscanf(tk, "%ld:%i:%ld", &f0, &mm, &ln) >= 2) {
+              seq_f[seq_n] = f0; seq_m[seq_n] = (int)mm;
+              seq_len[seq_n] = ln > 0 ? ln : 4; seq_n++;
+            }
+          }
+          free(dup);
+          fprintf(stderr, "=== INPUTSEQ: %d passos ===\n", seq_n);
+        }
+      }
+      for (int i = 0; i < seq_n; i++)
+        if ((long)frame >= seq_f[i] && (long)frame < seq_f[i] + seq_len[i]) {
+          if ((long)frame == seq_f[i])
+            fprintf(stderr, "=== INPUTSEQ passo %d mask=0x%04x @frame %lu ===\n",
+                    i, seq_m[i], frame);
+          mask |= seq_m[i];
+        }
+    }
+    /* 🔎 SONIC_INPUTFILE=/dev/shm/sonic_pad (debug): mask dinâmico via arquivo.
+       Conteúdo "0xNNNN" -> OR no mask a cada frame enquanto o arquivo existir.
+       Permite dirigir o jogo interativamente por ssh (echo 0x20 > f; rm f). */
+    {
+      static int inpf = -1; static const char *inpath;
+      if (inpf < 0) { inpath = getenv("SONIC_INPUTFILE"); inpf = inpath ? 1 : 0; }
+      if (inpf) {
+        FILE *f = fopen(inpath, "r");
+        if (f) { unsigned mm = 0;
+          if (fscanf(f, "%i", &mm) == 1 && mm) {
+            mask |= (int)mm;
+            static unsigned last_mm = 0;
+            if (mm != last_mm) { last_mm = mm;
+              fprintf(stderr, "=== INPUTFILE mask=0x%04x @frame %lu ===\n", mm, frame); }
+          }
+          fclose(f);
+        }
+      }
+    }
     /* 🔎 DIAG Y=Left: SONIC_TESTBIT=0xNNNN injeta esse bit FOX no mask em pulsos
        de 4 frames a cada 60, a partir de SONIC_TESTBIT_AT (default 1500). Determinístico
        (sem uinput). Ex.: TESTBIT=0x0010 (FOX_Y novo) vs 0x0100 (L1, o Y antigo errado). */
@@ -1535,6 +1801,23 @@ int main(int argc, char *argv[]) {
     /* dirige o continue do título (save com fase interrompida) — só fora do gameplay;
        a flag é lida exclusivamente por CStateWaitViewPausing::Next, então forçar
        o valor quando está 0 é seguro e usa o fluxo nativo. */
+#ifdef __aarch64__
+    /* v3: flag de continue nasce LIXO (malloc, Java inicializaria). Valor fora de
+       0..2 deixa CStateWaitViewPausing preso -> tap do título nunca vira menu.
+       Sanitiza: lixo -> 0 (aí o drive abaixo age igual ao v2). */
+    if (cont_slot) {
+      int *cp = *cont_slot;
+      if (cp && ((uintptr_t)cp & 3) == 0 && (uintptr_t)cp > 0x10000) {
+        int cv = *cp;
+        if (cv < 0 || cv > 2) {
+          *cp = 0;
+          static int san_log = 0;
+          if (san_log < 3) { san_log++;
+            fprintf(stderr, "=== continue flag LIXO (%d) sanitizada -> 0 @frame %lu ===\n", cv, frame); }
+        }
+      }
+    }
+#endif
     if (!sonic_continue_disabled && !sonic_game_started &&
         sonic_isContinueStart && sonic_SetContinueStart &&
         sonic_isContinueStart() == 0) {
@@ -1593,6 +1876,12 @@ int main(int argc, char *argv[]) {
     egl_shim_present();
     /* sinaliza intro-video done nos primeiros segundos */
     if (introCB && frame >= 30 && frame < 120 && (frame % 15) == 0) introCB(env, thiz);
+#ifdef __aarch64__
+    /* v3: limpa o bit PAUSE_INTRO_VIDEO (0x80) que o playIntroVideo deixou preso
+       (equivale ao activeGame(true, 0x80) que o Java faria ao fim do vídeo). */
+    if (f2f_app_active && frame >= 60 && frame < 4000 && (frame % 120) == 0)
+      f2f_app_active(1, 0x80);
+#endif
     /* 🔑 dispara o callback do ad intersticial (sem ad Java) p/ destravar a transição
        Start->world map. callbackInterstitialAds(type=0, result=0) invoca o callback que
        showInterstitial ARMAZENOU. ⚠️ NÃO disparar a cada frame: callBackInterestitial NÃO
@@ -1622,6 +1911,14 @@ int main(int argc, char *argv[]) {
     }
     if ((frame % 60) == 0 && env_flag_enabled("SONIC_FRAMELOG"))
       fprintf(stderr, "[frame %lu]\n", frame);
+    if ((frame % 60) == 0 && env_flag_enabled("SONIC_STATELOG"))
+      fprintf(stderr, "[state f%lu] setup_done=%d user_enable=%d upshell=%d continue=%d started=%d\n",
+              frame,
+              gs_setup_done ? gs_setup_done(0) : -1,
+              gs_user_enable ? gs_user_enable(0) : -1,
+              sjni_upshell ? sjni_upshell() : -1,
+              sonic_isContinueStart ? sonic_isContinueStart() : -1,
+              sonic_game_started);
     frame++;
     if (frame_sleep_us > 0) usleep((useconds_t)frame_sleep_us);
   }

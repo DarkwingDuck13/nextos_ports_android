@@ -447,7 +447,29 @@ static void my_glBindFramebuffer(unsigned t, unsigned fb) {
       /* preserva a cor de clear do engine: salva via glGetFloatv e restaura */
       static void(*gf)(unsigned,float*); if(!gf)gf=rgl("glGetFloatv");
       float save[4]={0,0,0,0}; if(gf) gf(0x0C22,save); /* GL_COLOR_CLEAR_VALUE */
+#ifdef __aarch64__
+      /* 🔑 v3: glClear RESPEITA scissor/colorMask/depthMask. Se o 1º bind do frame do
+         FBO que acumula a luz acontece com scissor ligado ou máscara parcial (ordem de
+         passes do v3 difere do v2), nosso clear vira no-op parcial -> o cassino segue
+         acumulando (fundo estoura + duplicação). Forçar estado FULL p/ o clear e
+         restaurar o estado rastreado do engine em seguida. */
+      static void(*en)(unsigned); static void(*dis)(unsigned);
+      static void(*cm)(unsigned char,unsigned char,unsigned char,unsigned char);
+      static void(*dm)(unsigned char);
+      if(!en)en=rgl("glEnable"); if(!dis)dis=rgl("glDisable");
+      if(!cm)cm=rgl("glColorMask"); if(!dm)dm=rgl("glDepthMask");
+      int had_sc = (g_scissor == 1);
+      if (had_sc && dis) dis(0x0C11);          /* GL_SCISSOR_TEST off p/ o clear */
+      if (cm) cm(1,1,1,1);
+      if (dm) dm(1);
       cc(cr,cg,cb,1.0f); c(0x4100); /* COLOR|DEPTH */
+      if (had_sc && en) en(0x0C11);
+      if (cm) cm((unsigned char)g_color_mask[0],(unsigned char)g_color_mask[1],
+                 (unsigned char)g_color_mask[2],(unsigned char)g_color_mask[3]);
+      if (dm) dm((unsigned char)g_depth_mask);
+#else
+      cc(cr,cg,cb,1.0f); c(0x4100); /* COLOR|DEPTH */
+#endif
       cc(save[0],save[1],save[2],save[3]);
     }
   }
