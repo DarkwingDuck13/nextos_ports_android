@@ -23,6 +23,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <setjmp.h>
 #include <execinfo.h>
 #include <string.h>
 
@@ -58,7 +59,18 @@ extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim
    grava backtrace com offset `libfox+0xNNN` (= bt[i]-text_base, resolvível por
    readelf) num `crash.log` PERSISTENTE (append; o log.txt é truncado no relaunch
    pelo launcher, por isso o crash some). Inclui frame atual e se estava no DrawFrame. */
+/* 🛡️ chamada protegida do teardown do attract-demo (ver my_ep2_CStartDemo_ReleaseInstance):
+   se estamos DENTRO da guarda e vem um SIGSEGV/SIGBUS, recupera via siglongjmp em vez de morrer. */
+static sigjmp_buf g_demo_guard_env;
+static volatile sig_atomic_t g_demo_guard_active = 0;
+static unsigned long g_demo_guard_recovered = 0;
+
 static void sonic_crash_handler(int sig, siginfo_t *si, void *uc) {
+  if (g_demo_guard_active && (sig == SIGSEGV || sig == SIGBUS)) {
+    g_demo_guard_active = 0;
+    g_demo_guard_recovered++;
+    siglongjmp(g_demo_guard_env, 1);          /* recupera: pula de volta pro sigsetjmp */
+  }
   void *bt[48];
   int n = backtrace(bt, 48);
   /* PC/LR exatos do ucontext (armhf) — a instrução do crash mesmo sem unwind da libfox. */
@@ -423,6 +435,37 @@ static int my_MediaPlayerisPlaying(int i) {
   if (off < 0) off = getenv("SONIC_NO_JINGLE1UP") ? 1 : 0;
   if (off) return 0;                                  /* fallback: comportamento v4.0 (mudo) */
   return sonic_audio_jingle_playing(i);               /* 1 só se canal i for jingle tocando */
+}
+
+/* 🛡️ FIX crash no teardown do attract-demo (reportado pelo tester na Electric Road, frame ~115k):
+   `gm::start_demo::ep2::CStartDemo` é um SINGLETON (s_instance). Se o objeto sofre USE-AFTER-FREE
+   (liberado externamente sem zerar s_instance), o ReleaseInstance nativo chama o destrutor virtual
+   sobre memória corrompida -> SIGSEGV dentro de ~CStartDemo (ex.: str [this+0x28] em libfox+0x4254b8,
+   PC=0x...4254b8). Reimplementamos o ReleaseInstance (fiel: null-check + blx vtable[0] + zera
+   s_instance) MAS envolvemos a chamada do destrutor numa CHAMADA PROTEGIDA (sigsetjmp): se crashar,
+   o handler faz siglongjmp de volta, a gente loga, zera s_instance e SEGUE (vaza o objeto meio-
+   destruído, mas NÃO fecha o jogo). No caminho bom é idêntico ao original. SONIC_NO_DEMOGUARD desliga. */
+static void **g_cstartdemo_s_instance = 0;
+static void my_ep2_CStartDemo_ReleaseInstance(void) {
+  if (!g_cstartdemo_s_instance)
+    g_cstartdemo_s_instance =
+        (void **)so_find_addr_safe("_ZN2gm10start_demo10CStartDemo10s_instanceE");
+  void **pinst = g_cstartdemo_s_instance;
+  if (!pinst) return;
+  void *inst = *pinst;
+  if (!inst) return;                          /* igual ao original: s_instance null -> nada a fazer */
+  g_demo_guard_active = 1;
+  if (sigsetjmp(g_demo_guard_env, 1) == 0) {
+    void (**vt)(void *) = *(void (***)(void *))inst;   /* vtable = *inst (pode crashar se UAF) */
+    void (*dtor)(void *) = vt[0];                      /* vtable[0] = destrutor virtual (D0) */
+    dtor(inst);                                        /* == blx [[inst]] do ReleaseInstance nativo */
+    g_demo_guard_active = 0;
+  } else {
+    /* recuperado do SIGSEGV dentro do destrutor */
+    fprintf(stderr, "[DEMOGUARD] ~CStartDemo crashou (use-after-free) -> RECUPERADO, "
+                    "s_instance zerado (#%lu)\n", g_demo_guard_recovered);
+  }
+  *pinst = 0;                                 /* igual ao original: zera o singleton */
 }
 
 static int sonic_amThreadCheckDraw(long unused) {
@@ -820,6 +863,25 @@ int main(int argc, char *argv[]) {
     patch_arm_jump("_Z21_amDrawReleaseTextureP14AMS_REGISTLIST",
                    (void *)my_amDrawReleaseTexture);
     fprintf(stderr, "=== RELSAFE: _amDrawReleaseTexture protegido (stale-P do exit) ===\n");
+  }
+  /* 🛡️ DEMOGUARD (default ON; SONIC_NO_DEMOGUARD desliga): chamada protegida do teardown do
+     attract-demo (CStartDemo) — evita o crash de use-after-free em ~CStartDemo (tester, Electric Road). */
+  if (!getenv("SONIC_NO_DEMOGUARD")) {
+    patch_arm_jump("_ZN2gm10start_demo3ep210CStartDemo15ReleaseInstanceEv",
+                   (void *)my_ep2_CStartDemo_ReleaseInstance);
+    fprintf(stderr, "=== DEMOGUARD: ep2::CStartDemo::ReleaseInstance protegido (UAF do demo) ===\n");
+    /* 🧪 SONIC_SIMDEMOCRASH: simula o crash — força s_instance = ponteiro garbage e chama o
+       ReleaseInstance. SEM guarda -> crash em ~CStartDemo; COM guarda -> recupera e segue. */
+    if (getenv("SONIC_SIMDEMOCRASH")) {
+      void **pinst = (void **)so_find_addr_safe("_ZN2gm10start_demo10CStartDemo10s_instanceE");
+      fprintf(stderr, "=== SIMDEMOCRASH: s_instance@%p, forcando garbage e chamando ReleaseInstance ===\n",
+              (void *)pinst);
+      if (pinst) {
+        *pinst = (void *)0x1;                 /* ponteiro non-null INVÁLIDO = UAF simulado */
+        my_ep2_CStartDemo_ReleaseInstance();  /* deve RECUPERAR (guarda) em vez de fechar */
+        fprintf(stderr, "=== SIMDEMOCRASH: SOBREVIVI (recuperado=%lu) ===\n", g_demo_guard_recovered);
+      }
+    }
   }
   /* 🔆 SONIC_FREEZETONEMAP (SUSPEITO #1 do cassino "Electric Road"): CONGELA a
      AUTO-EXPOSIÇÃO. ChangeToneMapParam(midgray,lwhite) é chamado por frame pela
