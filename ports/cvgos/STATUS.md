@@ -1,5 +1,12 @@
 # Castlevania: Grimoire of Souls (jp.konami.castlevania) — Mali-450 .79 — STATUS
 
+## ⭐ ATUALIZAÇÃO sessão 1 (tarde/noite) — 2 BREAKTHROUGHS, path natural anda até RecreateGfxState
+1. **trap-gate** (libunity+0x31fe38): `nativeRender` baila se `[player+0x104]!=0` → causa da tela preta (NÃO o GC).
+2. 🎯 **RAIZ do trap = SIGHUP!** "main thread trapped; signum=1" = a Unity grava o SINAL (1=SIGHUP) que trapou a thread em `curthread->trap`; o gate propaga. **FIX: ignorar+bloquear SIGHUP** (`signal(SIGHUP,SIG_IGN)`+sigprocmask+my_sigaction recusa sig1) → **trapped 175684×→0**, gate retorna 0 NATURALMENTE (sem forçar, sem corrupção). Ligar via default (CVGOS_NOSIGHUPIGN desliga).
+3. **Path natural agora**: boot → trap=0 → initJni OK → `nativeRecreateGfxState` roda de verdade e **constrói um `java.lang.Error`+StackTrace** (FindClass Error/StackTraceElement, NewStringUTF Class/Method/File) — a Unity está LOGANDO uma exceção via Java. **Crash (SIGSEGV 139) na máquina C++ de exceção/log**: libunity+0x31fafc `ldr r1,[fp+0x108](=1); ldr r1,[r1,#12]` — local=1 vira ponteiro. `CVGOS_CRASHSKIP=1` sobrevive ~5 skips mas a construção aninhada acaba matando.
+- **PRÓXIMO**: (a) descobrir QUE erro a Unity está logando no RecreateGfxState (hook `__cxa_throw`/ler a msg do `java.lang.Error`, ou o que falha no gfx state) — pode ser um check de GL/config; (b) OU deixar a construção do stacktrace-Java robusta (NewObjectArray→buffer válido, NewObject→dummy, SetObjectArrayElement no-op) p/ o log completar e o RecreateGfxState seguir. Provavelmente a exceção é diagnóstico não-fatal → se completar o log, init continua.
+- envs atuais no run.sh: `CVGOS_NOTRAPPATCH=1` (path natural, não força gate), `CVGOS_CRASHSKIP=1`, `CUP_NOSIGH=1`, `SDL_VIDEODRIVER=mali`, `CUP_VIDEO=kmsdrm`, `CUP_GLES_MAJOR=2`, `CUP_1CORE=1`.
+
 ## Estado (2026-07-01, sessão 1)
 Port armv7 Unity 2018.4.11f1 IL2CPP **do zero**, base = glue Unity do Terraria + loader
 ELF32-ARM/softfp do Shantae (ambos JOGÁVEL). **Boot completo + present no fb0 funcionando**;

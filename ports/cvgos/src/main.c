@@ -436,6 +436,23 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     if ((sbn & 0x1ff) == 0) dbg_sync();
     return;  /* resume no caller */
   }
+  /* 🔑 CVGOS_CRASHSKIP: pula crashes NÃO-essenciais (SIGSEGV/SIGILL) da máquina de
+     exceção/log C++ da Unity (dispara ao construir java.lang.Error no RecreateGfxState
+     por causa do nosso JNIEnv fake). Retoma no caller (lr) com r0=0. Cap alto p/ evitar
+     loop infinito. So na thread NÃO-render (a render tem recovery proprio). */
+  if ((sig == SIGSEGV || sig == SIGILL) && getenv("CVGOS_CRASHSKIP") && lr0 && lr0 != pc0) {
+    static volatile unsigned long csn = 0;
+    if (csn < 5000) {
+      uc0->uc_mcontext.arm_pc = lr0;
+      uc0->uc_mcontext.arm_r0 = 0;
+      if (csn++ < 40)
+        fprintf(stderr, "[CRASHSKIP] #%lu sig=%d pc=0x%lx fault=%p -> lr=0x%lx\n",
+                csn, sig, (unsigned long)pc0, si->si_addr, (unsigned long)lr0);
+      else csn++;
+      if ((csn & 0x3ff) == 0) dbg_sync();
+      return;
+    }
+  }
   /* skipbad: crash em thread NÃO-render (worker/job) → estaciona a thread em vez de
      matar o processo (mantém o jogo vivo p/ a render continuar). */
   if (g_skipbad && sig == SIGSEGV) {
