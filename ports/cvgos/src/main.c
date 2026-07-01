@@ -4862,6 +4862,18 @@ static void *fmod_audio_thread(void *arg) {
   return NULL;
 }
 
+/* 🔑 __cxa_throw hook: loga o TIPO da exceção C++ (type_info->name) antes de repassar
+ * -> revela O QUE a Unity lança no RecreateGfxState. CVGOS_THROWLOG ativa. */
+static void (*g_real_cxa_throw)(void *, void *, void *) = NULL;
+static void my_cxa_throw(void *thrown, void *tinfo, void *dest) {
+  const char *nm = "?";
+  if (tinfo) { const char *p = *(const char **)((char *)tinfo + 4); if (p) nm = p; }
+  fprintf(stderr, "[CXA_THROW] tipo='%s' obj=%p\n", nm, thrown); fsync(2);
+  if (!g_real_cxa_throw) g_real_cxa_throw = (void (*)(void *, void *, void *))dlsym(RTLD_DEFAULT, "__cxa_throw");
+  if (g_real_cxa_throw) g_real_cxa_throw(thrown, tinfo, dest);
+  for (;;) pause();
+}
+
 int main(int argc, char **argv) {
   (void)argc; (void)argv;
   setvbuf(stdout, NULL, _IONBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
@@ -5551,6 +5563,14 @@ int main(int argc, char **argv) {
       so_use(c); free(c);
     }
     fprintf(stderr, "[EHFIX] exception ABI resolvida (%d simbolos patchados)\n", nfix);
+    if (getenv("CVGOS_THROWLOG")) {
+      g_real_cxa_throw = (void (*)(void *, void *, void *))dlsym(RTLD_DEFAULT, "__cxa_throw");
+      so_module *c = so_save();
+      so_use(g_m_unity); patch_got("__cxa_throw", (void *)my_cxa_throw);
+      if (g_m_il2cpp) { so_use(g_m_il2cpp); patch_got("__cxa_throw", (void *)my_cxa_throw); }
+      so_use(c); free(c);
+      fprintf(stderr, "[THROWLOG] __cxa_throw hookado\n");
+    }
   }
 
   /* lista os métodos nativos registrados (achar initJni/nativeRender) */
