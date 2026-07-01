@@ -6093,7 +6093,7 @@ int main(int argc, char **argv) {
     g_gl_proc_router = ds_route;
     fprintf(stderr, "[SHFIX] g_gl_proc_router = ds_route (glShaderSource precision normalize)\n");
   }
-  if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
+  if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || getenv("CUP_DRAWCOUNT") || g_drawspy)
     set_import("eglGetProcAddress", (void *)my_eglGetProcAddress);
   set_import("sysconf", (void *)my_sysconf);
   /* 🔑 dl_iterate_phdr: libil2cpp importa e o resolvia p/ o STUB (retorna 0) → o unwinder C++ da
@@ -6185,10 +6185,11 @@ int main(int argc, char **argv) {
   patch_got("__android_log_print", (void *)my_alog_print);
   patch_got("__android_log_write", (void *)my_alog_write);
   patch_got("__android_log_vprint", (void *)my_alog_vprint);
-  if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
+  if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || getenv("CUP_DRAWCOUNT") || g_drawspy)
     patch_got("eglGetProcAddress", (void *)my_eglGetProcAddress);
   /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
-  if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0"))
+  if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_SHOTLIVE") ||
+      getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0"))
     patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
   /* FF9_EGLFIX (fbdev): substitui eglChooseConfig da libunity p/ sanitizar attribs ES2
      (senão Mali Utgard rejeita os attribs ES3 -> GfxDevice NULL -> 0 draws -> preto). */
