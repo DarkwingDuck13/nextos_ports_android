@@ -1123,6 +1123,12 @@ static int ter_env_positive_int_main(const char *name) {
   long v = strtol(s, &end, 10);
   return (end != s && v > 0 && v < 32768) ? (int)v : 0;
 }
+static int ter_env_on(const char *name) {
+  const char *s = getenv(name);
+  if (!s || !*s || !strcmp(s, "0") || !strcasecmp(s, "false") || !strcasecmp(s, "off") || !strcasecmp(s, "no"))
+    return 0;
+  return 1;
+}
 static int ter_read_screen_pair_main(const char *path, int *w, int *h) {
   FILE *f = fopen(path, "r");
   if (!f) return 0;
@@ -5449,7 +5455,12 @@ void my_TitleUITimer_Update(void *self, void *mi) {
 }
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
-  if ((getenv("FF9_NEWGAME") || getenv("FF9_SHOWMENU") || getenv("FF9_FORCE_STARTGAME")) &&
+  uintptr_t a = g_il2cpp_base + 0x1348430;
+  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
+  mprotect((void *)(a & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  memcpy((void *)a, g_titleui_orig, 16);
+  __builtin___clear_cache((char *)a, (char *)(a + 16));
+  if ((ter_env_on("FF9_NEWGAME") || ter_env_on("FF9_SHOWMENU") || ter_env_on("FF9_FORCE_STARTGAME")) &&
       this_ && ((uintptr_t)this_ >> 40) == 0) {
     void *timer = *(void **)((char *)this_ + 0x230);
     if (!timer) {
@@ -5462,11 +5473,6 @@ void my_TitleUI_Update(void *this_, void *mi) {
     }
   }
   /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
-  uintptr_t a = g_il2cpp_base + 0x1348430;
-  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
-  mprotect((void *)(a & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
-  memcpy((void *)a, g_titleui_orig, 16);
-  __builtin___clear_cache((char *)a, (char *)(a + 16));
   ((void (*)(void *, void *))a)(this_, mi);   /* roda o Update original deste frame */
 }
 ff9_touch my_Input_GetTouch(int index, void *mi) {
@@ -7426,7 +7432,7 @@ int main(int argc, char **argv) {
      antes do estado 8. ValidateExpansion (0x10D8580, chamada no estado 1, com x0=this) é o ponto
      natural p/ forçar: patchamos ela p/ `currentState=8; ret` → no próximo Update vai p/ StartGame.
      (jump table 0x67d9c4: entry[7]=0x9a → 0x10D7F18 = case StartGame.) OPT-IN FF9_FORCE_STARTGAME. */
-  if (getenv("FF9_FORCE_STARTGAME") && g_il2cpp_base) {
+  if (ter_env_on("FF9_FORCE_STARTGAME") && g_il2cpp_base) {
     long pgsz = sysconf(_SC_PAGESIZE);
     /* ONE-SHOT (sacada do NextOS: forçar state=8 TODA frame = "segurar o botão" → StartGame
        re-roda toda frame, a cena do título nunca assume → preto). Trampolim no switch
@@ -7859,9 +7865,9 @@ int main(int argc, char **argv) {
       }
       /* FF9_NEWGAME: depois do título montado (f>=FF9_NGAT, default 1300), hooka TitleUI.Update
          p/ chamar OnNewGameButtonClick(this) e iniciar o jogo (a UI não responde a input injetado). */
-      { const char *ng = getenv("FF9_NEWGAME");
-        const char *sm = getenv("FF9_SHOWMENU");  /* fluxo natural: pula o SlashScreen slideshow chamando ShowMenuPanel direto */
-        const char *nc = getenv("FF9_NOTIFYCLICK");  /* dispensa o slideshow via UICamera.Notify(SlideShowHitArea,"OnClick") */
+      { int ng = ter_env_on("FF9_NEWGAME");
+        int sm = ter_env_on("FF9_SHOWMENU");  /* fluxo natural: pula o SlashScreen slideshow chamando ShowMenuPanel direto */
+        int nc = ter_env_on("FF9_NOTIFYCLICK");  /* dispensa o slideshow via UICamera.Notify(SlideShowHitArea,"OnClick") */
         static int ng_hooked = 0;
         if ((ng || sm || nc) && !ng_hooked && g_il2cpp_base) {
           int ngat = getenv("FF9_NGAT") ? atoi(getenv("FF9_NGAT")) : 1300;
