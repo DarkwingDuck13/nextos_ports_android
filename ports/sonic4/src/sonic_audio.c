@@ -1182,24 +1182,27 @@ static int ensure_audio(void) {
     fprintf(stderr, "sonic_audio: drivers disponiveis: %s\n", list);
   }
 
-  /* (0) override explícito do tester: SONIC_AUDIODRIVER=alsa|pulseaudio|...
-     força TENTAR esse driver primeiro (sem hardcode no launcher; é o usuário
-     escolhendo no device dele pra achar o audível). Se não abrir, segue o fluxo
-     automático normal abaixo. */
+  /* (0) AUDIO_DRIVER do launcher (via SONIC_AUDIODRIVER): força esse driver do SDL. Aceita
+     "alsa", "pulse"/"pulseaudio", "pipewire", etc. TOLERANTE: o SDL chama o pulse de "pulseaudio",
+     então normalizamos "pulse"->"pulseaudio", e o sucesso é "abriu o áudio" (não exige nome exato).
+     Loga CLARO que foi setado e se deu certo. */
   {
     const char *ovr = getenv("SONIC_AUDIODRIVER");
     if (ovr && *ovr && strcmp(ovr, "dummy") != 0) {
+      const char *sdlname = (strcmp(ovr, "pulse") == 0) ? "pulseaudio" : ovr;
+      fprintf(stderr, "=== AUDIO_DRIVER=%s -> SDL_AUDIODRIVER=%s (forçado pelo launcher) ===\n",
+              ovr, sdlname);
       SDL_QuitSubSystem(SDL_INIT_AUDIO);
-      setenv("SDL_AUDIODRIVER", ovr, 1);
+      setenv("SDL_AUDIODRIVER", sdlname, 1);
       if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
         const char *cur = SDL_GetCurrentAudioDriver();
-        if (cur && strcmp(cur, ovr) == 0 && sa_try_open(&want, &have)) {
-          fprintf(stderr, "sonic_audio: SDL audio aberto (override) %dHz %dch samples=%d driver=%s\n",
-                  have.freq, have.channels, have.samples, ovr);
+        if (cur && !sa_driver_silent(cur) && sa_try_open(&want, &have)) {
+          fprintf(stderr, "sonic_audio: SDL audio aberto (AUDIO_DRIVER=%s) %dHz %dch samples=%d driver=%s -> OK\n",
+                  ovr, have.freq, have.channels, have.samples, cur);
           goto opened;
         }
       }
-      fprintf(stderr, "sonic_audio: override driver=%s nao abriu (%s) -> automatico\n",
+      fprintf(stderr, "sonic_audio: AUDIO_DRIVER=%s NAO abriu (%s) -> tenta automatico\n",
               ovr, SDL_GetError());
       unsetenv("SDL_AUDIODRIVER");
     }
