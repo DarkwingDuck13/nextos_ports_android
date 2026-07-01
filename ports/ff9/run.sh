@@ -62,15 +62,18 @@ export CUP_CONDPOLL=${CUP_CONDPOLL:-100} CUP_SEMPOLL=${CUP_SEMPOLL:-50} TER_FUTE
 # NULLGUARD (trampolim NULL-safe @0x439864). → render loop roda 200+ frames + eglSwapBuffers.
 export CUP_DLLOG=${CUP_DLLOG:-0}
 
-# Caminho validado: titulo -> new game -> campo, com audio real sdlib/OpenSL e controles.
+# Caminho validado: tela de titulo/menu inicial com audio real sdlib/OpenSL e controles.
 export FF9_OBB=${FF9_OBB:-1} FF9_EMPTYPKG=${FF9_EMPTYPKG:-1} FF9_OBBINIT=${FF9_OBBINIT:-1}
 export FF9_SPLASHDONE=${FF9_SPLASHDONE:-1} FF9_NOLOGIN=${FF9_NOLOGIN:-1}
-export FF9_SHOWMENU=${FF9_SHOWMENU:-1} FF9_NEWGAME=${FF9_NEWGAME:-1}
+export FF9_FORCE_STARTGAME=${FF9_FORCE_STARTGAME:-1} FF9_LOADSCENE=${FF9_LOADSCENE:-Title}
+export FF9_LOADAT=${FF9_LOADAT:-900} FF9_GAMEINIT=${FF9_GAMEINIT:-1}
+export FF9_SHOWMENU=${FF9_SHOWMENU:-0} FF9_NEWGAME=${FF9_NEWGAME:-0}
+export FF9_NOTIFYCLICK=${FF9_NOTIFYCLICK:-0} FF9_NODIRECTNG=${FF9_NODIRECTNG:-1}
 export FF9_NGAT=${FF9_NGAT:-380} FF9_SHOWMENUAT=${FF9_SHOWMENUAT:-440} FF9_NEWGAMEAT=${FF9_NEWGAMEAT:-900}
 export FF9_REALAUDIO=${FF9_REALAUDIO:-1} FF9_REALSOUND=${FF9_REALSOUND:-1}
 export FF9_GAMEPAD=${FF9_GAMEPAD:-1} FF9_FORCECONTROL=${FF9_FORCECONTROL:-1}
 export TER_GPVIRT=${TER_GPVIRT:-1} TER_GPVDUR=${TER_GPVDUR:-30} TER_GP_EVDEV=${TER_GP_EVDEV:-1}
 rm -f /tmp/tergp
 
-echo "[run] FF9 — gameplay campo + audio real sdlib + controles"
+echo "[run] FF9 — menu inicial + audio real sdlib + controles"
 exec ./ff9
