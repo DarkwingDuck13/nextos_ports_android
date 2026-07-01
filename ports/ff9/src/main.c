@@ -5465,6 +5465,16 @@ void my_TitleUITimer_Update(void *self, void *mi) {
     *(float *)((char *)self + 0x10) = 0.0f; /* time */
   }
 }
+static void ff9_title_timer_patch(uintptr_t base) {
+  uintptr_t u = base + 0x134848c; /* TitleUI.Update: cbz timer, throw NRE */
+  uintptr_t a = base + 0x1348614; /* Timer.Update: cbz timeoutAction, throw NRE */
+  long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
+  mprotect((void *)(u & ~((uintptr_t)ps - 1)), (size_t)ps * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)u = 0xb4000a00u; /* cbz x0, 0x13485cc: epilogo/ret se TitleUI.timer e NULL */
+  *(uint32_t *)a = 0xb4000168u; /* cbz x8, 0x1348640: epilogo/ret se callback e NULL */
+  __builtin___clear_cache((char *)u, (char *)u + 4);
+  __builtin___clear_cache((char *)a, (char *)a + 4);
+}
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
   uintptr_t a = g_il2cpp_base + 0x1348430;
@@ -7840,14 +7850,14 @@ int main(int argc, char **argv) {
         ff9_fieldstate_install(g_il2cpp_base);
         fstate_hooked = 1;
       }
-      /* FF9_TITLETIMERFIX (default ON): em fluxos forçados o TitleUI.Timer pode existir com
-         timeoutAction NULL; Timer.Update lança NRE todo frame e estoura a stack do il2cpp. */
+      /* FF9_TITLETIMERFIX (default ON): em fluxos forcados o TitleUI.timer ou
+         Timer.timeoutAction podem vir NULL; preserva callbacks validos, mas retorna sem NRE
+         quando esses campos ainda nao existem. */
       static int tmr_hooked = 0;
       if (!tmr_hooked && !getenv("FF9_NOTITLETIMERFIX") && g_il2cpp_base && f >= 180) {
-        extern void my_TitleUITimer_Update(void *, void *);
-        hook_arm64(g_il2cpp_base + 0x13485E0, (uintptr_t)my_TitleUITimer_Update);
+        ff9_title_timer_patch(g_il2cpp_base);
         tmr_hooked = 1;
-        fprintf(stderr, "[TITLETIMER] TitleUI.Timer.Update(0x13485E0) -> pause/noop @f=%d\n", f); fsync(2);
+        fprintf(stderr, "[TITLETIMER] TitleUI/Timer null guards -> ret @f=%d\n", f); fsync(2);
       }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
