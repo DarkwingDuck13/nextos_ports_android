@@ -1041,6 +1041,9 @@ static void *my_memalign(unsigned long alignment, unsigned long size) {
   if (alignment & (alignment - 1)) { unsigned long a = sizeof(void *); while (a < alignment) a <<= 1; alignment = a; }
   void *p = NULL;
   if (posix_memalign(&p, alignment, size ? size : 1) != 0) return NULL;
+  /* CVGOS_ZEROALLOC: zera a memoria (objetos Unity esperam campos 0; sem zerar, campo
+     +0x108 fica com lixo=&pthread_mutex_lock_fake -> deref-como-objeto -> SIGSEGV). */
+  if (p && getenv("CVGOS_ZEROALLOC")) memset(p, 0, size ? size : 1);
   return p;
 }
 static unsigned long my_strlcat(char *dst, const char *src, unsigned long sz) {
