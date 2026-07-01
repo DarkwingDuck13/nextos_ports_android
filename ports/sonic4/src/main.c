@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <execinfo.h>
 #include <string.h>
 
@@ -185,16 +186,35 @@ static void sonic_kill_other_instances(void) {
    -> tela preta) FALHAM. Aqui só APONTAMOS pro que o sistema JÁ criou (não força
    driver nenhum; só preenche se estiver vazio). Em kmsdrm puro (muOS sem wayland)
    não há socket wayland -> WAYLAND_DISPLAY fica vazio -> SDL usa kmsdrm (correto). */
+static int dir_ok_rw(const char *p) {
+  if (!p || !*p) return 0;
+  DIR *d = opendir(p); if (!d) return 0; closedir(d);
+  return access(p, W_OK) == 0;    /* precisa ser GRAVAVEL p/ o socket do pipewire/pulse */
+}
 static void sonic_detect_session_runtime(void) {
-  if (!getenv("XDG_RUNTIME_DIR")) {
+  /* Só age se o runtime-dir ATUAL estiver ausente/não-gravável (não mexe num válido da sessão). */
+  const char *cur = getenv("XDG_RUNTIME_DIR");
+  if (!dir_ok_rw(cur)) {
     char ubuf[64];
     snprintf(ubuf, sizeof(ubuf), "/run/user/%u", (unsigned)getuid());
     const char *cands[] = { "/run/0-runtime-dir", "/var/run/0-runtime-dir",
                             "/run/user/0", "/var/run/user/0", ubuf, NULL };
-    for (int i = 0; cands[i]; i++) {
-      DIR *d = opendir(cands[i]);
-      if (d) { closedir(d); setenv("XDG_RUNTIME_DIR", cands[i], 1);
-               fprintf(stderr, "=== XDG_RUNTIME_DIR fallback = %s ===\n", cands[i]); break; }
+    const char *chosen = NULL;
+    for (int i = 0; cands[i]; i++)
+      if (dir_ok_rw(cands[i])) { chosen = cands[i]; break; }
+    /* 🔊 muOS/ROCKNIX sem runtime-dir: pipewire/pulse falham ("pw.loop can't make
+       support.system handle: No such file or directory") -> sem servidor de som -> cai no
+       ALSA cru -> speaker busy -> HDMI (mudo). Se NADA válido existe, CRIA um dir gravável
+       0700 p/ o servidor de som conseguir criar o socket. SONIC_NO_RTDIR=1 desliga. */
+    static char made[80];
+    if (!chosen && !getenv("SONIC_NO_RTDIR")) {
+      snprintf(made, sizeof(made), "/tmp/sonic-rt-%u", (unsigned)getuid());
+      mkdir(made, 0700);
+      if (dir_ok_rw(made)) { chmod(made, 0700); chosen = made; }
+    }
+    if (chosen) {
+      setenv("XDG_RUNTIME_DIR", chosen, 1);
+      fprintf(stderr, "=== XDG_RUNTIME_DIR = %s (fallback p/ pipewire/pulse) ===\n", chosen);
     }
   }
   if (!getenv("WAYLAND_DISPLAY")) {
