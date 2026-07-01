@@ -4549,6 +4549,21 @@ static int ff9_log_managed_exception_candidate(int n, const char *slot, void *ex
   fsync(2);
   return 1;
 }
+static void ff9_log_throw_stack_ras(int id) {
+  if (!getenv("FF9_LOGTHROWBT") || !g_il2cpp_base || id > 12) return;
+  uintptr_t start = ((uintptr_t)&id) & ~(uintptr_t)7;
+  int hits = 0;
+  for (uintptr_t a = start; a < start + 0x3000 && hits < 20; a += 8) {
+    if (!addr_readable(a) || !addr_readable(a + 7)) break;
+    uintptr_t v = *(uintptr_t *)a;
+    if (v >= g_il2cpp_base && v < g_il2cpp_base + 0x3000000) {
+      fprintf(stderr, "[LOGTHROWBT] #%d sp+0x%lx RA libil2cpp+0x%lx\n",
+              id, (unsigned long)(a - start), (unsigned long)(v - g_il2cpp_base));
+      hits++;
+    }
+  }
+  fsync(2);
+}
 
 /* FF9_SKIPMOVIE (default ON): no so-loader o VideoPlayer Android nao e criado para os
  * logos/FMV iniciais. MovieMaterial.Load entao ve _videoPlayer == NULL e lanca
@@ -4714,6 +4729,7 @@ __attribute__((noreturn)) void my_cxa_throw_diag(void *thrown, void *tinfo, void
               (unsigned long)q[0], (unsigned long)q[1],
               (unsigned long)q[2], (unsigned long)q[3]);
     }
+    ff9_log_throw_stack_ras(id);
     fsync(2);
   }
   g_cxa_throw_orig(thrown, tinfo, dest);
