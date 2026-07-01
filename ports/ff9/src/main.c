@@ -5743,10 +5743,16 @@ static int (*g_eventengine_service_orig)(void *, void *);
 static void (*g_fmac_update_movement_orig)(void *, void *);
 static void *g_eventengine_this;
 static uint32_t ff9_eventinput_bits(void);
+/* env "ligada" de verdade: FF9_FORCECONTROL=0 conta como OFF (o run.sh sempre exporta,
+   então só presença não basta p/ desligar em teste). */
+static int ff9_env_on(const char *name) {
+  const char *v = getenv(name);
+  return v && *v && strcmp(v, "0") != 0;
+}
 int my_EventEngine_ServiceEvents(void *self, void *method);
 int my_EventEngine_ServiceEvents(void *self, void *method) {
   g_eventengine_this = self;
-  if (getenv("FF9_FORCECONTROL") && self && ((uintptr_t)self >> 40) == 0 && g_il2cpp_base) {
+  if (ff9_env_on("FF9_FORCECONTROL") && self && ((uintptr_t)self >> 40) == 0 && g_il2cpp_base) {
     ((void (*)(void *, int, void *))(g_il2cpp_base + 0x159AC18))(self, 1, NULL);
   }
   int r = g_eventengine_service_orig ? g_eventengine_service_orig(self, method) : 0;
@@ -5824,6 +5830,50 @@ static void ff9_field_nre_patch(uintptr_t base) {
   __builtin___clear_cache((char *)(base + 0x1122ca8), (char *)(base + 0x1122cb4));
 }
 
+/* FF9_SNDSAFE (default ON com FF9_REALSOUND): dispatch de som REAL porém exception-safe.
+   O dispatch gerenciado lança KeyNotFoundException p/ sound profile ausente (ex.: key 136)
+   e a exceção ABORTA o ServiceEvents do script de campo -> evento de abertura congela antes
+   do 1º diálogo. Aqui chamamos o método via il2cpp_runtime_invoke: exceção managed é
+   CAPTURADA (logada) e vira no-op só daquele som; os sons presentes tocam normal.
+   Anti-recursão: runtime_invoke re-entra no methodPointer hookado -> flag por thread
+   desvia pro trampolim original. */
+static void *(*p_il2_rt_invoke)(void *m, void *obj, void **params, void **exc);
+static void (*p_il2_fmt_exc)(void *exc, char *msg, int size);
+static int (*g_snd_dispatch1_orig)(int, int, int, int, int, void *);
+static int (*g_snd_dispatch2_orig)(int, int, int, int, int, void *);
+static __thread int g_snd_in_invoke;
+static int ff9_snd_dispatch_safe(int parmType, int objNo, int a1, int a2, int a3,
+                                 void *method, int which) {
+  int (*orig)(int, int, int, int, int, void *) =
+      which ? g_snd_dispatch2_orig : g_snd_dispatch1_orig;
+  if (!p_il2_rt_invoke || !method || g_snd_in_invoke)
+    return orig ? orig(parmType, objNo, a1, a2, a3, method) : 0;
+  void *exc = NULL;
+  void *params[5] = { &parmType, &objNo, &a1, &a2, &a3 };
+  g_snd_in_invoke = 1;
+  void *r = p_il2_rt_invoke(method, NULL, params, &exc);
+  g_snd_in_invoke = 0;
+  if (exc) {
+    static int n = 0;
+    if (n++ < 60) {
+      char msg[256] = "";
+      if (p_il2_fmt_exc) p_il2_fmt_exc(exc, msg, sizeof msg);
+      fprintf(stderr, "[FF9_SNDSAFE] exceção capturada d%d parm=0x%x obj=%d a=(%d,%d,%d): %s\n",
+              which + 1, parmType, objNo, a1, a2, a3, msg);
+      fsync(2);
+    }
+    return 0;
+  }
+  return (r && !((uintptr_t)r >> 40)) ? *(int *)((char *)r + 0x10) : 0;
+}
+int my_FF9Snd_Dispatch_Safe1(int parmType, int objNo, int a1, int a2, int a3, void *method);
+int my_FF9Snd_Dispatch_Safe1(int parmType, int objNo, int a1, int a2, int a3, void *method) {
+  return ff9_snd_dispatch_safe(parmType, objNo, a1, a2, a3, method, 0);
+}
+int my_FF9Snd_Dispatch_Safe2(int parmType, int objNo, int a1, int a2, int a3, void *method);
+int my_FF9Snd_Dispatch_Safe2(int parmType, int objNo, int a1, int a2, int a3, void *method) {
+  return ff9_snd_dispatch_safe(parmType, objNo, a1, a2, a3, method, 1);
+}
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method);
 int my_FF9Snd_Dispatch_Noop(int parmType, int objNo, int arg1, int arg2, int arg3, void *method) {
   (void)method;
@@ -9198,6 +9248,29 @@ int main(int argc, char **argv) {
         hook_arm64(g_il2cpp_base + 0x13a9330, (uintptr_t)my_FF9Snd_Dispatch_Noop);
         sndg_hooked = 1;
         fprintf(stderr, "[FF9_SOUNDGUARD] FF9Snd dispatch -> noop @f=%d\n", f); fsync(2);
+      }
+      /* FF9_SNDSAFE: com REALSOUND ligado, dispatch real mas com exceção managed capturada
+         (KeyNotFound key 136 etc. deixa de abortar o script de campo). FF9_NOSNDSAFE desliga. */
+      if (!sndg_hooked && getenv("FF9_REALSOUND") && !getenv("FF9_NOSNDSAFE") &&
+          g_il2cpp_base && f >= 180) {
+        extern int my_FF9Snd_Dispatch_Safe1(int, int, int, int, int, void *);
+        extern int my_FF9Snd_Dispatch_Safe2(int, int, int, int, int, void *);
+        p_il2_rt_invoke = (void *(*)(void *, void *, void **, void **))(g_il2cpp_base + 0xff7fd4);
+        p_il2_fmt_exc = (void (*)(void *, char *, int))(g_il2cpp_base + 0xff7bf4);
+        if (!g_snd_dispatch1_orig)
+          g_snd_dispatch1_orig = (int (*)(int, int, int, int, int, void *))
+              mk_tramp(g_il2cpp_base + 0x13a2fec, "FF9Snd.dispatch1");
+        if (!g_snd_dispatch2_orig)
+          g_snd_dispatch2_orig = (int (*)(int, int, int, int, int, void *))
+              mk_tramp(g_il2cpp_base + 0x13a9330, "FF9Snd.dispatch2");
+        if (g_snd_dispatch1_orig)
+          hook_arm64(g_il2cpp_base + 0x13a2fec, (uintptr_t)my_FF9Snd_Dispatch_Safe1);
+        if (g_snd_dispatch2_orig)
+          hook_arm64(g_il2cpp_base + 0x13a9330, (uintptr_t)my_FF9Snd_Dispatch_Safe2);
+        sndg_hooked = 1;
+        fprintf(stderr, "[FF9_SNDSAFE] dispatch real exception-safe @f=%d (orig1=%p orig2=%p)\n",
+                f, (void *)g_snd_dispatch1_orig, (void *)g_snd_dispatch2_orig);
+        fsync(2);
       }
       /* FF9_FIELDGUARD (default ON): campos podem pedir EBG animation/overlay com listas
          parcialmente carregadas; aplica bounds-check e mantem EventEngine vivo. */
