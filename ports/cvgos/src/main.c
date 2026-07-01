@@ -5457,6 +5457,30 @@ int main(int argc, char **argv) {
 
   so_use(g_m_unity);  /* volta o contexto p/ libunity */
 
+  /* 🔑 EXCEPTION ABI: _Unwind e __cxa estavam STUBADOS (no-op) -> qualquer exceção C++
+     da libunity/il2cpp -> unwind falha -> std::terminate -> processo sai. Resolve p/ as
+     REAIS (libgcc_s/libc via dlsym) nos dois módulos. CVGOS_NOEHFIX desliga. */
+  if (!getenv("CVGOS_NOEHFIX")) {
+    static const char *eh[] = {
+      "_Unwind_RaiseException","_Unwind_Resume","_Unwind_Resume_or_Rethrow","_Unwind_Complete",
+      "_Unwind_DeleteException","_Unwind_Backtrace","_Unwind_GetLanguageSpecificData",
+      "_Unwind_GetRegionStart","_Unwind_GetDataRelBase","_Unwind_GetTextRelBase",
+      "_Unwind_VRS_Get","_Unwind_VRS_Set","_Unwind_GetCFA","_Unwind_ForcedUnwind",
+      "__cxa_throw","__cxa_begin_catch","__cxa_end_catch","__cxa_rethrow","__cxa_call_unexpected",
+      "__cxa_begin_cleanup","__cxa_type_match","__cxa_finalize","__gxx_personality_v0",
+      "__aeabi_unwind_cpp_pr0","__aeabi_unwind_cpp_pr1","__aeabi_unwind_cpp_pr2", 0 };
+    int nfix = 0;
+    for (int i = 0; eh[i]; i++) {
+      void *p = dlsym(RTLD_DEFAULT, eh[i]);
+      if (!p) continue;
+      so_module *c = so_save();
+      so_use(g_m_unity);  if (patch_got(eh[i], p) > 0) nfix++;
+      if (g_m_il2cpp) { so_use(g_m_il2cpp); patch_got(eh[i], p); }
+      so_use(c); free(c);
+    }
+    fprintf(stderr, "[EHFIX] exception ABI resolvida (%d simbolos patchados)\n", nfix);
+  }
+
   /* lista os métodos nativos registrados (achar initJni/nativeRender) */
   extern void jni_dump_natives(void);
   extern void *jni_find_native(const char *);
@@ -5535,6 +5559,22 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[F2] nativeSendSurfaceChangedEvent OK\n");
   }
   if ((fn = jni_find_native("nativeFocusChanged"))) ((void (*)(void *, void *, int))fn)(env, &thiz, 1);
+
+  /* 🔑 GATE "main thread trapped": libunity+0x31fe38 le [player+0x104] e, se !=0, LOGA
+     "main thread is trapped; signum=%i" e FAZ nativeRender BAILAR (retorna sem rodar o
+     PlayerLoop/scripting-init/1a cena). No so-loader esse campo fica "trapado" (signum=1)
+     e trava TUDO -> tela preta. Patch: forca o gate a retornar 0 (mov r0,#0; bx lr).
+     CVGOS_NOTRAPPATCH desliga. */
+  if (!getenv("CVGOS_NOTRAPPATCH") && g_unity_base) {
+    extern void so_make_text_writable(void), so_make_text_executable(void), so_flush_caches(void);
+    uintptr_t ga = g_unity_base + 0x31fe38;
+    so_make_text_writable();
+    ((uint32_t *)ga)[0] = 0xe3a00000u;  /* mov r0, #0 */
+    ((uint32_t *)ga)[1] = 0xe12fff1eu;  /* bx  lr     */
+    so_make_text_executable();
+    so_flush_caches();
+    fprintf(stderr, "[TRAPGATE] libunity+0x31fe38 -> return 0 (nativeRender nao baila mais)\n");
+  }
 
   /* dispara a thread de áudio do FMOD (alimenta fmodProcess em paralelo ao
      render — destrava o boot que espera o mixer). CUP_NOAUDIOTHREAD=1 desliga.
