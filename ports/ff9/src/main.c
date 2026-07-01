@@ -4925,6 +4925,14 @@ static void ff9_go_set_active(void *go, int active, const char *tag) {
   fprintf(stderr, "[FF9_UI] %s=%p SetActive(%d)\n", tag, go, active);
   fsync(2);
 }
+void my_TitleUITimer_Update(void *self, void *mi);
+void my_TitleUITimer_Update(void *self, void *mi) {
+  (void)mi;
+  if (self && ((uintptr_t)self >> 40) == 0) {
+    *(uint8_t *)((char *)self + 0x14) = 1;  /* pauseTimer */
+    *(float *)((char *)self + 0x10) = 0.0f; /* time */
+  }
+}
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
   /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
@@ -7144,6 +7152,15 @@ int main(int argc, char **argv) {
       if (mv_hooked) {
         extern void ff9_skipmovie_pump_finish(void);
         ff9_skipmovie_pump_finish();
+      }
+      /* FF9_TITLETIMERFIX (default ON): em fluxos forçados o TitleUI.Timer pode existir com
+         timeoutAction NULL; Timer.Update lança NRE todo frame e estoura a stack do il2cpp. */
+      static int tmr_hooked = 0;
+      if (!tmr_hooked && !getenv("FF9_NOTITLETIMERFIX") && g_il2cpp_base && f >= 180) {
+        extern void my_TitleUITimer_Update(void *, void *);
+        hook_arm64(g_il2cpp_base + 0x13485E0, (uintptr_t)my_TitleUITimer_Update);
+        tmr_hooked = 1;
+        fprintf(stderr, "[TITLETIMER] TitleUI.Timer.Update(0x13485E0) -> pause/noop @f=%d\n", f); fsync(2);
       }
       static int fd_hooked = 0;
       if (!fd_hooked && getenv("FF9_FADEDONE") && g_il2cpp_base && f >= 180) {
