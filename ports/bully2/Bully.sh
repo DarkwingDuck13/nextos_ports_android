@@ -39,6 +39,12 @@ trap cleanup EXIT INT TERM
 pkill -9 -x bully 2>/dev/null || true
 pkill -9 -x gptokeyb 2>/dev/null || true
 
+# libmali que casa com o kernel (ArkOS RK3326/Mali-G31 = DDK r13p0, EGL/GLES/GBM)
+# fica em /usr/local/lib/<triplet>, NAO no path padrao (o libMali.so default e r6p0
+# e falha contra kernels novos). Setar ANTES da extracao para o progressor de
+# extracao (setup splash) tambem conseguir criar o contexto GL e MOSTRAR A TELA.
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+
 $ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || true
 
 BULLY_BINARY="$GAMEDIR/bully" "$GAMEDIR/tools/extract-bully-data.sh" "" "$GAMEDIR" || {
@@ -63,12 +69,7 @@ fi
 
 "$GAMEDIR/tools/ensure-bully-menu-patch.sh" "$GAMEDIR" || true
 
-# Alguns devices (ArkOS RK3326/Mali-G31) mantem a libmali que casa com o kernel
-# (DDK r13p0, EGL/GLES/GBM) em /usr/local/lib/<triplet>, NAO no path padrao. O
-# libMali.so default e antigo (r6p0 -> reporta /dev/mali0 API 10.6) e falha contra
-# kernels novos ("not of a compatible version"). Prepender esse dir faz o loader
-# resolver libEGL.so.1/libGLESv2.so.2 para o blob compativel e o contexto GL sobe.
-export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+# LD_LIBRARY_PATH ja foi exportado no topo (antes da extracao) p/ o progressor.
 [ -n "$sdl_controllerconfig" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
