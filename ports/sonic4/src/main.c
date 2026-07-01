@@ -1342,9 +1342,20 @@ int main(int argc, char *argv[]) {
   void **sonic_ss_main_pp = NULL;
   {
     uintptr_t cnet = so_find_addr_safe("_ZN2ss4CNet10s_instanceE");
-    if (cnet) sonic_ss_main_pp = (void **)(cnet - 0x99e4a4 + 0x99e480);
+    /* g_SsMain = ss::CMain::s_main (não exportado): fica ADJACENTE a CNet::s_instance no .bss,
+       mas o OFFSET é por-versão. v2 armv7: CNet@0x99e4a4, s_main@0x99e480 (−0x24). No v3 arm64
+       o layout muda (CNet@0xd240c0) e o −0x24 daria um global ALEATÓRIO → se não-nulo, o jogo
+       acha que está SEMPRE em special-stage e quebra a confirmação de menu. Então só computo
+       quando reconheço o layout v2; senão NULL (fallback = sonic_game_started, seguro). */
+    if (cnet) {
+      uintptr_t cnet_off = cnet - (uintptr_t)text_base;
+      if (cnet_off == 0x99e4a4UL)                  /* v2 armv7 */
+        sonic_ss_main_pp = (void **)(cnet - 0x24);
+      /* TODO v3 arm64: achar o s_main real (RE com gameplay-test) e setar o offset certo. */
+    }
     if (getenv("SONIC_INPUTLOG"))
-      fprintf(stderr, "=== g_SsMain pp=%p ===\n", (void *)sonic_ss_main_pp);
+      fprintf(stderr, "=== g_SsMain pp=%p (cnet_off=0x%lx) ===\n", (void *)sonic_ss_main_pp,
+              cnet ? (unsigned long)(cnet - (uintptr_t)text_base) : 0UL);
   }
   for (;;) {
     sonic_frame_for_imports = frame;
