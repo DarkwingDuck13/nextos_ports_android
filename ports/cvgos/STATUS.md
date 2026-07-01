@@ -26,7 +26,14 @@ muro atual = **conteúdo (cenas/addressables) não carrega → tela preta**.
 - gdb main thread bt = `main → fsync → nativeRender` em loop (não travado; só girando vazio).
 - "main thread is trapped; signum=1" (602×/run) = **GC stop-the-world do il2cpp** (benigno; `CUP_GCOFF=1` PIORA → crash em libc tgkill/pthread_kill). NÃO é o problema.
 
-### 🎯 Hipóteses p/ próxima sessão (mais provável 1ª)
+### 🔬 RAIZ LOCALIZADA (strace do binário, sessão 1 fim)
+- Fix aplicado: `jni_shim.c` tinha 3 paths hardcoded `/storage/roms/terraria` (ASSET_BASE + dataPath + userdata) → corrigidos p/ cvgos. Boot.config agora lê do path certo. **MAS sintoma igual.**
+- **strace decisivo**: após `bin/Data/boot.config`, o processo SÓ reabre boot.config + `debug.log` em loop. **`global-metadata.dat` NUNCA é aberto** (grep strace inteiro = 0). level0/`.ab`/OBB idem.
+- Conclusão: **`il2cpp_init` (runtime C#) NUNCA é chamado** — o engine (libunity) faz initJni→RecreateGfxState→nativeRender(loop vazio) mas **nunca dispara o scripting backend / 1ª cena**. Sem C#, sem conteúdo, preto.
+- Causa provável: a sequência de boot da base (main.c) é do **Cuphead/Terraria = Unity 2021**; **CVGoS = Unity 2018.4** tem fluxo de init diferente p/ arrancar o il2cpp/PlayerLoop. Terraria (mesma base) RODA C#, então o mecanismo existe — falta o gatilho certo p/ 2018.4.
+
+### 🎯 Hipóteses p/ próxima sessão (foco: fazer il2cpp_init/1ª cena rodar)
+0. **[NOVO, prioridade máxima] Disparar o scripting/scene-load do Unity 2018.4**: comparar a sequência de boot que o Terraria (Unity 2021, JOGÁVEL) usa vs o que 2018.4 precisa. Ver se falta: (a) um `nativeSendSurfaceChangedEvent` com surface válida/resize, (b) chamar explicitamente o `PlayerInitEngineGraphics`/`LoadFirstScene`/`il2cpp_init` de libunity, (c) um passo de lifecycle Java (executeGLThreadJobs). Confirmar via strace que `global-metadata.dat` passa a abrir. Hookar/logar `il2cpp_init` (exportado em libil2cpp @0x79dcc4) p/ ver se é chamado.
 1. **Addressables/OBB não encontrado**: jogo é addressables (2631 .ab no OBB `main.110`). O bootstrap (level0) provavelmente carrega o **catálogo** do OBB no path Android (`getObbDir()`/`Application.dataPath`+obb) e não acha → coroutine espera p/ sempre → sem cena. AÇÃO: ver que path o jogo pede (hookar getObbDir/getPackageCodePath no jni_shim; logar opens de `catalog*`/`.bundle`/`.hash`); apontar/симlink o OBB (ou extrair os .ab) pro path esperado. OBB já está em `/storage/roms/ports/cvgos/obb/jp.konami.castlevania/main.110...obb`.
 2. **Online-gate**: GoS é online (servers mortos). Bootstrap pode travar em Firebase(`libFirebaseCppApp`)/GPG(`libgpg`) init → stub. Ver se há socket/connect ou espera de init de rede.
 3. **il2cpp não roda C#**: confirmar que o bootstrap C# (level0 Awake/Start) executa — hookar um método conhecido ou logar il2cpp_runtime_class_init. Se level0 nem carrega, achar o auto-load da 1ª cena.

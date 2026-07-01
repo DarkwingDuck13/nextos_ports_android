@@ -226,7 +226,7 @@ static const char *mid_name(void *tag) {
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
-#define ASSET_BASE "/storage/roms/terraria/"
+#define ASSET_BASE "/storage/roms/ports/cvgos/"
 
 static int g_assetmgr;   /* tag do objeto AssetManager */
 static int g_empty_list; /* tag de uma java.util.List vazia */
@@ -660,7 +660,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        do pack. Nossos dados estão em ASSET_BASE/bin/Data; Unity lê <path>/bin/Data/...
        então o path do pack é o ASSET_BASE (sem barra final). */
     if (strcmp(nm, "getAssetPackPath") == 0)
-      return make_jstring("/storage/roms/terraria");
+      return make_jstring("/storage/roms/ports/cvgos");
     /* anti-pirataria: jogo checa se foi instalado da Play Store. "" trava/loopa. */
     if (strcmp(nm, "getInstallerPackageName") == 0)
       return make_jstring("com.android.vending");
@@ -759,7 +759,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         strcmp(nm, "getDataDir") == 0 || strcmp(nm, "getExternalStorageDirectory") == 0 ||
         strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
         strcmp(nm, "getCanonicalPath") == 0)
-      return make_jstring("/storage/roms/terraria/userdata");
+      return make_jstring("/storage/roms/ports/cvgos/userdata");
     /* SharedPreferences.getString(key, default) -> valor ARMAZENADO se existir,
        senão o default. Faz o round-trip do save funcionar (era sempre default). */
     if (strcmp(nm, "getString") == 0) {
