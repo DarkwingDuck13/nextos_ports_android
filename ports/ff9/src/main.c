@@ -1977,11 +1977,54 @@ static void ter_jobworkers0(void);
 static void ter_input_hook(void);
 void ff9_titlepad_tick(void);
 void ff9_titlepad_draw(void);
+/* fb0 é double-buffer vertical (1280x1440 = 2 metades de 720). Se a TV escaneia uma metade
+   e o jogo desenha na outra, o usuário vê tela escura/stale enquanto a captura (offset 0)
+   mostra o jogo. Dois remédios opt-in p/ testar no device:
+   FF9_FORCEPAN0=1  -> FBIOPAN_DISPLAY yoffset=0 a cada swap (display preso na metade de cima);
+   FF9_FBMIRROR=1   -> memcpy metade de cima -> metade de baixo a cada swap (imagem nas duas). */
+static pid_t g_extmovie_pid; /* tentative; definido no bloco EXTMOVIE abaixo */
+static void ff9_fb_scanout_fix(void) {
+  static int mode = -1;
+  static int fbfd = -1;
+  static unsigned char *fbmap;
+  static size_t half;
+  if (mode < 0) {
+    mode = getenv("FF9_FORCEPAN0") ? 1 : (getenv("FF9_FBMIRROR") ? 2 : 0);
+    if (mode) {
+      fbfd = open("/dev/fb0", O_RDWR);
+      struct fb_var_screeninfo vi;
+      if (fbfd >= 0 && ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) == 0 &&
+          vi.yres_virtual >= vi.yres * 2) {
+        half = (size_t)vi.xres_virtual * vi.yres * (vi.bits_per_pixel / 8);
+        if (mode == 2) {
+          fbmap = mmap(NULL, half * 2, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
+          if (fbmap == MAP_FAILED) { fbmap = NULL; mode = 0; }
+        }
+        fprintf(stderr, "[FBSCAN] modo=%s half=%zu fb=%ux%u virt=%ux%u yoff=%u\n",
+                mode == 1 ? "FORCEPAN0" : mode == 2 ? "FBMIRROR" : "off", half,
+                vi.xres, vi.yres, vi.xres_virtual, vi.yres_virtual, vi.yoffset);
+        fsync(2);
+      } else mode = 0;
+    }
+  }
+  if (!mode || fbfd < 0) return;
+  if (g_extmovie_pid > 0) return; /* FMV externa tocando: não brigar com o pan do player */
+  if (mode == 1) {
+    struct fb_var_screeninfo vi;
+    if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) == 0 && vi.yoffset != 0) {
+      vi.yoffset = 0;
+      ioctl(fbfd, FBIOPAN_DISPLAY, &vi);
+    }
+  } else if (mode == 2 && fbmap) {
+    memcpy(fbmap + half, fbmap, half);
+  }
+}
 void ter_shot_hook(void) {
   ter_nuke_methods();
   ter_jobworkers0();
   ter_input_hook();
   ff9_titlepad_draw();
+  ff9_fb_scanout_fix();
   ter_screenshot_maybe();
 }
 
