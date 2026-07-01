@@ -5667,6 +5667,19 @@ int main(int argc, char **argv) {
     so_flush_caches();
     fprintf(stderr, "[TRAPGATE] libunity+0x31fe38 -> return 0 (nativeRender nao baila mais)\n");
   }
+  /* CVGOS_SKIPERRFUNC: a func libunity+0x31fa08 constroi um java.lang.Error+StackTrace no
+     RecreateGfxState (init do crash-handler/log da Unity) e crasha com nosso JNIEnv fake.
+     Patch -> return 0 (pula o error-reporter). Default ON; CVGOS_NOSKIPERRFUNC desliga. */
+  if (getenv("CVGOS_SKIPERRFUNC") && g_unity_base) {
+    extern void so_make_text_writable(void), so_make_text_executable(void), so_flush_caches(void);
+    uintptr_t ea = g_unity_base + 0x31fa08;
+    so_make_text_writable();
+    ((uint32_t *)ea)[0] = 0xe3a00000u;  /* mov r0, #0 */
+    ((uint32_t *)ea)[1] = 0xe12fff1eu;  /* bx  lr     */
+    so_make_text_executable();
+    so_flush_caches();
+    fprintf(stderr, "[SKIPERRFUNC] libunity+0x31fa08 -> return 0 (pula error-reporter)\n");
+  }
 
   /* dispara a thread de áudio do FMOD (alimenta fmodProcess em paralelo ao
      render — destrava o boot que espera o mixer). CUP_NOAUDIOTHREAD=1 desliga.
