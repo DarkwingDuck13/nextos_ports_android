@@ -4935,6 +4935,18 @@ void my_TitleUITimer_Update(void *self, void *mi) {
 }
 void my_TitleUI_Update(void *this_, void *mi) {
   g_titleui_this = this_;
+  if ((getenv("FF9_NEWGAME") || getenv("FF9_SHOWMENU") || getenv("FF9_FORCE_STARTGAME")) &&
+      this_ && ((uintptr_t)this_ >> 40) == 0) {
+    void *timer = *(void **)((char *)this_ + 0x230);
+    if (!timer) {
+      static int n = 0;
+      if (n++ < 5) {
+        fprintf(stderr, "[FF9_NEWGAME] TitleUI.Update original pulado: timer(+0x230)=NULL this=%p\n", this_);
+        fsync(2);
+      }
+      return;
+    }
+  }
   /* capturamos só 1×: restaura os 16 bytes originais do Update e executa-o normalmente */
   uintptr_t a = g_il2cpp_base + 0x1348430;
   long ps = sysconf(_SC_PAGESIZE); if (ps <= 0) ps = 4096;
