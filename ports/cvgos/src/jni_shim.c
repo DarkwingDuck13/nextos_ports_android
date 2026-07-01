@@ -1410,10 +1410,20 @@ static jint jni_GetArrayLength(void *env, void *array) {
   return b ? b->len : 0;
 }
 /* GetObjectArrayElement: args do doFrame -> o Long boxed (slot 0) */
+static char g_safe_arr[8192];
+static void *jni_NewObjectArray(void *env, jint len, void *cls, void *init) {
+  (void)env; (void)len; (void)cls; (void)init;
+  if (getenv("CVGOS_SAFEOBJ")) return g_safe_arr;   /* array valido zerado (StackTraceElement[]) */
+  return NULL;
+}
+static void jni_SetObjectArrayElement(void *env, void *arr, jint idx, void *val) {
+  (void)env; (void)arr; (void)idx; (void)val;   /* no-op seguro */
+}
 static void *jni_GetObjectArrayElement(void *env, void *array, jint idx) {
   (void)env; (void)idx;
   if (array == (void *)&g_doframe_args_sentinel) return &g_long_box_sentinel;
   if (array == (void *)&g_handlemsg_args_sentinel) return &g_message_sentinel;
+  if (getenv("CVGOS_SAFEOBJ")) { static char e[4096]; return e; }
   return NULL;
 }
 /* int[] accessors (InputDevice IDs etc.) */
@@ -1618,6 +1628,10 @@ static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
   if (clazz == class_for("org/fmod/FMODAudioDevice")) {
     debugPrintf("jni_shim: NewObject(FMODAudioDevice) -> device fake\n"); return &g_fmod_device_obj;
   }
+  /* CVGOS_SAFEOBJ: NewObject de classe desconhecida (ex StackTraceElement no init do log
+     handler do Unity) -> ponteiro pra buffer ZERADO grande (nao NULL) p/ a maquina C++ da
+     Unity poder deref [obj+N]=0 sem crashar durante a construcao Java-Error do RecreateGfxState. */
+  if (getenv("CVGOS_SAFEOBJ")) { static char safe[8192]; return safe; }
   return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressão */
 }
 static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){ (void)ap; return jni_NewObject(env,clazz,mid); }
@@ -1747,7 +1761,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;
   jni_env_vtable[170] = (uintptr_t)jni_ReleaseStringUTFChars;
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength;
+  jni_env_vtable[172] = (uintptr_t)jni_NewObjectArray;        /* StackTraceElement[] etc */
   jni_env_vtable[173] = (uintptr_t)jni_GetObjectArrayElement; /* doFrame args[0]=Long */
+  jni_env_vtable[174] = (uintptr_t)jni_SetObjectArrayElement;
   jni_env_vtable[175] = (uintptr_t)jni_NewBooleanArray;       /* NewBooleanArray */
   jni_env_vtable[179] = (uintptr_t)jni_NewIntArray;          /* NewIntArray */
   jni_env_vtable[183] = (uintptr_t)jni_GetBooleanArrayElements;
