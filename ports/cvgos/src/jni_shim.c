@@ -786,6 +786,12 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       const char *stored = prefs_get_string(key);
       debugPrintf("[PREFS] getString key='%s' -> %s\n", key, stored ? "ARMAZENADO" : "default");
       if (stored) return make_jstring(stored);
+      /* Bundle.getString(key) [metaData, 1 arg] de chave ausente -> NULL (nao o "default"
+         lido como va_arg LIXO -> "4}" -> excecao no jogo). Chaves de metaData sao
+         property-style (com pontos: "com.samsung...vr.application.mode"). */
+      if (key && (strstr(key, "vr.application") || strstr(key, "com.samsung") ||
+                  strstr(key, "com.oculus") || strstr(key, "com.google.")))
+        return NULL;
       return defstr ? defstr : make_jstring("");
     }
     if (strcmp(nm, "toString") == 0)
