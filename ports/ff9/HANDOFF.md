@@ -7,6 +7,24 @@
 
 ---
 
+## s14 2026-07-01 — ✅ fluxo sem skip validado de novo + input de campo via EventInput
+
+> Device .90. Validado em `run_bubbleproc_clean.log`, com `FF9_NOSKIPMOVIE=1`, `FF9_FIELDSTATE=1`, `FF9_FORCECONTROL=1`, `FF9_GPLOG=1`, `FF9_BUBBLELOG=1`, `FF9_EBGDIAG=1`.
+
+### ✅ Avancos validados
+- Rebuild/deploy do binario atual (`ports/ff9/ff9`) no device.
+- `FMV000.mp4` tocou inteiro e terminou `status=0x0` no frame 3412.
+- Menu inicial navegou por `/tmp/tergp`: `down` selecionou `NEW GAME`; `a` chamou `TitleUI.OnNewGameButtonClick`.
+- `FMV001.mp4` tocou inteira, sem skip, e terminou `status=0x0` no frame 12134.
+- Campo `FBG_N00_TSHP_MAP002_TH_CGR_1` carregou depois da FMV001; EventEngine ficou em `gMode=1 user=1 movement=1`.
+- Gameplay/control confirmado: `right` moveu o player de aprox. `(25,0,-1100)` para `(168,0,-1019)` com `bits=0x20` e `moving=1`.
+- Patch novo alimenta `EventInput.RecieveDialogConfirm()` em A no campo e consome `BubbleUI.currentInput` por `EventInput.ProcessBubbleInput()` quando a rota do BubbleUI existir.
+
+### Estado visual / proximo muro
+- Framebuffer `/tmp/ff9_bubbleproc_field.png`: Zidane, UI e paredes laterais aparecem; centro do field segue preto/sem background.
+- Apertar `A` no estado inicial chegou a `EventInput.ReceiveInput` e `RecieveDialogConfirm`, mas `bubble=(nil)` e nao houve `BubbleUI.SetInput`; o `?` visivel no canto nao esta passando pela rota `BubbleUI` naquele ponto.
+- Proximo foco real: recuperar background/iluminacao EBG do campo. Logs atuais: `overlayCount=28`, `animCount=3`, `spriteCount=0`, `combine=1`, `upscale=1`, atlas `2048x2048`; `EBG_animationInit` continua com frames de anim ausentes.
+
 ## s13 2026-07-01 — ✅ fluxo real ate gameplay controlavel pos-FMV001
 
 > Device .90. Validado em `run_real_latch.log`, sem pular videos (`FF9_NOSKIPMOVIE=1`).

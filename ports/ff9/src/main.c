@@ -3699,8 +3699,10 @@ static void *ds_route(const char *nm, void *real) {
 static void ds_init(void) {
   rs_init();   /* CUP_RENDERSCALE: parseia env (o FBO lo-res cria-se lazy no 1º bind) */
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
-  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled()) return;
-  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY e/ou TEXHALF precisam de glTexImage2D) */
+  int want_drawcount = getenv("CUP_DRAWCOUNT") != NULL;
+  int want_texstat = getenv("CUP_TEXSTAT") != NULL;
+  if (!getenv("CUP_DRAWSPY") && !want_drawcount && !want_texstat && !g_texhalf && !rs_enabled()) return;
+  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY/TEXHALF/DRAWCOUNT/TEXSTAT) */
   g_drawdiag = getenv("CUP_DRAWSPY") ? 1 : 0;  /* ⚠️ ring + glGetIntegerv/draw — só em diag */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;
   const char *sp = getenv("CUP_SKIPPROG");
@@ -5777,6 +5779,7 @@ int my_FieldMap_EBG_animationInit(void *self, void *method) {
             self, scene, anim_count, anim_size, overlay_size);
     fsync(2);
   }
+  int missing_frames = 0;
   for (int i = 0; i < anim_count; i++) {
     int list_size = -1, frame_size = -1;
     void *anim = ff9_list_item_safe(anim_list, i, &list_size);
@@ -5790,6 +5793,7 @@ int my_FieldMap_EBG_animationInit(void *self, void *method) {
     void *frame_list = *(void **)((char *)anim + 0x30);
     void *frame = ff9_list_item_safe(frame_list, 0, &frame_size);
     if (!frame || ((uintptr_t)frame >> 40) || !addr_readable((uintptr_t)frame + 0x12)) {
+      missing_frames++;
       if (n < 16) fprintf(stderr, "[FF9_FIELDGUARD] anim frame skip i=%d frameSize=%d frame=%p\n", i, frame_size, frame);
       continue;
     }
@@ -5801,6 +5805,16 @@ int my_FieldMap_EBG_animationInit(void *self, void *method) {
       continue;
     }
     *(uint8_t *)((char *)overlay + 0x10) |= 2;
+  }
+  if (missing_frames && missing_frames == anim_count && overlay_size > 0) {
+    for (int i = 0; i < overlay_size; i++) {
+      void *overlay = ff9_list_item_safe(overlay_list, i, NULL);
+      if (overlay && !((uintptr_t)overlay >> 40) && addr_readable((uintptr_t)overlay + 0x18))
+        *(uint8_t *)((char *)overlay + 0x10) |= 2;
+    }
+    fprintf(stderr, "[FF9_FIELDGUARD] anim frames ausentes=%d -> ativa overlays fallback count=%d\n",
+            missing_frames, overlay_size);
+    fsync(2);
   }
   return 1;
 }
@@ -5844,6 +5858,9 @@ int my_FieldMap_EBG_charAttachOverlay(void *self, uint32_t overlayNdx, int attac
   *(int16_t *)((char *)entry + 0x14) = (int16_t)overlayNdx;
   *(int16_t *)((char *)entry + 0x16) = (int16_t)attachX;
   *(int16_t *)((char *)entry + 0x18) = (int16_t)attachY;
+  if (!(surroundMode & 0x80) && g_il2cpp_base)
+    ((void (*)(void *, uint32_t, int, int, int))(g_il2cpp_base + 0x1139724))
+        (self, overlayNdx, r, g, b);
   *(uint16_t *)((char *)self + 0x142) = (uint16_t)(attach_count + 1);
   if (n++ < 8) {
     fprintf(stderr, "[FF9_FIELDGUARD] EBG_charAttachOverlay safe count=%u/%lu overlay=%u xy=%d,%d mode=%d rgb=%d,%d,%d\n",
@@ -6338,6 +6355,7 @@ static uint32_t ff9_build_ctrl_state(void) {
 }
 
 static void ff9_eventinput_feed_buttons(void);
+static void ff9_dialog_feed_confirm(uint32_t down);
 static void ff9_bubble_feed_confirm(uint32_t down);
 static void ff9_gamepad_poll(void) {
   if (!ff9_gamepad_enabled()) return;
@@ -6345,13 +6363,14 @@ static void ff9_gamepad_poll(void) {
   ter_gamepad_poll();
   g_ff9_ctrl_state = ff9_build_ctrl_state();
   ff9_eventinput_feed_buttons();
-  ff9_bubble_feed_confirm(g_ff9_ctrl_state & ~g_ff9_ctrl_prev);
+  uint32_t down = g_ff9_ctrl_state & ~g_ff9_ctrl_prev;
+  ff9_dialog_feed_confirm(down);
+  ff9_bubble_feed_confirm(down);
   if (getenv("FF9_GPLOG")) {
     static const char *nm[16] = {
       "confirm","cancel","menu","special","lb","rb","lt","rt",
       "pause","select","up","down","left","right","dpad","none"
     };
-    uint32_t down = g_ff9_ctrl_state & ~g_ff9_ctrl_prev;
     for (int i = 0; i < 16; i++) if (down & (1u << i)) {
       fprintf(stderr, "[FF9GP] %s(%d) DOWN\n", nm[i], i);
       fsync(2);
@@ -6466,6 +6485,17 @@ void my_BubbleUI_InitialBubble(void *self, void *po, void *coll, void *flags, vo
   }
   if (g_bubble_initial_orig) g_bubble_initial_orig(self, po, coll, flags, listener, mi);
 }
+static void ff9_dialog_feed_confirm(uint32_t down) {
+  if (!g_il2cpp_base || getenv("FF9_NODIALOGCONFIRM")) return;
+  if (!(down & ff9_ctrl_bit(0))) return;
+  if (!g_eventengine_this && !g_ff9_bubble_ui) return;
+  ((void (*)(void *))(g_il2cpp_base + 0x112A0B4))(NULL); /* EventInput.RecieveDialogConfirm */
+  if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
+    fprintf(stderr, "[FF9PAD] RecieveDialogConfirm f=%d ee=%p bubble=%p\n",
+            g_render_frame, g_eventengine_this, g_ff9_bubble_ui);
+    fsync(2);
+  }
+}
 static void ff9_bubble_feed_confirm(uint32_t down) {
   if (!g_il2cpp_base || getenv("FF9_NOBUBBLEPAD")) return;
   if (!(down & ff9_ctrl_bit(0))) return;
@@ -6475,9 +6505,22 @@ static void ff9_bubble_feed_confirm(uint32_t down) {
   if (g_ff9_bubble_ui && g_bubble_setinput_orig) {
     g_bubble_setinput_orig(g_ff9_bubble_ui, g_ff9_bubble_po, g_ff9_bubble_coll, button, NULL);
     void *current = *(void **)((char *)g_ff9_bubble_ui + 0x68);
+    uint32_t current_button = 0;
+    uint32_t bubble_bits = 0;
+    if (current && !((uintptr_t)current >> 40) && addr_readable((uintptr_t)current + 0x24))
+      current_button = *(uint32_t *)((char *)current + 0x20);
+    if (current && !getenv("FF9_NOBUBBLEPROC")) {
+      bubble_bits = ((uint32_t (*)(void *, void *))(g_il2cpp_base + 0x1129D90))(current, NULL);
+      if (bubble_bits)
+        ((void (*)(uint32_t, void *))(g_il2cpp_base + 0x112A234))(bubble_bits, NULL);
+    }
+    if (!bubble_bits && button)
+      ((void (*)(uint32_t, void *))(g_il2cpp_base + 0x112A234))(button, NULL);
     if (getenv("FF9_GPLOG") || getenv("FF9_BUBBLELOG")) {
-      fprintf(stderr, "[FF9BUBBLE] SetInput.inject ui=%p po=%p coll=%p button=0x%x current=%p age=%d f=%d\n",
-              g_ff9_bubble_ui, g_ff9_bubble_po, g_ff9_bubble_coll, button, current, age, g_render_frame);
+      fprintf(stderr,
+              "[FF9BUBBLE] SetInput.inject ui=%p po=%p coll=%p button=0x%x current=%p curButton=0x%x bubbleBits=0x%x age=%d f=%d\n",
+              g_ff9_bubble_ui, g_ff9_bubble_po, g_ff9_bubble_coll, button, current,
+              current_button, bubble_bits ? bubble_bits : button, age, g_render_frame);
       fsync(2);
     }
   }
