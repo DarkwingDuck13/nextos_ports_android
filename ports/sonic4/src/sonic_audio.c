@@ -1221,31 +1221,23 @@ static int ensure_audio(void) {
             drv ? drv : "?", SDL_GetError());
   }
 
-  /* (2) fallback PREFERINDO servidor de som (pipewire/pulse) ANTES do ALSA cru — mesma ordem
-     do alsoft.conf do Bully. Servidor -> default sink = speaker (evita o card ALSA cru por nome,
-     onde o speaker vem busy e cai no HDMI). SONIC_AUDIO_ORDER="a,b,c" sobrescreve a preferência. */
+  /* (2) fallback SIMPLES: varre os drivers e abre o DEFAULT de cada um, preferindo servidor de som
+     (pipewire/pulse) antes do alsa cru. Sem enum de card nomeado (isso virou opt-in em sa_try_open).
+     .79/.104 nem chegam aqui (o auto acima ja abre). */
   {
-    const char *oe = getenv("SONIC_AUDIO_ORDER");
-    char order[128];
-    strncpy(order, (oe && *oe) ? oe : "pipewire,pulseaudio,pulse,alsa", sizeof(order) - 1);
-    order[sizeof(order) - 1] = 0;
-    char *sv = NULL;
-    for (char *tok = strtok_r(order, ",; ", &sv); tok; tok = strtok_r(NULL, ",; ", &sv)) {
+    static const char *pref[] = { "pipewire", "pulseaudio", "pulse", 0 };
+    for (int p = 0; pref[p]; p++)
       for (int i = 0; i < ndrv; i++) {
         const char *name = SDL_GetAudioDriver(i);
-        if (!name || strcmp(name, tok) != 0) continue;
-        if (sa_driver_silent(name)) continue;
-        if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
-        if (sa_open_named_driver(name, &want, &have)) goto opened;
+        if (name && strcmp(name, pref[p]) == 0 && !sa_driver_silent(name) &&
+            (!failed_drv[0] || strcmp(name, failed_drv) != 0) &&
+            sa_open_named_driver(name, &want, &have)) goto opened;
       }
+    for (int i = 0; i < ndrv; i++) {
+      const char *name = SDL_GetAudioDriver(i);
+      if (name && !sa_driver_silent(name) && (!failed_drv[0] || strcmp(name, failed_drv) != 0) &&
+          sa_open_named_driver(name, &want, &have)) goto opened;
     }
-  }
-  /* (3) resto: qualquer driver que abra, na ordem do SDL (cobre nomes fora da preferência) */
-  for (int i = 0; i < ndrv; i++) {
-    const char *name = SDL_GetAudioDriver(i);
-    if (sa_driver_silent(name)) continue;
-    if (failed_drv[0] && strcmp(name, failed_drv) == 0) continue;
-    if (sa_open_named_driver(name, &want, &have)) goto opened;
   }
   unsetenv("SDL_AUDIODRIVER");
   fprintf(stderr, "sonic_audio: NENHUM driver de audio funcional (jogo segue, mas mudo)\n");
@@ -1253,11 +1245,11 @@ static int ensure_audio(void) {
   return 0;
 
 opened:
-  /* card cru (sem softvol do sistema) -> sobe a thread que segue o volume dos
-     botoes via batocera.conf (Plano C). SONIC_NO_SYSVOL=1 desliga.
-     SONIC_FORCE_SYSVOL=1 forca o Plano C mesmo em device normal (TESTE). */
-  if (getenv("SONIC_FORCE_SYSVOL")) g_opened_raw = 1;
-  if (g_opened_raw && !getenv("SONIC_NO_SYSVOL")) {
+  /* Plano C (volume por software seguindo os botoes via batocera.conf/amixer) — agora OPT-IN:
+     so roda com SONIC_SYSVOL=1 (antes ligava sozinho em card cru). Nos nossos devices o volume e do
+     sistema (pulse/alsa default), nao precisa. Devices de card cru sem softvol (batocera/Knulli)
+     ligam SONIC_SYSVOL=1 (+ SONIC_AUDIO_ENUM=1 p/ chegar no card). SONIC_FORCE_SYSVOL = alias legado. */
+  if (g_opened_raw && (getenv("SONIC_SYSVOL") || getenv("SONIC_FORCE_SYSVOL"))) {
     float v0;
     if (sa_read_sys_volume(&v0)) g_sys_vol = v0;
     pthread_t th;
