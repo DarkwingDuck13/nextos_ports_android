@@ -29,10 +29,23 @@
   il2cpp_runtime_invoke re-entra e crasha (singleton de som nulo → blr lixo). A KeyNotFound 136
   é capturada pela PRÓPRIA engine (não-fatal, evento roda). Rodar com **FF9_NOSNDSAFE=1**.
 
-### ▶️ EM TESTE: FF9_EBG_NOUPFM=1 (força useUpscaleFM=0 no scene+0xa8 e fieldMap+0x150) →
-  GenerateAtlasFromBinary empacota sprites do binário → spriteCount>0 → geometria SD visível.
-  (loc/prm dos overlays apontam pro ebgBin, então o binário TEM os dados.) run_noup.sh.
-  Se render: virar default no launcher. Se preto/crash: o furo é a geometria do combined-mesh.
+### ✅ EBG testado em 4 configs — fundo PRETO em TODAS (parede confirmada):
+  | config | upscale | atlas | mats | spriteCount | Zidane | fundo |
+  |--------|---------|-------|------|-------------|--------|-------|
+  | play (guard)      | 1 | 2048² | 6 | 0 | ✅ | preto |
+  | ebg (guard)       | 1 | 2048² | 6 | 0 | ✅ | preto |
+  | noup (guard)      | 0 | 1024² | 6 | 0 | ✅ | preto |
+  | noguard           | 1 | 2048² | 6 | 0 | ❌(some!) | preto |
+- Offsets confirmados no dump: overlay.spriteCount@0x3A=0, overlay.spriteList@0x60 vazia,
+  isCreated@0x71=1, canCombine@0x70=1 — os 28 overlays são CASCAS (header wh/xy/z/loc/prm OK,
+  ZERO sprites). O mesh combinado do background sai sem geometria desenhável → preto.
+- NOFIELDGUARD faz Zidane SUMIR também (o guard é necessário pro personagem) → não é caminho.
+- 🔴 **VEREDITO: parede EBG multi-sessão.** Materiais(6)+shaders(Shader.Find OK)+atlas(2048² real)
+  prontos, mas os overlays não têm sprites → sem geometria de fundo. PENDENTE p/ próxima sessão:
+  (a) checar se o combined-mesh usa scene.vertices[]@0xB8/indices[]@0xC0 (não spriteList) e logar
+  a contagem de vértices reais; (b) testar combineMeshes=0 (força CreateSeparateSprites por overlay);
+  (c) investigar por que ExtractSpriteData/ExtractOverlayData lê 0 sprites do ebgBin (parse/asset).
+- ✅ DEFAULT do launcher agora: FF9_NOSNDSAFE=1 + FF9_FBMIRROR=1 (seguro, menu visível na TV).
 
 ## s18 2026-07-01 — 🎯 tese do evento de abertura + FF9_SNDSAFE (pendente validação: device caiu)
 
