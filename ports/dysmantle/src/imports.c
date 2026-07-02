@@ -593,10 +593,15 @@ static void dysp_unpage(unsigned id) {
   if (dysp_swapdir()) { char p[320]; snprintf(p, sizeof p, "%s/%u.tx", dysp_swapdir(), id); remove(p); }
 }
 /* upload com pixels reais: grava/atualiza o swap (redefinicao = conteudo novo) e contabiliza */
+static unsigned dysp_min_bytes(void) {
+  static long v = -1;
+  if (v < 0) { const char *e = getenv("DYSMANTLE_PAGE_MIN_KB"); v = (e ? atol(e) : 96) * 1024; }
+  return (unsigned)v;
+}
 static void dysp_note_upload(unsigned id, int ifmt, int w, int h, unsigned ufmt, unsigned utype,
                              const void *data, unsigned bytes) {
   if (!dysmantle_paging() || id == 0 || id >= DYSP_MAX || !data || !bytes) return;
-  if (bytes < 96 * 1024) return;               /* pequenas nao valem paginar */
+  if (bytes < dysp_min_bytes()) return;        /* pequenas nao valem paginar */
   char path[320]; snprintf(path, sizeof path, "%s/%u.tx", dysp_swapdir(), id);
   FILE *f = fopen(path, "wb"); if (!f) return;
   struct dysp_swap_hdr hd = { DYSP_MAGIC, w, h, ifmt, ufmt, utype, bytes };
@@ -608,7 +613,7 @@ static void dysp_note_upload(unsigned id, int ifmt, int w, int h, unsigned ufmt,
   g_dysp_w[id] = (unsigned short)w; g_dysp_h[id] = (unsigned short)h; g_dysp_use[id] = ++g_dysp_clock;
 }
 /* despeja as mais FRIAS ate voltar ao orcamento 'capb' (pula a atual e as ja-despejadas) */
-static void dysp_evict_to(unsigned target, unsigned keep, long long capb) {
+static void dysp_evict_to(unsigned target, unsigned keep, long long capb, unsigned min_age) {
   static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
   static void (*rBind)(unsigned,unsigned) = NULL;
   if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
@@ -620,6 +625,7 @@ static void dysp_evict_to(unsigned target, unsigned keep, long long capb) {
     unsigned best = 0, bu = 0xffffffffu; int fi = -1;
     for (int i = 0; i < g_dysp_n; i++) { unsigned id = g_dysp_list[i];
       if (id == keep || g_dysp_kind[id] != 2 || !g_dysp_present[id]) continue;
+      if (min_age && g_dysp_clock - g_dysp_use[id] < min_age) continue; /* FRIA apenas (anti-piscada) */
       if (g_dysp_use[id] < bu) { bu = g_dysp_use[id]; best = id; fi = i; } }
     if (fi < 0) break;
     long long b = g_dysp_bytes[best];
@@ -722,19 +728,22 @@ static void dysp_on_bind(unsigned target, unsigned id) {
       dysp_drain(id);
     } else if (!g_dysp_present[id]) dysp_fault(id);
   } else if (!g_dysp_present[id]) dysp_fault(id);
-  if (g_dysp_resident > dysp_cap()) dysp_evict_to(target, id, dysp_cap());
+  if (g_dysp_resident > dysp_cap()) dysp_evict_to(target, id, dysp_cap(), 0);
   /* piso anti-OOM: checa MemAvailable a cada ~256 binds; abaixo do piso, encolhe o
-   * residente (8MB por checagem; CRITICO <piso/2 = -25%) mesmo abaixo do cap */
+   * residente (8MB por checagem; CRITICO <piso/2 = -25%) mesmo abaixo do cap.
+   * SO despeja textura FRIA (nao usada ha >=6000 binds) e nunca abaixo de 8MB —
+   * senao despeja textura VISIVEL = piscada preta (visto no R36S 639MB). */
   if (dysp_floor() > 0) {
     static unsigned fc = 0;
     if ((++fc & 0xFF) == 0) {
       long long avail = dysp_mem_avail();
-      if (avail >= 0 && avail < dysp_floor() && g_dysp_resident > 0) {
+      long long keepmin = (long long)8 * 1024 * 1024;
+      if (avail >= 0 && avail < dysp_floor() && g_dysp_resident > keepmin) {
         long long cut = (avail < dysp_floor() / 2) ? g_dysp_resident / 4 : (long long)8 * 1024 * 1024;
-        long long tgt2 = g_dysp_resident - cut; if (tgt2 < 0) tgt2 = 0;
-        dysp_evict_to(target, id, tgt2);
+        long long tgt2 = g_dysp_resident - cut; if (tgt2 < keepmin) tgt2 = keepmin;
+        dysp_evict_to(target, id, tgt2, 6000);
         if (getenv("DYSMANTLE_PAGELOG"))
-          fprintf(stderr, "[dysp] PRESSAO avail=%lldMB < piso=%lldMB -> evict p/ %lldMB\n",
+          fprintf(stderr, "[dysp] PRESSAO avail=%lldMB < piso=%lldMB -> evict FRIAS p/ %lldMB\n",
                   avail/(1024*1024), dysp_floor()/(1024*1024), tgt2/(1024*1024));
       }
     }
@@ -1592,6 +1601,18 @@ static unsigned my_glGetError(void) {
   static unsigned (*real)(void) = NULL; rgl("glGetError", (void **)&real);
   return real ? real() : 0;
 }
+/* diag ArkOS/R36S: "failed to create a vertex shader" — quem falha, create ou erro pendente? */
+static unsigned my_glCreateShader(unsigned type) {
+  static unsigned (*real)(unsigned) = NULL; rgl("glCreateShader", (void **)&real);
+  static unsigned (*ge)(void) = NULL; rgl("glGetError", (void **)&ge);
+  unsigned pend = ge ? ge() : 0;
+  unsigned r = real ? real(type) : 0;
+  unsigned e = ge ? ge() : 0;
+  static int n = 0;
+  if (n < 12) { fprintf(stderr, "[CREATESHADER] type=0x%x -> id=%u pend=0x%x err=0x%x tid=%d\n",
+                        type, r, pend, e, (int)syscall(178)); n++; }
+  return r;
+}
 
 /* ---- Interceptação de SHADERS (diag do mundo branco) ----
  * Loga source (gated DYSMANTLE_SHADER_DUMP) e SEMPRE loga erro de compile/link.
@@ -1808,6 +1829,7 @@ DynLibFunction dysmantle_overrides[] = {
   /* GL core interceptados p/ diag/fix do mundo branco (resolvidos pela tabela,
    * NÃO via eglGetProcAddress) */
   {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+  {"glCreateShader", (uintptr_t)my_glCreateShader},
   /* DYS_PAGE: atlas dinamico + limpeza de estado por id */
   {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
   {"glCopyTexSubImage2D", (uintptr_t)my_glCopyTexSubImage2D},
@@ -1840,6 +1862,13 @@ DynLibFunction dysmantle_overrides[] = {
   {"glViewport", (uintptr_t)my_glViewport},  /* T2: resolução interna */
   {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
   {"pthread_attr_setstacksize", (uintptr_t)my_attr_setstacksize},
+  /* glibc <=2.32 (ArkOS 2.30) NAO exporta stat/lstat/fstat da libc.so (sao do
+   * libc_nonshared.a) -> dlsym falha -> slot com lixo -> SIGSEGV no 1o stat da
+   * engine (open do gamedata/.log). Apontar pros simbolos LOCAIS do binario
+   * (aarch64: struct stat bionic == kernel == glibc; receita do chrono). */
+  {"stat", (uintptr_t)&stat},
+  {"lstat", (uintptr_t)&lstat},
+  {"fstat", (uintptr_t)&fstat},
   {"fopen", (uintptr_t)my_fopen},
   {"__stack_chk_fail", (uintptr_t)my_stack_chk_fail},
   {"memcpy", (uintptr_t)my_memcpy},
