@@ -7,6 +7,33 @@
 
 ---
 
+## s18b 2026-07-01 — ✅ RAIZ DO FUNDO PRETO ISOLADA (EBGDIAG no campo real) + evento de abertura roda
+
+> Device .90 voltou. Fluxo validado ao vivo: menu (FBMIRROR nas 2 metades do fb0) → New Game →
+> FMV000/FMV001 reais → campo `FBG_N00_TSHP_MAP002_TH_CGR_1` com Zidane. Áudio REAL fluindo
+> (`bq_Enqueue PCM fluindo`). Controle USB físico detectado (SDL js0). Evento de abertura RODA:
+> `ETb.NewMesWin mes=34 num=2` + `MesWinActive num=2 -> 1` (diálogo pedido/ativo na lógica).
+
+### 🔑 RAIZ do fundo preto (EBGDIAG campo real, NÃO é shader nem atlas):
+- `CreateMaterials` → **mats=6 OK** (Shader.Find achou; materiais criados).
+- atlas **2048x2048 real** carregado (`atlas=0x... tex=2048x2048`).
+- 28 overlays parseados com header correto (`wh=32x80 xy z loc/prm`), **Transform criado (created=1 comb=1)**.
+- **PORÉM `spriteCount=0`** (BGSCENE_DEF+0xA4) e cada overlay `sprites=0 first=(nil)`.
+- `combine=1 upscale=1` → path **UseUpscaleFM (HD)**: atlas vem de imagem HD pré-renderizada
+  (por isso tem pixels sem sprites do binário), e a **geração de geometria (quads) do path
+  upscaled sai VAZIA** → mesh combinado sem vértices → nada desenha → PRETO.
+- Modelos 3D (Zidane) usam URP normal e renderizam; o background 2D é PSX-emulation
+  (`PSXGPU.InitMaterial`: Shader.Find + Material..ctor dos 3 matPSX*) + mesh combinado do EBG.
+
+### 🎯 SNDSAFE: DESCARTAR (crashou). FF9Snd$$FF9FieldSoundDispatch(0x13a9330) via
+  il2cpp_runtime_invoke re-entra e crasha (singleton de som nulo → blr lixo). A KeyNotFound 136
+  é capturada pela PRÓPRIA engine (não-fatal, evento roda). Rodar com **FF9_NOSNDSAFE=1**.
+
+### ▶️ EM TESTE: FF9_EBG_NOUPFM=1 (força useUpscaleFM=0 no scene+0xa8 e fieldMap+0x150) →
+  GenerateAtlasFromBinary empacota sprites do binário → spriteCount>0 → geometria SD visível.
+  (loc/prm dos overlays apontam pro ebgBin, então o binário TEM os dados.) run_noup.sh.
+  Se render: virar default no launcher. Se preto/crash: o furo é a geometria do combined-mesh.
+
 ## s18 2026-07-01 — 🎯 tese do evento de abertura + FF9_SNDSAFE (pendente validação: device caiu)
 
 > Device .90 CAIU (sem ping; provável wedge por grep pesado nos logs gigantes com o jogo a 60fps —
