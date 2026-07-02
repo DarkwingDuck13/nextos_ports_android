@@ -555,3 +555,16 @@ Ordem recomendada:
 2. Validar rotas mais longas de gameplay para item box, inimigo/matar bicho, damage,
    spin/dash/homing, gimmicks de zona e coop/Tails. Audio base ja esta aprovado.
 3. Depois do teste manual, revisar qualquer visual/audio restante que aparecer fora da primeira rota.
+
+## Auditoria Bully v11 × Sonic v5 (2026-07-02) — video/audio/compat
+- Gap real achado e FECHADO: bundle libs.aarch64 agora leva a familia vorbis
+  (libvorbisfile.so.3 + libvorbis.so.0 + libogg.so.0) alem da libmpg123 — o
+  binario LINKA essas libs (NEEDED) e um device enxuto futuro (padrao X5M)
+  poderia nao te-las. Zip v5 final md5 4eb359bd; bundle tambem nos 4 devices.
+- Licao estrutural (nao urgente): Bully so linka SDL2/EGL/GLES/libc e faz
+  dlopen(RTLD_GLOBAL) de openal/mpg123 — nunca morre no ld.so por lib de audio.
+  Migrar mpg123/vorbis p/ dlopen num v5.x deixaria o Sonic igual.
+- Resto da comparacao: Sonic v5 >= Bully em video (resolucao com fallback DRM
+  sysfs + drawable authority + rejeicao desktop-GL + weston fallback; Bully tem
+  MSAA opt-in e alpha8->0 que nao precisamos) e >= em audio (scan adaptativo de
+  driver SDL + override do launcher vs OpenAL do device com alsoft.conf fixo).
