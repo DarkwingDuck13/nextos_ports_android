@@ -1,5 +1,52 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-07-01 (noite) — ARM64 v3: os 2 bugs de render RESOLVIDOS (validado pelo usuario)
+Commit `54b7322`. Binario `sonic4.arm64` deployado no .79. Usuario validou: menu abre,
+fase abre/retorna sem tela preta, **Electric Road "ficou perfeita"** (fundo preto, luzes finas,
+sem duplicacao/rastro), velocidade e som OK pelo launcher.
+
+### BUG 2 (tela preta ao sair/reiniciar fase) — RAIZ + FIX (RELSAFE64)
+- Raiz: release de textura DIFERIDO (cmd 2 do ring amDraw). Payload copiado por valor no
+  enqueue mas contem ponteiro P -> lista {count,handles} na CENA, que o GameProcess libera
+  na MESMA passada -> no exec P esta STALE. No armv7 dava a tempestade de SIGSEGV mascarada
+  pelo DEMOGUARD (DecRef em slot errado); no arm64 o RELSAFE antigo rejeitava TUDO
+  (sane_engine_ptr com teto 32-bit rejeitava ponteiro >4GB) -> leak -> tabela de 1024 slots
+  do amTexMgr esgotava -> reload da fase sem textura = TELA PRETA.
+- Fix: hook do `amDrawRegistCommand1` (replica fiel do ring v3; ctx/tabela derivados dos
+  BYTES da lib via decode ADRP+LDR/ADD + verificacao table[0]=Nop/table[2]=ReleaseTexture).
+  cmd 2 -> SNAPSHOT {count,handles} feito NO ENQUEUE (P valido) e o payload passa a apontar
+  pro snapshot; DecRef continua NO EXEC (timing original). ⚠️ DecRef ADIANTADO (1a tentativa)
+  quebrava os SPRITES do titulo (texturas do frame corrente liberadas cedo) — o snapshot e
+  a forma certa. P nao-rastreado no exec = stale -> pula SEMPRE (nunca DecRef em lista morta).
+
+### Titulo nao ia pro MENU no tap (regressao aparente) — RAIZ + FIX
+- Raiz: no v3 a flag de continue (lida por CStateWaitViewPausing::Next, slot re-apontado
+  pelo init p/ struct malloc'd) nasce LIXO — no Android o Java a inicializa via
+  SetContinueFlag. Next() so trata 1/2; lixo = preso no titulo p/ sempre (music restart).
+- Fix: sanitizador por frame (slot derivado das instrucoes do isContinueStart; valor fora
+  de 0..2 -> 0) + continue-drive v2 (SetContinueStart(2)) volta a funcionar.
+- Gates v3 extras (consent refatorado): Legal::isCompleteAllState->1, Age::haveDoneAgeGate->1,
+  haveUserConsent->1, NEED_TO_SHOW_POPUP_IMPROVE->0, resume do PAUSE_INTRO_VIDEO (bit 0x80).
+
+### BUG 1 (Electric Road estourada/duplicada) — resolvido pela combinacao
+- CLEARALL blindado no arm64 (scissor OFF + colormask/depthmask FULL durante o clear,
+  estado restaurado) + RELSAFE64 (texmgr saudavel). FBO-STATS do v3 na fase: FBO 2 =
+  cena (75 draws/frame, 1 clear/frame do engine), FBO 0 nunca limpo pelo engine (CLEARALL
+  cobre), FBO 6/7/8 ciclicos. Validado com screenshots no gameplay real (pulos/molas/boost).
+
+### Infra de debug nova (reusavel)
+- `SONIC_INPUTFILE=/dev/shm/sonic_pad` — mask FOX dinamico via arquivo (dirigir por ssh).
+- `SONIC_INPUTSEQ="F:MASK:LEN,..."` — roteiro deterministico de input.
+- `SONIC_STATELOG=1` — gates do fluxo titulo->menu por segundo (setup/enable/upshell/continue).
+- ⚠️ ao testar via ssh: PARAR a ES antes (senao compoe por cima do jogo e contamina
+  screenshot/fb) e NAO usar SONIC_FRAME_SLEEP_US em teste de jogabilidade (deixa lento).
+- Screenshots de referencia: scratchpad da sessao (h1_title=titulo OK, p6/p7=Electric Road OK).
+
+### Pendencia MENOR (arm64): SFX pontuais do cassino mudos
+- `Ring1R`/`Casino1` etc dao LPK miss no data.obb v3 (S4EP2FX_113a..., CASINO_BOBBIN...).
+  As strings EXISTEM no OBB (offset ~673MB) mas o lookup por path falha — provavelmente
+  dentro de um bank/subarquivo com path de indice diferente do v2. Som geral OK.
+
 ## Sessao 2026-06-30 (noite) — v4.2: corrige REGRESSAO (fase nao abria) + sons + release limpa
 Tudo VALIDADO no R36S/ArkOS (.104) pelo usuario. 4 commits no master (sem co-autor):
 - **FASE NAO ABRIA = regressao pos-v4.0 (commit 9a116e1).** O RELSAFE de `_amDrawReleaseTexture`

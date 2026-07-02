@@ -60,6 +60,19 @@ matar a firula multiarch de áudio. Autorizado 2026-07-01.
   - 🎯 **Falta:** input→gameplay (o teste precisa da ES suspensa; abrir pelo menu que o
     PortMaster suspende sozinho — NÃO parar ES via ssh, regra forte); multi-device; empacotar.
 
+## 🏆 s2 (2026-07-01 noite) — OS 2 BUGS DE RENDER RESOLVIDOS (validado pelo usuário)
+
+Commit `54b7322`. Ver STATUS.md (topo) pros detalhes. Resumo: **BUG 2** (tela preta ao
+sair/reiniciar fase) = release diferido lendo lista STALE; fix RELSAFE64 = hook do
+`amDrawRegistCommand1` com SNAPSHOT da lista no enqueue (DecRef fica no exec — adiantar
+o DecRef mata sprites vivos!) + skip de P não-rastreado no exec + `sane_engine_ptr` 64-bit.
+**Título→menu** = flag de continue nasce LIXO no v3 (malloc, Java inicializaria) e
+`CStateWaitViewPausing::Next` só trata 1/2 → sanitizador por frame (lixo→0). **BUG 1**
+(Electric Road) = resolvido por CLEARALL blindado (scissor/masks) + texmgr saudável;
+"ficou perfeita" (usuário). Técnica nova reusável: derivar globals/tabelas dos BYTES da
+lib carregada (decode ADRP+LDR/ADD) em vez de hardcodar offsets — à prova de versão.
+Pendência menor: SFX pontuais do cassino (Ring1R/Casino1) dão LPK miss no OBB v3 (bank?).
+
 ## 🏁 ONDE PAROU (2026-07-01, fim da sessão — pediu resumo)
 
 **JOGÁVEL no Mali-450 .79 (aarch64):** boota, renderiza título, **áudio OK, controle OK**
