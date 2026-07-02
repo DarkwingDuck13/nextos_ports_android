@@ -889,6 +889,77 @@ static char *str_replace_all(const char *src, const char *find,
   return out;
 }
 
+/* diag uniforms de sombra (BULLY2_UNIFLOG=1): rastreia location de
+ * shadowparam/rendersize e loga os valores em glUniform4fv. Se shadowparam.x=0
+ * ou rendersize.zw errado -> sombra nao aparece (bug de port, nao driver). */
+static int g_loc_shadowparam = -999, g_loc_rendersize = -999;
+static int my_glGetUniformLocation(unsigned prog, const char *name) {
+  static int (*r)(unsigned, const char *) = NULL;
+  if (!r) r = dlsym(RTLD_DEFAULT, "glGetUniformLocation");
+  int loc = r ? r(prog, name) : -1;
+  if (getenv("BULLY2_UNIFLOG") && name) {
+    if (!strcmp(name, "shadowparam")) {
+      g_loc_shadowparam = loc;
+      static int c; if (c++<4) fprintf(stderr, "[uniflog] loc shadowparam=%d (prog %u)\n", loc, prog);
+    } else if (!strcmp(name, "rendersize")) {
+      g_loc_rendersize = loc;
+      static int c; if (c++<4) fprintf(stderr, "[uniflog] loc rendersize=%d (prog %u)\n", loc, prog);
+    } else if (!strcmp(name, "shadowtex") || !strcmp(name, "shadowdepth")) {
+      static int c; if (c++<4) fprintf(stderr, "[uniflog] loc %s=%d (prog %u)\n", name, loc, prog);
+    }
+  }
+  return loc;
+}
+static void my_glUniform4f(int loc, float a, float b, float c, float d) {
+  static void (*r)(int, float, float, float, float) = NULL;
+  if (!r) r = dlsym(RTLD_DEFAULT, "glUniform4f");
+  if (getenv("BULLY2_UNIFLOG")) {
+    static int c1, c2;
+    if (loc == g_loc_shadowparam && c1++ < 6)
+      fprintf(stderr, "[uniflog] shadowparam4f = %.3f %.3f %.3f %.3f\n", a, b, c, d);
+    else if (loc == g_loc_rendersize && c2++ < 6)
+      fprintf(stderr, "[uniflog] rendersize4f = %.1f %.1f %.5f %.5f\n", a, b, c, d);
+  }
+  if (r) r(loc, a, b, c, d);
+}
+static void my_glUniform4fv(int loc, int count, const float *v) {
+  static void (*r)(int, int, const float *) = NULL;
+  if (!r) r = dlsym(RTLD_DEFAULT, "glUniform4fv");
+  if (getenv("BULLY2_UNIFLOG") && v && count > 0) {
+    static int c1, c2;
+    if (loc == g_loc_shadowparam && c1++ < 6)
+      fprintf(stderr, "[uniflog] shadowparam = %.3f %.3f %.3f %.3f\n", v[0],
+              v[1], v[2], v[3]);
+    else if (loc == g_loc_rendersize && c2++ < 6)
+      fprintf(stderr, "[uniflog] rendersize = %.1f %.1f %.5f %.5f\n", v[0],
+              v[1], v[2], v[3]);
+  }
+  if (r) r(loc, count, v);
+}
+
+/* diag: checa status de compilacao dos shaders (BULLY2_SHADERCHK=1) —
+ * se o resolve de sombra (sampler2DShadow) falhar compilar, shadowtex fica
+ * vazio e nao ha sombra. */
+static void my_glCompileShader(unsigned sh) {
+  static void (*rc)(unsigned) = NULL;
+  static void (*giv)(unsigned, unsigned, int *) = NULL;
+  static void (*gil)(unsigned, int, int *, char *) = NULL;
+  static const unsigned char *(*rgs)(unsigned) = NULL;
+  if (!rc) rc = dlsym(RTLD_DEFAULT, "glCompileShader");
+  if (rc) rc(sh);
+  if (getenv("BULLY2_SHADERCHK")) {
+    if (!giv) giv = dlsym(RTLD_DEFAULT, "glGetShaderiv");
+    if (!gil) gil = dlsym(RTLD_DEFAULT, "glGetShaderInfoLog");
+    int ok = 1;
+    if (giv) giv(sh, 0x8B81 /*COMPILE_STATUS*/, &ok);
+    if (!ok) {
+      char log[512]; log[0]=0;
+      if (gil) gil(sh, sizeof(log), NULL, log);
+      fprintf(stderr, "[shaderchk] shader %u FALHOU compilar: %s\n", sh, log);
+    }
+  }
+}
+
 static void (*real_glShaderSource)(unsigned, int, const char *const *,
                                    const int *) = NULL;
 static void my_glShaderSource(unsigned sh, int count, const char *const *str,

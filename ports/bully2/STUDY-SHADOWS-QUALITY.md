@@ -151,3 +151,32 @@ Hookei `RendererES3::SetShadowTexture` (0x95bd5c) e `RendererES::SetShadowMatrix
 - Fix do SSAO: alimentar os 3 vetores do pp_ssao (Material::QueueVectorParameter
   @ 0x9441fc) sem o ponteiro lixo.
 - Validar RendererES3 em cenas variadas (interiores/cutscenes/combate) no X5M.
+
+## 10. Diagnóstico PROFUNDO (2026-07-02, dump de shaders + uniforms)
+
+Referência do usuário: **sombra FUNCIONA no celular** (Moto G100 = Adreno 650),
+mesmo libGame. Fork antigo do amigo TAMBÉM não mostra sombra = não é regressão
+nossa. Arquitetura de sombra do Bully (via BULLY2_DUMP_SHADERS):
+- **Deferred screen-space shadow**. 3 estágios:
+  1. Shadow map luz: depth texture 2048x2048 (`highp sampler2DShadow shadowdepth`).
+  2. Resolve (sh_0153): `textureProj(shadowdepth, shadowPos)` lê `framedepth`
+     (depth-stencil da cena), projeta por `shadowtrx`, escreve shadowtex =
+     `shadowAmt * shadowparam.x`.
+  3. World (sh_0016): `getshadow()=1.0-texture(shadowtex, gl_FragCoord*rendersize.zw).r`.
+- **Tudo verificado CORRETO no nosso port (X5M ES3)**:
+  - Shaders compilam: 0 falhas (BULLY2_SHADERCHK).
+  - `GL_TEXTURE_COMPARE_MODE=COMPARE_REF_TO_TEXTURE(0x884e)`, func LEQUAL — setado
+    certo na textura de sombra (BULLY2_SHADOWLOG glTexParameteri).
+  - Depth textures criadas (shadow 2048 depth, gbuffer depth-stencil).
+  - Uniforms (shadowparam/rendersize) via **UBO** (glGetUniformLocation nunca
+    chamado com esses nomes; glUniform4f/4fv idem) = padrão ES3, ok.
+  - Nenhum shim nosso (glClear/Viewport/Framebuffer/UseProgram/DrawElements)
+    altera comportamento (pass-through só log).
+- **CONCLUSÃO**: pipeline 100% igual ao Android real. A sombra falha em **Mali**
+  (X5M G310, e provavelmente todos nossos devices Mali) mas funciona em **Adreno**
+  (celular) = incompatibilidade específica do driver Mali com a técnica de sombra
+  diferida (sampler2DShadow/textureProj sobre depth texture / UBO). Não é bug de
+  código nosso — é o driver Mali + a técnica da engine.
+- Fix real exigiria: (a) trace GL do celular (Adreno) p/ comparar chamada-a-chamada,
+  ou (b) reescrever a técnica de sombra (patch shader/engine) — arriscado. Ferramentas
+  de diagnóstico deixadas opt-in: BULLY2_DUMP_SHADERS, SHADERCHK, UNIFLOG, SHADOWLOG.
