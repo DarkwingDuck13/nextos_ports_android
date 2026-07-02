@@ -2050,6 +2050,7 @@ static void *ter_getinputtext_hook(long a0,long a1,long a2,long a3,long a4,
    ja digitado no campo (g_vkbd_force_text, via hook do CreateAndSave/CreateWorld) ou
    TER_VK_DEFAULT. Tela morta nunca mais aparece. */
 static void ter_invoke0(const char *ns, const char *cn, const char *mn, void *obj);
+static void ter_il2cpp_set_string_field(void *obj, size_t off, void *s);
 static void (*g_orig_player_entername)(void*, void*);
 static void (*g_orig_world_entername)(void*, void*);
 static void ter_player_entername_hook(void *self, void *mi) {
@@ -2066,6 +2067,13 @@ static void (*g_orig_world_name_draw)(void*, void*);
 static void ter_world_name_draw_hook(void *self, void *mi) {
   g_world_name_menu_inst = self;
   g_world_name_menu_frame = g_render_frame;
+  { static int upct; static int last = -999999;
+    if (!jni_softinput_active()) upct++; else upct = 0;
+    if (upct >= 30 && g_render_frame - last > 300) {
+      last = g_render_frame; upct = 0;
+      jni_softinput_open(ter_vkbd_effective_name("Mundo"), 20);
+      fprintf(stderr, "[AUTONAME] tela de nome do mundo: abrindo teclado na tela\n"); fsync(2);
+    } }
   if (g_orig_world_name_draw) g_orig_world_name_draw(self, mi);
 }
 static void ter_player_name_draw_hook(void *self, void *mi) {
@@ -2077,6 +2085,9 @@ static void ter_player_name_draw_hook(void *self, void *mi) {
      GetInputText (nosso hook devolve o nome + liga inputTextEnter REAL) e a PROPRIA tela
      aceita: PendingPlayer -> CreateAndSave -> set_menuMode. Tudo codigo nativo dela. */
   { static int upct; static int last = -999999;
+    static int osk_opened; static int last_seen = -999999;
+    if (g_render_frame - last_seen > 30) osk_opened = 0;   /* nova visita da tela */
+    last_seen = g_render_frame;
     if (!jni_softinput_active()) upct++; else upct = 0;
     if (upct >= 30 && g_render_frame - last > 300) {
       last = g_render_frame; upct = 0;
@@ -2091,6 +2102,44 @@ static void ter_player_name_draw_hook(void *self, void *mi) {
         *((unsigned char *)o4 + 0x18) = 1;   /* guard: edicao ativa */
         g_name_enter_frames = 6;             /* GetInputText hook completa */
         fprintf(stderr, "[AUTONAME] guard de edicao LIGADO + auto-enter armado\n"); fsync(2);
+      } else if (!osk_opened) {
+        /* Criar direto: o editor de nome nem existe (so nasce ao tocar o campo).
+           1o passo: abre o NOSSO teclado NESTA tela p/ digitar/confirmar o nome. */
+        osk_opened = 1;
+        jni_softinput_open(ter_vkbd_effective_name("Player"), 20);
+        fprintf(stderr, "[AUTONAME] tela de nome: abrindo teclado na tela\n"); fsync(2);
+      } else if (NP_SANE(o3)) {
+        /* 2o passo (pos-OK, editor ainda inexistente): CRIA o GUIMenuNameEdit via
+           il2cpp, pendura em LocalUser.Active+0x2F0 (write barrier), liga
+           _enabled(+0x18) e poe o nome em _editedName(+0x10) -> o Draw entra no
+           caminho de input, GetInputText (hookado) da nome+ENTER e a tela aceita
+           nativamente (PendingPlayer -> CreateAndSave -> menuMode). */
+        void *(*dom_get2)(void) = (void *)(g_il2cpp_base + 0x73c860);
+        const void **(*dom_asms2)(void *, size_t *) = (void *)(g_il2cpp_base + 0x73c86c);
+        void *(*asm_img2)(const void *) = (void *)(g_il2cpp_base + 0x73c22c);
+        void *(*cls_from_name2)(void *, const char *, const char *) = (void *)(g_il2cpp_base + 0x73c264);
+        void *(*cls_method2)(void *, const char *, int) = (void *)(g_il2cpp_base + 0x73c28c);
+        void *(*obj_new2)(void *) = (void *)(g_il2cpp_base + 0x73cc34);
+        void *(*rt_invoke2)(void *, void *, void **, void **) = (void *)(g_il2cpp_base + 0x73cc7c);
+        void *(*isn2)(const char *) = (void *)(g_il2cpp_base + 0x73cc98);
+        void *cls = NULL; void *dom = dom_get2();
+        if (dom) { size_t na = 0; const void **as = dom_asms2(dom, &na);
+          for (size_t ai = 0; as && ai < na; ai++) { void *img = asm_img2(as[ai]); if (!img) continue;
+            cls = cls_from_name2(img, "", "GUIMenuNameEdit"); if (cls) break; } }
+        void *ne = cls ? obj_new2(cls) : NULL;
+        if (ne) {
+          void *ct = cls_method2(cls, ".ctor", 0);
+          if (ct) { void *exc = NULL; rt_invoke2(ct, ne, NULL, &exc); }
+          const char *nm2 = g_vkbd_force_text[0] ? g_vkbd_force_text : ter_vkbd_effective_name("Player");
+          ter_il2cpp_set_string_field(ne, 0x10, isn2(nm2));  /* _editedName */
+          *((unsigned char *)ne + 0x18) = 1;                 /* _enabled */
+          void (*wb2)(void *, void **, void *) = (void *)(g_il2cpp_base + 0x73cb34);
+          wb2(o3, (void **)((char *)o3 + 0x2F0), ne);        /* LocalUser.Active.nameEdit = ne */
+          g_name_enter_frames = 6;
+          fprintf(stderr, "[AUTONAME] GUIMenuNameEdit CRIADO (%p) + guard + auto-enter (nome \"%s\")\n", ne, nm2); fsync(2);
+        } else {
+          fprintf(stderr, "[AUTONAME] falha ao criar GUIMenuNameEdit (cls=%p)\n", cls); fsync(2);
+        }
       }
       #undef NP_SANE
     } }
