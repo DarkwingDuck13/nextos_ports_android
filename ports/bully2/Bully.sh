@@ -57,7 +57,10 @@ missing=0
 for required in "$GAMEDIR/bully" "$GAMEDIR/libGame.so" "$GAMEDIR/libc++_shared.so" \
                 "$GAMEDIR/assets/data_0.zip" "$GAMEDIR/assets/data_1.zip" \
                 "$GAMEDIR/assets/data_2.zip" "$GAMEDIR/assets/data_3.zip" \
-                "$GAMEDIR/assets/data_4.zip"; do
+                "$GAMEDIR/assets/data_4.zip" \
+                "$GAMEDIR/assets/data_0.zip.idx" "$GAMEDIR/assets/data_1.zip.idx" \
+                "$GAMEDIR/assets/data_2.zip.idx" "$GAMEDIR/assets/data_3.zip.idx" \
+                "$GAMEDIR/assets/data_4.zip.idx"; do
   [ -f "$required" ] || { echo "Missing required file: $required"; missing=1; }
 done
 

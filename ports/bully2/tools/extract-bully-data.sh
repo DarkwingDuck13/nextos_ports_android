@@ -10,12 +10,14 @@ SETUPF="${BULLY_SETUP_FILE:-/tmp/bully_setup.txt}"
 STOPF="${BULLY_SETUP_STOP:-/tmp/bully_setup_stop}"
 
 ready() {
-  for required in "$DEST/libGame.so" "$DEST/libc++_shared.so" \
-                  "$DEST/assets/data_0.zip" "$DEST/assets/data_1.zip" \
-                  "$DEST/assets/data_2.zip" "$DEST/assets/data_3.zip" \
-                  "$DEST/assets/data_4.zip"; do
-    [ -f "$required" ] || return 1
+  # exige tambem os .idx: extracao interrompida deixa o par zip/idx
+  # incompleto -> ready falha -> proximo boot re-extrai (auto-recuperacao)
+  for i in 0 1 2 3 4; do
+    [ -f "$DEST/assets/data_${i}.zip" ] || return 1
+    [ -f "$DEST/assets/data_${i}.zip.idx" ] || return 1
   done
+  [ -f "$DEST/libGame.so" ] || return 1
+  [ -f "$DEST/libc++_shared.so" ] || return 1
   return 0
 }
 
