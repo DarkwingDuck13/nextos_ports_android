@@ -1,3 +1,12 @@
+# v6 finais de estabilidade (2026-07-02)
+- Tela de setup por ETAPAS com progresso real (lib / dados em MB / conserto / otimizacao)
+- Streaming de textura com guarda anti-OOM (pressao por RAM E zram) e anti-piscada (despejo
+  critico com cooldown; nunca despeja visivel quando nao ha o que ganhar)
+- Device ~640MB (R36S-class): textura 1.5 quase-nativa (sessao longa estavel); >=700MB: nativa
+- Frontend (ES) e PAUSADO durante o jogo em device de pouca RAM e religado ao sair (+~76MB)
+- Todos os binarios auditados para glibc <= 2.30 (gate automatico no build e no zip)
+- READMEs EN/pt-BR
+
 # DYSMANTLE (NextOS Elite / PortMaster) — CHANGELOG
 
 ---
