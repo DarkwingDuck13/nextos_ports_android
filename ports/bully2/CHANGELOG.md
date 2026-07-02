@@ -15,3 +15,5 @@
   pin de threads so em CPU homogenea, OpenAL-soft 1.21.1 bundlado + mute-stubs.
   Validado Mali-450 (principal, cutscene renderizada) e R36S. Zip v11 sha256
   397bf74f...662331c1.
+- Hotfix X5M: driver SDL comparado case-insensitive no present (KMSDRM
+  maiusculo do EmuELEC novo dava tela preta). Zips v11 regenerados.
