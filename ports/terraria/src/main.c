@@ -1992,6 +1992,8 @@ int ter_install_hook4(unsigned long off, void* fn, void** orig_out) {
   return 1;
 }
 static volatile void *g_player_create_menu_inst, *g_world_create_menu_inst, *g_player_name_menu_inst;
+static volatile void *g_world_name_menu_inst;
+static volatile int g_world_name_menu_frame = -999999;
 static volatile void *g_menu_nameedit_inst;
 static volatile int g_player_create_menu_frame = -999999, g_world_create_menu_frame = -999999,
                     g_player_name_menu_frame = -999999, g_menu_nameedit_frame = -999999;
@@ -2008,9 +2010,90 @@ static void ter_player_create_draw_hook(void *self, void *mi) {
   g_player_create_menu_frame = g_render_frame;
   if (g_orig_player_create_draw) g_orig_player_create_draw(self, mi);
 }
+/* 🔑 A tela de nome usa o caminho de texto ESTILO PC: GetInputText(oldString, region, ...)
+   @0xFCD98C — le o teclado FNA (morto no so-loader), ZERA Main.inputTextEnter a cada
+   chamada (por isso setar a flag de fora nunca funcionou) e devolve o texto digitado
+   (por isso o OSK nao aparecia no campo). Hook com call-through: quando o auto-enter
+   esta armado (g_name_enter_frames>0, setado pelo pump), devolvemos NOSSO nome e
+   ligamos inputTextEnter DEPOIS do original (que acabou de zerar) -> a tela aceita
+   nativamente (CreateAndSave/CreateWorld + transicao). Roda na thread do jogo. */
+static volatile int g_name_enter_frames;
+static void *(*g_orig_getinputtext)(long,long,long,long,long,long,long,long,long,long);
+static void *ter_getinputtext_hook(long a0,long a1,long a2,long a3,long a4,
+                                   long a5,long a6,long a7,long a8,long a9) {
+  void *r = g_orig_getinputtext ? (void *)g_orig_getinputtext(a0,a1,a2,a3,a4,a5,a6,a7,a8,a9)
+                                : (void *)a0;
+  if (g_name_enter_frames > 0 && g_il2cpp_base) {
+    g_name_enter_frames--;
+    const char *nm = g_vkbd_force_text[0] ? g_vkbd_force_text :
+                     (getenv("TER_VK_DEFAULT") ? getenv("TER_VK_DEFAULT") : "Player");
+    void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+    /* RVAs CONFERIDOS no dump: set_chatText=0xF74E44, set_inputTextEnter=0xF74EF0
+       (0xf74e9c/0xf74f4c eram os GETTERS — a 1a tentativa era no-op). Estamos na
+       thread do jogo (chamados pelo Draw) -> thread-static ok. */
+    void (*set_chat)(void *, void *) = (void (*)(void *, void *))(g_il2cpp_base + 0xF74E44);
+    void (*set_enter)(int, void *) = (void (*)(int, void *))(g_il2cpp_base + 0xF74EF0);
+    void *ns = isn(nm);
+    set_chat(ns, NULL);
+    set_enter(1, NULL);
+    static int logged;
+    if (logged++ < 8) { fprintf(stderr, "[AUTONAME] GetInputText -> \"%s\" + ENTER\n", nm); fsync(2); }
+    return ns;
+  }
+  return r;
+}
+/* 🏆 FIX DEFINITIVO da 2a tela de nome ("Digite o Nome do Personagem"): ela e o caminho
+   de teclado FISICO do Terraria PC (GetInputText/inputTextEnter) que esta morto no
+   so-loader — ja provado que nem o GetInputText dela roda. Em vez de reanimar a tela,
+   PULAMOS ela: o botao Criar chama EnterName() -> substituimos por CreateAndSave/
+   CreateWorld diretos (mesmo caminho validado do MAKECLEANPLAYER). O nome usado e o
+   ja digitado no campo (g_vkbd_force_text, via hook do CreateAndSave/CreateWorld) ou
+   TER_VK_DEFAULT. Tela morta nunca mais aparece. */
+static void ter_invoke0(const char *ns, const char *cn, const char *mn, void *obj);
+static void (*g_orig_player_entername)(void*, void*);
+static void (*g_orig_world_entername)(void*, void*);
+static void ter_player_entername_hook(void *self, void *mi) {
+  (void)mi;
+  fprintf(stderr, "[AUTONAME] Criar(player): EnterName -> CreateAndSave direto\n"); fsync(2);
+  ter_invoke0("", "GUIPlayerCreateMenu", "CreateAndSave", self);
+}
+static void ter_world_entername_hook(void *self, void *mi) {
+  (void)mi;
+  fprintf(stderr, "[AUTONAME] Criar(mundo): EnterName -> CreateWorld direto\n"); fsync(2);
+  ter_invoke0("", "GUIWorldCreateMenu", "CreateWorld", self);
+}
+static void (*g_orig_world_name_draw)(void*, void*);
+static void ter_world_name_draw_hook(void *self, void *mi) {
+  g_world_name_menu_inst = self;
+  g_world_name_menu_frame = g_render_frame;
+  if (g_orig_world_name_draw) g_orig_world_name_draw(self, mi);
+}
 static void ter_player_name_draw_hook(void *self, void *mi) {
   g_player_name_menu_inst = self;
   g_player_name_menu_frame = g_render_frame;
+  /* tela de nome do PERSONAGEM: liga o GUARD de edicao ativa (o byte que um TAP no campo
+     ligaria) pela MESMA cadeia que o Draw dela le (disasm 0xD360E4: [[base+0x2fc2cb0]+0]
+     ->+0xB8->[deref]->+0x2F0->byte+0x18) e arma o auto-enter. Com o guard=1, o Draw chama
+     GetInputText (nosso hook devolve o nome + liga inputTextEnter REAL) e a PROPRIA tela
+     aceita: PendingPlayer -> CreateAndSave -> set_menuMode. Tudo codigo nativo dela. */
+  { static int upct; static int last = -999999;
+    if (!jni_softinput_active()) upct++; else upct = 0;
+    if (upct >= 30 && g_render_frame - last > 300) {
+      last = g_render_frame; upct = 0;
+      #define NP_SANE(p) ((uintptr_t)(p) > 0x10000 && (uintptr_t)(p) < 0x8000000000UL)
+      void **st = (void **)(g_il2cpp_base + 0x2fc2cb0);
+      void *o1 = *st;
+      void *o2 = NP_SANE(o1) ? *(void **)((char *)o1 + 0xB8) : NULL;
+      void *o3 = NP_SANE(o2) ? *(void **)o2 : NULL;
+      void *o4 = NP_SANE(o3) ? *(void **)((char *)o3 + 0x2F0) : NULL;
+      fprintf(stderr, "[AUTONAME] chain: o1=%p o2=%p o3=%p o4=%p\n", o1, o2, o3, o4); fsync(2);
+      if (NP_SANE(o4)) {
+        *((unsigned char *)o4 + 0x18) = 1;   /* guard: edicao ativa */
+        g_name_enter_frames = 6;             /* GetInputText hook completa */
+        fprintf(stderr, "[AUTONAME] guard de edicao LIGADO + auto-enter armado\n"); fsync(2);
+      }
+      #undef NP_SANE
+    } }
   if (!g_vkbd_force_text[0])
     snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", ter_vkbd_effective_name("Player"));
   ter_player_name_menu_force_text(g_vkbd_force_text);
@@ -2090,6 +2173,21 @@ static void ter_name_hooks_install(void) {
   unsigned long po = ter_method_off("", "GUIPlayerCreateMenu", "Draw", 0);
   unsigned long pno = ter_method_off("", "GUIPlayerNameMenu", "Draw", 0);
   unsigned long wo = ter_method_off("", "GUIWorldCreateMenu", "Draw", 0);
+  unsigned long wnn = ter_method_off("", "GUIWorldNameMenu", "Draw", 0);
+  if (!g_orig_getinputtext &&
+      ter_install_hook4(0xFCD98C, (void*)ter_getinputtext_hook, (void**)&g_orig_getinputtext))
+    fprintf(stderr, "[VKBD] GetInputText @0xFCD98C hookado (auto-enter)\n");
+  unsigned long pen = ter_method_off("", "GUIPlayerCreateMenu", "EnterName", 0);
+  unsigned long wen = ter_method_off("", "GUIWorldCreateMenu", "EnterName", 0);
+  if (pen && !g_orig_player_entername &&
+      ter_install_hook4(pen, (void*)ter_player_entername_hook, (void**)&g_orig_player_entername))
+    fprintf(stderr, "[VKBD] GUIPlayerCreateMenu.EnterName hookado @0x%lx (Criar direto)\n", pen);
+  if (wen && !g_orig_world_entername &&
+      ter_install_hook4(wen, (void*)ter_world_entername_hook, (void**)&g_orig_world_entername))
+    fprintf(stderr, "[VKBD] GUIWorldCreateMenu.EnterName hookado @0x%lx (Criar direto)\n", wen);
+  if (wnn && !g_orig_world_name_draw &&
+      ter_install_hook4(wnn, (void*)ter_world_name_draw_hook, (void**)&g_orig_world_name_draw))
+    fprintf(stderr, "[VKBD] GUIWorldNameMenu.Draw hookado @0x%lx\n", wnn);
   unsigned long no = ter_method_off("", "GUIMenuNameEdit", "Enable", 1);
   unsigned long ps = ter_method_off("", "GUIPlayerCreateMenu", "CreateAndSave", 0);
   unsigned long pc = ter_method_off("", "GUIPlayerCreateMenu", "CreatePlayer", 0);
@@ -2240,18 +2338,38 @@ static void ter_name_commit_text(const char *text) {
     fprintf(stderr, "[VKBD] name edit aplicado: \"%s\" inst=%p\n", text, ninst);
   }
   if (pinst && fp >= 0 && fp < 180 && (fp <= fw || fw < 0 || fw >= 180)) {
+    /* o fluxo NATIVO pos-teclado e: CloseNameEdit + (se veio do botao Criar) CreateAndSave.
+       O jogo faz isso quando o TouchScreenKeyboard reporta Done — o que nosso teclado fake
+       nao convence 100%. Entao NOS completamos: le a flag ANTES do Close (0x19 =
+       editPlayerNameForCreate), fecha a edicao (0x18 = editingPlayerName) e invoca o
+       CreateAndSave original (mesmo caminho do MAKECLEANPLAYER validado). */
+    int for_create = *(unsigned char *)((char *)pinst + 0x19);
     if (ninst && fn >= 0 && fn < 600) ter_il2cpp_set_string_field(ninst, 0x10, s);
     ter_invoke0("", "GUIPlayerCreateMenu", "CloseNameEdit", pinst);
     ter_il2cpp_set_string_field(pinst, 0x80, s);  /* _playerName */
     ter_il2cpp_set_string_field(pinst, 0x88, s);  /* editPlayerName */
-    fprintf(stderr, "[VKBD] player name aplicado: \"%s\" inst=%p\n", text, pinst); fsync(2);
+    *(unsigned char *)((char *)pinst + 0x18) = 0; /* editingPlayerName = false */
+    fprintf(stderr, "[VKBD] player name aplicado: \"%s\" inst=%p forCreate=%d\n", text, pinst, for_create); fsync(2);
+    if (for_create) {
+      ter_invoke0("", "GUIPlayerCreateMenu", "CreateAndSave", pinst);
+      fprintf(stderr, "[VKBD] CreateAndSave invocado — criacao completada\n"); fsync(2);
+    }
     return;
   }
   if (winst && fw >= 0 && fw < 180) {
+    int wfor_create = 0;
+    void *wn = (void *)g_world_name_menu_inst;
+    if (wn && g_render_frame - g_world_name_menu_frame < 900)
+      wfor_create = *(unsigned char *)((char *)wn + 0x15);   /* editWorldNameForCreate */
     if (ninst && fn >= 0 && fn < 600) ter_il2cpp_set_string_field(ninst, 0x10, s);
     ter_invoke0("", "GUIWorldCreateMenu", "CloseNameEdit", winst);
+    if (wn) *(unsigned char *)((char *)wn + 0x14) = 0;        /* editingWorldName = false */
     ter_il2cpp_set_string_field(winst, 0x70, s);  /* _worldName */
     fprintf(stderr, "[VKBD] world name aplicado: \"%s\" inst=%p\n", text, winst); fsync(2);
+    if (wfor_create) {
+      ter_invoke0("", "GUIWorldCreateMenu", "CreateWorld", winst);
+      fprintf(stderr, "[VKBD] CreateWorld invocado — criacao do mundo iniciada\n"); fsync(2);
+    }
     return;
   }
   fprintf(stderr, "[VKBD] OK sem tela de nome ativa: \"%s\" fp=%d fw=%d fn=%d\n", text, fp, fw, fn); fsync(2);
@@ -2266,6 +2384,44 @@ static void ter_name_pump(void) {
   ter_vkbd_maybe_open();
   if (jni_softinput_active()) ter_vkbd_update();
   if (!jni_softinput_active() && g_vkbd_swallow > 0) g_vkbd_swallow--;
+  /* ⚡ AUTO-ENTER da tela de nome (GUIPlayerNameMenu/GUIWorldNameMenu): essa tela e
+     estilo Terraria PC — o Draw dela le Main.chatText (texto) + Main.inputTextEnter
+     (flag do ENTER fisico) e, ao ver o Enter, ELA MESMA aceita o nome e chama
+     CreateAndSave/CreateWorld + transicao (provado no disassembly de 0xD360E4).
+     Sem teclado fisico ninguem seta o Enter -> a tela prendia p/ sempre.
+     Fix: quando a tela esta desenhando ha ~30 frames SEM softinput ativo, escrevemos
+     Main.chatText = nome ja digitado (ou TER_VK_DEFAULT) e Main.inputTextEnter = true
+     por 12 frames seguidos (Update do jogo pode limpar a flag; repetir garante que o
+     Draw veja true). Setters estaticos por RVA: set_chatText@0xf74e9c,
+     set_inputTextEnter@0xf74f4c. */
+  {
+    void *pn = (void *)g_player_name_menu_inst;
+    int fpn = g_render_frame - g_player_name_menu_frame;
+    void *wn = (void *)g_world_name_menu_inst;
+    int fwn = g_render_frame - g_world_name_menu_frame;
+    int screen_up = (pn && fpn >= 0 && fpn < 5) || (wn && fwn >= 0 && fwn < 5);
+    static int upct, last_ac = -999999;
+    if (screen_up && !jni_softinput_active()) upct++; else upct = 0;
+    if (upct >= 30 && g_render_frame - last_ac > 150) {
+      last_ac = g_render_frame; upct = 0; g_name_enter_frames = 6;
+      fprintf(stderr, "[AUTONAME] tela de nome sem teclado -> injetando chatText+ENTER (\"%s\")\n",
+              g_vkbd_force_text[0] ? g_vkbd_force_text : "Player"); fsync(2);
+    }
+  }
+  /* WATCHDOG anti-trava: se o softinput esta ativo mas a tela de nome (GUIMenuNameEdit)
+     ja fechou (_enabled=0 em +0x18) ha >90 frames — usuario saiu sem OK/cancelar — cancela.
+     Sem isso o ter_vkbd_blocking fica preso e o NATPAD bloqueia TODOS os controles. */
+  if (jni_softinput_active() && g_menu_nameedit_inst) {
+    void *ne = (void *)g_menu_nameedit_inst;
+    int enabled = *(unsigned char *)((char *)ne + 0x18);
+    static int offct = 0;
+    if (!enabled) {
+      if (++offct >= 90) {
+        offct = 0; jni_softinput_cancel();
+        fprintf(stderr, "[VKBD] watchdog: tela de nome fechou sem OK -> cancelando teclado (controles liberados)\n"); fsync(2);
+      }
+    } else offct = 0;
+  }
   /* TER_AUTONAME: sem teclado — quando o jogo abre a edicao de nome (GUIMenuNameEdit.Enable),
      espera ~40 frames e preenche o default (TER_VK_DEFAULT, senao PLAYER) fechando nativamente
      (CloseNameEdit via ter_name_commit_text). Re-arma a cada nova abertura. */
@@ -2274,6 +2430,12 @@ static void ter_name_pump(void) {
     int fn = g_menu_nameedit_frame;
     if (fn != seen) { seen = fn; fired = 0; }
     if (jni_softinput_active()) { seen = fn; fired = 1; }   /* teclado aberto: usuario digita, nao interfere */
+    /* tela PC de nome ativa: quem completa e o auto-enter do GetInputText; fechar a
+       edicao aqui mataria o caminho de input da tela. */
+    { int fpn2 = g_render_frame - g_player_name_menu_frame;
+      int fwn2 = g_render_frame - g_world_name_menu_frame;
+      if ((g_player_name_menu_inst && fpn2 >= 0 && fpn2 < 5) ||
+          (g_world_name_menu_inst && fwn2 >= 0 && fwn2 < 5)) fired = 1; }
     if (!fired && g_render_frame - fn >= 40) {
       fired = 1;
       /* replica o fluxo COMPLETO do vk_commit_text: forca o texto nos menus por 180

@@ -375,7 +375,9 @@ void jni_softinput_commit(const char *text) {
   softinput_apply_text();
   g_softinput_active = 0;
   g_softinput_manual = 0;
-  g_softinput_suppress_empty = 5;
+  /* modo OSK (teclado real): reabertura do campo deve SEMPRE abrir o teclado.
+     A supressao de reopen-vazio e so do modo autoname/sem-teclado. */
+  g_softinput_suppress_empty = getenv("TER_OSK") ? 0 : 5;
   debugPrintf("[VKBD] OK text=\"%s\"\n", g_softinput_text);
 }
 void jni_softinput_cancel(void) {
