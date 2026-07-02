@@ -43,7 +43,7 @@ gen() {
   "$NM" -D --undefined-only ./sonic4 |
     awk '{print $NF}' | grep -E "$1" | sort -u | sed 's/.*/void &(void){}/'
 }
-gen '^SDL_' > "$STUB/sdl.c"
+{ gen '^SDL_' | sed 's/void \(SDL_[A-Za-z0-9_]*\).*/\1/'; printf '%s\n' SDL_Init SDL_CreateRenderer SDL_DestroyRenderer SDL_RenderClear SDL_RenderPresent SDL_RenderFillRect SDL_RenderDrawRect SDL_SetRenderDrawColor SDL_GetRendererOutputSize SDL_GetRendererInfo SDL_GetCurrentVideoDriver SDL_Delay SDL_Quit; } | sort -u | sed 's/.*/void &(void){}/' > "$STUB/sdl.c"
 gen '^egl' > "$STUB/egl.c"
 gen '^gl[A-Z]' > "$STUB/gles.c"
 gen '^mpg123_' > "$STUB/mpg123.c"
@@ -59,7 +59,7 @@ gen '^(ov_|vorbis_|ogg_|_ov_)' > "$STUB/vorbisogg.c"
 
 # arm64: so_util ELF64 (so_util_arm64.c) no lugar do ELF32; SEM softfp_shim (arm64
 # nao tem split softfp/hardfp -> floats vao em regs FP nativamente).
-SRCS="src/main.c src/so_util_arm64.c src/util.c src/error.c \
+SRCS="src/main.c src/setup_splash.c src/so_util_arm64.c src/util.c src/error.c \
       src/imports.c src/pthread_bridge.c src/jni_shim.c \
       src/sonic_audio.c \
       src/egl_shim.c src/android_shim.c \
