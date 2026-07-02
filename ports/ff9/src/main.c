@@ -1990,10 +1990,16 @@ static void ff9_fb_scanout_fix(void) {
   static size_t half;
   if (mode < 0) {
     mode = getenv("FF9_FORCEPAN0") ? 1 : (getenv("FF9_FBMIRROR") ? 2 : 0);
+    fprintf(stderr, "[FBSCAN] init mode=%d FBMIRROR=%s FBBRIGHT=%s\n", mode,
+            getenv("FF9_FBMIRROR") ? getenv("FF9_FBMIRROR") : "(nil)",
+            getenv("FF9_FBBRIGHT") ? getenv("FF9_FBBRIGHT") : "(nil)"); fsync(2);
     if (mode) {
       fbfd = open("/dev/fb0", O_RDWR);
       struct fb_var_screeninfo vi;
-      if (fbfd >= 0 && ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) == 0 &&
+      int ioc = (fbfd >= 0) ? ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) : -99;
+      fprintf(stderr, "[FBSCAN] open fb0 fd=%d ioctl=%d yres=%u yvirt=%u\n",
+              fbfd, ioc, ioc == 0 ? vi.yres : 0, ioc == 0 ? vi.yres_virtual : 0); fsync(2);
+      if (fbfd >= 0 && ioc == 0 &&
           vi.yres_virtual >= vi.yres * 2) {
         half = (size_t)vi.xres_virtual * vi.yres * (vi.bits_per_pixel / 8);
         if (mode == 2) {
@@ -2048,6 +2054,8 @@ static void ff9_fb_scanout_fix(void) {
   }
 }
 void ter_shot_hook(void) {
+  static int once = 0;
+  if (!once) { once = 1; fprintf(stderr, "[SHOTHOOK] ter_shot_hook chamado (1a vez)\n"); fsync(2); }
   ter_nuke_methods();
   ter_jobworkers0();
   ter_input_hook();
@@ -9209,6 +9217,7 @@ int main(int argc, char **argv) {
     }
     /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
+    ff9_fb_scanout_fix();  /* FBMIRROR/FBBRIGHT no loop de render real (ter_shot_hook nao roda no swap do FF9) */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
     /* 🎮 input driver: FF9_AUTOCONFIRM=N → injeta Confirm(0) a cada N frames (dispensa disclaimer
        + telas "press to continue" até o menu). FF9_INPUTSEQ="ctrl@frame,..." p/ sequência precisa
