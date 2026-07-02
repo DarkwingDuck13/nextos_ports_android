@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static int sp_file_exists(const char *path) {
   struct stat st;
@@ -119,25 +120,42 @@ int sonic_run_setup_splash(void) {
   if (!stop || !*stop)
     stop = "/tmp/sonic_setup_stop";
 
-  if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-    fprintf(stderr, "[setup] SDL_Init failed: %s\n", SDL_GetError());
-    return 1;
+  /* RETRY: no NextOS novo a ES acabou de ser parada e o DRM pode demorar a ser
+     liberado -> a 1a criacao de janela kmsdrm falha. Tentar por ate ~15s antes
+     de desistir (a extracao continua por baixo de qualquer forma). */
+  SDL_Window *w = NULL;
+  SDL_Renderer *r = NULL;
+  for (int try = 0; try < 30 && !r; try++) {
+    if (sp_file_exists(stop))
+      return 0;                                  /* extracao ja acabou */
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+      fprintf(stderr, "[setup] SDL_Init falhou (try %d): %s\n", try, SDL_GetError());
+      SDL_Quit();
+      usleep(500 * 1000);
+      continue;
+    }
+    w = SDL_CreateWindow("Sonic 4 EP2 setup", SDL_WINDOWPOS_UNDEFINED,
+                         SDL_WINDOWPOS_UNDEFINED, 640, 480,
+                         SDL_WINDOW_FULLSCREEN_DESKTOP);
+    if (!w) {
+      fprintf(stderr, "[setup] janela falhou (try %d): %s\n", try, SDL_GetError());
+      SDL_Quit();
+      usleep(500 * 1000);
+      continue;
+    }
+    r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED);
+    if (!r)
+      r = SDL_CreateRenderer(w, -1, SDL_RENDERER_SOFTWARE);
+    if (!r) {
+      fprintf(stderr, "[setup] renderer falhou (try %d): %s\n", try, SDL_GetError());
+      SDL_DestroyWindow(w);
+      w = NULL;
+      SDL_Quit();
+      usleep(500 * 1000);
+    }
   }
-  SDL_Window *w = SDL_CreateWindow("Sonic 4 EP2 setup", SDL_WINDOWPOS_UNDEFINED,
-                                   SDL_WINDOWPOS_UNDEFINED, 640, 480,
-                                   SDL_WINDOW_FULLSCREEN_DESKTOP);
-  if (!w) {
-    fprintf(stderr, "[setup] window failed: %s\n", SDL_GetError());
-    SDL_Quit();
-    return 1;
-  }
-  SDL_Renderer *r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED);
-  if (!r)
-    r = SDL_CreateRenderer(w, -1, SDL_RENDERER_SOFTWARE);
   if (!r) {
-    fprintf(stderr, "[setup] renderer failed: %s\n", SDL_GetError());
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    fprintf(stderr, "[setup] sem video apos retries -> desisto (extracao segue)\n");
     return 1;
   }
 

@@ -78,9 +78,35 @@ NEED_EXTRACT=0
 { [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; } || NEED_EXTRACT=1
 
 if [ "$NEXTOS_NOVO" = 1 ]; then
-  if [ "$NEED_EXTRACT" = 1 ] && command -v systemctl >/dev/null 2>&1; then
-    systemctl stop essway 2>/dev/null
-    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-kmsdrm}"   # convencao do mod_NextOS p/ ports
+  if [ "$NEED_EXTRACT" = 1 ] && command -v systemd-run >/dev/null 2>&1; then
+    # ⚠️ Este launcher roda DENTRO do cgroup da essway (runemu): um systemctl stop
+    # essway aqui mataria a nos mesmos (e a extracao no meio!). Igual ao
+    # pm_platform_helper do mod: delega TUDO (bake+extracao+jogo+restauracao da
+    # ES) pra um service transiente independente e sai.
+    FRWRAP="/tmp/sonic_v5_first_run_$$.sh"
+    cat > "$FRWRAP" <<FRE
+#!/bin/bash
+cd "$GAMEDIR"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
+if [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; then
+  GP="${controlfolder}/gptokeyb"
+  [ -x "\$GP" ] && "\$GP" -1 "sonic4.arm64" -c "$GAMEDIR/sonic4.gptk" &
+  GPID=\$!
+  ./sonic4.arm64
+  kill -9 \$GPID 2>/dev/null
+fi
+systemd-run --no-block --collect /bin/sh -c 'touch /var/lock/start.games; systemctl reset-failed essway 2>/dev/null; systemctl start essway' 2>/dev/null
+rm -f "\$0"
+FRE
+    chmod +x "$FRWRAP"
+    systemd-run --no-block --collect --unit="sonic4-firstrun-$$" \
+      --service-type=simple --working-directory="$GAMEDIR" \
+      --setenv=SDL_VIDEODRIVER=kmsdrm --setenv=SDL_KMSDRM_VSYNC_DEFAULT=1 \
+      --setenv=HOME=/storage \
+      --property=ExecStartPre='/bin/sh -c "rm -f /var/lock/start.games; systemctl stop essway"' \
+      "$FRWRAP" 2>>/tmp/mod_NextOS.log
+    exit 0
   fi
 else
   start_weston_if_needed
