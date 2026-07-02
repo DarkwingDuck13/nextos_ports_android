@@ -52,3 +52,6 @@ echo "BUILD OK -> dysmantle.compat.gcc"
 echo "  GLIBC max: $(aarch64-linux-gnu-readelf -V dysmantle.compat.gcc | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
 echo "  tamanho:   $(stat -c%s dysmantle.compat.gcc) bytes"
 echo "  compilador: $(aarch64-linux-gnu-readelf -p .comment dysmantle.compat.gcc 2>/dev/null | grep -oE 'GCC.*' | head -1)"
+
+# GATE OBRIGATORIO: nenhum binario shipavel pode exigir GLIBC > 2.30 (regra fixa
+# pos-regressao fixpak 2026-07-02). Roda no host apos o build (fora do container ok).
