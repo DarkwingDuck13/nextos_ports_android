@@ -574,11 +574,19 @@ static int dysp_async(void){ static int m=-1; if(m<0)m=getenv("DYSMANTLE_PAGE_AS
 /* piso de MemAvailable (rede anti-OOM, do texpage do Bully): se a RAM LIVRE do sistema cair
  * abaixo do piso, despeja frias MESMO abaixo do cap (crucial em device SEM swap, ex R36S). */
 static long long dysp_floor(void){ static long long f=-1; if(f<0){ const char*e=getenv("DYSMANTLE_PAGE_FLOOR_MB"); f=(long long)(e?atoll(e):0)*1024*1024; } return f; }
+static long long g_dysp_swapfree = -1, g_dysp_swaptotal = -1; /* bytes (da ultima leitura) */
 static long long dysp_mem_avail(void){
   FILE *f = fopen("/proc/meminfo", "r"); if (!f) return -1;
-  char ln[160]; long kb = -1;
-  while (fgets(ln, sizeof ln, f)) if (!strncmp(ln, "MemAvailable:", 13)) { kb = atol(ln + 13); break; }
-  fclose(f); return kb >= 0 ? (long long)kb * 1024 : -1;
+  char ln[160]; long kb = -1, sf = -1, st = -1;
+  while (fgets(ln, sizeof ln, f)) {
+    if (!strncmp(ln, "MemAvailable:", 13)) kb = atol(ln + 13);
+    else if (!strncmp(ln, "SwapTotal:", 10)) st = atol(ln + 10);
+    else if (!strncmp(ln, "SwapFree:", 9)) sf = atol(ln + 9);
+  }
+  fclose(f);
+  g_dysp_swaptotal = st >= 0 ? (long long)st * 1024 : -1;
+  g_dysp_swapfree  = sf >= 0 ? (long long)sf * 1024 : -1;
+  return kb >= 0 ? (long long)kb * 1024 : -1;
 }
 static int dysp_bpp(unsigned fmt, unsigned typ) {
   if (typ == 0x8033 /*4444*/ || typ == 0x8034 /*5551*/ || typ == 0x8363 /*565*/) return 2;
@@ -746,13 +754,24 @@ static void dysp_on_bind(unsigned target, unsigned id) {
     if ((++fc & 0xFF) == 0) {
       long long avail = dysp_mem_avail();
       long long keepmin = (long long)8 * 1024 * 1024;
-      if (avail >= 0 && avail < dysp_floor() && g_dysp_resident > keepmin) {
-        long long cut = (avail < dysp_floor() / 2) ? g_dysp_resident / 4 : (long long)8 * 1024 * 1024;
+      /* zram/swap SATURADO = pressao real mesmo com MemAvailable "ok" (OOM do .160:
+       * zram 193/255 cheio, avail ~50MB, floor nao disparava e o kernel matou o jogo) */
+      int swap_low  = (g_dysp_swaptotal > 0 && g_dysp_swapfree >= 0 &&
+                       g_dysp_swapfree < g_dysp_swaptotal / 8);   /* <12.5% livre */
+      int swap_crit = (g_dysp_swaptotal > 0 && g_dysp_swapfree >= 0 &&
+                       g_dysp_swapfree < g_dysp_swaptotal / 16);  /* <6% livre */
+      if (avail >= 0 && (avail < dysp_floor() || swap_low) && g_dysp_resident > keepmin) {
+        /* CRITICO (avail < piso/2): despeja IGNORANDO idade — pop-in momentaneo e
+         * melhor que OOM-kill (visto no R36S .160: em pico de carga nada e "frio",
+         * o cold-guard travava o floor e o kernel matava o jogo). Normal: so FRIAS. */
+        int critical = (avail < dysp_floor() / 2) || swap_crit;
+        long long cut = critical ? g_dysp_resident / 2 : (long long)8 * 1024 * 1024;
         long long tgt2 = g_dysp_resident - cut; if (tgt2 < keepmin) tgt2 = keepmin;
-        dysp_evict_to(target, id, tgt2, 6000);
+        dysp_evict_to(target, id, tgt2, critical ? 0 : 6000);
         if (getenv("DYSMANTLE_PAGELOG"))
-          fprintf(stderr, "[dysp] PRESSAO avail=%lldMB < piso=%lldMB -> evict FRIAS p/ %lldMB\n",
-                  avail/(1024*1024), dysp_floor()/(1024*1024), tgt2/(1024*1024));
+          fprintf(stderr, "[dysp] PRESSAO%s avail=%lldMB piso=%lldMB -> evict p/ %lldMB\n",
+                  critical ? " CRITICA" : "", avail/(1024*1024), dysp_floor()/(1024*1024),
+                  tgt2/(1024*1024));
       }
     }
   }
