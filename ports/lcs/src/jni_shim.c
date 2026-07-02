@@ -5986,6 +5986,22 @@ void jni_load(void) {
      * legado deixar esses toggles ligados. */
     lcs_apply_pvs_debug_cleanup();
     lcs_apply_stream_phase_profile(lcs_current_app_state());
+    /* DESTROY-THROTTLE always-on (crash da MORTE 2026-07-03): o respawn destroi/recria
+     * MILHARES de buffers/texturas num frame (log: b=3808 t=805) e o driver Utgard
+     * morre em sig11 no swap (mesma stack em TODOS os binarios, inclusive o validado).
+     * Limitar SO os DESTROYS por frame espalha a demolicao (creates ficam LIVRES —
+     * o throttle de create foi o que apagou peds/HUD). LCS_DESTROY_THROTTLE=0 desliga. */
+    {
+      int dt = lcs_env_int("LCS_DESTROY_THROTTLE", 12);
+      if (dt > 0) {
+        static int applied = 0;
+        if (!applied) {
+          lcs_write_dv_s32("dvStreamerDestroyNumTexturesPerFrame", dt, "destroy-throttle");
+          lcs_write_dv_s32("dvStreamerDestroyNumBuffersPerFrame", dt, "destroy-throttle");
+          applied = 1;
+        }
+      }
+    }
     lcs_force_subtitles_pref("frame");
     lcs_ensure_font_initialised(f, "pre-draw");
     lcs_text_diag_tick(f, "pre-draw");
