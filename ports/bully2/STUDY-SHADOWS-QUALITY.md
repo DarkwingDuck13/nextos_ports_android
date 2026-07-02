@@ -227,3 +227,72 @@ nossa. Arquitetura de sombra do Bully (via BULLY2_DUMP_SHADERS):
 - Fix real exigiria: (a) trace GL do celular (Adreno) p/ comparar chamada-a-chamada,
   ou (b) reescrever a técnica de sombra (patch shader/engine) — arriscado. Ferramentas
   de diagnóstico deixadas opt-in: BULLY2_DUMP_SHADERS, SHADERCHK, UNIFLOG, SHADOWLOG.
+
+## 11. 🎯 CAUSA-RAIZ NÍVEL ENGINE (2026-07-02, sessão 2 — disasm + runtime)
+
+A "incompatibilidade Mali" da seção 10 foi rastreada até o mecanismo exato:
+
+1. **A engine tem um caminho de sombra que SÓ liga em Adreno.**
+   `RendererES::Initialize` (0x955be4) varre GL_EXTENSIONS e liga a flag
+   `[renderer+2053]` quando acha **`GL_AMD_compressed_ATC_texture`** (extensão
+   exclusiva Qualcomm/Adreno). Essa flag gateia (cbz @0x95aa8c em
+   `RendererES3::BeginRendering`) a chamada de
+   **`RenderTarget2DES3::BindAdrenoSubBuffer`** (0x95a14c), que cria um FBO
+   privado re-anexando color/depth/stencil — o caminho que torna o
+   depth-stencil da cena (`pp_depthstencil` = `framedepth`) utilizável pelo
+   resolve de sombra. Em Mali: flag 0 → caminho nunca roda.
+2. **Sem esse caminho, o resolve roda em feedback-loop** (provado com
+   BULLY2_SHADOWTRACE): o pass de resolve (prog c/ sampler2DShadow) desenha no
+   fbo da cena **amostrando a MESMA textura de depth (tex4) que está anexada
+   ao fbo** — comportamento indefinido no spec. Adreno tolera; **Mali retorna
+   0/lixo** → `frameSample=0` → shadowPos degenerado → resolve escreve 0 →
+   `getshadow()=1-0=1` → zero sombra no jogo inteiro. Readback confirmou:
+   resolve output 100% zerado (glReadPixels do fbo do resolve).
+3. **Casters NÃO têm gate** — `ShadowSceneView::RenderView` desenha o shadow
+   map (2048 depth) igualmente em qualquer GPU. O problema é só no resolve.
+4. **Experimentos** (todos opt-in, default OFF):
+   - `BULLY2_SHADOW_DEPTHFIX=1`: NOP no cbz @0x95aa8c → força
+     BindAdrenoSubBuffer em Mali. O pipeline ACORDA (usuário viu um "quadrado
+     gigante de sombra que anda junto" = frustum do shadow map com compare
+     uniforme), mas a sombra por-objeto não sai: o subFBO re-anexa o depth
+     TAMBÉM → feedback persiste → frameSample continua lixo.
+   - `BULLY2_FEEDBACK_FIX=1`: blit do depth p/ textura-cópia + amostrar a
+     cópia no draw do resolve (quebra o feedback de verdade). Sozinho e
+     combinado com DEPTHFIX: ainda sem sombra visível.
+   - `BULLY2_RESOLVE_FORCE=3` (saída = textureProj cru, sem shadowparam):
+     ainda nada → o compare em si retorna constante em Mali. Há pelo menos
+     mais um degrau driver-specific (formato/estado do sampler2DShadow ou
+     conteúdo do shadow map no momento do resolve) NÃO fechado.
+   - Simular Adreno? Spoof de GL_RENDERER só muda o perfprofile; a flag vem da
+     extensão ATC, e fingir ATC faria a engine escolher texturas ATC que o
+     Mali não decodifica. DEPTHFIX já é a simulação limpa — e não basta.
+5. **RendererES2 (Mali-450/1GB) nunca terá essa sombra**: não overridea
+   SetShadowTexture/SupportsDepthSampling (stubs `ret`); sampler2DShadow é
+   ES3-only. O que existe em ES2 é a família `Shadows::*` (blob/decal).
+
+## 12. DECISÃO (2026-07-02): opção "Shadows" ESCONDIDA do menu
+
+Como a sombra diferida não renderiza fora de Adreno (e High ainda arrisca o
+SSAO quebrado), a linha "Shadows" foi REMOVIDA do menu Settings→Display via
+hook de `BullySettings::GetDisplayShadowOption` → 0 (mesmo mecanismo que o
+jogo usa p/ esconder em device fraco). Validado na tela no X5M: Display mostra
+só Brightness/Subtitles/Language/Clarity/Textures/Light. O rendering fica
+IDÊNTICO ao validado (default interno continua Medium=2; mesh shadows
+intactos). Escape hatch: `BULLY2_SHADOWS_MENU=show` reexibe a opção (com
+`BULLY2_SHADOWS_MAX` como antes).
+
+## 13. RendererES3 liberado p/ devices 2GB+ (2026-07-02)
+
+O gate de RAM do modo ES3 auto (`es3_quality_mode`) baixou de 2600MB (classe
+4GB) p/ **1700MB** (classe 2GB reporta ~1800-2000 de MemTotal): qualquer
+device 2GB+ com contexto GL ES3 real ganha o RendererES3 (imagem mais rica,
+highp preservado). Devices 1GB (~630-950MB) ficam no ES2 spoof, intocados.
+Ajuste fino: `BULLY2_ES3_MIN_MB=<mb>`; escape: `BULLY2_RENDERER=es2` se algum
+2GB (ex. Mali-G31) regredir. Shadow map 2048 auto continua só em ≥2600MB.
+
+Diagnósticos novos desta sessão (opt-in): BULLY2_SHADOWTRACE (mapa
+fbo→attachments, textura por unidade, draws por (fbo,depth,color,depthmask)
+por frame, detecção de feedback-loop, readback do resolve),
+BULLY2_RESOLVEDUMP, BULLY2_RESOLVE_FORCE=1..5, BULLY2_FEEDBACK_FIX,
+BULLY2_SHADOW_DEPTHFIX; tools/vgpad.c ganhou botões/hat/seq e há injetor de
+eventos p/ pad físico (navegação de menu por SSH sem clonar o pad).
