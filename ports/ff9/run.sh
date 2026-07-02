@@ -72,6 +72,13 @@ export FF9_SHOWMENU=${FF9_SHOWMENU:-0} FF9_NEWGAME=${FF9_NEWGAME:-0}
 export FF9_NOTIFYCLICK=${FF9_NOTIFYCLICK:-0} FF9_NODIRECTNG=${FF9_NODIRECTNG:-1}
 export FF9_NGAT=${FF9_NGAT:-380} FF9_SHOWMENUAT=${FF9_SHOWMENUAT:-440} FF9_NEWGAMEAT=${FF9_NEWGAMEAT:-900}
 export FF9_REALAUDIO=${FF9_REALAUDIO:-1} FF9_REALSOUND=${FF9_REALSOUND:-1}
+# SNDSAFE (dispatch via runtime_invoke) crasha no FF9FieldSoundDispatch (singleton nulo) —
+# a KeyNotFound 136 já é capturada pela engine (não-fatal). Manter DESLIGADO por padrão.
+export FF9_NOSNDSAFE=${FF9_NOSNDSAFE:-1}
+# fb0 do device é double-buffer vertical (1280x1440 = 2 metades de 720); a TV pode escanear a
+# metade que o jogo NÃO desenhou -> "menu escuro" pro usuário. FBMIRROR copia o frame novo pras
+# duas metades a cada swap (mesma técnica do LEGO Batman) -> imagem sempre visível na TV.
+export FF9_FBMIRROR=${FF9_FBMIRROR:-1}
 export FF9_GAMEPAD=${FF9_GAMEPAD:-1} FF9_FORCECONTROL=${FF9_FORCECONTROL:-1}
 export TER_GPVIRT=${TER_GPVIRT:-1} TER_GPVDUR=${TER_GPVDUR:-30} TER_GP_EVDEV=${TER_GP_EVDEV:-1}
 rm -f /tmp/tergp
