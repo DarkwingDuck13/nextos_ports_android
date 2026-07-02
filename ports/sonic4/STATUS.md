@@ -1,5 +1,35 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-07-02 — v5 ARM64-ONLY empacotado (bake estilo Bully) + validado nos devices
+Zip: `Sonic4EP2 PortMaster v5 arm64.zip` (Area de trabalho, md5 13380bb1). Commits ate 65c6950.
+- **v5 = so arm64** (pedido do usuario): sonic4.arm64 + launcher unico + extrator do .apkm.
+- **BAKE estilo Bully v11** (setup_splash.c): o proprio binario desenha (SDL renderer, fonte
+  5x7) titulo "SONIC 4 EP2 V5", mensagem, barra de MB e **NEXTOS no canto inferior direito**.
+  Gate SONIC_SETUPSPLASH + protocolo /tmp/sonic_setup.txt + stop-file. RETRY de 15s na
+  criacao da janela (DRM demora a soltar apos parar a ES).
+- **Extrator (tools/sonic4ep2_extract.sh)**: fontes = .apkm (ou splits); extrai
+  split_config.arm64_v8a.apk->libfox + split_packs.apk->data.obb com barra por poll de
+  tamanho; APAGA apkm/temporarios no fim. Erro = barra vermelha + mensagem.
+- **Fluxo validado pelo usuario**: R36S cabeado ("teste 1 ok"), Mali-450 .79 ("deu certo"),
+  X5M ("agora sim") — bake visivel + extracao + jogo + apkm some. R36S WiFi pronto (apkm la).
+- 🔑 **LICOES DO X5M (3 telas pretas ate acertar, todas com raiz achada):**
+  1. ES do X5M lanca ports por **gamelist.xml** (nao ports_scripts como o .79) — entrada add.
+  2. **cgroup suicida**: launcher roda DENTRO do cgroup da essway (runemu); `systemctl stop
+     essway` mata o proprio launcher+extracao. FIX = first-run inteiro delegado a um
+     **systemd-run transiente** (ExecStartPre para a essway; wrapper roda bake+extracao+jogo
+     e restaura a ES no fim) — mesmo padrao do pm_platform_helper do mod_NextOS.
+  3. **LD_LIBRARY_PATH tem que ser exportado ANTES do wrapper do first-run** — senao o
+     splash/jogo nao acham a libmpg123 bundled (libs.aarch64) e morrem no loader.
+- **pm_platform_helper** (mod_NextOS do X5M): e ASSIM que Bully abre la — service com
+  SDL_VIDEODRIVER=kmsdrm + stop essway (libera o DRM) + gptokeyb no cgroup + ES de volta.
+  Nosso launcher chama o helper igual o Bully; defaults criticos foram pro BINARIO
+  (LPK=data/data.obb se existir; SONIC_CLEARALL=1 arm64) porque systemd-run nao repassa envs.
+- **ports_scripts (.79)**: a ES do NextOS antigo lanca por /storage/roms/ports_scripts/*.sh —
+  launcher v5 copiado la tambem.
+- 📌 licao de arquitetura (estilo Bully, p/ adotar num v5.x): Bully nao LINKA libs do device
+  (dlopen em runtime) — nunca morre no loader por lib faltando. Nosso binario linka
+  SDL2/mpg123/vorbisfile/GLESv2 (bundle cobre, mas dlopen seria mais robusto).
+
 ## Sessao 2026-07-01 (noite 2) — MULTI-DEVICE: SFX arm64 validado + X5M COMPLETO + R36S parcial
 - ✅ **Mali-450 .79 (NextOS): fix SFX arm64 VALIDADO** — tsRead alloc/buf resolvem (fallback
   ...Pm), `LPK read alloc ok` nos OGGs, `play sfx key="Ok" handle=1` tocando. Binario c20d52f.
