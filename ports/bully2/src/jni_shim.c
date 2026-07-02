@@ -4200,7 +4200,15 @@ void jni_load(void) {
     OnActivityCreated(fake_env, NULL, (void *)0x42424242, 1);
   fprintf(stderr, "[drv] implOnActivityCreated OK\n");
 
-  bully_init_gl();
+  /* Sem contexto GL nao ha o que seedar: seguir com OS_EGL* nulos faz a
+   * engine abortar (SIGABRT) dentro do implOnSurfaceChanged — visto no CFW
+   * do tester R36S e reproduzido no R36S cabeado. Falha explicita > abort. */
+  if (!bully_init_gl()) {
+    fprintf(stderr,
+            "[drv] FATAL: video/GL indisponivel (driver SDL/EGL) — abortando "
+            "limpo antes do lifecycle da engine\n");
+    return;
+  }
   if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0)
     fprintf(stderr, "[pad] SDL input init: %s\n", SDL_GetError());
   jni_init_input();

@@ -28,6 +28,42 @@ static int g_w = 1280;
 static int g_h = 720;
 static int g_is_kmsdrm = 0;   /* kmsdrm/wayland precisam SDL_GL_SwapWindow p/ page-flip; mali fbdev usa eglSwapBuffers cru */
 
+/* Resolve egl* na MESMA libEGL que o SDL carregou. Em CFWs com DUAS stacks
+ * EGL no userspace (glvnd + blob Mali — tester R36S "DarkOSre"), o link-time
+ * pegava a glvnd enquanto o SDL bindava o contexto pelo blob: o "current" de
+ * EGL e por-biblioteca, entao eglGetCurrentDisplay/Surface/Context daqui
+ * devolviam NULL, a engine era seedada com handles nulos e abortava no
+ * implOnSurfaceChanged. SDL_GL_GetProcAddress cai no handle da libEGL que o
+ * proprio SDL deu dlopen — garante stack unica. */
+void *bully_eglsym(const char *name) {
+  void *p = SDL_GL_GetProcAddress(name);
+  if (!p)
+    p = dlsym(RTLD_DEFAULT, name);
+  return p;
+}
+
+static void *(*p_eglGetCurrentDisplay)(void);
+static void *(*p_eglGetCurrentSurface)(int);
+static void *(*p_eglGetCurrentContext)(void);
+static const char *(*p_eglQueryString)(void *, int);
+
+static void egl_resolve_current_fns(void) {
+  if (p_eglGetCurrentDisplay)
+    return;
+  p_eglGetCurrentDisplay = bully_eglsym("eglGetCurrentDisplay");
+  p_eglGetCurrentSurface = bully_eglsym("eglGetCurrentSurface");
+  p_eglGetCurrentContext = bully_eglsym("eglGetCurrentContext");
+  p_eglQueryString = bully_eglsym("eglQueryString");
+  if (!p_eglGetCurrentDisplay)
+    p_eglGetCurrentDisplay = (void *(*)(void))eglGetCurrentDisplay;
+  if (!p_eglGetCurrentSurface)
+    p_eglGetCurrentSurface = (void *(*)(int))eglGetCurrentSurface;
+  if (!p_eglGetCurrentContext)
+    p_eglGetCurrentContext = (void *(*)(void))eglGetCurrentContext;
+  if (!p_eglQueryString)
+    p_eglQueryString = (const char *(*)(void *, int))eglQueryString;
+}
+
 int bully_is_kmsdrm(void) { return g_is_kmsdrm; }
 int bully_mali_swap_sdl(void) { return g_mali_swap_sdl; }
 
@@ -78,8 +114,9 @@ void bully_dump_display_diag(const char *when) {
     close(fd);
   }
 
-  const char *egl_vendor = eglQueryString(eglGetCurrentDisplay(), EGL_VENDOR);
-  const char *egl_ver = eglQueryString(eglGetCurrentDisplay(), EGL_VERSION);
+  egl_resolve_current_fns();
+  const char *egl_vendor = p_eglQueryString(p_eglGetCurrentDisplay(), EGL_VENDOR);
+  const char *egl_ver = p_eglQueryString(p_eglGetCurrentDisplay(), EGL_VERSION);
   fprintf(stderr, "[diag] EGL vendor='%s' version='%s'\n",
           egl_vendor ? egl_vendor : "?", egl_ver ? egl_ver : "?");
   const GLubyte *r = glGetString(GL_RENDERER);
@@ -194,15 +231,16 @@ int bully_init_gl(void) {
    * engine faz eglMakeCurrent na SUA surface e eglGetCurrentSurface deixaria de
    * retornar a do SDL. Usada pelo pin de surface (imports.c) p/ devices onde a
    * surface recriada da engine nao fica ligada ao scanout (H700/Knulli). */
-  g_egl_display = eglGetCurrentDisplay();
-  g_egl_surface = eglGetCurrentSurface(EGL_DRAW);
-  g_egl_context = eglGetCurrentContext();
+  egl_resolve_current_fns();
+  g_egl_display = p_eglGetCurrentDisplay();
+  g_egl_surface = p_eglGetCurrentSurface(EGL_DRAW);
+  g_egl_context = p_eglGetCurrentContext();
   const GLubyte *renderer = glGetString(GL_RENDERER);
   const GLubyte *version = glGetString(GL_VERSION);
   fprintf(stderr, "[gl] %dx%d driver=%s | EGL d=%p s=%p c=%p | %s / %s\n",
           g_w, g_h, SDL_GetCurrentVideoDriver(),
-          (void *)eglGetCurrentDisplay(), (void *)eglGetCurrentSurface(EGL_DRAW),
-          (void *)eglGetCurrentContext(), renderer ? (const char *)renderer : "?",
+          g_egl_display, g_egl_surface, g_egl_context,
+          renderer ? (const char *)renderer : "?",
           version ? (const char *)version : "?");
   /* decide o modo de present no caminho mali/fbdev por familia de GPU */
   if (!g_is_kmsdrm) {
@@ -226,12 +264,21 @@ int bully_init_gl(void) {
 }
 
 void bully_egl_objects(uintptr_t *d, uintptr_t *s, uintptr_t *c) {
+  egl_resolve_current_fns();
   if (d)
-    *d = (uintptr_t)eglGetCurrentDisplay();
+    *d = (uintptr_t)p_eglGetCurrentDisplay();
   if (s)
-    *s = (uintptr_t)eglGetCurrentSurface(EGL_DRAW);
+    *s = (uintptr_t)p_eglGetCurrentSurface(EGL_DRAW);
   if (c)
-    *c = (uintptr_t)eglGetCurrentContext();
+    *c = (uintptr_t)p_eglGetCurrentContext();
+  /* fallback: engine faz MakeCurrent na thread de render, entao "current"
+   * daqui pode ser nada — usa os handles estaveis capturados no init. */
+  if (d && !*d)
+    *d = (uintptr_t)g_egl_display;
+  if (s && !*s)
+    *s = (uintptr_t)g_egl_surface;
+  if (c && !*c)
+    *c = (uintptr_t)g_egl_context;
 }
 
 /* handles ESTAVEIS de scan-out do SDL, capturados no init (nao mudam quando a
@@ -334,9 +381,10 @@ void bully_swap_buffers(void) {
     /* Amlogic Mali-4xx: eglSwapBuffers cru chega no /dev/fb0 direto. */
     static unsigned (*raw_swap)(void *, void *) = NULL;
     if (!raw_swap)
-      raw_swap = (unsigned (*)(void *, void *))dlsym(RTLD_DEFAULT, "eglSwapBuffers");
-    EGLDisplay d = eglGetCurrentDisplay();
-    EGLSurface s = eglGetCurrentSurface(EGL_DRAW);
+      raw_swap = (unsigned (*)(void *, void *))bully_eglsym("eglSwapBuffers");
+    egl_resolve_current_fns();
+    EGLDisplay d = p_eglGetCurrentDisplay();
+    EGLSurface s = p_eglGetCurrentSurface(EGL_DRAW);
     if (raw_swap && d != EGL_NO_DISPLAY && s != EGL_NO_SURFACE) {
       raw_swap(d, s);
       return;

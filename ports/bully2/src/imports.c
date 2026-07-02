@@ -1830,8 +1830,10 @@ static void my_glCompressedTexImage2D(unsigned target, int level,
                 width, height, imageSize > 0 ? (uint32_t)imageSize : 0);
 }
 
+extern void *bully_eglsym(const char *name);
+
 static void *gl_proc2(const char *core, const char *ext) {
-  void *(*gpa)(const char *) = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+  void *(*gpa)(const char *) = bully_eglsym("eglGetProcAddress");
   void *p = gpa ? gpa(core) : NULL;
   if (!p && gpa && ext)
     p = gpa(ext);
@@ -1932,7 +1934,7 @@ static void *my_eglCreateWindowSurface(void *dpy, void *cfg, void *win,
   }
   if (!real_eglCreateWindowSurface)
     real_eglCreateWindowSurface =
-        dlsym(RTLD_DEFAULT, "eglCreateWindowSurface");
+        bully_eglsym("eglCreateWindowSurface");
   return real_eglCreateWindowSurface
              ? real_eglCreateWindowSurface(dpy, cfg, win, attr)
              : NULL;
@@ -1946,7 +1948,7 @@ static unsigned my_eglDestroySurface(void *dpy, void *surf) {
     return 1; /* EGL_TRUE */
   }
   if (!real_eglDestroySurface)
-    real_eglDestroySurface = dlsym(RTLD_DEFAULT, "eglDestroySurface");
+    real_eglDestroySurface = bully_eglsym("eglDestroySurface");
   return real_eglDestroySurface ? real_eglDestroySurface(dpy, surf) : 1;
 }
 
@@ -1975,7 +1977,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
       surf = s;
   }
   if (!real_eglSwapBuffers)
-    real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+    real_eglSwapBuffers = bully_eglsym("eglSwapBuffers");
   unsigned r = real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
   if (n == 0 || (n % 600) == 0)
     fprintf(stderr,
@@ -1985,10 +1987,38 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   return r;
 }
 
+/* Demais egl* que a libGame importa (ChooseConfig/CreateContext/GetDisplay/
+ * Initialize/MakeCurrent/...): sem wrapper, o so_loader resolvia por
+ * dlsym(RTLD_DEFAULT) e podia cair na libEGL ERRADA em CFW com stack dupla
+ * (glvnd + blob Mali). Passthrough generico resolvendo via bully_eglsym —
+ * todos os egl* so tem args inteiros/ponteiro, entao a assinatura de 8
+ * registradores preserva a ABI aarch64. */
+#define EGL_PASS(nm)                                                           \
+  static uintptr_t my_##nm(uintptr_t a, uintptr_t b, uintptr_t c,              \
+                           uintptr_t d, uintptr_t e, uintptr_t f,              \
+                           uintptr_t g, uintptr_t h) {                         \
+    static uintptr_t (*real)(uintptr_t, uintptr_t, uintptr_t, uintptr_t,       \
+                             uintptr_t, uintptr_t, uintptr_t, uintptr_t);      \
+    if (!real)                                                                 \
+      real = (uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t,        \
+                            uintptr_t, uintptr_t, uintptr_t,                   \
+                            uintptr_t))bully_eglsym(#nm);                      \
+    return real ? real(a, b, c, d, e, f, g, h) : 0;                            \
+  }
+EGL_PASS(eglChooseConfig)
+EGL_PASS(eglCreateContext)
+EGL_PASS(eglGetConfigAttrib)
+EGL_PASS(eglGetDisplay)
+EGL_PASS(eglGetError)
+EGL_PASS(eglInitialize)
+EGL_PASS(eglMakeCurrent)
+EGL_PASS(eglSwapInterval)
+#undef EGL_PASS
+
 static void *(*real_eglGetProcAddress)(const char *) = NULL;
 static void *my_eglGetProcAddress(const char *name) {
   if (!real_eglGetProcAddress)
-    real_eglGetProcAddress = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+    real_eglGetProcAddress = bully_eglsym("eglGetProcAddress");
   if (name && (!strcmp(name, "glDrawBuffers") ||
                !strcmp(name, "glDrawBuffersEXT"))) {
     bully_gltrace("eglGetProcAddress(%s) -> glDrawBuffers shim", name);
@@ -2203,6 +2233,14 @@ DynLibFunction bully_stub_table[] = {
     {"eglSwapBuffers", (uintptr_t)my_eglSwapBuffers},
     {"eglCreateWindowSurface", (uintptr_t)my_eglCreateWindowSurface},
     {"eglDestroySurface", (uintptr_t)my_eglDestroySurface},
+    {"eglChooseConfig", (uintptr_t)my_eglChooseConfig},
+    {"eglCreateContext", (uintptr_t)my_eglCreateContext},
+    {"eglGetConfigAttrib", (uintptr_t)my_eglGetConfigAttrib},
+    {"eglGetDisplay", (uintptr_t)my_eglGetDisplay},
+    {"eglGetError", (uintptr_t)my_eglGetError},
+    {"eglInitialize", (uintptr_t)my_eglInitialize},
+    {"eglMakeCurrent", (uintptr_t)my_eglMakeCurrent},
+    {"eglSwapInterval", (uintptr_t)my_eglSwapInterval},
     {"glGetString", (uintptr_t)w_glGetString},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexParameteri", (uintptr_t)my_glTexParameteri},
