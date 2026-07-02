@@ -185,6 +185,29 @@ static void np_cal_step(void) {
                               np_cal_kind ? "analog" : "button", np_cal_idx); fsync(2); }
 }
 
+/* SELECT+START segurados ~0.75s = fecha o jogo (padrão dos ports NextOS).
+   TER_NPEXIT=0 desliga; TER_NPEXITF muda o nº de frames. _exit direto: o processo
+   morre sem teardown GL (mesmo efeito do kill -9 que o device já tolera). */
+static void np_exit_combo(void) {
+  static int hold, frames = -1;
+  if (frames < 0) {
+    frames = getenv("TER_NPEXITF") ? atoi(getenv("TER_NPEXITF")) : 45;
+    if (getenv("TER_NPEXIT") && !atoi(getenv("TER_NPEXIT"))) frames = 0;
+  }
+  if (!frames) return;
+  if (g_npb[NPB_BACK] && g_npb[NPB_START]) {
+    if (++hold >= frames) {
+      fprintf(stderr, "[NATPAD] SELECT+START segurados -> saindo do jogo\n"); fsync(2);
+      _exit(0);
+    }
+  } else hold = 0;
+}
+
+/* estado p/ consumidores externos (vkbd do main.c): botão segurado + edge deste frame */
+static unsigned char g_npb_prev[NPB_COUNT];
+int np_btn(int b)      { return (b >= 0 && b < NPB_COUNT) ? g_npb[b] : 0; }
+int np_btn_down(int b) { return (b >= 0 && b < NPB_COUNT) ? (g_npb[b] && !g_npb_prev[b]) : 0; }
+
 /* histograma de consultas (revela o mapeamento do profile) */
 static unsigned np_qbtn[20], np_qax[20];
 static unsigned long np_jn_calls, np_rb_calls, np_ra_calls;
@@ -362,8 +385,10 @@ void np_frame(void) {
   np_log = getenv("TER_NATLOG") ? 1 : 0;
   np_install();
   if (!np_installed) return;
+  memcpy(g_npb_prev, g_npb, sizeof g_npb_prev);
   np_poll_sdl();
   np_poll_virtual();
+  np_exit_combo();
   np_cal_step();
   np_manual_attach();
   np_diag();

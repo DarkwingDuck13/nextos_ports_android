@@ -62,6 +62,9 @@ export CUP_FRAMES=999999999
 # raw-read (UnityInputDevice.ReadRawButtonState/ReadRawAnalogValue) com o SDL_GameController.
 # Menu/options/bolsa/gameplay/glifos = codigo do proprio Terraria. Nada de mouse/teclado simulado.
 export TER_NATPAD=1 TER_FIXSP=1 TER_NOVKBD=1
+# NOME SEM TECLADO: ao abrir a edicao de nome (novo personagem/mundo), preenche "Player"
+# e fecha nativamente (CloseNameEdit). SELECT+START segurados ~0.75s fecham o jogo.
+export TER_AUTONAME=1 TER_VK_DEFAULT=Player
 # SOM: thread C bombeia fmodProcess->SDL (auto pulse/pipewire/alsa). TER_STREAMFALLBACK
 # refaz a MÚSICA (stream, que falha INTERNAL no so-loader) como SAMPLE -> toca. SFX já tocam.
 export TER_AUDIO=1 TER_STREAMFALLBACK=1
