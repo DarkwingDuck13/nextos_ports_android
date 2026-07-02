@@ -1072,9 +1072,43 @@ static void hook_nxfs(void) {
 
 /* GOT-hook Paddleboat_getControllerData: loga se/quando a engine lê o pad */
 static int32_t (*orig_pb_getdata)(int32_t, void *) = NULL;
+/* 🎚️ FORCE DETAIL (Plano B light): chama Shadegrown::SetDetailLevelPreset(preset)
+ * na marra — o jogo NUNCA chama o setter sozinho no nosso caminho (hook_detail
+ * ficava inerte). O singleton e o simbolo GLOBAL exportado `shadegrown` (BSS).
+ * Menos particulas/detalhe = menos RAM/CPU do MUNDO (o assassino do 639MB).
+ * LAZY no frame 600 do render loop (chamar no init trava boot — licao FF9).
+ * Env: DYSMANTLE_FORCE_DETAIL=Low|Medium|High (launcher decide por classe). */
+static void dys_force_detail(int frame) {
+  static int state = -1;  /* -1=probe, 0=off, 1=armado, 2=feito */
+  static const char *preset = NULL;
+  if (state == 0 || state == 2) return;
+  if (state < 0) {
+    preset = getenv("DYSMANTLE_FORCE_DETAIL");
+    state = (preset && *preset) ? 1 : 0;
+    if (!state) return;
+  }
+  if (frame < 600) return;
+  uintptr_t g = so_find_addr("shadegrown");
+  uintptr_t fn = so_find_addr("_ZN10Shadegrown20SetDetailLevelPresetEPKc");
+  state = 2;
+  if (!g || !fn) { fprintf(stderr, "[DETAIL] simbolos nao achados (g=%lx fn=%lx)\n", g, fn); return; }
+  /* `shadegrown` pode ser a INSTANCIA no BSS ou um PONTEIRO p/ ela: se a 1a
+   * word parecer um ponteiro valido p/ regiao mapeada com vtable, deref. */
+  void *self = (void *)g;
+  uintptr_t first = *(uintptr_t *)g;
+  if (first > 0x10000 && (first >> 40) == (g >> 40)) {
+    uintptr_t v0 = *(uintptr_t *)first;          /* provavel vtable da instancia */
+    if (v0 > 0x10000) self = (void *)first;
+  }
+  void (*setp)(void *, const char *) = (void (*)(void *, const char *))fn;
+  fprintf(stderr, "[DETAIL] SetDetailLevelPreset('%s') self=%p (global=%lx)\n", preset, self, g);
+  setp(self, preset);
+  fprintf(stderr, "[DETAIL] aplicado sem crash\n");
+}
 static int32_t my_pb_getdata(int32_t idx, void *data) {
   int32_t r = orig_pb_getdata ? orig_pb_getdata(idx, data) : 1;
   static int n = 0;
+  dys_force_detail(n);
   if (n < 5 || (n % 120) == 0) {
     uint32_t buttons = data ? *(uint32_t *)((char *)data + 8) : 0;
     fprintf(stderr, "[PBdata] #%d idx=%d ret=%d buttons=0x%x\n", n, idx, r,

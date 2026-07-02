@@ -128,13 +128,15 @@ if [ -n "$DYS_LOWRAM" ] && [ -z "${DYSMANTLE_KEEP_ES:-}" ] && command -v systemc
 fi
 if [ -n "$DYS_ES_UNIT" ] && [ -z "${DYS_ES_ESCAPED:-}" ] && command -v systemd-run >/dev/null 2>&1; then
   DYS_ES_ESCAPED=1 export DYS_ES_ESCAPED
+  # repassa TODOS os DYSMANTLE_* pro scope (sudo faz env_reset; valores sem espaco)
   exec $ESUDO systemd-run --scope --quiet env DYS_ES_ESCAPED=1 \
-    DYSMANTLE_DEBUG="${DYSMANTLE_DEBUG:-}" DYSMANTLE_TEXSCALE="${DYSMANTLE_TEXSCALE:-}" \
-    DYSMANTLE_PAGELOG="${DYSMANTLE_PAGELOG:-}" bash "$DYS_SELF" "$@"
+    $(env | grep '^DYSMANTLE_' | tr '\n' ' ') bash "$DYS_SELF" "$@"
 fi
 if [ -n "$DYS_ES_UNIT" ] && [ -n "${DYS_ES_ESCAPED:-}" ]; then
   $ESUDO systemctl stop "$DYS_ES_UNIT" 2>/dev/null
-  trap "$ESUDO systemctl start $DYS_ES_UNIT 2>/dev/null" EXIT INT TERM
+  # so religa o ES se NENHUMA outra instancia do jogo estiver rodando (senao o
+  # trap de uma instancia VELHA religa o ES POR CIMA da nova — race vista no .110)
+  trap "ps ax | grep -v grep | grep -q '\\./dysmantle' || $ESUDO systemctl start $DYS_ES_UNIT 2>/dev/null" EXIT INT TERM
 fi
 
 # ---------- DYS_PAGE: streaming de textura (qualidade NATIVA, estilo Bully/GTA) ----------
@@ -161,7 +163,12 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
     export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-48}"
     export DYSMANTLE_PAGE_MIN_KB="${DYSMANTLE_PAGE_MIN_KB:-24}"
     DYS_PAGE_TEXSCALE_LOW="1.5"
+    # preset Low da ENGINE (menos particulas/detalhe = menos RAM/CPU do MUNDO —
+    # o que mata sessao longa em 639MB). Chamada direta no singleton `shadegrown`
+    # no frame 600. Desligar: DYSMANTLE_FORCE_DETAIL=off
+    export DYSMANTLE_FORCE_DETAIL="${DYSMANTLE_FORCE_DETAIL:-Low}"
   fi
+  [ "$DYSMANTLE_FORCE_DETAIL" = "off" ] && unset DYSMANTLE_FORCE_DETAIL
   # piso anti-OOM: se MemAvailable cair abaixo disso, despeja mesmo abaixo do cap
   export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-120}"
   export DYSMANTLE_PAGE_SWAP="$GAMEDIR/texswap"
