@@ -35,7 +35,7 @@ if [ "$mem_kb" -lt 716800 ]; then
 elif [ "$mem_kb" -lt 1228800 ]; then
   # 700MB-1.2GB (Mali-450 832MB atual): SEM cortes visuais; so throttle de fase
   : "${LCS_MEM_TIER:=mid}"
-  : "${LCS_STREAM_PHASE:=1}"
+  : "${LCS_STREAM_PHASE:=0}"  # REVERTIDO: tex=1/frame estrangulava texturas de peds (pernas invisiveis) e HUD (barra de vida cinza)
   export LCS_STREAM_PHASE
 else
   : "${LCS_MEM_TIER:=high}"

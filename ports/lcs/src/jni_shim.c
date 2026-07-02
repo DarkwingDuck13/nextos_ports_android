@@ -261,7 +261,7 @@ static void lcs_apply_gfx_profile(void) {
  * (2) malloc_trim: devolve topo do heap glibc ao SO (o [heap] tinha 72MB+62MB swap). */
 extern int malloc_trim(size_t pad);
 static void lcs_ram_hygiene(int frame) {
-  if (lcs_env_flag("LCS_NO_RAM_HYGIENE")) return;
+  if (!lcs_env_flag("LCS_RAM_HYGIENE")) return;  /* REVERTIDO p/ opt-in: malloc_trim periodico e suspeito de stutter */
   if (frame == 0 || (frame % 900) != 0) return;
   malloc_trim(0);
   static unsigned long st_lo = 0, st_hi = 0;
@@ -4909,7 +4909,7 @@ static void install_hooks(void) {
    * atual = CGlass::RenderReflectionPolys (polys de reflexo dos vidros; passe alpha
    * view-dependent que pisca no Utgard). Default OFF p/ teste A/B ao vivo;
    * LCS_GLASS_REFLECT=1 religa o reflexo do vidro. */
-  if (!lcs_env_flag("LCS_GLASS_REFLECT")) {
+  if (lcs_env_flag("LCS_NO_GLASS_REFLECT")) {  /* REVERTIDO: no-op nao curou o flicker do vidro */
     uintptr_t gr = so_find_addr_safe("_ZN6CGlass21RenderReflectionPolysEv");
     if (gr) {
       hook_x64(gr, (uintptr_t)my_pvs_noop);

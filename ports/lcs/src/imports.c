@@ -313,7 +313,7 @@ void bully_page_on_bind(unsigned target, unsigned id) {
 #include <sched.h>
 int lcs_thread_pin_on(void) {
   static int v = -1;
-  if (v < 0) { const char *e = getenv("LCS_THREAD_PIN"); v = (e && *e) ? atoi(e) : 1; }
+  if (v < 0) { const char *e = getenv("LCS_THREAD_PIN"); v = (e && *e) ? atoi(e) : 0; }  /* REVERTIDO p/ opt-in: confinamento 0/1/3 e suspeito de stutter */
   return v;
 }
 int my_pthread_create_pin(pthread_t *t, const pthread_attr_t *attr,
