@@ -68,7 +68,7 @@ fail() {
 }
 
 cleanup_sources() {
-  rm -f "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null
+  rm -f "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM "$GAMEDIR"/*.apks "$GAMEDIR"/*.APKS "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null
   rm -rf "$GAMEDIR/.apkm_tmp" 2>/dev/null
 }
 
@@ -83,7 +83,7 @@ fi
 #   -> fallback .apkm (bundle com os splits)  -> splits soltos  -> data.obb solto.
 zip_has() { [ -f "$1" ] && unzip -l "$1" "$2" >/dev/null 2>&1; }
 
-APKM=$(ls "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM 2>/dev/null | head -1)
+APKM=$(ls "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM "$GAMEDIR"/*.apks "$GAMEDIR"/*.APKS 2>/dev/null | head -1)
 SPLIT_LIB="$GAMEDIR/split_config.arm64_v8a.apk"
 SPLIT_PACKS="$GAMEDIR/split_packs.apk"
 
@@ -112,10 +112,10 @@ mkdir -p "$GAMEDIR/lib/arm64-v8a" "$GAMEDIR/data"
 # Fallback .apkm: so abre o bundle se ainda falta alguma fonte
 if { [ -z "$APK_LIB" ] || { [ -z "$APK_OBB" ] && [ -z "$LOOSE_OBB" ]; }; } && [ -n "$APKM" ]; then
   mkdir -p "$GAMEDIR/.apkm_tmp"
-  prog 1 0 840 "ABRINDO O BUNDLE APKM"
-  poll_file "$GAMEDIR/.apkm_tmp/split_packs.apk" 840 "ABRINDO O BUNDLE APKM"
+  prog 1 0 840 "ABRINDO O BUNDLE (APKM/APKS)"
+  poll_file "$GAMEDIR/.apkm_tmp/split_packs.apk" 840 "ABRINDO O BUNDLE (APKM/APKS)"
   if ! unzip -o -q "$APKM" split_config.arm64_v8a.apk split_packs.apk -d "$GAMEDIR/.apkm_tmp" 2>/dev/null; then
-    fail "APKM INVALIDO OU INCOMPLETO"
+    fail "BUNDLE APKM/APKS INVALIDO OU INCOMPLETO"
   fi
   stop_poll
   [ -z "$APK_LIB" ] && APK_LIB="$GAMEDIR/.apkm_tmp/split_config.arm64_v8a.apk"
