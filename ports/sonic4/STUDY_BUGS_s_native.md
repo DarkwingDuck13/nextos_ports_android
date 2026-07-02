@@ -129,3 +129,12 @@ Senão: repro on-device, LOWFX off, e checar se GmGmkSlotFlush roda.
 3. Fix volume Knulli/ROCKNIX em `sa_read_sys_volume` (paths desses CFW / amixer).
 4. Repro Oil Desert Act3 c/ e sem LOWFX → score preso.
 Device R36S ArchR online; ES rodando; lançar com cuidado (matar sonic antes, regra do device).
+
+## Tester ROCKNIX 2026-07-01 (relato do usuário)
+
+- Sonic 4 EP2 no ROCKNIX: **sem som** e **sem vídeos** (ainda), mesmo após
+  s5 (áudio adaptativo 7e263ad + contexto ES3->ES2 3ff310b + volume 72f8fb5).
+- Investigar próxima sessão sonic4: ROCKNIX = pipewire 1.4.6 + sway/wayland
+  (matriz CFW no bully2/STUDY-RAM-STREAMING.md); driver "pipewire" no SDL do
+  ROCKNIX pode abrir e ficar mudo (checar sa_driver_silent/varredura) e o
+  caminho de vídeo pode precisar do mesmo tratamento do contexto adaptativo.
