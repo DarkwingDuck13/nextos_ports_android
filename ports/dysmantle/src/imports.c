@@ -1783,6 +1783,10 @@ DynLibFunction dysmantle_overrides[] = {
   /* GL core interceptados p/ diag/fix do mundo branco (resolvidos pela tabela,
    * NÃO via eglGetProcAddress) */
   {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+  /* DYS_PAGE: atlas dinamico + limpeza de estado por id */
+  {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+  {"glCopyTexSubImage2D", (uintptr_t)my_glCopyTexSubImage2D},
+  {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
   {"glShaderSource", (uintptr_t)my_glShaderSource},
   {"glCompileShader", (uintptr_t)my_glCompileShader},
   {"glLinkProgram", (uintptr_t)my_glLinkProgram},
