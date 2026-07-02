@@ -32,6 +32,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/mman.h>
 #include <SDL2/SDL.h>
 
@@ -77,8 +78,9 @@ enum { NPA_LX, NPA_LY, NPA_RX, NPA_RY, NPA_LT, NPA_RT, NPA_COUNT };
 static unsigned char g_npb[NPB_COUNT];
 static float g_npa[NPA_COUNT];
 
+static SDL_GameController *g_np_gc;   /* pad SDL aberto (lido direto pelo exit-hotkey) */
 static void np_poll_sdl(void) {
-  static SDL_GameController *gc; static int tried;
+  SDL_GameController *gc = g_np_gc; static int tried;
   if (!tried) {
     tried = 1;
     SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS);
@@ -94,6 +96,7 @@ static void np_poll_sdl(void) {
     for (int i = 0; i < n; i++) {
       if (!SDL_IsGameController(i)) continue;
       gc = SDL_GameControllerOpen(i);
+      g_np_gc = gc;
       if (gc) { fprintf(stderr, "[NATPAD] SDL pad js%d: %s\n", i,
                         SDL_GameControllerName(gc) ? SDL_GameControllerName(gc) : "?"); fsync(2); break; }
     }
@@ -189,19 +192,20 @@ static void np_cal_step(void) {
 /* SELECT+START segurados ~0.75s = fecha o jogo (padrão dos ports NextOS).
    TER_NPEXIT=0 desliga; TER_NPEXITF muda o nº de frames. _exit direto: o processo
    morre sem teardown GL (mesmo efeito do kill -9 que o device já tolera). */
-static void np_exit_combo(void) {
-  static int hold, frames = -1;
-  if (frames < 0) {
-    frames = getenv("TER_NPEXITF") ? atoi(getenv("TER_NPEXITF")) : 45;
-    if (getenv("TER_NPEXIT") && !atoi(getenv("TER_NPEXIT"))) frames = 0;
+/* Hotkey universal de SAIR (SELECT+START) — COPIADO do Bully/Sonic: le o
+ * SDL_GameController DIRETO (nao o estado cacheado) e mata NA HORA. Chamado de
+ * todo frame (np_frame) E de dentro do ReadRawButtonState (o jogo chama muitas
+ * vezes por frame) -> garante deteccao mesmo se o swap-hook falhar num frame.
+ * _exit/SIGKILL imediato evita o deadlock do blob Mali ao liberar o contexto GL. */
+void np_check_exit_hotkey(void) {
+  if (getenv("TER_NPEXIT") && !atoi(getenv("TER_NPEXIT"))) return;
+  if (g_np_gc &&
+      SDL_GameControllerGetButton(g_np_gc, SDL_CONTROLLER_BUTTON_BACK) &&
+      SDL_GameControllerGetButton(g_np_gc, SDL_CONTROLLER_BUTTON_START)) {
+    fprintf(stderr, "[NATPAD] SELECT+START -> saindo do jogo\n"); fsync(2);
+    kill(getpid(), SIGKILL);
+    _exit(0);
   }
-  if (!frames) return;
-  if (g_npb[NPB_BACK] && g_npb[NPB_START]) {
-    if (++hold >= frames) {
-      fprintf(stderr, "[NATPAD] SELECT+START segurados -> saindo do jogo\n"); fsync(2);
-      _exit(0);
-    }
-  } else hold = 0;
 }
 
 /* estado p/ consumidores externos (vkbd do main.c): botão segurado + edge deste frame */
@@ -216,6 +220,7 @@ static unsigned long np_jn_calls, np_rb_calls, np_ra_calls;
 /* ================= corpos substituídos (chamados pelo InControl) ================= */
 static int np_ReadRawButtonState(void *self, int index, void *mi) {
   (void)self; (void)mi; np_rb_calls++;
+  np_check_exit_hotkey();
   if (index >= 0 && index < 20) np_qbtn[index]++;
   if (ter_vkbd_blocking()) return 0;   /* digitando no teclado: jogo não vê botões */
   if (np_cal_idx >= 0) return (!np_cal_kind && index == np_cal_idx) ? 1 : 0;
@@ -391,7 +396,7 @@ void np_frame(void) {
   memcpy(g_npb_prev, g_npb, sizeof g_npb_prev);
   np_poll_sdl();
   np_poll_virtual();
-  np_exit_combo();
+  np_check_exit_hotkey();
   np_cal_step();
   np_manual_attach();
   np_diag();
