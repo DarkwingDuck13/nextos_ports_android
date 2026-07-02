@@ -6546,9 +6546,11 @@ void jni_load(void) {
               onMenu ? onMenu(fake_env, FAKE_OBJ) : -1, rstate, b21, p2632 ? *p2632 : -1);
       if (lcs_env_flag("LCS_GLSTATS")) lcs_gl_report();
     }
-    /* PERF (2026-07-02): o SDL_Delay(16) fixo aqui somava 16ms a CADA frame ALEM do
-     * FPS_CAP (nanosleep) -> capava em ~21fps em vez de 30. O pacing agora e SO o
-     * FPS_CAP. LCS_LOOP_DELAY_MS restaura um delay fixo se precisar (debug). */
-    { int d = lcs_env_int("LCS_LOOP_DELAY_MS", 0); if (d > 0) SDL_Delay(d); }
+    /* PACING (VALIDADO): SDL_Delay(16) fixo = o pacing do binario bom (179c9afa) que
+     * o usuario validou (camera lisa, sem tremedeira, sem crash de load). Historia
+     * 2026-07-02/03: remover o delay deu sig11 no libMali nas fases de load (driver
+     * sem folga p/ uploads); "respiro adaptativo" pulsado deu TREMEDEIRA de camera/
+     * carros. NAO mexer sem A/B validado na TV. LCS_LOOP_DELAY_MS ajusta (0 desliga). */
+    { int d = lcs_env_int("LCS_LOOP_DELAY_MS", 16); if (d > 0) SDL_Delay(d); }
   }
 }
