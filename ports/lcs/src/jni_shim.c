@@ -1522,6 +1522,7 @@ static void my_CutsceneUpdateOverlay_noop(void) {
   }
 }
 
+unsigned long g_cutscene_finish_any = 0;  /* TODO FinishCutscene (nosso/nativo/skip) */
 static int g_forced_cutscene_finished = 0;
 static int g_forced_cutscene_finished_count = 0;
 static unsigned long g_forced_cutscene_finished_frame = 0;
@@ -1942,7 +1943,13 @@ static void my_CObject_ctor_int_bool(void *self, int model, int create) {
 static void (*tramp_Cutscene_DeleteData)(void) = NULL;
 
 static int lcs_cutscene_full_delete_allowed(void) {
-  if (lcs_env_flag("LCS_CUTSCENE_DELETE")) return 1;
+  /* FLUXO NATIVO (2026-07-02, R4): o SCM fecha a cutscene com CLEAR_CUTSCENE ->
+   * DeleteCutsceneData — e o delete que derruba ms_running/entrega o ped pra cena
+   * seguinte (escadas). O guard (era s2, crash FindPlayerVehicle em restart forcado)
+   * bloqueava exatamente esse fecho (R4: skip#1 f=2141 fim cut1, skip#2 f=4083 fim
+   * cut2 -> cut=1/1/0 eterno, Toni estatua). Default agora = DELETE NATIVO liberado;
+   * LCS_CUTSCENE_DELETE=0 volta o bloqueio (debug). */
+  if (lcs_env_int("LCS_CUTSCENE_DELETE", 1)) return 1;
   if (!lcs_env_flag("LCS_CUTSCENE_FINAL_FULL_DELETE")) return 0;
   int need = lcs_fe25_required_finishes();
   return need > 0 && g_forced_cutscene_finished_count >= need;
@@ -2633,12 +2640,45 @@ static void lcs_cutscene_tick_after_draw(int frame) {
     }
   }
 
-  /* REDE by-clock: SO em flyby real (cmode==17). A mini-cena das escadas (pos-cut2,
-   * SCM) REUSA o path/clock da cut2 com cmode 15/18 — sem o gate de cmode a rede
-   * re-disparava FinishCutscene NO MEIO da cena scriptada (f=6450 na run de
-   * 2026-07-02) -> Toni sumia/travava. */
-  if (want_net && gate && pos >= 1.0f && cmode == 17) {
-    lcs_cutscene_finish_from_clock("finish-net", frame, clk, dur, (const void *)pt);
+  /* REDE "spline-latch" (raiz FINAL do fluxo, 2026-07-02 run R2): o fecho NATIVO da
+   * cutscene = SCM ve HasCutsceneFinished (spline==1.0f EXATO) e faz CLEAR_CUTSCENE.
+   * A cut1 crava 1.0 sozinha; a cut2 para em 0.99999x (roundoff). Chamar FinishCutscene
+   * aqui (rede antiga) era TOXICO: agenda um restore-de-camera com fade (~7s) que
+   * aterrissava NO MEIO da cutscene SEGUINTE (cmode 17->15, spline congela, cut2
+   * "morre" com legendas rodando, cena das escadas dessincroniza, Toni some).
+   * A rede agora so CRAVA spline=1.0f quando o clock passa do fim e o nativo nao
+   * cravou -> SCM fecha 100%% nativo, zero FinishCutscene no fluxo natural.
+   * Fallback raro: se 5s apos o latch o SCM nao fechou, FinishCutscene 1x. */
+  {
+    extern unsigned long g_cutscene_finish_any;
+    static const void *net_path = NULL;
+    static unsigned long net_path_fin0 = 0;
+    static int latch_frame = -1;
+    if ((const void *)pt != net_path) {
+      net_path = (const void *)pt;
+      net_path_fin0 = g_cutscene_finish_any;
+      latch_frame = -1;
+    }
+    int path_virgin = (g_cutscene_finish_any == net_path_fin0);
+    float net_delay = lcs_env_float("LCS_CUTSCENE_FINISH_DELAY", 0.25f);
+    /* sem gate de cmode: no fim natural o modo sai de 17 ANTES de dur+delay (R3:
+     * cut2 inteira em 17, vira 15 no fim, latch nunca casava -> SCM eterno). O latch
+     * e 1x por path e dispara ANTES das escadas comecarem (elas so iniciam depois
+     * que o SCM fecha a cut2) -> nao ha risco de atropelar a cena scriptada. */
+    if (want_net && gate && path_virgin &&
+        clk >= dur + net_delay && cur_after < 1.0f && latch_frame < 0) {
+      *(float *)((char *)cam + 336) = 1.0f;
+      latch_frame = frame;
+      fprintf(stderr,
+              "[cutscene] spline-latch f=%d clk=%.3f dur=%.3f cmode=%d spline %.6f->1.0 (SCM fecha nativo)\n",
+              frame, clk, dur, cmode, cur_after);
+    }
+    if (want_net && path_virgin && latch_frame >= 0 && frame > latch_frame + 150 &&
+        lcs_cutscene_active()) {
+      fprintf(stderr, "[cutscene] latch fallback: SCM nao fechou em 5s -> FinishCutscene\n");
+      lcs_cutscene_finish_from_clock("latch-fallback", frame, dur + 1.0f, dur, (const void *)pt);
+      latch_frame = -1;
+    }
   }
 }
 
@@ -2668,6 +2708,8 @@ static void my_Cutscene_Finish(void) {
     resolved = 1;
   }
   extern unsigned long g_frame_no;
+  extern unsigned long g_cutscene_finish_any;
+  g_cutscene_finish_any++;   /* marca o path atual como finalizado p/ a rede by-clock */
   fprintf(stderr, "[cutscene] FinishCutscene called f=%lu cut=%d/%d/%d skip=%d/%d was=%d\n",
           g_frame_no,
           p_running ? *p_running : -1,
@@ -2677,6 +2719,26 @@ static void my_Cutscene_Finish(void) {
           p_skip_time ? *p_skip_time : -1,
           p_was_skipped ? *p_was_skipped : -1);
   if (tramp_Cutscene_Finish) tramp_Cutscene_Finish();
+  /* 🔑 PONTE PRO SCM (raiz do "trava apos cut2/skip", 2026-07-02): o script so avanca
+   * (CLEAR_CUTSCENE -> ms_running=0 -> cena das escadas) quando HasCutsceneFinished
+   * @0x2ef294 retorna 1 = flag@0x84aeb2!=1 OU spline==1.0f EXATO. FinishCutscene NAO
+   * derruba a flag nem crava o spline -> SCM esperava eterno (cut=1/1/0 forever,
+   * Toni estatua, "entre no carro" sem cena). Cravamos spline=1.0f exato apos
+   * QUALQUER FinishCutscene (skip/fallback) -> HasFinished REAL vira true e o SCM
+   * limpa NATIVO. */
+  {
+    extern void *text_base;
+    void *cam = *(void **)((uintptr_t)text_base + 0x7f9000 + 400);
+    if (cam) *(float *)((char *)cam + 336) = 1.0f;
+  }
+  /* SKIP do jogador: FinishCutscene agenda um restore-de-camera LENTO (fade) que
+   * aterrissaria no meio da PROXIMA cutscene (derruba flyby 17->15, congela spline —
+   * era isso que matava a cut2). Restore IMEDIATO (jumpcut, invisivel sob o fade
+   * preto do skip) zera a pendencia. So no skip: fluxo natural nao passa por aqui. */
+  if (p_was_skipped && *p_was_skipped &&
+      lcs_env_int("LCS_CUTSCENE_SKIP_RESTORE", 1)) {
+    lcs_cutscene_restore_camera("skip-imediato");
+  }
   if (lcs_env_flag("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
     lcs_cutscene_clear_flags("finish");
   }
@@ -2700,8 +2762,12 @@ static int my_Cutscene_HasFinished(void) {
 
   const char *e = getenv("LCS_CUTSCENE_FINISH_FRAME");
   long trigger = (e && *e) ? atol(e) : -1;
-  const char *force_e = getenv("LCS_CUTSCENE_FORCE_HASFINISHED");
-  int force_enabled = !force_e || strcmp(force_e, "0") != 0;
+  /* Janela pos-finish (default ON — cinto de seguranca): FinishCutscene NAO derruba a
+   * flag@0x84aeb2, entao o real depende de spline==1.0f exato (cravado no wrap do
+   * FinishCutscene). A janela de 8 frames garante o SCM ver o fim mesmo se algo
+   * reescrever o spline. Desligar essa ponte (tentativa 8bc82c3a) travou o fluxo:
+   * cut=1/1/0 eterno pos-cut2/skip. LCS_CUTSCENE_FORCE_HASFINISHED=0 desliga. */
+  int force_enabled = lcs_env_int("LCS_CUTSCENE_FORCE_HASFINISHED", 1);
   int force = force_enabled &&
               g_cutscene_hasfinished_force_until &&
               g_frame_no <= g_cutscene_hasfinished_force_until;
