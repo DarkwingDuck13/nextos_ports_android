@@ -3793,7 +3793,65 @@ static void *(*tramp_nvapk_open_light)(const char *) = NULL;
 static void *(*tramp_nvapk_open_from_pack_light)(const char *) = NULL;
 static int (*tramp_os_zip_file_open_light)(const char *, void **) = NULL;
 
+/* Filtro opcional de sons de ambiente/multidao (ideia vinda do fork de um
+ * tester sobre nosso codigo): BULLY2_NO_CROWD_SND=1 bloqueia assets de som
+ * crowd / ambs_ / _chatter no caminho de abertura (menos fontes OpenAL
+ * ativas -> menos CPU de mixer e menos RAM de buffer em devices 1GB);
+ * =full bloqueia tambem "speech" (agressivo: mata falas ambientes). */
+static int crowd_snd_filter_mode(void) {
+  static int mode = -1;
+  if (mode < 0) {
+    const char *e = first_env("BULLY2_NO_CROWD_SND", "BULLY_NO_CROWD_SND");
+    if (!e || !*e || !strcmp(e, "0"))
+      mode = 0;
+    else if (!strcasecmp(e, "full"))
+      mode = 2;
+    else
+      mode = 1;
+    if (mode)
+      fprintf(stderr, "[snd] filtro crowd/ambs/chatter=%s\n",
+              mode == 2 ? "full(+speech)" : "on");
+  }
+  return mode;
+}
+
+/* Redireciona (NAO falha!) o som filtrado pra um .snd de silencio do proprio
+ * jogo: devolver NULL crashava o engine (deref em stream de musica
+ * mx_ms_5-09_crowdnis.snd na tela de titulo). Musicas "mx_" nunca sao
+ * filtradas — o filtro e para ambiencia (ambs_ = 1.5-2.3MB cada, 146
+ * arquivos crowd/ambs/chatter no jogo). */
+static const char *crowd_snd_redirect_path(const char *path,
+                                           const char *source) {
+  int mode = crowd_snd_filter_mode();
+  if (!mode || !path)
+    return NULL;
+  if (!strstr(path, ".snd"))
+    return NULL;
+  if (strstr(path, "mx_"))
+    return NULL; /* musica: nunca filtrar */
+  int hit = strstr(path, "crowd") != NULL || strstr(path, "ambs_") != NULL ||
+            strstr(path, "_chatter") != NULL;
+  if (!hit && mode == 2)
+    hit = strstr(path, "speech") != NULL;
+  if (!hit)
+    return 0;
+  const char *dummy =
+      first_env("BULLY2_CROWD_SND_DUMMY", "BULLY_CROWD_SND_DUMMY");
+  if (!dummy || !*dummy)
+    dummy = "bully/sfx_silenceloop.snd";
+  static int log_count;
+  if (log_count < 24) {
+    log_count++;
+    fprintf(stderr, "[snd] SILENCIO %s \"%s\" -> \"%s\"\n",
+            source ? source : "asset", path, dummy);
+  }
+  return dummy;
+}
+
 static void *my_NvAPKOpen_light(const char *path) {
+  const char *snd = crowd_snd_redirect_path(path, "NvAPKOpen");
+  if (snd)
+    path = snd;
   const char *redirect = tex_light_redirect_path(path, "NvAPKOpen");
   if (redirect)
     path = redirect;
@@ -3801,6 +3859,9 @@ static void *my_NvAPKOpen_light(const char *path) {
 }
 
 static void *my_NvAPKOpenFromPack_light(const char *path) {
+  const char *snd = crowd_snd_redirect_path(path, "NvAPKOpenFromPack");
+  if (snd)
+    path = snd;
   const char *redirect = tex_light_redirect_path(path, "NvAPKOpenFromPack");
   if (redirect)
     path = redirect;
@@ -3810,6 +3871,9 @@ static void *my_NvAPKOpenFromPack_light(const char *path) {
 }
 
 static int my_OS_ZipFileOpen_light(const char *path, void **out) {
+  const char *snd = crowd_snd_redirect_path(path, "OS_ZipFileOpen");
+  if (snd)
+    path = snd;
   const char *redirect = tex_light_redirect_path(path, "OS_ZipFileOpen");
   if (redirect)
     path = redirect;

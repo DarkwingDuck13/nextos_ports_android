@@ -43,7 +43,7 @@ pkill -9 -x gptokeyb 2>/dev/null || true
 # fica em /usr/local/lib/<triplet>, NAO no path padrao (o libMali.so default e r6p0
 # e falha contra kernels novos). Setar ANTES da extracao para o progressor de
 # extracao (setup splash) tambem conseguir criar o contexto GL e MOSTRAR A TELA.
-export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:$controlfolder/libs:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
 
 $ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || true
 
@@ -95,6 +95,9 @@ if [ "${BULLY2_USE_GPTK:-0}" = "1" ]; then
     gptokeyb -1 "bully" -c "$GAMEDIR/bully.gptk" &
   fi
 fi
+
+# ajustes automaticos por CFW do runtime PortMaster (no-op onde nao existe)
+command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/bully" >/dev/null 2>&1
 
 ./bully
 exit $?
