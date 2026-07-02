@@ -68,8 +68,7 @@ fail() {
 }
 
 cleanup_sources() {
-  rm -f "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM 2>/dev/null
-  rm -f "$GAMEDIR/split_config.arm64_v8a.apk" "$GAMEDIR/split_packs.apk" 2>/dev/null
+  rm -f "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK 2>/dev/null
   rm -rf "$GAMEDIR/.apkm_tmp" 2>/dev/null
 }
 
@@ -79,20 +78,39 @@ if ready; then
   exit 0
 fi
 
+# Fontes possiveis (ordem de preferencia):
+#   APK "normal" (merged, v3.0.0 arm64: tem lib/arm64-v8a/libfox.so e/ou assets/data.obb)
+#   -> fallback .apkm (bundle com os splits)  -> splits soltos  -> data.obb solto.
+zip_has() { [ -f "$1" ] && unzip -l "$1" "$2" >/dev/null 2>&1; }
+
 APKM=$(ls "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM 2>/dev/null | head -1)
 SPLIT_LIB="$GAMEDIR/split_config.arm64_v8a.apk"
 SPLIT_PACKS="$GAMEDIR/split_packs.apk"
 
-if [ -z "$APKM" ] && [ ! -f "$SPLIT_PACKS" ]; then
+# APK normal: qualquer .apk no gamedir que contenha a lib arm64 ou o data.obb
+APK_LIB=""; APK_OBB=""
+for A in "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK; do
+  [ -f "$A" ] || continue
+  case "$(basename "$A")" in split_config.arm64_v8a.apk|split_packs.apk) continue;; esac
+  [ -z "$APK_LIB" ] && zip_has "$A" "lib/arm64-v8a/libfox.so" && APK_LIB="$A"
+  [ -z "$APK_OBB" ] && zip_has "$A" "assets/data.obb" && APK_OBB="$A"
+done
+# splits soltos tambem contam como fonte
+[ -z "$APK_LIB" ] && zip_has "$SPLIT_LIB" "lib/arm64-v8a/libfox.so" && APK_LIB="$SPLIT_LIB"
+[ -z "$APK_OBB" ] && zip_has "$SPLIT_PACKS" "assets/data.obb" && APK_OBB="$SPLIT_PACKS"
+# data.obb solto no gamedir
+LOOSE_OBB=$(ls "$GAMEDIR"/data.obb "$GAMEDIR"/*.obb 2>/dev/null | head -1)
+
+if [ -z "$APK_LIB$APK_OBB$APKM$LOOSE_OBB" ]; then
   splash_start
-  fail "COPIE O .APKM DO SONIC 4 EP2 3.0.0 PARA PORTS/SONIC4EP2"
+  fail "COPIE O APK DO SONIC 4 EP2 3.0.0 (ARM64) PARA PORTS/SONIC4EP2"
 fi
 
 splash_start
 mkdir -p "$GAMEDIR/lib/arm64-v8a" "$GAMEDIR/data"
 
-# Fase 1: abrir o bundle .apkm (zip) -> splits
-if [ -n "$APKM" ] && [ ! -f "$SPLIT_PACKS" ]; then
+# Fallback .apkm: so abre o bundle se ainda falta alguma fonte
+if { [ -z "$APK_LIB" ] || { [ -z "$APK_OBB" ] && [ -z "$LOOSE_OBB" ]; }; } && [ -n "$APKM" ]; then
   mkdir -p "$GAMEDIR/.apkm_tmp"
   prog 1 0 840 "ABRINDO O BUNDLE APKM"
   poll_file "$GAMEDIR/.apkm_tmp/split_packs.apk" 840 "ABRINDO O BUNDLE APKM"
@@ -100,31 +118,33 @@ if [ -n "$APKM" ] && [ ! -f "$SPLIT_PACKS" ]; then
     fail "APKM INVALIDO OU INCOMPLETO"
   fi
   stop_poll
-  SPLIT_LIB="$GAMEDIR/.apkm_tmp/split_config.arm64_v8a.apk"
-  SPLIT_PACKS="$GAMEDIR/.apkm_tmp/split_packs.apk"
+  [ -z "$APK_LIB" ] && APK_LIB="$GAMEDIR/.apkm_tmp/split_config.arm64_v8a.apk"
+  [ -z "$APK_OBB" ] && APK_OBB="$GAMEDIR/.apkm_tmp/split_packs.apk"
 fi
 
-[ -f "$SPLIT_PACKS" ] || fail "SPLIT_PACKS.APK NAO ENCONTRADO"
-
-# Fase 2: libfox arm64
+# Fase 2: libfox arm64 (de qualquer APK que a contenha)
 if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ]; then
   prog 1 0 12 "EXTRAINDO A BIBLIOTECA DO JOGO"
-  if [ -f "$SPLIT_LIB" ]; then
-    unzip -o -q -j "$SPLIT_LIB" "lib/arm64-v8a/libfox.so" -d "$GAMEDIR/lib/arm64-v8a" 2>/dev/null \
-      || fail "LIBFOX ARM64 NAO ENCONTRADA NO SPLIT"
-  else
-    fail "SPLIT_CONFIG.ARM64_V8A.APK NAO ENCONTRADO"
-  fi
+  [ -n "$APK_LIB" ] || fail "APK SEM A LIB ARM64 (USE O APK 3.0.0 ARM64)"
+  unzip -o -q -j "$APK_LIB" "lib/arm64-v8a/libfox.so" -d "$GAMEDIR/lib/arm64-v8a" 2>/dev/null \
+    || fail "LIBFOX ARM64 NAO ENCONTRADA NO APK"
   prog 1 12 12 "BIBLIOTECA OK"
 fi
 
-# Fase 3: data.obb (a parte grande, ~643 MB)
+# Fase 3: data.obb (a parte grande, ~643 MB) — do APK, ou solto no gamedir
 if [ ! -f "$GAMEDIR/data/data.obb" ]; then
-  prog 1 0 643 "EXTRAINDO OS DADOS DO JOGO"
-  poll_file "$GAMEDIR/data/data.obb" 643 "EXTRAINDO OS DADOS DO JOGO"
-  unzip -o -q -j "$SPLIT_PACKS" "assets/data.obb" -d "$GAMEDIR/data" 2>/dev/null \
-    || fail "DATA.OBB NAO ENCONTRADO NO SPLIT_PACKS"
-  stop_poll
+  if [ -n "$APK_OBB" ]; then
+    prog 1 0 643 "EXTRAINDO OS DADOS DO JOGO"
+    poll_file "$GAMEDIR/data/data.obb" 643 "EXTRAINDO OS DADOS DO JOGO"
+    unzip -o -q -j "$APK_OBB" "assets/data.obb" -d "$GAMEDIR/data" 2>/dev/null \
+      || fail "DATA.OBB NAO ENCONTRADO NO APK"
+    stop_poll
+  elif [ -n "$LOOSE_OBB" ]; then
+    prog 1 0 643 "INSTALANDO OS DADOS DO JOGO"
+    mv -f "$LOOSE_OBB" "$GAMEDIR/data/data.obb" || fail "FALHA AO MOVER O DATA.OBB"
+  else
+    fail "FALTA O DATA.OBB (APK COMPLETO, APKM OU DATA.OBB SOLTO)"
+  fi
 fi
 
 ready || fail "EXTRACAO INCOMPLETA - TENTE DE NOVO"
