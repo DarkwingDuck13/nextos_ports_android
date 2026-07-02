@@ -4920,6 +4920,20 @@ static void install_hooks(void) {
       fprintf(stderr, "[fix] GenerateEnvironmentMap NAO ACHADO\n");
     }
   }
+  /* 🎯 MUDANÇA #2 (complemento da #1): com o passe do envmap morto, os MATERIAIS de
+   * veiculo/vidro ainda tem o efeito matfx-envmap INSTALADO e amostram o mapa
+   * semi-morto (lataria/vidro piscando/qualidade estranha). NO-OP no SETUP do efeito
+   * (RslMatFXMaterialSetupEnvMap) -> nenhum material liga envmap -> render cai no
+   * caminho SEM matfx (limpo). LCS_NO_MATFX_ENV=0 religa. */
+  if (lcs_env_flag("LCS_NO_MATFX_ENV")) {  /* REVERTIDO: no-op do Setup crasha o load de material (boot f=989) — refazer com abordagem por-material se voltarmos aqui */
+    uintptr_t se = so_find_addr_safe("_Z27RslMatFXMaterialSetupEnvMapP11RslMaterialP10RslTextureP7RslNodeif");
+    if (se) {
+      hook_x64(se, (uintptr_t)my_pvs_noop);
+      fprintf(stderr, "[fix] RslMatFXMaterialSetupEnvMap NO-OP (materiais sem matfx-envmap)\n");
+    } else {
+      fprintf(stderr, "[fix] RslMatFXMaterialSetupEnvMap NAO ACHADO\n");
+    }
+  }
   /* VIDRO piscando (dia e noite, relatado 2026-07-02 mesmo com NO_ENVMAP): suspeito
    * atual = CGlass::RenderReflectionPolys (polys de reflexo dos vidros; passe alpha
    * view-dependent que pisca no Utgard). Default OFF p/ teste A/B ao vivo;
