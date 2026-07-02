@@ -10,3 +10,8 @@
 - RAM reportada ao engine auto por /proc/meminfo (BULLY2_DEVICE_RAM_MB override).
 - BULLY2_FPS_LIMIT=15..120 opcional.
 - Zip v11 p/ testers regenerado (sha256 6c1288e4cef8...c0fcc8f31b).
+- Multi-CFW (estudo 4 agentes): escada de config GL ES2/ES3 + depth 24/16 com
+  rejeicao de desktop-GL, present por lista positiva, preload versionado,
+  pin de threads so em CPU homogenea, OpenAL-soft 1.21.1 bundlado + mute-stubs.
+  Validado Mali-450 (principal, cutscene renderizada) e R36S. Zip v11 sha256
+  397bf74f...662331c1.
