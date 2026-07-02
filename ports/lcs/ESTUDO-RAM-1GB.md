@@ -69,11 +69,44 @@ env-map possa voltar).
 2. Flicker vidro/reflexo em movimento (estudo acima — hipótese uploads mid-frame).
 3. Câmera da cena das escadas "invertida/atrás do carro" (checar se persiste no fluxo novo).
 
-## Plano (preencher pós-agentes)
-1. Mapear consumo real (smaps por região + resource report) — saber ONDE estão os 594MB.
-2. Portar do Bully o mecanismo de perfil por MemTotal (launcher) + o que couber do streaming v11.
-3. Cortes de engine estilo Vita/SA (streaming budget, população, draw distance) num perfil
-   `LCS_MEM_PROFILE=1gb` — SEM tocar o perfil atual do 832MB até validar.
-4. Flicker: T1-T3 acima.
-5. Testes headless A/B (RSS pico, fps médio do heartbeat, uploads/frame) antes de qualquer
-   validação do usuário.
+## Consolidação dos 3 estudos (agentes, 2026-07-02)
+- **Bully (mesma família)**: paginação LRU v11 JÁ está no lcs/imports.c (BULLY_PAGE, off);
+  perfil low-mem por símbolo JÁ existe (bloco LCS_GFX_MEMLOW jni_shim 197-253); becos:
+  TEX_BUDGET_HOOK falha (getters fixos), trilinear <1.2GB afunda RAM, evict nativo agressivo
+  crasha, mlock OOM. Thread-pin de streaming = ganho real. `GetTotalGraphicsMemoryOfSystem`
+  hardcoded 512MB no Bully (engine nunca despeja sozinho).
+- **Dysmantle**: DYS_PAGE id-keyed (name-keyed dá textura errada), floor MemAvailable + guarda
+  zram + cold-guard min_age + cooldown (senão piscada preta), stack-shrink madvise, fadvise no
+  swap I/O, malloc env, launcher por MemTotal, ES-off (~76MB). LIÇÃO-MESTRA: **RAM é dominada
+  pelo pool de objetos do MUNDO, não por textura** — cortar mundo > comprimir textura.
+- **GTASA Vita/NextOS**: Vita dá heap grande e deixa o CStreaming decidir; gNoDetailTextures
+  default; RQCaps->isSlowGPU (NÃO existe no LCS — Leeds mais velho). Nosso arsenal real já
+  está no lcs shim (gStreamingMemSize, LOD/pop/dist, TEX_HALF, ETC1 bake). Downscale de render
+  = inútil comprovado (RAM-bound, não GPU).
+
+## ✅ APLICADO (commits 748fc2a + 1f54643, 2026-07-02)
+1. **Higiene RAM** (lcs_ram_hygiene 900f): malloc_trim + stack-shrink madvise. + MALLOC_ARENA_MAX=2/
+   TRIM/MMAP no launcher + swappiness 60. A/B headless: **pico 594→558MB, RSS 437→373MB**.
+2. **Escada por MemTotal no run30.sh**: <700MB → MEMLOW completo (R36S); 700-1200 → só
+   LCS_STREAM_PHASE (throttle de upload por fase, sem cortes visuais); ≥1200 → nada.
+3. **ES parado durante o jogo** (desenhava por cima do fbdev — visto em screenshot; era o
+   "personagem invisível/faixa no rodapé": fb sujo do ES + jogo desenhando só a área ativa).
+   Usuário confirmou: "bugs de câmera/tela resolvidos".
+4. **Perf**: SDL_Delay(16) fixo REMOVIDO do loop (capava <30fps em cena pesada); thread-pin
+   render=core2 exclusivo, engine=0/1/3. Baseline leve: 30.0fps cravado.
+5. Diags permanentes: [bigalloc] (nenhuma alocação >20MB única → arena de 254MB = milhares de
+   allocs pequenas do mundo em arena glibc ✓ tese Dysmantle), [viewport]/[scissor].
+
+## Fila restante (prioridade do usuário: DESEMPENHO > RAM > vidro; depois R36S 1GB)
+1. Medir fps na CIDADE dirigindo (pós SDL_Delay/pin) — usuário sente ao vivo; headless via
+   progress3.txt em área pesada.
+2. A/B do perfil 1GB simulado no 832 (forçar LCS_GFX_MEMLOW=1): medir RSS/HWM e validar visual
+   com o usuário antes do R36S.
+3. Vidro flicker (dia e noite, persiste com NO_ENVMAP): próximo suspeito = CGlass::
+   RenderReflectionPolys (polys de reflexo) e uploads mid-frame (T1: já com throttle ativo no
+   tier mid — validar com usuário se melhorou); T2: drenar uploads pós-swap.
+4. Bug câmera girando sobre o personagem → tudo pisca em certo ângulo (precisa repro com pad).
+5. Load Game path: crash 'WHEELS.TXD' (1 ocorrência) — investigar servir TXD via WAD no load.
+6. BULLY_PAGE do LCS: modernizar com floor/cold-guard/cooldown do Dysmantle ANTES de ligar
+   (cobre pouco hoje: só texturas do caminho ETC1-bake; mundo LCS sobe compressed direto).
+7. R36S 1GB: quando device chegar — a escada já liga MEMLOW sozinha; tunar caps lá.
