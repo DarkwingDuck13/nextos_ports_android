@@ -79,43 +79,70 @@ void egl_shim_create_window(void) {
       dys_screen_w = w; dys_screen_h = h;
       debugPrintf("egl_shim: DYSMANTLE_RES override %dx%d\n", w, h);
     } }
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  /* contexto ES casa com o DYSMANTLE_GLVER passado pro engine (default 2.0);
-   * em GPU ES3 real (Mali-G310) GLVER=3.0 -> contexto ES 3.0 de verdade */
+  /* ===== ESCADA DE CONFIG GL (receita bully2 multi-CFW) =====
+   * Uma so config quebrava em CFW com EGL exigente: mali fbdev antigo prefere
+   * alpha8; PowerVR (TrimUI) so tem depth16; mesa/panfrost pode devolver
+   * EGL_BAD_CONFIG ou um contexto DESKTOP-GL (lição sonic4: rejeitar!).
+   * Tentamos combos ate um dar contexto ES valido. GLVER=3 tenta ES3 primeiro
+   * e cai pra ES2; GLVER=2 tenta ES2 primeiro e sobe pra ES3 em ultimo caso. */
   { const char *gv = getenv("DYSMANTLE_GLVER");
-    int major = (gv && gv[0] == '3') ? 3 : 2;
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    if (major == 3) debugPrintf("egl_shim: pedindo contexto ES 3.0\n"); }
-  SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-
-  egl_window = SDL_CreateWindow(
-      PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      SCREEN_WIDTH, SCREEN_HEIGHT,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
-  if (!egl_window) {
-    fprintf(stderr, "[egl_shim] SDL_CreateWindow FALHOU: %s\n", SDL_GetError());
-    return;
+    int want3 = (gv && gv[0] == '3');
+    struct { int major, alpha, depth, stencil; } ladder[10]; int ln = 0;
+    int majors[2]; majors[0] = want3 ? 3 : 2; majors[1] = want3 ? 2 : 3;
+    for (int m = 0; m < 2; m++) {
+      ladder[ln].major = majors[m]; ladder[ln].alpha = 0; ladder[ln].depth = 24; ladder[ln].stencil = 8; ln++;
+      ladder[ln].major = majors[m]; ladder[ln].alpha = 8; ladder[ln].depth = 24; ladder[ln].stencil = 8; ln++;
+      ladder[ln].major = majors[m]; ladder[ln].alpha = 0; ladder[ln].depth = 16; ladder[ln].stencil = 8; ln++;
+      ladder[ln].major = majors[m]; ladder[ln].alpha = 0; ladder[ln].depth = 16; ladder[ln].stencil = 0; ln++;
+    }
+    for (int i = 0; i < ln && !egl_share_root; i++) {
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, ladder[i].major);
+      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+      SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+      SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+      SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+      SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, ladder[i].alpha);
+      SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, ladder[i].depth);
+      SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, ladder[i].stencil);
+      SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+      if (egl_window) { SDL_DestroyWindow(egl_window); egl_window = NULL; }
+      egl_window = SDL_CreateWindow(
+          PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+          SCREEN_WIDTH, SCREEN_HEIGHT,
+          SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
+      if (!egl_window) {
+        fprintf(stderr, "[egl_shim] rung %d (ES%d a%d d%d s%d): janela FALHOU: %s\n",
+                i, ladder[i].major, ladder[i].alpha, ladder[i].depth, ladder[i].stencil, SDL_GetError());
+        continue;
+      }
+      egl_share_root = gl_createcontext(egl_window);
+      if (!egl_share_root) {
+        fprintf(stderr, "[egl_shim] rung %d (ES%d a%d d%d s%d): contexto FALHOU: %s\n",
+                i, ladder[i].major, ladder[i].alpha, ladder[i].depth, ladder[i].stencil, SDL_GetError());
+        continue;
+      }
+      /* rejeita contexto DESKTOP-GL (mesa pode ignorar o profile ES) */
+      gl_makecurrent(egl_window, egl_share_root);
+      { const GLubyte *(*gs)(unsigned) = (void *)SDL_GL_GetProcAddress("glGetString");
+        const char *ver = gs ? (const char *)gs(0x1F02) : NULL;
+        if (!ver || strncmp(ver, "OpenGL ES", 9) != 0) {
+          fprintf(stderr, "[egl_shim] rung %d: contexto NAO-ES ('%s') -> rejeitado\n",
+                  i, ver ? ver : "null");
+          SDL_GL_DeleteContext(egl_share_root); egl_share_root = NULL;
+          continue;
+        }
+        fprintf(stderr, "[egl_shim] janela %dx%d criada (driver=%s, rung %d ES%d a%d d%d s%d)\n",
+                SCREEN_WIDTH, SCREEN_HEIGHT, SDL_GetCurrentVideoDriver(),
+                i, ladder[i].major, ladder[i].alpha, ladder[i].depth, ladder[i].stencil);
+        fprintf(stderr, "[egl_shim] GL_VERSION='%s' RENDERER='%s' VENDOR='%s'\n",
+                ver, gs ? (const char *)gs(0x1F01) : "?", gs ? (const char *)gs(0x1F00) : "?");
+      }
+    }
   }
-  fprintf(stderr, "[egl_shim] janela %dx%d criada (driver=%s)\n",
-          SCREEN_WIDTH, SCREEN_HEIGHT, SDL_GetCurrentVideoDriver());
-
-  egl_share_root = gl_createcontext(egl_window);
-  if (!egl_share_root) {
-    fprintf(stderr, "[egl_shim] SDL_GL_CreateContext FALHOU: %s\n", SDL_GetError());
+  if (!egl_window || !egl_share_root) {
+    fprintf(stderr, "[egl_shim] TODAS as configs GL falharam: %s\n", SDL_GetError());
     return;
-  }
-  { /* diagnóstico: ES version/renderer REAIS do device (G31 etc) */
-    gl_makecurrent(egl_window, egl_share_root);
-    const GLubyte *(*gs)(unsigned) = (void *)SDL_GL_GetProcAddress("glGetString");
-    if (gs) fprintf(stderr, "[egl_shim] GL_VERSION='%s' RENDERER='%s' VENDOR='%s'\n",
-                    gs(0x1F02), gs(0x1F01), gs(0x1F00));
   }
   fprintf(stderr, "[egl_shim] GL share-root context OK\n");
   /* DYSMANTLE_SWAPINT no contexto novo (a engine pode nunca chamar

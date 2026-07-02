@@ -208,12 +208,22 @@ static void install_crash_handler(void) {
 }
 
 static void preload_device_libs(void) {
-  static const char *libs[] = {
-      "libSDL2-2.0.so.0", "libGLESv2.so", "libEGL.so",
-      "libm.so.6", "libdl.so.2", NULL };
-  for (int i = 0; libs[i]; i++) {
-    void *h = dlopen(libs[i], RTLD_NOW | RTLD_GLOBAL);
-    fprintf(stderr, "preload: %s %s\n", libs[i], h ? "OK" : dlerror());
+  /* candidatos VERSIONADOS por lib (receita bully2): CFW sem pacote -dev nao tem
+   * o symlink "libGLESv2.so" -> tenta o SONAME .so.2/.so.1 antes de desistir. */
+  static const char *cands[][3] = {
+      { "libSDL2-2.0.so.0", NULL, NULL },
+      { "libGLESv2.so", "libGLESv2.so.2", NULL },
+      { "libEGL.so", "libEGL.so.1", NULL },
+      { "libm.so.6", NULL, NULL },
+      { "libdl.so.2", NULL, NULL },
+  };
+  for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]); i++) {
+    void *h = NULL; const char *got = NULL;
+    for (int j = 0; j < 3 && cands[i][j]; j++) {
+      h = dlopen(cands[i][j], RTLD_NOW | RTLD_GLOBAL);
+      if (h) { got = cands[i][j]; break; }
+    }
+    fprintf(stderr, "preload: %s %s\n", got ? got : cands[i][0], h ? "OK" : dlerror());
   }
 }
 

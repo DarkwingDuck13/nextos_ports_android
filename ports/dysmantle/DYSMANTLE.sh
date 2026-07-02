@@ -195,7 +195,24 @@ fi
 # do driver -> glCreateShader devolve 0 SEM erro -> "failed to create a vertex shader"
 # -> popup fatal. Prepender /usr/local/lib/<triplet> (o que o sistema usa) resolve;
 # nos demais CFWs os dirs nem existem (sem efeito).
-export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:$controlfolder/libs:$LD_LIBRARY_PATH"
+# glibc malloc: 2 arenas + trim agressivo = menos RSS residual (receita Bully v11)
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
+export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
+# XDG_RUNTIME_DIR: lancado pela ES pode vir VAZIO -> SDL nao inicia video em
+# alguns CFWs (lição bully2/X5M). Aponta pra runtime dir da sessao.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ]; then
+  for _d in /run/0-runtime-dir "/run/user/$(id -u 2>/dev/null)" /run/user/0 \
+            /var/run/user/0 /tmp/dysmantle-runtime; do
+    [ -n "$_d" ] || continue
+    if [ -d "$_d" ] || mkdir -p "$_d" 2>/dev/null; then
+      chmod 700 "$_d" 2>/dev/null || true
+      export XDG_RUNTIME_DIR="$_d"
+      break
+    fi
+  done
+fi
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
@@ -266,14 +283,19 @@ $ESUDO chmod 666 /dev/uinput 2>/dev/null
 
 # Padrao PortMaster: gptokeyb traduz o controle do CFW em TECLADO (dysmantle.gptk)
 # e o binario converte essas teclas em eventos Paddleboat (DYSMANTLE_INPUT=gptk).
-# Sem gptokeyb -> controle NATIVO direto no binario.
-if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
+# Sem gptokeyb -> controle NATIVO direto no binario (validado R36S/ArkOS).
+# 🔑 check consertado (bully2): o antigo `set -- $GPTOKEYB; [ -x "$1" ]` testava o
+# literal "sudo" e falhava sempre em CFW que definem GPTOKEYB com sudo na frente.
+if [ -n "$GPTOKEYB" ] && [ -x "$controlfolder/gptokeyb" ]; then
   export DYSMANTLE_INPUT=gptk
   $GPTOKEYB "dysmantle" -c "$GAMEDIR/dysmantle.gptk" &
 elif command -v gptokeyb >/dev/null 2>&1; then
   export DYSMANTLE_INPUT=gptk
   gptokeyb -1 "dysmantle" -c "$GAMEDIR/dysmantle.gptk" &
 fi
+
+# ajustes automaticos por CFW do runtime PortMaster (no-op onde nao existe)
+command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/$BIN" >/dev/null 2>&1
 
 "./$BIN"
 

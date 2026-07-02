@@ -523,6 +523,23 @@ static void ensure_audio_initialized(void) {
 
   g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
   if (g_audio_dev == 0) {
+    /* 🔊 VARREDURA de drivers (receita sonic4/muOS): o driver AUTO do SDL pode
+     * estar quebrado/ausente no CFW (pipewire sem sessão, pulse morto, ALSA cru).
+     * NUNCA forçamos por padrão (regra: auto primeiro); a varredura SÓ roda
+     * quando o auto FALHOU — melhor algum driver que jogo MUDO. */
+    static const char *cands[] = { "pulseaudio", "pipewire", "alsa", "dsp" };
+    const char *cur = SDL_GetCurrentAudioDriver();
+    fprintf(stderr, "[opensles_shim] audio auto ('%s') falhou: %s — varrendo drivers\n",
+            cur ? cur : "?", SDL_GetError());
+    for (unsigned i = 0; i < sizeof(cands) / sizeof(cands[0]) && g_audio_dev == 0; i++) {
+      if (cur && strcmp(cur, cands[i]) == 0) continue;
+      if (SDL_AudioInit(cands[i]) != 0) continue;
+      g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+      fprintf(stderr, "[opensles_shim] driver '%s' -> %s\n", cands[i],
+              g_audio_dev ? "OK" : SDL_GetError());
+    }
+  }
+  if (g_audio_dev == 0) {
     debugPrintf("opensles_shim: SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
     g_audio_initialized = 1;
     return;

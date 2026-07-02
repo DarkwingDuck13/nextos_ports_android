@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 
 #include "so_util.h"
@@ -605,7 +606,10 @@ static void dysp_note_upload(unsigned id, int ifmt, int w, int h, unsigned ufmt,
   char path[320]; snprintf(path, sizeof path, "%s/%u.tx", dysp_swapdir(), id);
   FILE *f = fopen(path, "wb"); if (!f) return;
   struct dysp_swap_hdr hd = { DYSP_MAGIC, w, h, ifmt, ufmt, utype, bytes };
-  fwrite(&hd, sizeof hd, 1, f); fwrite(data, 1, bytes, f); fclose(f);
+  fwrite(&hd, sizeof hd, 1, f); fwrite(data, 1, bytes, f);
+  /* solta o page-cache do swap (licao Bully r6: cache do texswap enchia a RAM e o
+   * kernel swapava o JOGO; DONTNEED torna reclaimavel na hora) */
+  fflush(f); posix_fadvise(fileno(f), 0, 0, POSIX_FADV_DONTNEED); fclose(f);
   if (!g_dysp_kind[id] && g_dysp_n < 65536) g_dysp_list[g_dysp_n++] = id;
   int was = g_dysp_kind[id] && g_dysp_present[id];
   g_dysp_resident += was ? (long long)bytes - g_dysp_bytes[id] : (long long)bytes;
@@ -649,7 +653,9 @@ static int dysp_read(unsigned id, struct dysp_ready *out) {
   FILE *f = fopen(path, "rb"); if (!f) return 0;
   struct dysp_swap_hdr hd;
   if (fread(&hd, sizeof hd, 1, f) != 1 || hd.magic != DYSP_MAGIC) { fclose(f); return 0; }
-  unsigned char *buf = malloc(hd.bytes); size_t r = buf ? fread(buf, 1, hd.bytes, f) : 0; fclose(f);
+  unsigned char *buf = malloc(hd.bytes); size_t r = buf ? fread(buf, 1, hd.bytes, f) : 0;
+  posix_fadvise(fileno(f), 0, 0, POSIX_FADV_DONTNEED);  /* nao poluir o page-cache */
+  fclose(f);
   if (!buf || r != hd.bytes) { free(buf); return 0; }
   out->id = id; out->buf = buf; out->w = hd.w; out->h = hd.h; out->ifmt = hd.ifmt;
   out->ufmt = hd.ufmt; out->utype = hd.utype; out->bytes = hd.bytes;
@@ -674,6 +680,8 @@ static void dysp_fault(unsigned id) {
 }
 static void *dysp_worker(void *arg) {
   (void)arg;
+  /* prioridade levemente reduzida: I/O de fundo nao compete com render/audio */
+  setpriority(PRIO_PROCESS, (id_t)syscall(178), 5);
   for (;;) {
     unsigned id;
     pthread_mutex_lock(&g_dysp_mtx);
