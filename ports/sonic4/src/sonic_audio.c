@@ -66,8 +66,11 @@ typedef struct {
   int paused_by_jingle;
 } MusicSlot;
 
-typedef int (*ts_read_alloc_t)(const char *, void **, unsigned *);
-typedef int (*ts_read_buf_t)(const char *, unsigned char *, unsigned *);
+/* ⚠️ ABI: o out-param de size do tsReadFile é `unsigned int*` (Pj) no v2 armv7 e
+   `unsigned long*` (Pm) no v3 arm64 (8 bytes!). Usar `unsigned long` cobre os dois
+   (no armv7 long = 32-bit) — passar &unsigned no arm64 corrompia a pilha. */
+typedef int (*ts_read_alloc_t)(const char *, void **, unsigned long *);
+typedef int (*ts_read_buf_t)(const char *, unsigned char *, unsigned long *);
 typedef int (*ts_get_size_t)(const char *);
 typedef void (*ts_unload_t)(void *);
 
@@ -189,10 +192,17 @@ static int16_t clamp_s16(int v) {
 
 static void resolve_ts_symbols(void) {
   if (g_ts_resolved) return;
+  /* v2 armv7 = ...Pj (uint*); v3 arm64 = ...Pm (ulong*). Tentar os dois. */
   g_ts_read_alloc =
       (ts_read_alloc_t)so_find_addr_safe("_Z10tsReadFilePKcPPvPj");
+  if (!g_ts_read_alloc)
+    g_ts_read_alloc =
+        (ts_read_alloc_t)so_find_addr_safe("_Z10tsReadFilePKcPPvPm");
   g_ts_read_buf =
       (ts_read_buf_t)so_find_addr_safe("_Z10tsReadFilePKcPhPj");
+  if (!g_ts_read_buf)
+    g_ts_read_buf =
+        (ts_read_buf_t)so_find_addr_safe("_Z10tsReadFilePKcPhPm");
   g_ts_get_size =
       (ts_get_size_t)so_find_addr_safe("_Z13tsGetFileSizePKc");
   g_ts_unload =
@@ -218,13 +228,13 @@ static int read_lpk_file(const char *path, unsigned char **out, size_t *out_size
 
   if (g_ts_read_alloc) {
     void *ptr = NULL;
-    unsigned size = 0;
+    unsigned long size = 0;
     int ret = g_ts_read_alloc(path, &ptr, &size);
     if (ptr && size > 0) {
       *out = (unsigned char *)ptr;
-      *out_size = size;
+      *out_size = (size_t)size;
       *engine_owned = 1;
-      alog("sonic_audio: LPK read alloc ok path=\"%s\" size=%u ret=%d\n",
+      alog("sonic_audio: LPK read alloc ok path=\"%s\" size=%lu ret=%d\n",
            path, size, ret);
       return 1;
     }
@@ -235,12 +245,12 @@ static int read_lpk_file(const char *path, unsigned char **out, size_t *out_size
     if (size > 0 && size < 256 * 1024 * 1024) {
       unsigned char *buf = malloc((size_t)size);
       if (!buf) return 0;
-      unsigned got = (unsigned)size;
+      unsigned long got = (unsigned long)size;
       int ret = g_ts_read_buf(path, buf, &got);
       if (got > 0) {
         *out = buf;
-        *out_size = got;
-        alog("sonic_audio: LPK read buf ok path=\"%s\" size=%u ret=%d\n",
+        *out_size = (size_t)got;
+        alog("sonic_audio: LPK read buf ok path=\"%s\" size=%lu ret=%d\n",
              path, got, ret);
         return 1;
       }

@@ -42,10 +42,36 @@ sem duplicacao/rastro), velocidade e som OK pelo launcher.
   screenshot/fb) e NAO usar SONIC_FRAME_SLEEP_US em teste de jogabilidade (deixa lento).
 - Screenshots de referencia: scratchpad da sessao (h1_title=titulo OK, p6/p7=Electric Road OK).
 
-### Pendencia MENOR (arm64): SFX pontuais do cassino mudos
-- `Ring1R`/`Casino1` etc dao LPK miss no data.obb v3 (S4EP2FX_113a..., CASINO_BOBBIN...).
-  As strings EXISTEM no OBB (offset ~673MB) mas o lookup por path falha — provavelmente
-  dentro de um bank/subarquivo com path de indice diferente do v2. Som geral OK.
+### 🔊 SFX no arm64: eram TODOS mudos — RAIZ achada e FIX pronto (falta deploy+validar)
+- Diagnostico do estudo pos-sessao: no run arm64 instrumentado ha **0 linhas "play sfx" e
+  1416 "LPK miss"** — ou seja, TODO SFX mudo no arm64 (a musica toca por outro caminho,
+  MP3/mpg123, por isso "parece ok"). O usuario ouvia so musica.
+- **RAIZ: mangling v3.** `sonic_audio.c` resolve `_Z10tsReadFilePKcPPvPj`/`...PhPj`
+  (v2: size = `unsigned int*`); o v3 arm64 exporta `...PPvPm`/`...PhPm` (size =
+  `unsigned long*`, 8 bytes) -> alloc=NULL, buf=NULL -> read_lpk_file nunca le nada.
+- **FIX (sonic_audio.c):** fallback pros nomes v3 + tipos de size viram `unsigned long`
+  (no armv7 long=32-bit, identico ao antigo; no arm64 evita corromper pilha com
+  out-param de 8 bytes). Buildado; **PENDENTE deploy+teste** (usuario estava jogando).
+- Verificacao do OBB v3 (parser proprio do LPK): indice = hash(nome normalizado)*31<<7,
+  2815 slots @0x30, file table 16B @0x2c40; `SOUND/SFX/S4EP2FX_113a_S2_2235_44R.OGG`
+  ESTA indexado e aponta p/ OggS valido -> OBB perfeito, era so o reader.
+  🔑 normalizador do LPK so UPPERCASEIA 'b'..'y' ('a' e 'z' ficam minusculos — por isso
+  os nomes "CaSINO"/"113a"). Hash: h=h*31+c(signed), key=(h<<7)&0xffffff80, strcmp so
+  em colisao (low 7 bits = idx na tabela de nomes duplicados).
+- Varredura geral de simbolos: unicos usados ausentes do v3 sem cobertura = os 2
+  tsReadFile (corrigidos); resto coberto pela tabela de alias/gates novos.
+
+### 🎬 ESTUDO cutscenes (a implementar, viavel)
+- Assets: `split_packs.apk` tem **cutscene1..7, 9-1, 9-2.mp4 (~135MB, MPEG4-ASP 800x450
+  30fps + AAC — leve p/ decode SW)** + stfrol_tryagain_*.mp4 (staffroll por idioma).
+- Engine: `gm::movie::clMovie` — requestMovieBeforeGameStart/AfterClearDemo escolhem o
+  id; hoje o port PULA tudo (videoIsPlaying->0, willPlayMovieBeforeGameStart->0,
+  isEnd->1). Java receberia o id (`cutsceneSetPlayId`) e tocaria o mp4.
+- **Device TEM mpv/ffplay/ffmpeg nativos** (EmuELEC usa p/ preview no ES).
+- Plano: modo `SONIC_MOVIES=1` — nao patchar os 3 gates; interceptar o pedido de movie
+  (jni_shim/log do metodo Java com o id), pausar o loop, `mpv --fs cutsceneN.mp4`
+  (SELECT/START = skip, kill mpv), sinalizar isEnd e resumir. MP4s = BYO via extract
+  do apkm (estender tools/sonic4ep2_extract.src). Risco baixo: jogo pausado nao swapa GL.
 
 ## Sessao 2026-06-30 (noite) — v4.2: corrige REGRESSAO (fase nao abria) + sons + release limpa
 Tudo VALIDADO no R36S/ArkOS (.104) pelo usuario. 4 commits no master (sem co-autor):
