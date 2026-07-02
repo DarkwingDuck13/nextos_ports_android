@@ -290,6 +290,15 @@ highp preservado). Devices 1GB (~630-950MB) ficam no ES2 spoof, intocados.
 Ajuste fino: `BULLY2_ES3_MIN_MB=<mb>`; escape: `BULLY2_RENDERER=es2` se algum
 2GB (ex. Mali-G31) regredir. Shadow map 2048 auto continua só em ≥2600MB.
 
+**Teste ES3 no R36S/Mali-G31 (ArkOS .110, 639MB, 2026-07-02):** `BULLY2_RENDERER=es3`
+forçado — **RENDERIZA correto** (cutscene + gameplay 640x480, lighting/pós-processo
+do caminho ES3 visíveis; a "tela preta com ES3 no G31" das notas antigas está
+SUPERADA pelos fixes atuais do caminho ES3) e ficou estável 90s com ~206MB livres.
+**PORÉM com lag pesado** (validado pelo usuário na TV) — o G31 não sustenta o
+custo do RendererES3. Veredito: R36S/1GB fica no ES2 spoof (que já é o default
+do piso 1700MB — nenhuma mudança necessária). O piso 2GB+ segue correto: o
+limitador em 1GB é GPU+RAM, não só RAM.
+
 Diagnósticos novos desta sessão (opt-in): BULLY2_SHADOWTRACE (mapa
 fbo→attachments, textura por unidade, draws por (fbo,depth,color,depthmask)
 por frame, detecção de feedback-loop, readback do resolve),
