@@ -1,0 +1,42 @@
+# Bully2 -- gptokeyb layout for PortMaster controls.
+# Parser note: keep comments on their own lines.
+#
+# Fixed keys handled by the binary:
+#   x/c/q/t = face, enter/esc = start/select
+#   u/i = aim/fire axis fallback, f/g = previous/next item touch tap
+#   n/m = look back/crouch, h/k/j/l = shoulder/trigger enums, arrows = dpad
+
+a = x
+b = c
+x = q
+y = t
+
+start = enter
+back = esc
+
+# Device shoulder/trigger naming varies; this mirrors the validated Bully layout.
+# On the test pads physical L2/R2 arrive as l1/r1, so they cycle items.
+l1 = f
+l2 = u
+r1 = g
+r2 = i
+l3 = n
+r3 = m
+
+up = up
+down = down
+left = left
+right = right
+
+left_analog_up = w
+left_analog_down = s
+left_analog_left = a
+left_analog_right = d
+
+right_analog_up = mouse_movement_up
+right_analog_down = mouse_movement_down
+right_analog_left = mouse_movement_left
+right_analog_right = mouse_movement_right
+
+mouse_scale = 512
+deadzone_y = 15000

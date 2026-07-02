@@ -25,6 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 
 #include "so_util.h"
@@ -532,10 +533,223 @@ static void my_glActiveTexture(unsigned tex) {
   if (g_active_unit >= 8) g_active_unit = 0;
   if (real) real(tex);
 }
+static void dysp_on_bind(unsigned target, unsigned id); /* fwd (DYS_PAGE, abaixo) */
 static void my_glBindTexture(unsigned tgt, unsigned tex) {
   static void (*real)(unsigned, unsigned) = NULL; rgl("glBindTexture", (void **)&real);
   if (g_active_unit < 8) g_bound_tex[g_active_unit] = tex;
   if (real) real(tgt, tex);
+  dysp_on_bind(tgt, tex);
+}
+
+/* ===================== DYS_PAGE: paginacao/streaming de textura (porte do Bully) =============
+ * O motor 10tons nunca despeja textura; na UMA do Mali textura GL = RAM. Com DYSMANTLE_PAGE=1,
+ * cada textura subida com pixels reais vira "pageavel": os pixels vao pro SD no upload
+ * (<swapdir>/<id>.tx, ID-KEYED = imune a atlas/nome-stale); acima do orcamento despejamos a
+ * mais FRIA (re-define 1x1 -> libera RAM, id continua valido); no re-bind de uma despejada
+ * (page fault) re-subimos do SD -- sincrono, ou assincrono via worker (pop-in, sem freeze).
+ * Gates: DYSMANTLE_PAGE=1 + DYSMANTLE_PAGE_SWAP=<dir> (obrigatorios), DYSMANTLE_PAGE_CAP_MB
+ * (default 200), DYSMANTLE_PAGE_ASYNC=1, DYSMANTLE_PAGELOG=1.
+ * DIFERENCA vs Bully: a engine ATLASA em runtime (glTexSubImage2D) -> textura que recebe
+ * SubImage/CopySub vira NAO-pageavel (MVP §2.3 do ESTUDO-PORTMASTER-1GB-STREAMING.md).
+ * Filtros: my_glTexParameteri (npot_fix, default ON) ja força mip->LINEAR, entao o re-upload
+ * nivel-0-only nunca amostra mip inexistente (= sem preto). */
+#define DYSP_MAX 262144
+static unsigned       g_dysp_bytes[DYSP_MAX];
+static unsigned char  g_dysp_kind[DYSP_MAX];      /* 0=nao-pageavel, 2=SWAP */
+static unsigned short g_dysp_w[DYSP_MAX], g_dysp_h[DYSP_MAX];
+static unsigned char  g_dysp_present[DYSP_MAX];
+static unsigned char  g_dysp_req[DYSP_MAX];       /* pedido em voo (async) */
+static unsigned       g_dysp_use[DYSP_MAX];
+static unsigned       g_dysp_clock = 0;
+static long long      g_dysp_resident = 0;
+static unsigned       g_dysp_list[65536]; static int g_dysp_n = 0;
+static long g_dysp_pf = 0, g_dysp_ev = 0, g_dysp_sub = 0;
+struct dysp_swap_hdr { unsigned magic; int w, h, ifmt; unsigned ufmt, utype, bytes; };
+#define DYSP_MAGIC 0xD75A9E11u
+static const char *dysp_swapdir(void){ static const char*d; static int got; if(!got){ d=getenv("DYSMANTLE_PAGE_SWAP"); got=1; } return d; }
+static int dysmantle_paging(void){ static int m=-1; if(m<0)m=(getenv("DYSMANTLE_PAGE")&&dysp_swapdir())?1:0; return m; }
+static long long dysp_cap(void){ static long long c=-1; if(c<0){ const char*e=getenv("DYSMANTLE_PAGE_CAP_MB"); c=(long long)(e?atoll(e):200)*1024*1024; } return c; }
+static int dysp_async(void){ static int m=-1; if(m<0)m=getenv("DYSMANTLE_PAGE_ASYNC")?1:0; return m; }
+static int dysp_bpp(unsigned fmt, unsigned typ) {
+  if (typ == 0x8033 /*4444*/ || typ == 0x8034 /*5551*/ || typ == 0x8363 /*565*/) return 2;
+  if (typ != 0x1401 /*UBYTE*/) return 0;
+  switch (fmt) { case 0x1908: return 4; case 0x1907: return 3; case 0x190A: return 2;
+                 case 0x1909: case 0x1906: return 1; default: return 0; }
+}
+/* tira a textura do sistema (RT/atlas dinamico/delete) e apaga o swap dela */
+static void dysp_unpage(unsigned id) {
+  if (id >= DYSP_MAX || !g_dysp_kind[id]) return;
+  if (g_dysp_present[id]) g_dysp_resident -= g_dysp_bytes[id];
+  g_dysp_kind[id] = 0; g_dysp_present[id] = 0; g_dysp_bytes[id] = 0;
+  if (dysp_swapdir()) { char p[320]; snprintf(p, sizeof p, "%s/%u.tx", dysp_swapdir(), id); remove(p); }
+}
+/* upload com pixels reais: grava/atualiza o swap (redefinicao = conteudo novo) e contabiliza */
+static void dysp_note_upload(unsigned id, int ifmt, int w, int h, unsigned ufmt, unsigned utype,
+                             const void *data, unsigned bytes) {
+  if (!dysmantle_paging() || id == 0 || id >= DYSP_MAX || !data || !bytes) return;
+  if (bytes < 96 * 1024) return;               /* pequenas nao valem paginar */
+  char path[320]; snprintf(path, sizeof path, "%s/%u.tx", dysp_swapdir(), id);
+  FILE *f = fopen(path, "wb"); if (!f) return;
+  struct dysp_swap_hdr hd = { DYSP_MAGIC, w, h, ifmt, ufmt, utype, bytes };
+  fwrite(&hd, sizeof hd, 1, f); fwrite(data, 1, bytes, f); fclose(f);
+  if (!g_dysp_kind[id] && g_dysp_n < 65536) g_dysp_list[g_dysp_n++] = id;
+  int was = g_dysp_kind[id] && g_dysp_present[id];
+  g_dysp_resident += was ? (long long)bytes - g_dysp_bytes[id] : (long long)bytes;
+  g_dysp_kind[id] = 2; g_dysp_present[id] = 1; g_dysp_bytes[id] = bytes;
+  g_dysp_w[id] = (unsigned short)w; g_dysp_h[id] = (unsigned short)h; g_dysp_use[id] = ++g_dysp_clock;
+}
+/* despeja as mais FRIAS ate voltar ao orcamento (pula a atual e as ja-despejadas) */
+static void dysp_evict(unsigned target, unsigned keep) {
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (!rTexImg || !rBind) return;
+  static const unsigned char black[4] = {0,0,0,0};
+  int guard = 0;
+  while (g_dysp_resident > dysp_cap() && guard++ < 4096) {
+    unsigned best = 0, bu = 0xffffffffu; int fi = -1;
+    for (int i = 0; i < g_dysp_n; i++) { unsigned id = g_dysp_list[i];
+      if (id == keep || g_dysp_kind[id] != 2 || !g_dysp_present[id]) continue;
+      if (g_dysp_use[id] < bu) { bu = g_dysp_use[id]; best = id; fi = i; } }
+    if (fi < 0) break;
+    long long b = g_dysp_bytes[best];
+    rBind(0x0DE1, best);
+    rTexImg(0x0DE1, 0, 0x1907, 1, 1, 0, 0x1907, 0x1401, black);  /* 1x1 -> libera a grande */
+    g_dysp_resident -= b; g_dysp_bytes[best] = 3; g_dysp_present[best] = 0; g_dysp_ev++;
+  }
+  rBind(target, keep);
+}
+struct dysp_ready { unsigned id; unsigned char *buf; int w, h, ifmt; unsigned ufmt, utype, bytes; };
+#define DYSP_RING 4096
+static unsigned g_dysp_rring[DYSP_RING]; static int g_dysp_rh = 0, g_dysp_rt = 0;
+static struct dysp_ready g_dysp_ready_l[DYSP_RING]; static int g_dysp_ready_n = 0;
+static struct dysp_ready g_dysp_drain_l[DYSP_RING];
+static pthread_mutex_t g_dysp_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_dysp_cv  = PTHREAD_COND_INITIALIZER;
+static pthread_t g_dysp_thr; static int g_dysp_thr_on = 0;
+/* SO I/O (pode rodar no worker) */
+static int dysp_read(unsigned id, struct dysp_ready *out) {
+  char path[320]; snprintf(path, sizeof path, "%s/%u.tx", dysp_swapdir(), id);
+  FILE *f = fopen(path, "rb"); if (!f) return 0;
+  struct dysp_swap_hdr hd;
+  if (fread(&hd, sizeof hd, 1, f) != 1 || hd.magic != DYSP_MAGIC) { fclose(f); return 0; }
+  unsigned char *buf = malloc(hd.bytes); size_t r = buf ? fread(buf, 1, hd.bytes, f) : 0; fclose(f);
+  if (!buf || r != hd.bytes) { free(buf); return 0; }
+  out->id = id; out->buf = buf; out->w = hd.w; out->h = hd.h; out->ifmt = hd.ifmt;
+  out->ufmt = hd.ufmt; out->utype = hd.utype; out->bytes = hd.bytes;
+  return 1;
+}
+/* SO GL (render thread): deixa o id BINDADO ao final */
+static void dysp_upload(const struct dysp_ready *pr) {
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rParam)(unsigned,unsigned,int) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rParam)  rParam  = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (!rTexImg || !rBind) return;
+  rBind(0x0DE1, pr->id);
+  rTexImg(0x0DE1, 0, pr->ifmt, pr->w, pr->h, 0, pr->ufmt, pr->utype, pr->buf);
+  if (rParam) { rParam(0x0DE1, 0x2801, 0x2601); rParam(0x0DE1, 0x2800, 0x2601); } /* LINEAR */
+  g_dysp_resident += pr->bytes; g_dysp_bytes[pr->id] = pr->bytes; g_dysp_present[pr->id] = 1; g_dysp_pf++;
+}
+static void dysp_fault(unsigned id) {
+  struct dysp_ready pr; if (dysp_read(id, &pr)) { dysp_upload(&pr); free(pr.buf); }
+}
+static void *dysp_worker(void *arg) {
+  (void)arg;
+  for (;;) {
+    unsigned id;
+    pthread_mutex_lock(&g_dysp_mtx);
+    while (g_dysp_rh == g_dysp_rt) pthread_cond_wait(&g_dysp_cv, &g_dysp_mtx);
+    id = g_dysp_rring[g_dysp_rh]; g_dysp_rh = (g_dysp_rh + 1) % DYSP_RING;
+    pthread_mutex_unlock(&g_dysp_mtx);
+    struct dysp_ready pr;
+    if (dysp_read(id, &pr)) {
+      pthread_mutex_lock(&g_dysp_mtx);
+      if (g_dysp_ready_n < DYSP_RING) g_dysp_ready_l[g_dysp_ready_n++] = pr; else free(pr.buf);
+      pthread_mutex_unlock(&g_dysp_mtx);
+    } else {
+      pthread_mutex_lock(&g_dysp_mtx);
+      if (id < DYSP_MAX) g_dysp_req[id] = 0;
+      pthread_mutex_unlock(&g_dysp_mtx);
+    }
+  }
+  return NULL;
+}
+static void dysp_enqueue(unsigned id) {
+  pthread_mutex_lock(&g_dysp_mtx);
+  if (!g_dysp_req[id]) {
+    int nt = (g_dysp_rt + 1) % DYSP_RING;
+    if (nt != g_dysp_rh) { g_dysp_rring[g_dysp_rt] = id; g_dysp_rt = nt; g_dysp_req[id] = 1;
+      pthread_cond_signal(&g_dysp_cv); }
+  }
+  pthread_mutex_unlock(&g_dysp_mtx);
+}
+static void dysp_drain(unsigned restore) {
+  int n;
+  pthread_mutex_lock(&g_dysp_mtx);
+  n = g_dysp_ready_n; for (int i = 0; i < n; i++) g_dysp_drain_l[i] = g_dysp_ready_l[i]; g_dysp_ready_n = 0;
+  pthread_mutex_unlock(&g_dysp_mtx);
+  if (!n) return;
+  for (int i = 0; i < n; i++) { struct dysp_ready *pr = &g_dysp_drain_l[i];
+    if (pr->id < DYSP_MAX && g_dysp_kind[pr->id] == 2 && !g_dysp_present[pr->id]) dysp_upload(pr);
+    free(pr->buf); }
+  pthread_mutex_lock(&g_dysp_mtx);
+  for (int i = 0; i < n; i++) if (g_dysp_drain_l[i].id < DYSP_MAX) g_dysp_req[g_dysp_drain_l[i].id] = 0;
+  pthread_mutex_unlock(&g_dysp_mtx);
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rBind) rBind = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (rBind) rBind(0x0DE1, restore);
+}
+static void dysp_on_bind(unsigned target, unsigned id) {
+  if (!dysmantle_paging() || target != 0x0DE1 || id >= DYSP_MAX || g_dysp_kind[id] != 2) return;
+  g_dysp_use[id] = ++g_dysp_clock;
+  if (dysp_async()) {
+    if (g_dysp_thr_on == 0) g_dysp_thr_on = (pthread_create(&g_dysp_thr, NULL, dysp_worker, NULL) == 0) ? 1 : -1;
+    if (g_dysp_thr_on == 1) {
+      if (!g_dysp_present[id]) dysp_enqueue(id);   /* pop-in: 1x1 ate o worker ler */
+      dysp_drain(id);
+    } else if (!g_dysp_present[id]) dysp_fault(id);
+  } else if (!g_dysp_present[id]) dysp_fault(id);
+  if (g_dysp_resident > dysp_cap()) dysp_evict(target, id);
+  if (getenv("DYSMANTLE_PAGELOG")) { static long c = 0; if ((c++ % 600) == 0)
+    fprintf(stderr, "[dysp] resident=%lldMB cap=%lldMB pf=%ld ev=%ld sub=%ld pageaveis=%d ready=%d\n",
+            g_dysp_resident/(1024*1024), dysp_cap()/(1024*1024), g_dysp_pf, g_dysp_ev, g_dysp_sub,
+            g_dysp_n, g_dysp_ready_n); }
+}
+/* atlas dinamico: garante conteudo, marca nao-pageavel (MVP) e passa adiante */
+static void my_glTexSubImage2D(unsigned tgt, int lvl, int xo, int yo, int w, int h,
+                               unsigned fmt, unsigned typ, const void *px) {
+  static void (*real)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  rgl("glTexSubImage2D", (void **)&real);
+  if (dysmantle_paging() && tgt == 0x0DE1) {
+    unsigned id = g_bound_tex[g_active_unit < 8 ? g_active_unit : 0];
+    if (id < DYSP_MAX && g_dysp_kind[id] == 2) {
+      if (!g_dysp_present[id]) dysp_fault(id);
+      g_dysp_sub++; dysp_unpage(id);
+    }
+  }
+  if (real) real(tgt, lvl, xo, yo, w, h, fmt, typ, px);
+}
+static void my_glCopyTexSubImage2D(unsigned tgt, int lvl, int xo, int yo, int x, int y, int w, int h) {
+  static void (*real)(unsigned,int,int,int,int,int,int,int) = NULL;
+  rgl("glCopyTexSubImage2D", (void **)&real);
+  if (dysmantle_paging() && tgt == 0x0DE1) {
+    unsigned id = g_bound_tex[g_active_unit < 8 ? g_active_unit : 0];
+    if (id < DYSP_MAX && g_dysp_kind[id] == 2) {
+      if (!g_dysp_present[id]) dysp_fault(id);
+      g_dysp_sub++; dysp_unpage(id);
+    }
+  }
+  if (real) real(tgt, lvl, xo, yo, x, y, w, h);
+}
+static void my_glDeleteTextures(int n, const unsigned *ids) {
+  static void (*real)(int, const unsigned *) = NULL;
+  rgl("glDeleteTextures", (void **)&real);
+  if (dysmantle_paging() && ids) for (int i = 0; i < n; i++) if (ids[i] < DYSP_MAX) dysp_unpage(ids[i]);
+  if (real) real(n, ids);
 }
 static void my_glUniform1i(int loc, int v) {
   static void (*real)(int, int) = NULL; rgl("glUniform1i", (void **)&real);
@@ -1098,6 +1312,9 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
   static unsigned (*gerr)(void) = NULL; rgl("glGetError", (void **)&gerr);
   if (g_tex_log < 0) g_tex_log = getenv("DYSMANTLE_TEX_LOG") ? 1 : 0;
   if (g_tex_fix < 0) g_tex_fix = getenv("DYSMANTLE_TEX_NOFIX") ? 0 : 1;
+  /* DYS_PAGE: id bindado agora (p/ registrar/unpage); redefinicao SEM pixels (RT) sai do paging */
+  unsigned dysp_tid = g_bound_tex[g_active_unit < 8 ? g_active_unit : 0];
+  if (dysmantle_paging() && tgt == 0x0DE1 && lvl == 0 && !px) dysp_unpage(dysp_tid);
   int orig = ifmt;
   if (g_tex_fix) {
     /* normaliza internalformat sized (GLES3) → base (GLES2) */
@@ -1156,8 +1373,11 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
             }
           }
           if (gerr) while (gerr()) {}
-          if (try_upload_etc1(tgt, lvl, nw, nh, sb, fmt)) return;  /* T3: ETC1 da textura já escalada */
+          /* DYS_PAGE ativo: pula ETC1 lossy (a paginacao segura a RAM; qualidade nativa) */
+          if (!dysmantle_paging() && try_upload_etc1(tgt, lvl, nw, nh, sb, fmt)) return;  /* T3 */
           if (real) real(tgt, lvl, ifmt, nw, nh, border, fmt, typ, sb);
+          if (tgt == 0x0DE1 && lvl == 0)
+            dysp_note_upload(dysp_tid, ifmt, nw, nh, fmt, typ, sb, (unsigned)((long)nw * nh * 4));
           static int sn = 0;
           if (sn < 6) { fprintf(stderr, "[TEXSCALE] %dx%d -> %dx%d\n", w, h, nw, nh); sn++; }
           return;
@@ -1197,8 +1417,13 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
     return;
   }
   if (gerr) while (gerr()) {}
-  if (try_upload_etc1(tgt, lvl, w, h, px, fmt)) return;  /* T3: ETC1 (opaca, mip0) -> ~8x menos VRAM */
+  /* DYS_PAGE ativo: pula ETC1 lossy (paginacao segura a RAM; qualidade nativa) */
+  if (!dysmantle_paging() && try_upload_etc1(tgt, lvl, w, h, px, fmt)) return;  /* T3 */
   if (real) real(tgt, lvl, ifmt, w, h, border, fmt, typ, px);
+  if (px && tgt == 0x0DE1 && lvl == 0) {
+    int _bpp = dysp_bpp(fmt, typ);
+    if (_bpp > 0) dysp_note_upload(dysp_tid, ifmt, w, h, fmt, typ, px, (unsigned)((long)w * h * _bpp));
+  }
   unsigned e = gerr ? gerr() : 0;
   if (g_tex_log) {
     /* histograma de (fmt,typ) distintos — pega LUMINANCE/ALPHA escondidos */

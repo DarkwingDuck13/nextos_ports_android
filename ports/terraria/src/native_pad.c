@@ -41,6 +41,7 @@ static uintptr_t g_il2cpp_base;   /* espelho local: main.c mantém o dele static
 extern unsigned long ter_method_off(const char *ns, const char *cn, const char *mn, int argc);
 extern int ter_install_hook4(unsigned long off, void *fn, void **orig_out);
 extern void *ter_static_obj(const char *ns, const char *cn, const char *fn);
+extern int ter_vkbd_blocking(void);   /* teclado na tela aberto: jogo não deve ver input */
 
 /* ---- il2cpp API (exports em RVA fixo, confirmados no readelf do libil2cpp.so) ---- */
 #define IL2(fn, rva) (*(fn)(uintptr_t)(g_il2cpp_base + (rva)))
@@ -216,6 +217,7 @@ static unsigned long np_jn_calls, np_rb_calls, np_ra_calls;
 static int np_ReadRawButtonState(void *self, int index, void *mi) {
   (void)self; (void)mi; np_rb_calls++;
   if (index >= 0 && index < 20) np_qbtn[index]++;
+  if (ter_vkbd_blocking()) return 0;   /* digitando no teclado: jogo não vê botões */
   if (np_cal_idx >= 0) return (!np_cal_kind && index == np_cal_idx) ? 1 : 0;
   if (index < 0 || index >= 20 || np_rawbtn[index] < 0) return 0;
   return g_npb[(int)np_rawbtn[index]] ? 1 : 0;
@@ -223,6 +225,7 @@ static int np_ReadRawButtonState(void *self, int index, void *mi) {
 static float np_ReadRawAnalogValue(void *self, int index, void *mi) {
   (void)self; (void)mi; np_ra_calls++;
   if (index >= 0 && index < 20) np_qax[index]++;
+  if (ter_vkbd_blocking()) return 0.0f;
   if (np_cal_idx >= 0) return (np_cal_kind && index == np_cal_idx) ? 1.0f : 0.0f;
   if (index < 0 || index >= 20) return 0.0f;
   int m = np_rawax[index];

@@ -61,10 +61,14 @@ export CUP_FRAMES=999999999
 # (Input.GetJoystickNames -> profile Android do InControl -> attach) e alimentamos so o
 # raw-read (UnityInputDevice.ReadRawButtonState/ReadRawAnalogValue) com o SDL_GameController.
 # Menu/options/bolsa/gameplay/glifos = codigo do proprio Terraria. Nada de mouse/teclado simulado.
-export TER_NATPAD=1 TER_FIXSP=1 TER_NOVKBD=1
-# NOME SEM TECLADO: ao abrir a edicao de nome (novo personagem/mundo), preenche "Player"
-# e fecha nativamente (CloseNameEdit). SELECT+START segurados ~0.75s fecham o jogo.
-export TER_AUTONAME=1 TER_VK_DEFAULT=Player
+export TER_NATPAD=1 TER_FIXSP=1
+# ⌨️ TECLADO NA TELA (TER_OSK): quando o jogo pede nome (novo personagem/mundo), o mini
+# teclado abre SOZINHO. D-pad navega, A=letra, B/X=apaga, Y=espaco, Start/RB/R3=OK
+# (confirma de verdade: softinput_commit + CloseNameEdit), Select=cancela. Enquanto o
+# teclado esta aberto o jogo NAO ve o controle (native_pad bloqueia).
+# Fallback TER_AUTONAME: se o teclado nao abrir, ~40 frames depois preenche
+# TER_VK_DEFAULT e confirma sozinho.
+export TER_OSK=1 TER_AUTONAME=1 TER_VK_DEFAULT=Player
 # SOM: thread C bombeia fmodProcess->SDL (auto pulse/pipewire/alsa). TER_STREAMFALLBACK
 # refaz a MÚSICA (stream, que falha INTERNAL no so-loader) como SAMPLE -> toca. SFX já tocam.
 export TER_AUDIO=1 TER_STREAMFALLBACK=1

@@ -1761,7 +1761,7 @@ static void ter_name_commit_text(const char *text);
 static void ter_force_main_player_name(const char *text);
 static void ter_player_name_menu_force_text(const char *text);
 static const char *ter_vkbd_effective_name(const char *fallback);
-static int ter_vkbd_blocking(void) {
+int ter_vkbd_blocking(void) {
   if (getenv("TER_NOVKBD")) return 0;
   return jni_softinput_active() || g_vkbd_swallow > 0;
 }
@@ -2273,7 +2273,21 @@ static void ter_name_pump(void) {
     static int seen = -12345, fired = 0;
     int fn = g_menu_nameedit_frame;
     if (fn != seen) { seen = fn; fired = 0; }
-    if (!fired && g_render_frame - fn >= 40) { fired = 1; ter_name_commit_text(NULL); }
+    if (jni_softinput_active()) { seen = fn; fired = 1; }   /* teclado aberto: usuario digita, nao interfere */
+    if (!fired && g_render_frame - fn >= 40) {
+      fired = 1;
+      /* replica o fluxo COMPLETO do vk_commit_text: forca o texto nos menus por 180
+         frames + jni_softinput_commit (o jogo ve o teclado dar "Done" = CONFIRMA) +
+         preenche campos/CloseNameEdit. Sem o softinput_commit o jogo fica esperando
+         o teclado terminar e nao confirma o nome. */
+      const char *nm = getenv("TER_VK_DEFAULT") ? getenv("TER_VK_DEFAULT") : "Player";
+      snprintf(g_vkbd_force_text, sizeof g_vkbd_force_text, "%s", nm);
+      g_vkbd_force_frames = 180;
+      jni_softinput_commit(nm);   /* SEMPRE: dispara os callbacks de "teclado fechou" do Unity */
+      ter_name_commit_text(nm);
+      g_vkbd_swallow = 24;
+      fprintf(stderr, "[AUTONAME] nome \"%s\" confirmado (softinput_commit + CloseNameEdit)\n", nm); fsync(2);
+    }
   }
 }
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
