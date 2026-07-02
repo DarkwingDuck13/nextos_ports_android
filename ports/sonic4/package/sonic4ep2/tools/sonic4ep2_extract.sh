@@ -14,21 +14,31 @@ cd "$GAMEDIR"
 
 SETUPF="${SONIC_SETUP_FILE:-/tmp/sonic_setup.txt}"
 STOPF="${SONIC_SETUP_STOP:-/tmp/sonic_setup_stop}"
+BAKELOG="$GAMEDIR/bake.log"
 SP=""
 POLL=""
+
+blog() { echo "[$(date '+%H:%M:%S')] $*" >> "$BAKELOG"; }
+: > "$BAKELOG"
+blog "=== bake start (gamedir=$GAMEDIR) ==="
+blog "env: SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-<auto>} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<vazio>} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<vazio>}"
 
 ready() { [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; }
 
 fsize_mb() { s=$(stat -c %s "$1" 2>/dev/null || wc -c < "$1" 2>/dev/null || echo 0); echo $((s / 1048576)); }
 
 prog() { # prog estado feito total "MENSAGEM"
+  if [ "$4" != "$(cat "$BAKELOG.last" 2>/dev/null)" ]; then
+    blog "fase: $4 (estado=$1, total=$3 MB)"
+    printf '%s' "$4" > "$BAKELOG.last"
+  fi
   printf '%d %d %d\n%s\n' "$1" "$2" "$3" "$4" > "$SETUPF.tmp" 2>/dev/null && mv -f "$SETUPF.tmp" "$SETUPF" 2>/dev/null
 }
 
 splash_start() {
   rm -f "$STOPF"
   SONIC_SETUPSPLASH=1 SONIC_SETUP_FILE="$SETUPF" SONIC_SETUP_STOP="$STOPF" \
-    "$GAMEDIR/sonic4.arm64" >/tmp/sonic_splash.log 2>&1 &
+    "$GAMEDIR/sonic4.arm64" >>"$BAKELOG" 2>&1 &
   SP=$!
 }
 
@@ -60,6 +70,7 @@ stop_poll() {
 }
 
 fail() {
+  blog "FALHA: ${1:-FALHA NA EXTRACAO}"
   stop_poll
   prog 2 0 1 "${1:-FALHA NA EXTRACAO}"
   sleep 6
@@ -151,9 +162,12 @@ ready || fail "EXTRACAO INCOMPLETA - TENTE DE NOVO"
 
 # Fase 4: limpeza (apaga apkm/splits/temp) + fim
 prog 1 643 643 "LIMPANDO ARQUIVOS TEMPORARIOS"
+blog "limpando fontes (apk/apkm/apks/temp)"
 cleanup_sources
 sync
 prog 1 643 643 "PRONTO - INICIANDO O JOGO"
 sleep 2
+rm -f "$BAKELOG.last"
+blog "=== bake fim OK ==="
 splash_stop
 exit 0

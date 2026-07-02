@@ -48,7 +48,7 @@ gen() {
     sed 's/.*/void &(void){}/'
 }
 
-{ gen '^SDL_' | sed 's/void \(SDL_[A-Za-z0-9_]*\).*/\1/'; printf '%s\n' SDL_Init SDL_CreateRenderer SDL_DestroyRenderer SDL_RenderClear SDL_RenderPresent SDL_RenderFillRect SDL_RenderDrawRect SDL_SetRenderDrawColor SDL_GetRendererOutputSize SDL_Delay SDL_Quit; } | sort -u | sed 's/.*/void &(void){}/' > "$STUB/sdl.c"
+{ gen '^SDL_' | sed 's/void \(SDL_[A-Za-z0-9_]*\).*/\1/'; printf '%s\n' SDL_Init SDL_CreateRenderer SDL_DestroyRenderer SDL_RenderClear SDL_RenderPresent SDL_RenderFillRect SDL_RenderDrawRect SDL_SetRenderDrawColor SDL_GetRendererOutputSize SDL_GetRendererInfo SDL_GetCurrentVideoDriver SDL_Delay SDL_Quit; } | sort -u | sed 's/.*/void &(void){}/' > "$STUB/sdl.c"
 gen '^egl' > "$STUB/egl.c"
 gen '^gl[A-Z]' > "$STUB/gles.c"
 gen '^mpg123_' > "$STUB/mpg123.c"

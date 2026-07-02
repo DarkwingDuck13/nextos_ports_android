@@ -128,6 +128,14 @@ int sonic_run_setup_splash(void) {
   for (int try = 0; try < 30 && !r; try++) {
     if (sp_file_exists(stop))
       return 0;                                  /* extracao ja acabou */
+    /* Se um SDL_VIDEODRIVER herdado (ex.: kmsdrm do PortMaster no ArchR, com o
+       sway segurando o DRM) nao abre em ~3s, solta o driver e deixa o SDL
+       escolher sozinho (wayland/x11/fbdev — o que a sessao oferecer). */
+    if (try == 6 && getenv("SDL_VIDEODRIVER")) {
+      fprintf(stderr, "[setup] driver herdado '%s' nao abre -> deixando o SDL escolher\n",
+              getenv("SDL_VIDEODRIVER"));
+      unsetenv("SDL_VIDEODRIVER");
+    }
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
       fprintf(stderr, "[setup] SDL_Init falhou (try %d): %s\n", try, SDL_GetError());
       SDL_Quit();
@@ -157,6 +165,14 @@ int sonic_run_setup_splash(void) {
   if (!r) {
     fprintf(stderr, "[setup] sem video apos retries -> desisto (extracao segue)\n");
     return 1;
+  }
+  {
+    SDL_RendererInfo ri;
+    int ww = 0, wh = 0;
+    SDL_GetRendererOutputSize(r, &ww, &wh);
+    fprintf(stderr, "[setup] BAKE OK: videodriver=%s renderer=%s output=%dx%d\n",
+            SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "?",
+            SDL_GetRendererInfo(r, &ri) == 0 ? ri.name : "?", ww, wh);
   }
 
   while (!sp_file_exists(stop)) {
