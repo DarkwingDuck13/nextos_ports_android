@@ -111,6 +111,28 @@ if [ -e /dev/dri/card0 ]; then
   fi
 fi
 
+# ---------- DYS_PAGE: streaming de textura (qualidade NATIVA, estilo Bully/GTA) ----------
+# Paginacao com orcamento (LRU + swap id-keyed no SD + worker assincrono): as texturas sobem
+# em qualidade NATIVA (sem TEXSCALE borrado, sem ETC1 lossy) e o residente fica limitado ao
+# DYSMANTLE_PAGE_CAP_MB. Validado 2026-07-02 no Mali-450 832MB (.90): gameplay nativo limpo,
+# 0 textura preta, cap 150MB. Regra: LIGA em device ES2 de ~832MB-1GB COM swap (classe
+# Mali-450/EmuELEC). R36S-class (<700MB util) segue no TEXSCALE 3.0 ate validar (estudo F3).
+# Desligar: DYSMANTLE_NO_PAGE=1. Cap manual: DYSMANTLE_PAGE_CAP_MB.
+DYS_SWAP_KB=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
+if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM" ] && \
+   [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -ge 716800 ] && \
+   [ -n "$DYS_SWAP_KB" ] && [ "$DYS_SWAP_KB" -ge 262144 ]; then
+  export DYSMANTLE_PAGE=1
+  export DYSMANTLE_PAGE_ASYNC="${DYSMANTLE_PAGE_ASYNC:-1}"
+  export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
+  export DYSMANTLE_PAGE_SWAP="$GAMEDIR/texswap"
+  # swap id-keyed e por-execucao: limpa no boot (ids GL mudam a cada run)
+  rm -rf "$GAMEDIR/texswap" 2>/dev/null
+  mkdir -p "$GAMEDIR/texswap"
+  # NATIVO: sem downscale (o binario ja pula o ETC1 lossy quando paginando)
+  export DYSMANTLE_TEXSCALE=1.0
+fi
+
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
 # Igual ao Bully/TMNT: a logica toda fica no tools/dysmantle_extract.src; aqui so
 # chamamos a JANELA de extracao (progressor). Ela extrai do APK e roda o fixpak
@@ -147,7 +169,7 @@ fi
 # Se o fator (DYSMANTLE_TEXSCALE) mudou desde o ultimo bake, RE-GERA (uma vez) p/ as dims
 # do cache casarem com o downscale do runtime. So-1x por escala (marcador .etc1_scale).
 BAKED_SCALE=$(cat "$GAMEDIR/.etc1_scale" 2>/dev/null)
-if [ -z "$DYS_NATIVE_ETC2" ] && [ -x "$GAMEDIR/texbake" ] && [ -f "$GAMEDIR/assets/data.pak" ] && \
+if [ -z "$DYSMANTLE_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -x "$GAMEDIR/texbake" ] && [ -f "$GAMEDIR/assets/data.pak" ] && \
    { [ ! -f "$GAMEDIR/etc1.cache" ] || [ "$BAKED_SCALE" != "$DYSMANTLE_TEXSCALE" ]; }; then
   echo "Convertendo texturas (escala $DYSMANTLE_TEXSCALE, 1a vez)... pode demorar, nao desligue." > $CUR_TTY
   $ESUDO rm -f "$GAMEDIR/etc1.cache" "$GAMEDIR/etc1.cache.tmpdata"*
@@ -197,7 +219,7 @@ fi
 # errada (anti-magenta); se o nome colide, cai pro RGBA8 correto. ZERO encode em runtime.
 # Mapas de iluminacao (normals/specular) ficam de fora (RGBA8) p/ a luz nao quebrar.
 # O cache foi bakeado no MESMO DYSMANTLE_TEXSCALE -> dims casam com o downscale do runtime.
-if [ -f "$GAMEDIR/etc1.cache" ]; then
+if [ -f "$GAMEDIR/etc1.cache" ] && [ -z "$DYSMANTLE_PAGE" ]; then
   export DYSMANTLE_ETC1CACHE="$GAMEDIR/etc1.cache"
 fi
 # VSYNC por BACKEND (T1): fbdev (Mali-450/Amlogic, sem /dev/dri) liga vsync=1 ->
