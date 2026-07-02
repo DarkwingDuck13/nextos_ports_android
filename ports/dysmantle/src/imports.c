@@ -962,10 +962,14 @@ static int iscale_on(void) {
   }
   return g_iscale < 0.999f;
 }
-/* alvo do FBO de cena: a engine já renderiza em ~768x432 (0.6× de 1280x720) e dá
- * upscale. Pegamos esse target (>=512 de largura) p/ reduzir AINDA mais via iscale. */
+/* alvo do FBO de CENA apenas: a engine renderiza a cena em ~0.6× da janela (768x432
+ * em 720p; 384x288 em 640x480) e compõe com upscale NORMALIZADO (UV 0-1) -> escalar é
+ * seguro. FBOs de UI/dialogo em TAMANHO CHEIO da janela (missões, seleção de emoji)
+ * são amostrados por sub-rect em PIXELS -> escalar dá ZOOM estourando a tela (bug
+ * visto no R36S 2026-07-02). Faixa: 40%-85% da janela = só a cena. */
 static int screenish(int w, int h) {
-  return w >= 512 && w <= DYS_W * 11 / 10 && h >= 288 && h <= DYS_H * 11 / 10;
+  return w >= DYS_W * 2 / 5 && w <= DYS_W * 17 / 20 &&
+         h >= DYS_H * 2 / 5 && h <= DYS_H * 17 / 20;
 }
 static int iscaled(int v) { int r = (int)(v * g_iscale + 0.5f); r &= ~1; return r < 2 ? 2 : r; }
 
