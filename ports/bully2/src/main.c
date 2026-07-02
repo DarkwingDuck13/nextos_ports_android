@@ -398,6 +398,11 @@ static int run_setup_splash(void) {
     snprintf(prog, sizeof(prog), "%d / %d MB", done, total);
     SDL_SetRenderDrawColor(r, 236, 238, 224, 255);
     draw_text(r, ww / 2 - 72, wh / 2 + 48, 2, prog);
+
+    /* assinatura no canto inferior direito */
+    SDL_SetRenderDrawColor(r, 150, 160, 145, 255);
+    draw_text(r, ww - 6 * 6 * 2 - 12, wh - 7 * 2 - 10, 2, "NEXTOS");
+
     SDL_RenderPresent(r);
     SDL_Delay(100);
   }
