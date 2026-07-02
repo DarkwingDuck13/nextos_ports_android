@@ -15,6 +15,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 
 #include "egl_shim.h"
 #include "util.h"
@@ -359,12 +361,50 @@ static void dys_maybe_screenshot(void) {
   debugPrintf("[shot] %dx%d salvo\n", w, h);
 }
 
+/* ===== STACK SHRINK (RAM): o [stack] da thread principal cresce com recursao
+ * funda da engine (ate ~131MB RSS medidos) e as paginas ficam residentes PRA
+ * SEMPRE. Abaixo do SP atual a memoria e MORTA por definicao -> madvise
+ * DONTNEED devolve as paginas ao kernel (re-toque = zero-fill, inofensivo).
+ * Roda a cada ~900 frames, SO na thread principal. DYSMANTLE_NO_STACK_SHRINK=1 desliga. */
+static void dys_stack_shrink(void) {
+  static int mode = -1;          /* -1=probe, 0=off, 1=on */
+  static uintptr_t st_lo = 0, st_hi = 0;
+  if (mode == 0) return;
+  if (mode < 0) {
+    if (getenv("DYSMANTLE_NO_STACK_SHRINK")) { mode = 0; return; }
+    if ((pid_t)syscall(SYS_gettid) != getpid()) { mode = 0; return; }  /* so main */
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) { mode = 0; return; }
+    char ln[256];
+    while (fgets(ln, sizeof ln, f))
+      if (strstr(ln, "[stack]")) { sscanf(ln, "%lx-%lx", &st_lo, &st_hi); break; }
+    fclose(f);
+    if (!st_lo || !st_hi) { mode = 0; return; }
+    mode = 1;
+    fprintf(stderr, "[STACKSHRINK] [stack]=%lx-%lx (%lu MB reservado)\n",
+            st_lo, st_hi, (st_hi - st_lo) >> 20);
+  }
+  uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+  if (sp <= st_lo || sp >= st_hi) return;
+  uintptr_t margin = 2u * 1024 * 1024;                 /* 2MB de folga abaixo do SP */
+  uintptr_t end = (sp - margin) & ~0xFFFUL;
+  if (end <= st_lo) return;
+  size_t len = end - st_lo;
+  if (len < 4u * 1024 * 1024) return;                  /* nao vale a syscall <4MB */
+  if (madvise((void *)st_lo, len, MADV_DONTNEED) == 0) {
+    static int n = 0;
+    if (n < 4 || getenv("DYSMANTLE_PAGELOG"))
+      { fprintf(stderr, "[STACKSHRINK] liberou %zu MB abaixo do SP\n", len >> 20); n++; }
+  }
+}
+
 EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
   (void)dpy; (void)surface;
   if (!egl_window) return EGL_TRUE;
 
   if (has_real_gl && current_context && !current_context->is_pbuffer) {
     dys_maybe_screenshot();
+    { static unsigned fs = 0; if ((++fs % 900) == 0) dys_stack_shrink(); }
     SDL_GL_SwapWindow(egl_window);
     /* [PERF] frame-time entre swaps; relatório a cada ~5s (diagnóstico do lag;
      * custo: 1 clock_gettime/frame + 1 fprintf/5s). */

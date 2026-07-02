@@ -7,6 +7,8 @@
 # BYO-DATA: requer o APK do DYSMANTLE 1.4.1.12 (sua copia legal). Veja README.md.
 
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+# caminho ABSOLUTO deste script (o re-exec do modo ES-off roda apos cd $GAMEDIR)
+DYS_SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 
 # ============================================================
 #  OPCOES (edite aqui)
@@ -109,6 +111,30 @@ if [ -e /dev/dri/card0 ]; then
   if [ -n "$DYS_LOWRAM" ] && [ -z "$DYSMANTLE_FORCE_NATIVE_ETC2" ]; then
     DYS_NATIVE_ETC2=""
   fi
+fi
+
+# ---------- LOW-RAM: PARA o ES durante o jogo (libera RSS + zram; religa ao sair) ----
+# Em device de pouca RAM o frontend residente (~76MB RSS, boa parte no zram) compete com
+# o jogo — foi decisivo nos travamentos de sessao longa. Truque: o launcher e FILHO do
+# ES; parar o service mataria este script -> re-executa a si mesmo num scope proprio
+# (systemd-run) ANTES de parar. Religa no fim (trap). So ArkOS(emulationstation) e
+# EmuELEC(emustation); essway (ROCKNIX/ArchR) NUNCA (derruba o device).
+# Desligar: DYSMANTLE_KEEP_ES=1.
+DYS_ES_UNIT=""
+if [ -n "$DYS_LOWRAM" ] && [ -z "${DYSMANTLE_KEEP_ES:-}" ] && command -v systemctl >/dev/null 2>&1; then
+  for _u in emulationstation emustation; do
+    if systemctl is-active "$_u" >/dev/null 2>&1; then DYS_ES_UNIT="$_u"; break; fi
+  done
+fi
+if [ -n "$DYS_ES_UNIT" ] && [ -z "${DYS_ES_ESCAPED:-}" ] && command -v systemd-run >/dev/null 2>&1; then
+  DYS_ES_ESCAPED=1 export DYS_ES_ESCAPED
+  exec $ESUDO systemd-run --scope --quiet env DYS_ES_ESCAPED=1 \
+    DYSMANTLE_DEBUG="${DYSMANTLE_DEBUG:-}" DYSMANTLE_TEXSCALE="${DYSMANTLE_TEXSCALE:-}" \
+    DYSMANTLE_PAGELOG="${DYSMANTLE_PAGELOG:-}" bash "$DYS_SELF" "$@"
+fi
+if [ -n "$DYS_ES_UNIT" ] && [ -n "${DYS_ES_ESCAPED:-}" ]; then
+  $ESUDO systemctl stop "$DYS_ES_UNIT" 2>/dev/null
+  trap "$ESUDO systemctl start $DYS_ES_UNIT 2>/dev/null" EXIT INT TERM
 fi
 
 # ---------- DYS_PAGE: streaming de textura (qualidade NATIVA, estilo Bully/GTA) ----------
