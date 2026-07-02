@@ -4,7 +4,7 @@ Framework pra **portar jogos Android (ARM64, NativeActivity) pra Linux ARM64 / N
 
 Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Linux, com uma camada de shim que finge ser Android (fake JNI, OpenSL ES→SDL2, EGL→SDL2, bionic→glibc). Mesma linhagem dos so-loaders de PSVita (TheFloW), adaptada pra Linux ARM64 + SDL2.
 
-> **Licença / créditos:** qualquer um pode compilar e usar este framework e os ports — **desde que dê os devidos créditos** ao projeto (**NextOS**). Use, modifique e redistribua à vontade, só mantenha a atribuição. Os jogos em si continuam sendo dos seus donos: tudo é **BYO-data** (você fornece o `.so`/dados do APK que **possui legalmente**).
+> **Licença: [GPL-3.0](LICENSE)** — use, modifique e redistribua à vontade, **desde que** mantenha os créditos ao projeto (**NextOS**), mantenha esta mesma licença e **disponibilize o código-fonte das suas modificações** ao redistribuir (copyleft). Os jogos em si continuam sendo dos seus donos: tudo é **BYO-data** (você fornece o `.so`/dados do APK que **possui legalmente**).
 
 > **Isto NÃO são ports PortMaster.** Cada jogo aqui roda a **versão ANDROID** (o `.so` do APK) via **so-loader** — não um build Linux/PC. O empacotamento aproveita o framework do PortMaster **só pra lançar** (control.txt + gptokeyb pra controle/sair), mas o que executa por dentro é o binário Android. Ports PortMaster "de verdade" (de builds Linux) desses jogos, quando existem, são projetos separados.
 
