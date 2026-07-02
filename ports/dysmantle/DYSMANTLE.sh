@@ -118,13 +118,19 @@ fi
 # 0 textura preta, cap 150MB. Regra: LIGA em device ES2 de ~832MB-1GB COM swap (classe
 # Mali-450/EmuELEC). R36S-class (<700MB util) segue no TEXSCALE 3.0 ate validar (estudo F3).
 # Desligar: DYSMANTLE_NO_PAGE=1. Cap manual: DYSMANTLE_PAGE_CAP_MB.
+# R36S-class (~640MB): entra se houver swap (zram do sistema); cap menor (100MB).
 DYS_SWAP_KB=$(awk '/SwapTotal/{print $2}' /proc/meminfo 2>/dev/null)
 if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM" ] && \
-   [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -ge 716800 ] && \
-   [ -n "$DYS_SWAP_KB" ] && [ "$DYS_SWAP_KB" -ge 262144 ]; then
+   [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -ge 614400 ] && \
+   [ -n "$DYS_SWAP_KB" ] && [ "$DYS_SWAP_KB" -ge 204800 ]; then
   export DYSMANTLE_PAGE=1
   export DYSMANTLE_PAGE_ASYNC="${DYSMANTLE_PAGE_ASYNC:-1}"
-  export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
+  if [ "$DYS_RAM_KB" -ge 716800 ]; then
+    export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
+  else
+    export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-100}"
+    export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-100}"
+  fi
   # piso anti-OOM: se MemAvailable cair abaixo disso, despeja mesmo abaixo do cap
   export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-120}"
   export DYSMANTLE_PAGE_SWAP="$GAMEDIR/texswap"
