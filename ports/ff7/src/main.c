@@ -900,10 +900,12 @@ static void ff7_pump_input(void) {
         break;
       case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
         int down = (e.type == SDL_CONTROLLERBUTTONDOWN);
-        /* HOTKEY PADRAO PORTMASTER: SELECT+START juntos = sair do jogo. */
+        /* HOTKEY PADRAO PORTMASTER: SELECT+START juntos = sair do jogo.
+         * SELECT aceita BACK e GUIDE (alguns pads mapeiam o select como guide). */
         static int hk_start = 0, hk_select = 0;
         if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) hk_start = down;
-        if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)  hk_select = down;
+        if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
+            e.cbutton.button == SDL_CONTROLLER_BUTTON_GUIDE) hk_select = down;
         if (hk_start && hk_select) { debugPrintf("SELECT+START -> quit\n"); g_quit = 1; break; }
         /* SKIP do FMV REMOVIDO (era feature NOSSA, nao existe no FF7 original):
          * o script de campo SINCRONIZA com o filme (MVIEF espera frames do
