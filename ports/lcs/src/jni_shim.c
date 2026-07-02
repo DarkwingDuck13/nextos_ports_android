@@ -1044,24 +1044,35 @@ static void build_env(void) {
  * 12-15=DPAD 16=L1 17=L2 18=R1 19=R2.
  * O layout antigo GTA-mobile colocava 4=L1 e 9=START; isso fazia L1 agir como
  * Start e Start fisico nao fazer nada no LCS. Sondavel via /dev/shm/lcs_btn. */
+/* ENUMS NATIVOS DA JNI (RE 2026-07-02, CPad::Update @0x3441a0 + onJoyButtonDown
+ * @0x56c114): a JNI so aceita 0..15; cada indice cai num campo da CControllerState:
+ * 0=Cross 1=Circle 2=Square 3=Triangle 4=Start 5=Select 6=L1(+10) 7=R1(+14)
+ * 8=DPadUp(+18) 9=DPadDown(+20) 10=DPadLeft(+22) 11=DPadRight(+24)
+ * 12=L3(+46) 13=R3(+48) 14/15=extras(+50/+52; 14 dispara PAUSE — NUNCA enviar).
+ * Triggers L2/R2 NAO sao botoes: sao os EIXOS 4/5 (setJoyAxis -> OS_GamepadAxis
+ * 0x44/0x45 -> LeftShoulder2/RightShoulder2 analogicos).
+ * ANTES (bug, NextOS 2026-07-02): dpad em 12-15 (14 abria o pause!), L3/R3 em 6/7
+ * (viravam L1/R1) e L1/R1 em 16/18 (descartados pela JNI). */
 #define LCS_BTN_COUNT 20
 #define LCS_BTN_A 0
 #define LCS_BTN_B 1
+#define LCS_BTN_X 2
+#define LCS_BTN_Y 3
 #define LCS_BTN_START 4
 #define LCS_BTN_BACK 5
-#define LCS_BTN_L3 6
-#define LCS_BTN_R3 7
-#define LCS_BTN_DPAD_UP 12
-#define LCS_BTN_DPAD_DOWN 13
-#define LCS_BTN_DPAD_LEFT 14
-#define LCS_BTN_DPAD_RIGHT 15
-#define LCS_BTN_L1 16
-#define LCS_BTN_L2 17
-#define LCS_BTN_R1 18
-#define LCS_BTN_R2 19
+#define LCS_BTN_L1 6
+#define LCS_BTN_R1 7
+#define LCS_BTN_DPAD_UP 8
+#define LCS_BTN_DPAD_DOWN 9
+#define LCS_BTN_DPAD_LEFT 10
+#define LCS_BTN_DPAD_RIGHT 11
+#define LCS_BTN_L3 12
+#define LCS_BTN_R3 13
+#define LCS_BTN_L2 17   /* interno (>15, JNI descarta); nativo = eixo 4 */
+#define LCS_BTN_R2 19   /* interno (>15, JNI descarta); nativo = eixo 5 */
 static const struct { int sdl; int game; } g_btnmap[] = {
-  {SDL_CONTROLLER_BUTTON_A, 0}, {SDL_CONTROLLER_BUTTON_B, 1},
-  {SDL_CONTROLLER_BUTTON_X, 2}, {SDL_CONTROLLER_BUTTON_Y, 3},
+  {SDL_CONTROLLER_BUTTON_A, LCS_BTN_A}, {SDL_CONTROLLER_BUTTON_B, LCS_BTN_B},
+  {SDL_CONTROLLER_BUTTON_X, LCS_BTN_X}, {SDL_CONTROLLER_BUTTON_Y, LCS_BTN_Y},
   {SDL_CONTROLLER_BUTTON_START, LCS_BTN_START}, {SDL_CONTROLLER_BUTTON_BACK, LCS_BTN_BACK},
   {SDL_CONTROLLER_BUTTON_LEFTSTICK, LCS_BTN_L3}, {SDL_CONTROLLER_BUTTON_RIGHTSTICK, LCS_BTN_R3},
   {SDL_CONTROLLER_BUTTON_DPAD_UP, LCS_BTN_DPAD_UP},
@@ -1408,7 +1419,7 @@ static void pump_input(void) {
     a[1] = lcs_norm_sdl_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY));
     a[2] = lcs_norm_sdl_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX));
     a[3] = lcs_norm_sdl_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY));
-    if (lcs_env_flag("LCS_TRIGGER_AXES")) {
+    if (lcs_env_int("LCS_TRIGGER_AXES", 1)) {
       a[4] = lcs_norm_sdl_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT));
       a[5] = lcs_norm_sdl_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
     } else {
@@ -2363,10 +2374,10 @@ static void my_CutsceneUpdateOverlay_finish_wrap(void) {
   finishCutscene();
   if (p_skip_fading) *p_skip_fading = 0;
   if (p_skip_time) *p_skip_time = 0;
-  if (getenv("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
+  if (lcs_env_flag("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
     lcs_cutscene_clear_flags("force-wrap");
   }
-  if (getenv("LCS_CUTSCENE_RESTORE_CAMERA")) {
+  if (lcs_env_flag("LCS_CUTSCENE_RESTORE_CAMERA")) {
     lcs_cutscene_restore_camera("force-wrap");
   }
   lcs_cutscene_note_finished("force-wrap");
@@ -2394,8 +2405,10 @@ static int lcs_cutscene_finish_from_clock(const char *tag, int frame, float clk,
   }
 
   if (dur <= 0.1f) return 0;
+  /* default: NUNCA re-finalizar o mesmo path (a mini-cena pos-cut2 reusa o path da
+   * cut2; re-arme de 180f matava a cena scriptada). Override so p/ debug. */
   const char *rearm_e = getenv("LCS_CUTSCENE_FINISH_REARM_FRAMES");
-  int rearm_frames = (rearm_e && *rearm_e) ? atoi(rearm_e) : 180;
+  int rearm_frames = (rearm_e && *rearm_e) ? atoi(rearm_e) : 100000000;
   if (rearm_frames < 1) rearm_frames = 1;
   if (path_id && path_id == last_finished_path && frame - last_finished_frame < rearm_frames) return 0;
   if (!path_id && g_forced_cutscene_finished) return 0;
@@ -2432,10 +2445,10 @@ static int lcs_cutscene_finish_from_clock(const char *tag, int frame, float clk,
   finishCutscene();
   if (p_skip_fading) *p_skip_fading = 0;
   if (p_skip_time) *p_skip_time = 0;
-  if (getenv("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
+  if (lcs_env_flag("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
     lcs_cutscene_clear_flags(tag ? tag : "clock");
   }
-  if (getenv("LCS_CUTSCENE_RESTORE_CAMERA")) {
+  if (lcs_env_flag("LCS_CUTSCENE_RESTORE_CAMERA")) {
     lcs_cutscene_restore_camera(tag ? tag : "clock");
   }
   if (path_id) {
@@ -2458,11 +2471,18 @@ static int lcs_cutscene_diag_step(void) {
    * cut1 e cut2. Voltado ao comportamento s6 limpo (SPLINEFIX + finish simples). */
 static void lcs_cutscene_tick_after_draw(int frame) {
   int want_time = lcs_env_flag("LCS_CUTSCENE_TIMEDIAG");
-  int want_spline = lcs_env_int("LCS_CUTSCENE_SPLINEFIX", 1);  /* s8: default ON (s6) — permanente, sem flag */
+  /* FLUXO NATIVO (2026-07-02, ESTUDO-FLUXO-NATIVO.md): com LCS_FE21_NATURAL a engine
+   * processa a camera sozinha (CCamera::Process por-frame) -> spline avanca nativo,
+   * cutscene termina sozinha. SPLINEFIX vira legado (default OFF). Fica so a REDE
+   * by-clock (want_net): a cut2 tem roundoff (clock congela em 74.1660 < dur 74.167,
+   * pos max 0.999991) e o finish nativo por spline==1.0 nunca fecha -> fechamos nos
+   * quando clk >= dur+delay. Validado ao vivo: cut1 100% nativa, cut2 via rede. */
+  int want_spline = lcs_env_int("LCS_CUTSCENE_SPLINEFIX", 0);
   int want_camfix = lcs_env_flag("LCS_CUTSCENE_CAMFIX");
   int want_camprocess = lcs_env_flag("LCS_CUTSCENE_CAMPROCESS");
   int want_take_spline = lcs_env_flag("LCS_CUTSCENE_TAKE_SPLINE");
-  if (!want_time && !want_spline && !want_camfix && !want_camprocess && !want_take_spline) return;
+  int want_net = lcs_env_int("LCS_CUTSCENE_FINISH_NET", 1);
+  if (!want_time && !want_spline && !want_camfix && !want_camprocess && !want_take_spline && !want_net) return;
 
   static float (*getSpline)(void *) = NULL;
   static void (*setPercent)(void *, float) = NULL;
@@ -2503,6 +2523,7 @@ static void lcs_cutscene_tick_after_draw(int frame) {
   int omode = ocam ? *(short *)((char *)ocam + 28) : -999;
   void *feobj = *(void **)(tb + 0x7f9000 + 704);
   int fe25 = feobj ? *(unsigned char *)((char *)feobj + 25) : -1;
+  int fe21 = feobj ? *(unsigned char *)((char *)feobj + 21) : -1;
   void *pActive = *(void **)(tb + 0x8aab40);
   void *pIdle = *(void **)(tb + 0x8aab48);
   void *scrSpace = *(void **)(tb + 0x8aab50);
@@ -2512,8 +2533,8 @@ static void lcs_cutscene_tick_after_draw(int frame) {
     int step = lcs_cutscene_diag_step();
     if (tlogs < 12 || (frame % step) == 0) {
       fprintf(stderr,
-              "[ctime] f=%d gstate=%d sub=%d gate=%d fe25=%d aidx=%d cmode=%d omode=%d scr(act=%p idle=%p space=%p) delta=%.4f clock=%.4f spline=%.6f cam=%p pt=%p pp=%p",
-              frame, gstate, sub, gate, fe25, aidx, cmode, omode, pActive, pIdle, scrSpace,
+              "[ctime] f=%d gstate=%d sub=%d gate=%d fe25=%d fe21=%d aidx=%d cmode=%d omode=%d scr(act=%p idle=%p space=%p) delta=%.4f clock=%.4f spline=%.6f cam=%p pt=%p pp=%p",
+              frame, gstate, sub, gate, fe25, fe21, aidx, cmode, omode, pActive, pIdle, scrSpace,
               delta, clk, spline, cam, (void *)pt, (void *)pp);
       if (pt) {
         int npts = (int)pt[0];
@@ -2581,7 +2602,7 @@ static void lcs_cutscene_tick_after_draw(int frame) {
     }
   }
 
-  float finish_pos = lcs_env_float("LCS_CUTSCENE_FINISH_POS", 0.985f);  /* s8: default 0.985 (s6) — permanente, sem flag */
+  float finish_pos = lcs_env_float("LCS_CUTSCENE_FINISH_POS", 0.0f);  /* fluxo nativo: posfix OFF (engine fecha; rede by-clock cobre o roundoff) */
   int finish_by_pos = finish_pos > 0.0f && finish_pos <= 1.0f &&
                       gate && (pos >= finish_pos || cur_after >= finish_pos);
   int finished = 0;
@@ -2612,8 +2633,12 @@ static void lcs_cutscene_tick_after_draw(int frame) {
     }
   }
 
-  if (gate && pos >= 1.0f) {
-    lcs_cutscene_finish_from_clock("splinefix", frame, clk, dur, (const void *)pt);
+  /* REDE by-clock: SO em flyby real (cmode==17). A mini-cena das escadas (pos-cut2,
+   * SCM) REUSA o path/clock da cut2 com cmode 15/18 — sem o gate de cmode a rede
+   * re-disparava FinishCutscene NO MEIO da cena scriptada (f=6450 na run de
+   * 2026-07-02) -> Toni sumia/travava. */
+  if (want_net && gate && pos >= 1.0f && cmode == 17) {
+    lcs_cutscene_finish_from_clock("finish-net", frame, clk, dur, (const void *)pt);
   }
 }
 
@@ -2652,10 +2677,10 @@ static void my_Cutscene_Finish(void) {
           p_skip_time ? *p_skip_time : -1,
           p_was_skipped ? *p_was_skipped : -1);
   if (tramp_Cutscene_Finish) tramp_Cutscene_Finish();
-  if (getenv("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
+  if (lcs_env_flag("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
     lcs_cutscene_clear_flags("finish");
   }
-  if (getenv("LCS_CUTSCENE_RESTORE_CAMERA")) {
+  if (lcs_env_flag("LCS_CUTSCENE_RESTORE_CAMERA")) {
     lcs_cutscene_restore_camera("finish");
   }
   lcs_cutscene_note_finished("finish");
@@ -2759,10 +2784,10 @@ static int my_Cutscene_IsSkipPressed(void) {
       finishCutscene();
       if (p_skip_fading) *p_skip_fading = 0;
       if (p_skip_time) *p_skip_time = 0;
-      if (getenv("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
+      if (lcs_env_flag("LCS_CUTSCENE_CLEAR_AFTER_FINISH")) {
         lcs_cutscene_clear_flags("skip-hook");
       }
-      if (getenv("LCS_CUTSCENE_RESTORE_CAMERA")) {
+      if (lcs_env_flag("LCS_CUTSCENE_RESTORE_CAMERA")) {
         lcs_cutscene_restore_camera("skip-hook");
       }
       lcs_cutscene_note_finished("skip-hook");
@@ -3460,6 +3485,18 @@ static void cpad_set_just_pair(unsigned char *pad, int cur_off, int old_off, int
 }
 
 static unsigned char *lcs_swap_nipple_ptr(void);
+
+/* Pause menu aberto no gameplay? CTimer::m_UserPause e setado pelo menu de pause. */
+static int lcs_user_paused(void) {
+  static unsigned char *p = NULL;
+  static int resolved = 0;
+  if (!resolved) {
+    p = (unsigned char *)so_find_addr_safe("_ZN6CTimer11m_UserPauseE");
+    resolved = 1;
+  }
+  return p ? (*p != 0) : 0;
+}
+
 static void lcs_apply_pad_bridge(const char *tag) {
   const char *en = getenv("LCS_PADBRIDGE");
   if (en && *en && !strcmp(en, "0")) return;
@@ -3470,10 +3507,21 @@ static void lcs_apply_pad_bridge(const char *tag) {
   int back = g_btn_state[LCS_BTN_B] || g_btn_state[LCS_BTN_BACK];     /* B ou BACK */
   int up = g_btn_state[LCS_BTN_DPAD_UP], down = g_btn_state[LCS_BTN_DPAD_DOWN];
   int left = g_btn_state[LCS_BTN_DPAD_LEFT], right = g_btn_state[LCS_BTN_DPAD_RIGHT];
+  /* PAUSE MENU (state 9 + UserPause): trata igual menu principal — d-pad E analogico
+   * navegam PULSADOS (1 aperto = 1 item; NextOS: "com analogico e muito rapido").
+   * O analogico vira direcao de menu e o stick e ZERADO na CPad enquanto pausado. */
+  int pause_menu = (state == 9 && lcs_env_int("LCS_PAUSE_MENU_PULSE", 1) != 0 &&
+                    lcs_user_paused());
+  if (pause_menu) {
+    up    |= g_axis_state[1] < -0.5f;
+    down  |= g_axis_state[1] >  0.5f;
+    left  |= g_axis_state[0] < -0.5f;
+    right |= g_axis_state[0] >  0.5f;
+  }
   int mask = sel | (back << 1) | (up << 2) | (down << 3) | (left << 4) | (right << 5);
-  int menu_buttons = (state == 7 && lcs_env_int("LCS_PADBRIDGE_MENU", 1) != 0);
+  int menu_buttons = ((state == 7 || pause_menu) && lcs_env_int("LCS_PADBRIDGE_MENU", 1) != 0);
   int direct_buttons = lcs_env_flag("LCS_PADBRIDGE_DIRECT") || menu_buttons;
-  int move_bridge = (state == 9 && lcs_env_int("LCS_PADBRIDGE_MOVE", 1) != 0);
+  int move_bridge = (state == 9 && !pause_menu && lcs_env_int("LCS_PADBRIDGE_MOVE", 1) != 0);
   static int prev_mask = 0;
   static int last_mask = -1;
   static int last_move = -999;
@@ -3518,6 +3566,12 @@ static void lcs_apply_pad_bridge(const char *tag) {
     cpad_set_just_pair(pad, 24, 76, rc, right_e);
     cpad_set_just_pair(pad, 32, 84, rc, right_e);
     pad[220] = 0; pad[221] = 0; pad[222] = 0;
+    if (pause_menu) {
+      /* zera o stick na CPad: o caminho nativo (axes 64/65) escreve +2/+4 todo
+       * frame ANTES de nos -> sem isso o analogico rola o menu continuo. */
+      cpad_set_axis128(pad, 2, 0.0f);
+      cpad_set_axis128(pad, 4, 0.0f);
+    }
   }
 
   if (move_bridge) {
@@ -3853,9 +3907,12 @@ static int my_CollectParameters(void *self, unsigned int *pcp, int count, int *o
  * LCS_MENUS9=1 reativa (debug). */
 static void (*tramp_rendermenus)(void) = NULL;
 static void my_RenderMenus(void) {
+  /* fluxo nativo: RenderMenus roda em state 9 (loading vermelho do new-game + pause
+   * menu). Validado 480s sem o crash antigo de CSprite2d. LCS_MENUS9_SKIP=1 volta
+   * o skip legado. */
   extern void *text_base;
   void *st = *(void **)((uintptr_t)text_base + 0x7fd000 + 2232);
-  if (st && *(int *)st == 9 && !getenv("LCS_MENUS9") &&
+  if (st && *(int *)st == 9 && lcs_env_flag("LCS_MENUS9_SKIP") &&
       !lcs_cutscene_required_finishes_done()) return;
   if (tramp_rendermenus) tramp_rendermenus();
 }
@@ -5344,6 +5401,15 @@ static void lcs_clear_splash_tap_gates(const char *tag) {
           sa0, lcs_u8(splash_active), rs0, lcs_u8(request_splash));
 }
 
+/* FE21 NATURAL (estudo 2026-07-02, ESTUDO-FLUXO-NATIVO.md): feobj+21 e o gate que
+ * PULA CCamera::Process por-frame em CGame::Process (@0x33c6ec: orr fe25|fe21) e o
+ * LIB_InputUpdate no GTAGameTick. Nativamente ele e ZERADO pelo gate Rockstar do New
+ * Game (RockstarJNIlib_StartGame/StartGameFromGate). Nosso force fe21=1 por-frame
+ * (necessario no BOOT) desfazia isso -> camera morta -> toda a torre SPLINEFIX/
+ * posfix/fade-hacks. Com LCS_FE21_NATURAL=1: forcamos fe21=1 SO ate o rkgate
+ * disparar; depois NUNCA mais escrevemos (fluxo do celular). */
+int g_rk_gate_done = 0;
+
 static void lcs_process_deferred_rockstar_gate(int frame) {
   if (!g_rk_gate_pending_kind) return;
   if (g_rk_gate_delay_frames > 0) {
@@ -5380,6 +5446,12 @@ static void lcs_process_deferred_rockstar_gate(int frame) {
     }
   }
   if (rkFinishGate) rkFinishGate(fake_env, FAKE_OBJ);
+  g_rk_gate_done = 1;
+  if (lcs_env_int("LCS_FE21_NATURAL", 1)) {
+    void *fe21o = text_base ? *(void **)(tb + 0x7f9000 + 704) : NULL;
+    fprintf(stderr, "[fe21] rkgate done f=%d -> fe21 nativo daqui em diante (fe21=%d)\n",
+            frame, fe21o ? *((unsigned char *)fe21o + 21) : -1);
+  }
 
   st = text_base ? *(void **)(tb + 0x7fd000 + 2232) : NULL;
   fe = text_base ? *(void **)(tb + 0x7f9000 + 704) : NULL;
@@ -5931,10 +6003,14 @@ void jni_load(void) {
      * por-frame; no Mali-450 Utgard (tile) o switch p/ o FBO do env-map causa
      * artefato de tile/flicker (pior dentro do carro). Zerar gbEnvmapReady por frame
      * pula o uso/render do env-map. LCS_NO_ENVMAP. */
-    if (getenv("LCS_NO_ENVMAP")) {
+    /* VIDRO/reflexo do carro PISCANDO (NextOS 2026-07-02, pior dirigindo): env-map e
+     * render-to-texture por-frame; no Mali-450 Utgard o switch de FBO causa flicker de
+     * tile. Default OFF (sem env-map = sem flicker; reflexo do carro some). LCS_NO_ENVMAP=0
+     * religa o env-map. */
+    if (lcs_env_int("LCS_NO_ENVMAP", 1)) {
       static unsigned char *er = NULL; static int err = 0;
       if (!err) { er = (unsigned char *)so_find_addr_safe("gbEnvmapReady"); err = 1;
-                  fprintf(stderr, "[diag] NO_ENVMAP gbEnvmapReady=%p\n", (void *)er); }
+                  fprintf(stderr, "[fix] NO_ENVMAP gbEnvmapReady=%p\n", (void *)er); }
       if (er) *er = 0;
     }
     /* DIAG MEM: onde está a RAM (gFixHeapSize + texturas vivas) p/ decidir o corte.
@@ -5976,11 +6052,17 @@ void jni_load(void) {
       if (lm) *lm = lcs_env_float("LCS_LIGHTSMULT", 1.0f);
     }
     /* habilita o game-tick (gate do GTAGameTick: feobj+21). Sem isso a boot
-     * state-machine nao avanca (tela preta). Default ON; LCS_NOTICK desliga. */
+     * state-machine nao avanca (tela preta). Default ON; LCS_NOTICK desliga.
+     * LCS_FE21_NATURAL=1: fe21==1 tambem PULA CCamera::Process por-frame
+     * (CGame::Process @0x33c6ec) e LIB_InputUpdate -> so forcamos ate o rkgate
+     * do New Game disparar (que zera fe21 nativamente); depois a engine manda. */
     if (!getenv("LCS_NOTICK")) {
-      extern void *text_base;
-      void *stobj = *(void **)((uintptr_t)text_base + 0x7f9000 + 704);
-      if (stobj) *((unsigned char *)stobj + 21) = 1;
+      extern int g_rk_gate_done;
+      if (!(lcs_env_int("LCS_FE21_NATURAL", 1) && g_rk_gate_done)) {
+        extern void *text_base;
+        void *stobj = *(void **)((uintptr_t)text_base + 0x7f9000 + 704);
+        if (stobj) *((unsigned char *)stobj + 21) = 1;
+      }
     }
     /* FE25 seguro: feobj+25 libera CTheScripts::Process + CCamera::Process em
      * CGame::Process. Forcar durante load da cutscene (gstate=1) derruba em
