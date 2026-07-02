@@ -765,6 +765,14 @@ static void dysp_on_bind(unsigned target, unsigned id) {
          * melhor que OOM-kill (visto no R36S .160: em pico de carga nada e "frio",
          * o cold-guard travava o floor e o kernel matava o jogo). Normal: so FRIAS. */
         int critical = (avail < dysp_floor() / 2) || swap_crit;
+        /* pool ja no minimo = despejar visivel NAO ajuda em nada (a pressao e do
+         * MUNDO, nao das texturas) -> vira so PISCA-PISCA infinito (visto .160,
+         * zram 255/255 + resident 7MB). Nesse caso NAO faz sweep critico. */
+        if (critical && g_dysp_resident <= keepmin * 3) critical = 0;
+        /* cooldown do critico: no maximo 1 sweep agressivo a cada ~8 checagens
+         * (~2000 binds) — pisca RARO em vez de constante */
+        static unsigned last_crit = 0; static unsigned checks = 0; checks++;
+        if (critical && checks - last_crit < 8) critical = 0; else if (critical) last_crit = checks;
         long long cut = critical ? g_dysp_resident / 2 : (long long)8 * 1024 * 1024;
         long long tgt2 = g_dysp_resident - cut; if (tgt2 < keepmin) tgt2 = keepmin;
         dysp_evict_to(target, id, tgt2, critical ? 0 : 6000);

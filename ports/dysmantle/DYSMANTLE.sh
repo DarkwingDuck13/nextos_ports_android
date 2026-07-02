@@ -128,10 +128,13 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
   if [ "$DYS_RAM_KB" -ge 716800 ]; then
     export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
   else
-    # R36S-class validado 2026-07-02 (.220 ArkOS 639MB+zram 256): nativo limpo, sem piscada
+    # R36S-class (<700MB): sessao LONGA nao segura textura nativa full (o MUNDO
+    # enche RAM+zram sozinho -> OOM/pisca, visto no .160). TEXSCALE 1.5 =
+    # quase-nativa com 2.2x menos RAM de textura; streaming continua.
     export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-80}"
     export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-48}"
     export DYSMANTLE_PAGE_MIN_KB="${DYSMANTLE_PAGE_MIN_KB:-24}"
+    DYS_PAGE_TEXSCALE_LOW="1.5"
   fi
   # piso anti-OOM: se MemAvailable cair abaixo disso, despeja mesmo abaixo do cap
   export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-120}"
@@ -139,8 +142,8 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
   # swap id-keyed e por-execucao: limpa no boot (ids GL mudam a cada run)
   rm -rf "$GAMEDIR/texswap" 2>/dev/null
   mkdir -p "$GAMEDIR/texswap"
-  # NATIVO: sem downscale (o binario ja pula o ETC1 lossy quando paginando)
-  export DYSMANTLE_TEXSCALE=1.0
+  # >=700MB: NATIVO sem downscale; <700MB: 1.5 quase-nativa (RAM nao segura full)
+  export DYSMANTLE_TEXSCALE="${DYS_PAGE_TEXSCALE_LOW:-1.0}"
 fi
 
 # ---------- BYO-DATA: 1a execucao extrai + conserta texturas (TELA DE BAKE v6) ----------
