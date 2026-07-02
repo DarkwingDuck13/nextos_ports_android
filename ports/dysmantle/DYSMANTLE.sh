@@ -150,7 +150,12 @@ fi
 # janela p/ contencao ao sair do ES).
 if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
   DYS_NEED_FIXPAK=0; [ -z "$DYS_NATIVE_ETC2" ] && DYS_NEED_FIXPAK=1
+  # texbake DENTRO da tela de bake (etapa 4/4): so no caminho TEXSCALE (ES2 sem
+  # streaming) — antes rodava depois, sem tela = "tela preta" longa no 1o boot
+  DYS_NEED_TEXBAKE=0
+  if [ -z "$DYS_NATIVE_ETC2" ] && [ -z "$DYSMANTLE_PAGE" ]; then DYS_NEED_TEXBAKE=1; fi
   DYSMANTLE_BINARY="$GAMEDIR/dysmantle" DYS_NEED_FIXPAK="$DYS_NEED_FIXPAK" \
+    DYS_NEED_TEXBAKE="$DYS_NEED_TEXBAKE" \
     bash "$GAMEDIR/tools/dysmantle_extract.sh" "" "$GAMEDIR"
 fi
 if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
