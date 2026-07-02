@@ -12,4 +12,6 @@ echo "=== cross-compila fixpak (aarch64) ==="
 $CC -O2 -o fixpak.aarch64 src/fixpak.c src/etc2_decode.c src/jpeg_enc.c -ldl
 aarch64-linux-gnu-strip texbake.aarch64 fixpak.aarch64 2>/dev/null || true
 echo "texbake: $(stat -c%s texbake.aarch64) bytes | fixpak: $(stat -c%s fixpak.aarch64) bytes"
-file texbake.aarch64
+# GATE OBRIGATORIO: nada shipavel pode exigir GLIBC > 2.30 (regressao fixpak 2026-07-02)
+apt-get install -y -qq binutils >/dev/null 2>&1 || true
+bash /repo/check_glibc.sh texbake.aarch64 fixpak.aarch64
