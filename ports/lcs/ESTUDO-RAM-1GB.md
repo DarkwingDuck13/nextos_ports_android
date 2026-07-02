@@ -107,16 +107,36 @@ env-map possa voltar).
 5. Diags permanentes: [bigalloc] (nenhuma alocação >20MB única → arena de 254MB = milhares de
    allocs pequenas do mundo em arena glibc ✓ tese Dysmantle), [viewport]/[scissor].
 
+## Mapa do frontend p/ automação (MENUDIAG screen/item)
+- screen=2: menu principal (item 0 default = Start Game; A confirma).
+- screen=14: submenu Start Game — **com SAVE presente a seleção default = item 1 (Load Game!)**;
+  item 0 = New Game. Menu tem WRAP (UP no topo vai pro fim — UP×2 cego re-cai no Load).
+  rkgate kind: ShowGate=New Game / ShowGateBeforeLoad=Load.
+- screen=69: pós-gate (loading). Autopilot v4 navega lendo screen/item do [menu] loop.
+- ⚠️ Load Game: às vezes funciona, às vezes morre em "Could not open Models/Generic/WHEELS.TXD"
+  (arquivo vive dentro do gta3.img, não como entrada do WAD — fila).
+
+## Sessão noturna 2026-07-02 (madrugada) — resultados
+- **Camfix pós-cena (v5, commit d642f0d)**: rede armada por cenas 15/17/18, dispara restore só
+  com ped imóvel 3s; dormant quando a engine restaura sozinha (intermitência confirmada: runs
+  J/K restauraram nativas; shotB tinha ficado presa). shotG: início pós-escadas PERFEITO.
+- **Perfil MEMLOW (1GB) exercitado no 832**: prefs aplicadas ([gfx] pref ...=0), visual
+  aceitável (shotG: fog mais próximo, mundo limpo). HWM em runs curtas é dominado pelo load
+  (586 vs 558 fase1 = ruído) — medição definitiva só em sessão longa/R36S.
+- **runNG.sh**: wrapper de teste que ESTACIONA o save do usuário (backup triplo: .bak-seguro +
+  PC scratchpad + ~/lcs-build/save-backup-nextos-20260702) e restaura por trap — New Game
+  determinístico p/ automação. Save do usuário intacto e restaurado ✓.
+- Lição harness: "run30 done" vai pro nohup.out (não run.log) — vigias devem grepar
+  "Mali teardown".
+
 ## Fila restante (prioridade do usuário: DESEMPENHO > RAM > vidro; depois R36S 1GB)
-1. Medir fps na CIDADE dirigindo (pós SDL_Delay/pin) — usuário sente ao vivo; headless via
-   progress3.txt em área pesada.
-2. A/B do perfil 1GB simulado no 832 (forçar LCS_GFX_MEMLOW=1): medir RSS/HWM e validar visual
-   com o usuário antes do R36S.
-3. Vidro flicker (dia e noite, persiste com NO_ENVMAP): próximo suspeito = CGlass::
-   RenderReflectionPolys (polys de reflexo) e uploads mid-frame (T1: já com throttle ativo no
-   tier mid — validar com usuário se melhorou); T2: drenar uploads pós-swap.
-4. Bug câmera girando sobre o personagem → tudo pisca em certo ângulo (precisa repro com pad).
-5. Load Game path: crash 'WHEELS.TXD' (1 ocorrência) — investigar servir TXD via WAD no load.
-6. BULLY_PAGE do LCS: modernizar com floor/cold-guard/cooldown do Dysmantle ANTES de ligar
-   (cobre pouco hoje: só texturas do caminho ETC1-bake; mundo LCS sobe compressed direto).
-7. R36S 1GB: quando device chegar — a escada já liga MEMLOW sozinha; tunar caps lá.
+1. **Vidro (VALIDAR COM USUÁRIO ao acordar)**: binário atual tem CGlass::RenderReflectionPolys
+   NO-OP default — piscada do vidro dia/noite sumiu? (LCS_GLASS_REFLECT=1 religa). Se persistir:
+   T2 = drenar uploads pós-swap; suspeito 3 = matfx env do vidro (DisableMatFx cirúrgico).
+2. fps na CIDADE dirigindo (usuário sente; headless dirigir é arriscado — autowalk morreu e
+   expôs o crash de respawn... que era o pin; re-testar morte/respawn no binário atual).
+3. Load Game: flaky — às vezes OK, às vezes "WHEELS.TXD" (dentro do gta3.img). Repro + fix.
+4. Bug câmera girando/tudo pisca em ângulo (provável morto com ES-fix — confirmar com usuário).
+5. BULLY_PAGE modernizar (floor/cold-guard Dysmantle) SE textura virar pressão real (hoje não é).
+6. R36S 1GB: escada liga MEMLOW sozinha; tunar caps/validar lá. Perfil "igual GTASA" =
+   run-gtasa-perf.sh tiers já existem.
