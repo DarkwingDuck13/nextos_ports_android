@@ -1400,23 +1400,23 @@ void ff7_music_feed(const void *pcm, uint32_t bytes) {
   if (!pcm || bytes == 0)
     return;
   ensure_audio_initialized();
+  extern int g_ff7_sqex_rate;   /* taxa de saida do SQEX (44100 com o hook do
+                                 * CoreSystem::Initialize; 32000 sem) */
   AudioPlayer *p = &g_players[MUSIC_SLOT];
-  /* Reconfigura SO' se o slot nao esta' no modo bypass (32000/playing) — ex.
-   * primeiro uso ou reclaim do modo BGM-PCM (44100). ⚠️BUG HISTORICO: comparar
-   * com SDL_OUTPUT_RATE (44100) fazia esta condicao ser SEMPRE true (o slot e'
-   * 32000) -> player_reset_meta zerava o ring A CADA feed -> readable preso em
-   * 4096 < gate de prebuffer (44100) -> MUSIC_SLOT nunca tocava = TODA BGM MUDA
-   * (titulo, campo, batalha), com o SQEX produzindo audio perfeito. */
-  if (!p->active || p->sample_rate != 32000 ||
+  /* Reconfigura SO' se o slot nao esta' no modo bypass (taxa do SQEX/playing).
+   * ⚠️BUG HISTORICO: comparar com SDL_OUTPUT_RATE (44100) com slot a 32000
+   * fazia esta condicao ser SEMPRE true -> player_reset_meta zerava o ring A
+   * CADA feed -> readable preso em 4096 < gate de prebuffer -> MUSIC_SLOT nunca
+   * tocava = TODA BGM MUDA, com o SQEX produzindo audio perfeito. */
+  if (!p->active || p->sample_rate != (uint32_t)g_ff7_sqex_rate ||
       p->play_state != SL_PLAYSTATE_PLAYING) {
     if (g_audio_dev)
       SDL_LockAudioDevice(g_audio_dev);
     player_reset_meta(p);
     p->num_channels = 2;
-    /* RenderMix entrega na TAXA DE SAIDA do SQEX (32000), nao 44100: o `out` ja' e'
-     * a contribuicao da fonte resampleada. Tocar a 32000 (callback faz 32000->44100)
-     * = ritmo realtime correto. (Se setasse 44100 -> underrun ~27% = 1-32000/44100.) */
-    p->sample_rate = 32000;
+    /* RenderMix entrega na TAXA DE SAIDA do SQEX: o `out` ja' e' a contribuicao
+     * da fonte resampleada. Com o hook 44100 = fast-path sem resample no mix. */
+    p->sample_rate = (uint32_t)g_ff7_sqex_rate;
     p->bits_per_sample = 16;
     p->volume = 1.0f; /* ⚠️era 2.0 ("BGM baixa") — mas com o reset-bug consertado a
                        * fonte chega no volume CERTO do jogo; 2.0 estourava int16
@@ -1430,7 +1430,7 @@ void ff7_music_feed(const void *pcm, uint32_t bytes) {
   /* Mantem um colchao (~ate 0.5s) p/ absorver o JITTER do loop de video (a producao
    * do RenderMix e' dirigida por frame -> irregular; sem colchao = underrun = chiado).
    * So' descarta o mais antigo se a latencia passar de ~0.5s (limita atraso). */
-  uint32_t max_buf = 32000u * 2u * 2u * 8u / 10u; /* ~0.8s @ 32000 stereo s16 */
+  uint32_t max_buf = (uint32_t)g_ff7_sqex_rate * 2u * 2u * 8u / 10u; /* ~0.8s stereo s16 */
   if (ring_readable(p) > max_buf && ring_readable(p) >= bytes) {
     __sync_synchronize();
     p->ring_tail += bytes; /* dropa o mais antigo */

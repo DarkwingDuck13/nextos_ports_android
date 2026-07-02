@@ -180,6 +180,12 @@ static void my_QueueBuffer(void *thisp, void *buf, unsigned size) {
     for (unsigned i = 0; i < size / 2 && i < 8192; i++) { int a = s[i] < 0 ? -s[i] : s[i]; if (a > pk) pk = a; }
     debugPrintf("QBUF #%u size=%u peak=%d\n", qc, size, pk);
   }
+  /* FF7_BGMDUMP: grava os primeiros ~40 buffers enfileirados (dado que DEVERIA tocar) */
+  if (getenv("FF7_BGMDUMP") && qc <= 40) {
+    static FILE *qf = NULL;
+    if (!qf) qf = fopen("qbuf.raw", "wb");
+    if (qf) { fwrite(buf, 1, size, qf); fflush(qf); }
+  }
   g_orig_queuebuf(thisp, buf, size);
 }
 typedef int (*playmidi_fn)(unsigned, unsigned, unsigned);
@@ -580,6 +586,24 @@ static void my_SourceStart(void *thisp) {
   debugPrintf("SRCSTART #%u this=%p\n", c, thisp);
   g_orig_srcstart(thisp);
 }
+/* ---- Taxa de saida do SQEX: o engine pede 32000 no CoreSystem::Initialize.
+ * Com 32000, a BGM (AKB 44100) sofre RESAMPLE DUPLO (SQEX 44100->32000 + nosso
+ * 32000->44100, ambos lineares) = aliasing = CHIADO constante na musica.
+ * Forcamos 44100 (= SDL_OUTPUT_RATE): SQEX vira passthrough e o feed cai no
+ * fast-path sem resample. FF7_SQEXRATE=N override; FF7_NOSQEX44K desliga. ---- */
+int g_ff7_sqex_rate = 32000;   /* lido pelo ff7_music_feed (opensles_shim) */
+typedef int (*coreinit_fn)(int, int);
+static coreinit_fn g_orig_coreinit = NULL;
+static int my_CoreInit(int rate, int ch) {
+  int want = 44100;
+  if (getenv("FF7_SQEXRATE")) want = atoi(getenv("FF7_SQEXRATE"));
+  if (getenv("FF7_NOSQEX44K")) want = rate;
+  if (want < 8000 || want > 48000) want = rate;
+  debugPrintf("COREINIT: engine pediu rate=%d ch=%d -> usando %d\n", rate, ch, want);
+  g_ff7_sqex_rate = want;
+  return g_orig_coreinit(want, ch);
+}
+
 typedef void (*sdvol_fn)(int, int, float);
 static sdvol_fn g_orig_sdvol = NULL;
 static void my_SdVolume(int id, int trans, float vol) {
@@ -607,24 +631,53 @@ static void my_SetPan(void *thisp, float v) {
 static void my_RenderMix(void *thisp, void *out, unsigned size) {
   /* FF7_BGMTRACE: estado interno do CoreSource da musica (callback de refill
    * [this+96], fila [this+116], idx [this+120], pos [this+124]). */
-  if (getenv("FF7_BGMTRACE")) {
-    static unsigned c = 0; c++;
-    if (c <= 10 || c % 100 == 0) {
-      void *cb = *(void **)((char *)thisp + 96);
-      int qn = *(int *)((char *)thisp + 116);
-      int qi = *(int *)((char *)thisp + 120);
-      int qp = *(int *)((char *)thisp + 124);
-      int st = *(int *)((char *)thisp + 88);
-      float vol = *(float *)((char *)thisp + 176);
-      debugPrintf("BGMTRACE #%u this=%p cb=%p fila=%d idx=%d restante=%d state=%d vol=%f\n",
-                  c, thisp, cb, qn, qi, qp, st, vol);
-    }
+  int bgmtrace = getenv("FF7_BGMTRACE") != NULL;
+  static unsigned btc = 0;
+  int qn0 = 0, qi0 = 0, qp0 = 0;
+  if (bgmtrace) { btc++;
+    qn0 = *(int *)((char *)thisp + 116);
+    qi0 = *(int *)((char *)thisp + 120);
+    qp0 = *(int *)((char *)thisp + 124);
   }
   g_orig_rendermix(thisp, out, size);
-  /* BYPASS antigo (RenderMix->MUSIC_SLOT 32000): so' se NAO estiver usando a BGM
-   * via PCM (que e' confiavel e usa o MUSIC_SLOT a 44100). Evita conflito/duplo. */
-  if (g_music_bypass && !g_bgm_active)
-    ff7_music_feed(out, size);
+  /* FF7_BGMDUMP: grava as primeiras ~200 saidas do RenderMix (o que TOCA) */
+  if (getenv("FF7_BGMDUMP")) {
+    static FILE *rf = NULL; static unsigned rn = 0;
+    if (!rf && rn == 0) rf = fopen("rmout.raw", "wb");
+    if (rf) { fwrite(out, 1, size, rf); fflush(rf); if (++rn >= 200) { fclose(rf); rf = NULL; rn = 1000; } }
+  }
+  if (bgmtrace && (btc <= 200 || btc % 100 == 0)) {
+    int st = *(int *)((char *)thisp + 88);
+    float vol = *(float *)((char *)thisp + 176);
+    /* peak da saida + peak do buffer da fila corrente (o que DEVERIA tocar) */
+    int opk = 0; { int n2 = size / 2; const short *s = (const short *)out;
+      for (int i = 0; i < n2 && i < 4096; i++) { int a2 = s[i]<0?-s[i]:s[i]; if (a2>opk) opk=a2; } }
+    /* NAO deref o ptr da fila (no 1o render e' LIXO -> segfault; o RenderMix le
+     * a mesma struct = a fonte do RUIDO). So' loga os valores brutos. */
+    unsigned long b0 = *(unsigned long *)((char *)thisp + 144);
+    unsigned long b1 = *(unsigned long *)((char *)thisp + 160);
+    unsigned long s0 = *(unsigned long *)((char *)thisp + 152);
+    unsigned long s1 = *(unsigned long *)((char *)thisp + 168);
+    debugPrintf("BGMTRACE #%u fila=%d idx=%d rest=%d st=%d vol=%.2f outpk=%d buf0=%#lx/%lu buf1=%#lx/%lu\n",
+                btc, qn0, qi0, qp0, st, vol, opk, b0, s0, b1, s1);
+  }
+  /* BYPASS da BGM p/ o MUSIC_SLOT. ⚠️O RenderMix produz FLOAT32 (+-1.0), NAO
+   * s16 — alimentar cru = RUIDO BRANCO (era o "chiado" nos creditos/gameplay,
+   * NextOS 2026-07-02). Converte float->s16 com clamp antes de alimentar.
+   * (player 0 nativo segue mudo: fill-cb do engine enfileira zeros.) */
+  if (g_music_bypass && !g_bgm_active) {
+    static short cvt[8192];
+    const float *fsrc = (const float *)out;
+    unsigned nf = size / 4;              /* size em BYTES; amostras float32 */
+    if (nf > 8192) nf = 8192;
+    for (unsigned i2 = 0; i2 < nf; i2++) {
+      float v = fsrc[i2] * 32767.0f;
+      if (v > 32767.0f) v = 32767.0f;
+      if (v < -32768.0f) v = -32768.0f;
+      cvt[i2] = (short)v;
+    }
+    ff7_music_feed(cvt, nf * 2);
+  }
   if (getenv("FF7_RMDIAG")) {
     static unsigned cnt = 0;
     cnt++;
@@ -1132,6 +1185,14 @@ int main(int argc, char *argv[]) {
                       g_border_c[3], g_border_c[4], g_border_c[5]); }
       } else debugPrintf("BORDER: simbolo nao achado\n");
     }
+  }
+  /* SQEX @44100 (mata o resample duplo da BGM = chiado). Prologo de
+   * CoreSystem::Initialize verificado relocavel (sub/cmp/stp/stp). */
+  {
+    uintptr_t ci = so_find_addr_safe("_ZN4SQEX10CoreSystem10InitializeEii");
+    if (ci) { g_orig_coreinit = (coreinit_fn)make_trampoline(ci, 16);
+      if (g_orig_coreinit) { hook_arm64(ci, (uintptr_t)&my_CoreInit);
+        debugPrintf("COREINIT: hooked CoreSystem::Initialize @%p\n", (void*)ci); } }
   }
   /* NAO hookear SoundManager::Update: prologo tem adrp (PC-relative) na 3a
    * instrucao -> trampoline de 16B corrompe -> mutex em endereco lixo -> trava. */
