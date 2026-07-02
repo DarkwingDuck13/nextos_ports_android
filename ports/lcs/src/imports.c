@@ -305,6 +305,28 @@ void bully_page_on_bind(unsigned target, unsigned id) {
             g_page_resident/(1024*1024), bully_page_cap()/(1024*1024), g_pf, g_ev, g_page_n); }
 }
 
+/* ---- THREAD PIN (perf 2026-07-02, receita Bully2 adaptada): render/main fica
+ * EXCLUSIVA no core 2 (pin no jni_load); threads do ENGINE (streamer/audio/loader)
+ * vao pros cores 0/1/3 -> streaming nao disputa com o render. S905 = 4x A53
+ * homogeneos. LCS_THREAD_PIN=0 desliga. ---- */
+#include <pthread.h>
+#include <sched.h>
+int lcs_thread_pin_on(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("LCS_THREAD_PIN"); v = (e && *e) ? atoi(e) : 1; }
+  return v;
+}
+int my_pthread_create_pin(pthread_t *t, const pthread_attr_t *attr,
+                          void *(*fn)(void *), void *arg) {
+  int rc = pthread_create(t, attr, fn, arg);
+  if (rc == 0 && lcs_thread_pin_on()) {
+    cpu_set_t cs; CPU_ZERO(&cs);
+    CPU_SET(0, &cs); CPU_SET(1, &cs); CPU_SET(3, &cs);
+    pthread_setaffinity_np(*t, sizeof cs, &cs);
+  }
+  return rc;
+}
+
 /* ---- VIEWPORT diag (bug "faixa no rodape"/personagem invisivel 2026-07-02): o jogo
  * passou a renderizar so uma tira de ~170px apos load do save do interior; logamos
  * TODA mudanca de glViewport/glScissor com caller p/ achar quem estreita. ---- */
@@ -1762,6 +1784,7 @@ DynLibFunction bully_stub_table[] = {
   {"memalign", (uintptr_t)my_memalign_diag},
   {"glViewport", (uintptr_t)my_glViewport},
   {"glScissor", (uintptr_t)my_glScissor},
+  {"pthread_create", (uintptr_t)my_pthread_create_pin},
   /* stat: ausentes como simbolo em glibc<2.33 -> via syscall (texto/fontes) */
   {"stat", (uintptr_t)my_stat}, {"lstat", (uintptr_t)my_lstat},
   {"fstat", (uintptr_t)my_fstat}, {"fstatat", (uintptr_t)my_fstatat},

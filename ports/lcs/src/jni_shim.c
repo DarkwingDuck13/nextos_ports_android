@@ -32,6 +32,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/mman.h>
+#include <sched.h>
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -5631,6 +5632,16 @@ static int lcs_play_intro(void) {
 }
 
 void jni_load(void) {
+  /* PERF: main/render EXCLUSIVA no core 2 (threads do engine vao pra 0/1/3 via
+   * my_pthread_create_pin em imports.c). LCS_THREAD_PIN=0 desliga. */
+  {
+    extern int lcs_thread_pin_on(void);
+    if (lcs_thread_pin_on()) {
+      cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(2, &cs);
+      if (sched_setaffinity(0, sizeof cs, &cs) == 0)
+        fprintf(stderr, "[pin] main/render -> core 2; engine threads -> 0/1/3\n");
+    }
+  }
   build_env();
   for (unsigned i = 0; i < sizeof(fake_vm) / sizeof(uintptr_t); i++)
     ((uintptr_t *)fake_vm)[i] = (uintptr_t)ret0;
@@ -6473,6 +6484,9 @@ void jni_load(void) {
               onMenu ? onMenu(fake_env, FAKE_OBJ) : -1, rstate, b21, p2632 ? *p2632 : -1);
       if (lcs_env_flag("LCS_GLSTATS")) lcs_gl_report();
     }
-    SDL_Delay(16);
+    /* PERF (2026-07-02): o SDL_Delay(16) fixo aqui somava 16ms a CADA frame ALEM do
+     * FPS_CAP (nanosleep) -> capava em ~21fps em vez de 30. O pacing agora e SO o
+     * FPS_CAP. LCS_LOOP_DELAY_MS restaura um delay fixo se precisar (debug). */
+    { int d = lcs_env_int("LCS_LOOP_DELAY_MS", 0); if (d > 0) SDL_Delay(d); }
   }
 }
