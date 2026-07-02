@@ -45,6 +45,28 @@ pkill -9 -x gptokeyb 2>/dev/null || true
 # extracao (setup splash) tambem conseguir criar o contexto GL e MOSTRAR A TELA.
 export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:$controlfolder/libs:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu"
 
+# XDG_RUNTIME_DIR: lancado pela ES (ex.: essway no S905X5M) vem VAZIO. Sem ele
+# o SDL nao inicia o video e a EGL cai no caminho quebrado (eglQueryDevicesEXT
+# missing) -> nenhuma config GL sobe -> tela preta/crash. Aponta p/ a runtime
+# dir da sessao (sem socket wayland o SDL usa KMSDRM, que a ES libera). Vale
+# tambem p/ o setup splash da extracao.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ]; then
+  for _d in /run/0-runtime-dir "/run/user/$(id -u 2>/dev/null)" /run/user/0 \
+            /var/run/user/0 /tmp/bully-runtime; do
+    [ -n "$_d" ] || continue
+    if [ -d "$_d" ] || mkdir -p "$_d" 2>/dev/null; then
+      chmod 700 "$_d" 2>/dev/null || true
+      export XDG_RUNTIME_DIR="$_d"
+      break
+    fi
+  done
+fi
+# se houver socket wayland na runtime dir, deixa o SDL usar wayland; senao KMSDRM
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  _ws=$(ls "${XDG_RUNTIME_DIR:-/nonexistent}"/wayland-* 2>/dev/null | head -1)
+  [ -n "$_ws" ] && export WAYLAND_DISPLAY="$(basename "$_ws")"
+fi
+
 $ESUDO chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || chmod +x "$GAMEDIR/bully" "$GAMEDIR/tools/"*.sh 2>/dev/null || true
 
 BULLY_BINARY="$GAMEDIR/bully" "$GAMEDIR/tools/extract-bully-data.sh" "" "$GAMEDIR" || {
