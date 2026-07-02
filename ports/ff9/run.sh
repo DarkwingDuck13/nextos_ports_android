@@ -75,10 +75,10 @@ export FF9_REALAUDIO=${FF9_REALAUDIO:-1} FF9_REALSOUND=${FF9_REALSOUND:-1}
 # SNDSAFE (dispatch via runtime_invoke) crasha no FF9FieldSoundDispatch (singleton nulo) —
 # a KeyNotFound 136 já é capturada pela engine (não-fatal). Manter DESLIGADO por padrão.
 export FF9_NOSNDSAFE=${FF9_NOSNDSAFE:-1}
-# fb0 do device é double-buffer vertical (1280x1440 = 2 metades de 720); a TV pode escanear a
-# metade que o jogo NÃO desenhou -> "menu escuro" pro usuário. FBMIRROR copia o frame novo pras
-# duas metades a cada swap (mesma técnica do LEGO Batman) -> imagem sempre visível na TV.
-export FF9_FBMIRROR=${FF9_FBMIRROR:-1}
+# FBMIRROR/FBBRIGHT: manipulação por-frame do fb0 (memcpy 3.7MB/frame) é pesada no CPU fraco e
+# arriscada; a metade do fb já é preenchida naturalmente pelo double-buffer. Default OFF (opt-in).
+# O "menu escuro na TV" é range HDMI limited/estado de display pós-reboot (ver HANDOFF), não render.
+export FF9_FBMIRROR=${FF9_FBMIRROR:-0}
 export FF9_GAMEPAD=${FF9_GAMEPAD:-1} FF9_FORCECONTROL=${FF9_FORCECONTROL:-1}
 export TER_GPVIRT=${TER_GPVIRT:-1} TER_GPVDUR=${TER_GPVDUR:-30} TER_GP_EVDEV=${TER_GP_EVDEV:-1}
 rm -f /tmp/tergp
