@@ -1569,9 +1569,23 @@ static void hook_clarity(void) {
   }
 }
 
+/* A opcao "Shadows" do menu de video fica ESCONDIDA por padrao: a sombra
+ * diferida (screen-space) do motor so renderiza no caminho ES3 + no path de
+ * profundidade amostravel especifico de Adreno (RenderTarget2DES3::
+ * BindAdrenoSubBuffer, gated pela flag "GPU suporta ATC" @off 2053, que existe
+ * so em Qualcomm/Adreno). Em GPU Mali/Utgard e no ES2 (devices 1GB) a sombra
+ * NAO aparece; alem disso o nivel High quebra outros efeitos (espelhos/etc).
+ * Deixar o toggle no menu so confunde (liga mas nada muda). Estudo completo em
+ * STUDY-SHADOWS-QUALITY.md. Escape hatch: BULLY2_SHADOWS_MENU=show reexibe. */
+static int shadows_menu_show(void) {
+  const char *e = first_env("BULLY2_SHADOWS_MENU", "BULLY_SHADOWS_MENU");
+  return e && (!strcmp(e, "1") || !strcmp(e, "show") || !strcmp(e, "on") ||
+               e[0] == 'y' || e[0] == 'Y');
+}
+
 static int my_GetDisplayShadowOption(void *self) {
   (void)self;
-  return 1;
+  return shadows_menu_show() ? 1 : 0; /* 0 = nao exibe a linha no menu */
 }
 
 static int my_GetMaxShadowOption(void *self) {
@@ -1582,27 +1596,29 @@ static int my_GetMaxShadowOption(void *self) {
 }
 
 static void hook_shadow_menu(void) {
-  if (!env_flag_default_on("BULLY2_SHADOWS_MENU", "BULLY_SHADOWS_MENU"))
-    return;
-
   uintptr_t display =
       so_symbol(&mod_game, "_ZN13BullySettings22GetDisplayShadowOptionEv");
-  uintptr_t max =
-      so_symbol(&mod_game, "_ZN13BullySettings18GetMaxShadowOptionEv");
   if (!display && text_base)
     display = (uintptr_t)text_base + 0x1033ccc;
-  if (!max && text_base)
-    max = (uintptr_t)text_base + 0x1033d24;
-
   if (display)
     hook_x64(display, (uintptr_t)my_GetDisplayShadowOption);
-  if (max)
-    hook_x64(max, (uintptr_t)my_GetMaxShadowOption);
 
-  fprintf(stderr,
-          "[shadows] menu forced display=%p max=%p max_setting=%d "
-          "(0=Off 1=Low 2=Medium 3=High)\n",
-          (void *)display, (void *)max, my_GetMaxShadowOption(NULL));
+  if (shadows_menu_show()) {
+    uintptr_t max =
+        so_symbol(&mod_game, "_ZN13BullySettings18GetMaxShadowOptionEv");
+    if (!max && text_base)
+      max = (uintptr_t)text_base + 0x1033d24;
+    if (max)
+      hook_x64(max, (uintptr_t)my_GetMaxShadowOption);
+    fprintf(stderr,
+            "[shadows] opcao 'Shadows' VISIVEL (BULLY2_SHADOWS_MENU=show) "
+            "max=%d (0=Off 1=Low 2=Medium 3=High)\n",
+            my_GetMaxShadowOption(NULL));
+  } else {
+    fprintf(stderr,
+            "[shadows] opcao 'Shadows' ESCONDIDA do menu (sombra diferida nao "
+            "renderiza fora de Adreno; BULLY2_SHADOWS_MENU=show p/ reexibir)\n");
+  }
 }
 
 static int g_shadow_default = -1;
@@ -1642,6 +1658,26 @@ static void patch_shadow_quality(void) {
             want2048, mem, cur);
   }
 
+  /* --- DEPTH-SAMPLEABLE p/ sombra em GPU nao-Adreno (Mali/etc) ---
+   * RendererES3 so re-anexa o depth-stencil como textura amostravel via
+   * RenderTarget2DES3::BindAdrenoSubBuffer, gated por uma flag @off 2053 que
+   * o motor liga SOMENTE se a GPU reporta GL_AMD_compressed_ATC_texture (=Adreno).
+   * Em Mali a flag fica 0 -> framedepth nao amostravel -> o resolve de sombra
+   * le profundidade lixo -> textureProj retorna 0 -> sombra invisivel.
+   * FIX: NOP no `cbz w8,skip` em RendererES3::BeginRendering @0x95aa8c, forcando
+   * a chamada de BindAdrenoSubBuffer sem fingir suporte ATC (texturas intactas).
+   * So faz sentido no caminho ES3 (RendererES2 nao tem esse path). */
+  if (env_enabled("BULLY2_SHADOW_DEPTHFIX")) {
+    uintptr_t cbz = (uintptr_t)text_base + 0x95aa8c;
+    if (*(uint32_t *)cbz == 0x340000c8) {
+      patch_stream_word(cbz, 0x340000c8, 0xd503201f, "shadowDepthSampleable");
+      fprintf(stderr, "[shadowq] depth-sampleable ON (BindAdrenoSubBuffer forcado em nao-Adreno)\n");
+    } else {
+      fprintf(stderr, "[shadowq] depthfix: assinatura inesperada @0x95aa8c = %08x\n",
+              *(uint32_t *)cbz);
+    }
+  }
+
   /* --- LUT High distinto de Medium (opt-in) --- */
   if (env_enabled("BULLY2_SHADOW_LUT_HIGH")) {
     uintptr_t lut4 = (uintptr_t)text_base + 0x5d05cc; /* 4a entrada */
@@ -1651,6 +1687,26 @@ static void patch_shadow_quality(void) {
     }
   }
 
+}
+
+/* Força a hora do jogo (Clock::SetGameClock) — DIAGNOSTICO de sombra: sol baixo
+ * (ex. 17h) faz sombra longa/visivel SE ela renderiza. opt-in BULLY2_FORCE_HOUR=17. */
+static void maybe_force_time_of_day(int frame) {
+  static int hour = -2;
+  static void (*set_clock)(unsigned char, unsigned char) = NULL;
+  if (hour == -2) {
+    const char *e = getenv("BULLY2_FORCE_HOUR");
+    hour = (e && *e) ? atoi(e) : -1;
+    if (hour >= 0)
+      set_clock = (void (*)(unsigned char, unsigned char))so_symbol(
+          &mod_game, "_ZN5Clock12SetGameClockEhh");
+  }
+  if (hour < 0 || !set_clock)
+    return;
+  if (frame != 600 && frame != 1200 && frame != 2400)
+    return;
+  fprintf(stderr, "[shadowq] SetGameClock(%d, 0) (frame %d)\n", hour, frame);
+  set_clock((unsigned char)hour, 0);
 }
 
 /* Blob shadow do personagem: g_bPlayerHasShadow em .bss (init tardio do jogo),
@@ -1683,6 +1739,9 @@ static void hook_shadow_default(void) {
   if (e && *e && (!strcmp(e, "native") || !strcmp(e, "original")))
     return;
 
+  /* default Medium (2), o mesmo de sempre: a opcao sumiu do MENU mas o
+   * rendering fica identico ao validado nos devices (Off<->Med mexe nos mesh
+   * shadows — nao arriscar regressao visual). BULLY2_SHADOW_DEFAULT muda. */
   g_shadow_default = parse_shadow_setting(e, 2);
   uintptr_t s = so_symbol(&mod_game, "_ZN13BullySettings16GetShadowDefaultEv");
   if (!s && text_base)
@@ -4258,6 +4317,7 @@ void jni_load(void) {
     maybe_runtime_texture_profile(f);
     maybe_force_phone_flag(f);
     maybe_force_ped_shadow(f);
+    maybe_force_time_of_day(f);
     OnDrawFrame(fake_env, NULL, 1.0f / 60.0f);
     texture_profile_reload_tick(f);
     if (f > 300 && (f % 300) == 0)

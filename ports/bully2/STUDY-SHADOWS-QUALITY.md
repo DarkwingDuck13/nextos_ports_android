@@ -1,5 +1,52 @@
 # ESTUDO — Sombras e Qualidade Gráfica do Bully (2026-07-02)
 
+## ★ CONCLUSÃO (sessão noturna Fable 5) — a sombra diferida NÃO renderiza fora de Adreno; decisão: ESCONDER a opção do menu
+
+**Cadeia de sombra diferida (screen-space) 100% mapeada e testada ao vivo no X5M:**
+1. O passo de **resolve DESENHA** (confirmado: resolve frag shader 317 → prog 395,
+   `glDrawElements` GL_TRIANGLES em fbo=2). O pipeline roda.
+2. Mas o resolve escreve **zero** → a textura screen-space de sombra fica vazia →
+   sombra invisível no mundo inteiro. (Readback via glReadPixels é enganoso no
+   Mali tile-based: até forçar a saída p/ constante 1.0 lê 0, porque o FBO ainda
+   é o DRAW target; validação real só por screenshot.)
+3. **Causa-raiz (disasm):** o shader de resolve amostra `framedepth`
+   (=`pp_depthstencil`, o depth-stencil da cena). Esse depth só vira textura
+   **amostrável** via `RenderTarget2DES3::BindAdrenoSubBuffer` (@0x95a14c), que
+   só é chamado quando a flag @offset **2053** do renderer está ligada. Essa flag
+   liga SÓ quando a GPU reporta a extensão `GL_AMD_compressed_ATC_texture`
+   (@0x599932) — ou seja, é **detecção de Adreno/Qualcomm**. Em Mali (não tem ATC)
+   a flag fica 0 → `framedepth` não amostrável → `textureProj` retorna 0 → sombra 0.
+   Isso casa com "funciona no celular Adreno (Moto G100), não no Mali/X5M".
+
+**Experimento de fix (BULLY2_SHADOW_DEPTHFIX, opt-in):** NOP no `cbz w8,skip`
+@0x95aa8c força `BindAdrenoSubBuffer` em não-Adreno SEM fingir ATC (texturas
+intactas). Efeito confirmado: o resolve passou a desenhar em **fbo=3** (FBO
+privado novo com o depth re-anexado). **PORÉM a sombra continua invisível** no
+A/B diurno (sol baixo hora 8, Jimmy no pátio: OFF≈ON). Logo, tornar o framedepth
+amostrável não basta — há mais camada(s) Mali-específica(s) (sampler2DShadow do
+light-depth-map / matriz shadowtrx / sampling do world shader). Sombra diferida
+inteira no Mali = **muro profundo**, não resolvido nesta sessão.
+
+**Decisão do usuário ("já que não existe sombra, desativar do menu"):** a opção
+**"Shadows" foi ESCONDIDA do menu Settings→Display** (`GetDisplayShadowOption`
+@0x1033ccc hookado → 0). Confirmado visualmente no X5M: a linha "Shadows" some
+(sobra a lacuna entre Clarity e Textures); restam Brightness/Subtitles/Language/
+Clarity/Textures/Light. Escape hatch: `BULLY2_SHADOWS_MENU=show` reexibe.
+Nível de sombra fica em **Medium** (default de sempre) de propósito — o nível
+controla também os blob/mesh shadows que FUNCIONAM; pôr Off seria regressão
+visual. Blob shadow sob personagens continua igual ao validado.
+
+**Ferramentas/infra desta sessão** (todas opt-in por env, cacheadas p/ não pesar
+em 1GB): `BULLY2_RESOLVEDRAW` (rastreia se o resolve desenha), `BULLY2_RESOLVEDUMP`
+(readback do FBO de resolve), `BULLY2_RESOLVE_FORCE=1..5` (força a saída do resolve
+p/ isolar fator), `BULLY2_SHADOW_DEPTHFIX` (força BindAdrenoSubBuffer). Screenshot
+sob demanda: `touch /dev/shm/bully_shot`. Toque por coord: `echo "X Y" >
+/dev/shm/bully_tap` (abre pause tocando o radar ~1770,110; navega menus touch).
+
+---
+
+
+
 Missão: fazer a opção "Shadows" do menu funcionar e melhorar a qualidade
 gráfica em devices com RAM/GPU sobrando (X5M 4GB Mali-G310), SEM afetar os
 devices de 1GB que já rodam bem. Estudo + disasm + testes ao vivo no X5M.

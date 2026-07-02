@@ -144,6 +144,19 @@ static int shadow_gl_log_enabled(void) {
   return enabled;
 }
 
+/* diagnostico de sombra gated por env, cacheado (evita getenv por-draw em
+ * device fraco): rastreio do passo de resolve + readback do FBO de resolve. */
+static int resolvedraw_enabled(void) {
+  static int e = -1;
+  if (e < 0) e = getenv("BULLY2_RESOLVEDRAW") ? 1 : 0;
+  return e;
+}
+static int resolvedump_enabled(void) {
+  static int e = -1;
+  if (e < 0) e = getenv("BULLY2_RESOLVEDUMP") ? 1 : 0;
+  return e;
+}
+
 void bully_gltrace(const char *fmt, ...) {
   if (!shadow_gl_log_enabled())
     return;
@@ -817,7 +830,11 @@ static int es3_quality_mode(void) {
   } else if (getenv("BULLY2_REAL_GL_VERSION")) {
     mode = 1;
   } else {
-    /* auto: precisa de RAM alta E contexto GL ES3 real */
+    /* auto: precisa de RAM suficiente E contexto GL ES3 real.
+     * Piso 1700MB = classe 2GB+ (2GB reporta ~1800-2000 de MemTotal; 1GB
+     * reporta ~630-950 e fica no ES2 spoof intocado). Ajustavel via
+     * BULLY2_ES3_MIN_MB; escape BULLY2_RENDERER=es2 se algum device 2GB
+     * (ex. Mali-G31) regredir com o RendererES3. */
     int es3 = 0;
     const unsigned char *(*rgs)(unsigned) = dlsym(RTLD_DEFAULT, "glGetString");
     if (rgs) {
@@ -825,7 +842,11 @@ static int es3_quality_mode(void) {
       if (v && strstr((const char *)v, "OpenGL ES 3"))
         es3 = 1;
     }
-    mode = (imports_mem_total_mb() >= 2600 && es3) ? 1 : 0;
+    int min_mb = 1700;
+    const char *m = first_env("BULLY2_ES3_MIN_MB", "BULLY_ES3_MIN_MB");
+    if (m && atoi(m) > 0)
+      min_mb = atoi(m);
+    mode = (imports_mem_total_mb() >= min_mb && es3) ? 1 : 0;
   }
   fprintf(stderr, "[gl] renderer mode=%s (mem=%dMB)\n",
           mode ? "ES3 (alta qualidade)" : "ES2 (spoof)",
@@ -937,9 +958,378 @@ static void my_glUniform4fv(int loc, int count, const float *v) {
   if (r) r(loc, count, v);
 }
 
+/* === SHADOWTRACE (BULLY2_SHADOWTRACE=1): rastreio profundo da cadeia de
+ * sombra deferred. Mantem mapa fbo->attachments, textura bound por unidade,
+ * contagem de draws por FBO/frame (identifica o pass do shadow map e se ha
+ * CASTERS desenhados nele), dump do estado no draw do RESOLVE (detecta
+ * feedback-loop: amostrar textura anexada ao FBO atual — Adreno tolera, Mali
+ * nao) e readback do output do resolve (shadowtex vazio = compare falhou).
+ * Opt-in, zero efeito sem a env. === */
+static int shadowtrace_enabled(void) {
+  static int v = -1;
+  if (v < 0)
+    v = env_enabled("BULLY2_SHADOWTRACE") ? 1 : 0;
+  return v;
+}
+#define ST_FBO_MAX 512
+#define ST_RBO_FLAG 0x40000000u
+typedef struct { unsigned color0, depth, stencil; } StFboAtt;
+static StFboAtt g_st_att[ST_FBO_MAX];
+static unsigned g_st_unit_tex[32];
+static unsigned g_st_frame;
+static unsigned g_st_draw_fbo_ids[24];
+static unsigned g_st_draw_dep[24];   /* depth-att no momento do draw */
+static unsigned g_st_draw_col[24];   /* color0-att no momento do draw */
+static unsigned char g_st_draw_dm[24]; /* depth mask no momento do draw */
+static unsigned g_st_draw_fbo_num[24];
+static int g_st_draw_fbo_cnt;
+static unsigned char g_st_depthmask = 1;
+static unsigned g_st_shadowtex;    /* color0 do FBO do resolve (= shadowtex) */
+static unsigned g_st_world_draws;  /* draws com shadowtex amostrada */
+
+static void st_texdesc(unsigned tex, char *out, size_t n) {
+  if (tex & ST_RBO_FLAG)
+    snprintf(out, n, "rbo%u", tex & ~ST_RBO_FLAG);
+  else if (tex && tex < g_texinfo_cap && g_texinfo[tex].alive)
+    snprintf(out, n, "%u(%dx%d,ifmt=0x%x)", tex, g_texinfo[tex].w,
+             g_texinfo[tex].h, g_texinfo[tex].ifmt);
+  else
+    snprintf(out, n, "%u", tex);
+}
+
+static void st_count_draw(void) {
+  if (!shadowtrace_enabled())
+    return;
+  unsigned f = g_shadow_bound_fbo;
+  unsigned dep = f < ST_FBO_MAX ? g_st_att[f].depth : 0;
+  unsigned col = f < ST_FBO_MAX ? g_st_att[f].color0 : 0;
+  if (g_st_shadowtex) {
+    for (int u = 0; u < 16; u++)
+      if (g_st_unit_tex[u] == g_st_shadowtex) { g_st_world_draws++; break; }
+  }
+  for (int i = 0; i < g_st_draw_fbo_cnt; i++)
+    if (g_st_draw_fbo_ids[i] == f && g_st_draw_dep[i] == dep &&
+        g_st_draw_col[i] == col && g_st_draw_dm[i] == g_st_depthmask) {
+      g_st_draw_fbo_num[i]++;
+      return;
+    }
+  if (g_st_draw_fbo_cnt < 24) {
+    g_st_draw_fbo_ids[g_st_draw_fbo_cnt] = f;
+    g_st_draw_dep[g_st_draw_fbo_cnt] = dep;
+    g_st_draw_col[g_st_draw_fbo_cnt] = col;
+    g_st_draw_dm[g_st_draw_fbo_cnt] = g_st_depthmask;
+    g_st_draw_fbo_num[g_st_draw_fbo_cnt++] = 1;
+  }
+}
+
+int bully2_feedback_fix_enabled_fwd(void);
+void bully_shadowtrace_frame(void) {
+  if (!shadowtrace_enabled()) {
+    if (bully2_feedback_fix_enabled_fwd())
+      g_st_frame++; /* fbfix precisa do frame p/ 1 blit/frame */
+    return;
+  }
+  g_st_frame++;
+  int hot = (g_st_frame <= 5) || (g_st_frame % 300 == 0);
+  if (hot) {
+    for (int i = 0; i < g_st_draw_fbo_cnt; i++) {
+      unsigned f = g_st_draw_fbo_ids[i];
+      char c0[48], dp[48];
+      const char *tag = "";
+      st_texdesc(g_st_draw_col[i], c0, sizeof(c0));
+      st_texdesc(g_st_draw_dep[i], dp, sizeof(dp));
+      if (!g_st_draw_col[i] && g_st_draw_dep[i])
+        tag = " <== DEPTH-ONLY (shadow map?)";
+      fprintf(stderr,
+              "[shadowtrace] frame=%u fbo=%u draws=%u color0=%s depth=%s "
+              "dmask=%d%s\n",
+              g_st_frame, f, g_st_draw_fbo_num[i], c0, dp, g_st_draw_dm[i],
+              tag);
+    }
+    if (g_st_shadowtex)
+      fprintf(stderr,
+              "[shadowtrace] frame=%u draws-amostrando-shadowtex(%u)=%u\n",
+              g_st_frame, g_st_shadowtex, g_st_world_draws);
+  }
+  g_st_draw_fbo_cnt = 0;
+  g_st_world_draws = 0;
+}
+
+static void st_resolve_dump(const char *kind, unsigned prog, int count) {
+  static int shots = 0, window = -1;
+  int wnd = (int)(g_st_frame / 600);
+  if (wnd != window) { window = wnd; shots = 0; }
+  if (shots >= 8)
+    return;
+  shots++;
+  unsigned f = g_shadow_bound_fbo;
+  char c0[48] = "-", dp[48] = "-";
+  if (f < ST_FBO_MAX) {
+    st_texdesc(g_st_att[f].color0, c0, sizeof(c0));
+    st_texdesc(g_st_att[f].depth, dp, sizeof(dp));
+    if (g_st_att[f].color0 && !(g_st_att[f].color0 & ST_RBO_FLAG))
+      g_st_shadowtex = g_st_att[f].color0;
+  }
+  fprintf(stderr,
+          "[shadowtrace] RESOLVE(%s) frame=%u prog=%u count=%d fbo=%u "
+          "color0=%s depth=%s\n",
+          kind, g_st_frame, prog, count, f, c0, dp);
+  for (int u = 0; u < 8; u++) {
+    unsigned t = g_st_unit_tex[u];
+    if (!t)
+      continue;
+    char td[48];
+    st_texdesc(t, td, sizeof(td));
+    char role[80];
+    role[0] = 0;
+    if (f < ST_FBO_MAX &&
+        (t == g_st_att[f].color0 || t == g_st_att[f].depth ||
+         t == g_st_att[f].stencil))
+      snprintf(role, sizeof(role), " **FEEDBACK: anexada ao FBO ATUAL %u**", f);
+    else
+      for (unsigned f2 = 0; f2 < ST_FBO_MAX; f2++) {
+        if (g_st_att[f2].depth == t) {
+          snprintf(role, sizeof(role), " [depth-att do fbo %u]", f2);
+          break;
+        }
+        if (g_st_att[f2].color0 == t) {
+          snprintf(role, sizeof(role), " [color-att do fbo %u]", f2);
+          break;
+        }
+      }
+    fprintf(stderr, "[shadowtrace]   unit%d tex=%s%s\n", u, td, role);
+  }
+}
+
+static void st_resolve_readback(void) {
+  static int shots = 0, window = -1;
+  int wnd = (int)(g_st_frame / 600);
+  if (wnd != window) { window = wnd; shots = 0; }
+  if (shots >= 6)
+    return;
+  shots++;
+  static void (*rp)(int, int, int, int, unsigned, unsigned, void *) = NULL;
+  static unsigned (*ge)(void) = NULL;
+  static void (*gi)(unsigned, int *) = NULL;
+  if (!rp) rp = dlsym(RTLD_DEFAULT, "glReadPixels");
+  if (!ge) ge = dlsym(RTLD_DEFAULT, "glGetError");
+  if (!gi) gi = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+  if (!rp || !gi)
+    return;
+  int vp[4] = {0, 0, 0, 0};
+  gi(0x0BA2 /*GL_VIEWPORT*/, vp);
+  int w = vp[2], h = vp[3];
+  if (w < 8 || h < 8)
+    return;
+  int rw = w < 64 ? w : 64, rh = h < 64 ? h : 64;
+  int rx = vp[0] + (w - rw) / 2, ry = vp[1] + (h - rh) / 2;
+  unsigned char *buf = malloc((size_t)rw * rh * 4);
+  if (!buf)
+    return;
+  if (ge) ge();
+  rp(rx, ry, rw, rh, 0x1908 /*GL_RGBA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, buf);
+  unsigned err = ge ? ge() : 0;
+  unsigned mn = 255, mx = 0;
+  unsigned long sum = 0;
+  for (int i = 0; i < rw * rh; i++) {
+    unsigned char r = buf[i * 4];
+    if (r < mn) mn = r;
+    if (r > mx) mx = r;
+    sum += r;
+  }
+  fprintf(stderr,
+          "[shadowtrace] RESOLVE out %dx%d@%d,%d R: min=%u max=%u avg=%.1f "
+          "err=0x%x (min=max=255 -> resolve nao escreveu sombra)\n",
+          rw, rh, rx, ry, mn, mx, (double)sum / (rw * rh), err);
+  free(buf);
+}
+
+/* === FEEDBACK FIX (BULLY2_FEEDBACK_FIX=1): quebra o feedback-loop do pass
+ * de sombra. A engine amostra `framedepth` (depth-stencil da cena) ENQUANTO
+ * ele esta anexado ao FBO em que desenha — comportamento INDEFINIDO no spec.
+ * Adreno tolera (sombra funciona no celular); Mali devolve lixo/0 -> sombra
+ * some no jogo inteiro. Fix: blit do depth p/ uma textura-copia e amostrar a
+ * COPIA durante o draw do resolve, restaurando o binding depois. === */
+static int feedback_fix_enabled(void) {
+  static int v = -1;
+  if (v < 0)
+    v = env_enabled("BULLY2_FEEDBACK_FIX") ? 1 : 0;
+  return v;
+}
+int bully2_feedback_fix_enabled_fwd(void) { return feedback_fix_enabled(); }
+static unsigned g_fbfix_tex, g_fbfix_fbo;
+static int g_fbfix_w, g_fbfix_h;
+static unsigned g_fbfix_frame_blitted; /* frame do ultimo blit (1 blit/frame) */
+
+/* retorna unit+1 se trocou o binding (orig_tex sai com a textura original) */
+static int st_feedback_fix_begin(unsigned *orig_tex) {
+  unsigned f = g_shadow_bound_fbo;
+  if (!f || f >= ST_FBO_MAX)
+    return 0;
+  unsigned dep = g_st_att[f].depth;
+  if (!dep || (dep & ST_RBO_FLAG))
+    return 0;
+  int unit = -1;
+  for (int u = 0; u < 8; u++)
+    if (g_st_unit_tex[u] == dep) { unit = u; break; }
+  if (unit < 0)
+    return 0;
+  if (!(dep < g_texinfo_cap && g_texinfo[dep].alive && g_texinfo[dep].w > 0))
+    return 0;
+  int w = g_texinfo[dep].w, h = g_texinfo[dep].h;
+  unsigned ifmt = g_texinfo[dep].ifmt;
+
+  static void (*p_genTex)(int, unsigned *), (*p_bindTex)(unsigned, unsigned);
+  static void (*p_texImage)(unsigned, int, int, int, int, int, unsigned,
+                            unsigned, const void *);
+  static void (*p_texPar)(unsigned, unsigned, int);
+  static void (*p_genFbo)(int, unsigned *), (*p_bindFbo)(unsigned, unsigned);
+  static void (*p_fboTex)(unsigned, unsigned, unsigned, unsigned, int);
+  static void (*p_blit)(int, int, int, int, int, int, int, int, unsigned,
+                        unsigned);
+  static void (*p_active)(unsigned);
+  if (!p_blit) {
+    p_genTex = dlsym(RTLD_DEFAULT, "glGenTextures");
+    p_bindTex = dlsym(RTLD_DEFAULT, "glBindTexture");
+    p_texImage = dlsym(RTLD_DEFAULT, "glTexImage2D");
+    p_texPar = dlsym(RTLD_DEFAULT, "glTexParameteri");
+    p_genFbo = dlsym(RTLD_DEFAULT, "glGenFramebuffers");
+    p_bindFbo = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+    p_fboTex = dlsym(RTLD_DEFAULT, "glFramebufferTexture2D");
+    p_blit = dlsym(RTLD_DEFAULT, "glBlitFramebuffer");
+    p_active = dlsym(RTLD_DEFAULT, "glActiveTexture");
+  }
+  if (!p_blit || !p_genTex || !p_texImage || !p_fboTex)
+    return 0;
+
+  unsigned saved_active = g_shadow_active_texture;
+
+  if (g_fbfix_tex && (g_fbfix_w != w || g_fbfix_h != h)) {
+    /* resolucao mudou: recria (raro) */
+    static void (*p_delTex)(int, const unsigned *) = NULL;
+    static void (*p_delFbo)(int, const unsigned *) = NULL;
+    if (!p_delTex) p_delTex = dlsym(RTLD_DEFAULT, "glDeleteTextures");
+    if (!p_delFbo) p_delFbo = dlsym(RTLD_DEFAULT, "glDeleteFramebuffers");
+    if (p_delTex) p_delTex(1, &g_fbfix_tex);
+    if (p_delFbo) p_delFbo(1, &g_fbfix_fbo);
+    g_fbfix_tex = g_fbfix_fbo = 0;
+  }
+  if (!g_fbfix_tex) {
+    unsigned fmt, type;
+    unsigned att = 0x8D00; /* GL_DEPTH_ATTACHMENT */
+    if (ifmt == 0x88F0 /*DEPTH24_STENCIL8*/) {
+      fmt = 0x84F9; type = 0x84FA; att = 0x821A; /* DEPTH_STENCIL */
+    } else { /* DEPTH_COMPONENT24/16/32F */
+      fmt = 0x1902; type = 0x1405;
+    }
+    p_genTex(1, &g_fbfix_tex);
+    p_active(0x84C0 + unit);
+    p_bindTex(0x0DE1, g_fbfix_tex);
+    p_texImage(0x0DE1, 0, (int)ifmt, w, h, 0, fmt, type, NULL);
+    p_texPar(0x0DE1, 0x2801, 0x2600); /* MIN NEAREST */
+    p_texPar(0x0DE1, 0x2800, 0x2600); /* MAG NEAREST */
+    p_texPar(0x0DE1, 0x2802, 0x812F); /* WRAP_S CLAMP */
+    p_texPar(0x0DE1, 0x2803, 0x812F); /* WRAP_T CLAMP */
+    p_texPar(0x0DE1, 0x884C, 0);      /* COMPARE_MODE NONE */
+    p_genFbo(1, &g_fbfix_fbo);
+    p_bindFbo(0x8CA9 /*DRAW*/, g_fbfix_fbo);
+    p_fboTex(0x8CA9, att, 0x0DE1, g_fbfix_tex, 0);
+    p_bindFbo(0x8D40 /*FRAMEBUFFER*/, f);
+    g_fbfix_w = w; g_fbfix_h = h;
+    fprintf(stderr,
+            "[fbfix] copia de depth criada tex=%u fbo=%u %dx%d ifmt=0x%x "
+            "(unit%d feedback de tex %u no fbo %u)\n",
+            g_fbfix_tex, g_fbfix_fbo, w, h, ifmt, unit, dep, f);
+  }
+  /* 1 blit por frame cobre todos os draws de resolve do frame */
+  if (g_fbfix_frame_blitted != g_st_frame + 1) {
+    static unsigned char (*p_isEn)(unsigned) = NULL;
+    static void (*p_dis)(unsigned) = NULL, (*p_en)(unsigned) = NULL;
+    if (!p_isEn) {
+      p_isEn = dlsym(RTLD_DEFAULT, "glIsEnabled");
+      p_dis = dlsym(RTLD_DEFAULT, "glDisable");
+      p_en = dlsym(RTLD_DEFAULT, "glEnable");
+    }
+    int scissor = p_isEn ? p_isEn(0x0C11 /*SCISSOR_TEST*/) : 0;
+    if (scissor && p_dis) p_dis(0x0C11); /* blit respeita scissor */
+    p_bindFbo(0x8CA8 /*READ*/, f);
+    p_bindFbo(0x8CA9 /*DRAW*/, g_fbfix_fbo);
+    p_blit(0, 0, w, h, 0, 0, w, h, 0x100 /*DEPTH_BUFFER_BIT*/, 0x2600);
+    p_bindFbo(0x8D40, f);
+    if (scissor && p_en) p_en(0x0C11);
+    g_fbfix_frame_blitted = g_st_frame + 1;
+  }
+  *orig_tex = dep;
+  p_active(0x84C0 + unit);
+  p_bindTex(0x0DE1, g_fbfix_tex);
+  p_active(saved_active);
+  return unit + 1;
+}
+
+static void st_feedback_fix_end(int unit, unsigned orig_tex) {
+  static void (*p_bindTex)(unsigned, unsigned) = NULL;
+  static void (*p_active)(unsigned) = NULL;
+  if (!p_bindTex) {
+    p_bindTex = dlsym(RTLD_DEFAULT, "glBindTexture");
+    p_active = dlsym(RTLD_DEFAULT, "glActiveTexture");
+  }
+  unsigned saved_active = g_shadow_active_texture;
+  p_active(0x84C0 + (unsigned)unit);
+  p_bindTex(0x0DE1, orig_tex);
+  p_active(saved_active);
+}
+
 /* diag: checa status de compilacao dos shaders (BULLY2_SHADERCHK=1) —
  * se o resolve de sombra (sampler2DShadow) falhar compilar, shadowtex fica
  * vazio e nao ha sombra. */
+/* rastreia se o RESOLVE de sombra (sampler2DShadow) realmente DESENHA.
+ * shader resolve -> programa -> glDrawArrays com esse programa ativo. */
+unsigned g_resolve_shaders[16]; int g_resolve_shn = 0;
+static unsigned g_resolve_progs[16]; static int g_resolve_pn = 0;
+unsigned g_cur_prog = 0;
+static int is_resolve_prog(unsigned p) {
+  for (int i = 0; i < g_resolve_pn; i++)
+    if (g_resolve_progs[i] == p) return 1;
+  return 0;
+}
+int is_resolve_prog_ext(unsigned p) { return is_resolve_prog(p); }
+static void my_glAttachShader(unsigned prog, unsigned sh) {
+  static void (*r)(unsigned, unsigned) = NULL;
+  if (!r) r = dlsym(RTLD_DEFAULT, "glAttachShader");
+  if (sh) {
+    for (int i = 0; i < g_resolve_shn; i++)
+      if (g_resolve_shaders[i] == sh && g_resolve_pn < 16) {
+        if (!is_resolve_prog(prog)) g_resolve_progs[g_resolve_pn++] = prog;
+        if (getenv("BULLY2_RESOLVEDRAW"))
+          fprintf(stderr, "[resolvedraw] resolve shader %u -> prog %u\n", sh, prog);
+      }
+  }
+  if (r) r(prog, sh);
+}
+static void my_glDrawArrays(unsigned mode, int first, int count) {
+  static void (*r)(unsigned, int, int) = NULL;
+  if (!r) r = dlsym(RTLD_DEFAULT, "glDrawArrays");
+  if (resolvedraw_enabled() && is_resolve_prog(g_cur_prog)) {
+    static int c;
+    if (c++ < 6)
+      fprintf(stderr, "[resolvedraw] RESOLVE DESENHOU prog=%u mode=0x%x count=%d fbo=%u\n",
+              g_cur_prog, mode, count, g_shadow_bound_fbo);
+  }
+  st_count_draw();
+  int st_res = shadowtrace_enabled() && is_resolve_prog(g_cur_prog);
+  if (st_res)
+    st_resolve_dump("arrays", g_cur_prog, count);
+  unsigned fbfix_orig = 0;
+  int fbfix_unit = 0;
+  if (feedback_fix_enabled() && is_resolve_prog(g_cur_prog))
+    fbfix_unit = st_feedback_fix_begin(&fbfix_orig);
+  if (r) r(mode, first, count);
+  if (fbfix_unit)
+    st_feedback_fix_end(fbfix_unit - 1, fbfix_orig);
+  if (st_res)
+    st_resolve_readback();
+}
+
 static void my_glCompileShader(unsigned sh) {
   static void (*rc)(unsigned) = NULL;
   static void (*giv)(unsigned, unsigned, int *) = NULL;
@@ -999,6 +1389,27 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
     if (strstr(cat, "hadow") || strstr(cat, "Shadow"))
       fprintf(stderr, "[shaderdump] %s tem 'shadow' (%zu bytes)\n", path,
               strlen(cat));
+  }
+  if (strstr(cat, "sampler2DShadow") && strstr(cat, "shadowdepth")) {
+    extern unsigned g_resolve_shaders[16]; extern int g_resolve_shn;
+    if (g_resolve_shn < 16) g_resolve_shaders[g_resolve_shn++] = sh;
+    if (getenv("BULLY2_RESOLVEDRAW"))
+      fprintf(stderr, "[resolvedraw] resolve fragment shader = %u\n", sh);
+  }
+
+  /* DIAGNOSTICO: forcar a saida do resolve p/ isolar qual fator zera a sombra.
+   * BULLY2_RESOLVE_FORCE=1 const 1.0 (testa write path) | 2 shadowparam.x |
+   * 3 textureProj cru | 4 frameSample | 5 shadowPos.z */
+  const char *rf = getenv("BULLY2_RESOLVE_FORCE");
+  if (rf && strstr(cat, "shadowAmt * shadowparam.x")) {
+    const char *rep = "1.0";
+    if (rf[0] == '2') rep = "shadowparam.x";
+    else if (rf[0] == '3') rep = "textureProj(shadowdepth, shadowPos)";
+    else if (rf[0] == '4') rep = "frameSample";
+    else if (rf[0] == '5') rep = "clamp(shadowPos.z, 0.0, 1.0)";
+    char *nc = str_replace_all(cat, "shadowAmt * shadowparam.x", rep);
+    if (nc) { free(cat); cat = nc; }
+    fprintf(stderr, "[resolveforce] resolve saida forcada -> %s\n", rep);
   }
 
   int is_vertex = strstr(cat, "gl_Position") != NULL;
@@ -1082,6 +1493,11 @@ static void my_glBindTexture(unsigned target, unsigned texture) {
                   g_shadow_active_texture, target, texture, g_shadow_bound_fbo);
   if (real_glBindTexture)
     real_glBindTexture(target, texture);
+  if (target == 0x0DE1) {
+    unsigned st_u = g_shadow_active_texture - 0x84C0;
+    if (st_u < 32)
+      g_st_unit_tex[st_u] = texture;
+  }
   if (target == 0x0DE1)
     g_bound_2d = texture;
   else if (target == 0x8513 || target_is_cube_face(target))
@@ -1154,6 +1570,14 @@ static void my_glFramebufferRenderbuffer(unsigned target, unsigned attachment,
     bully_gltrace("glFramebufferRenderbuffer fbo=%u att=0x%x rbo=%u target=0x%x",
                   g_shadow_bound_fbo, attachment, renderbuffer,
                   renderbuffertarget);
+  if (g_shadow_bound_fbo < ST_FBO_MAX) {
+    StFboAtt *a = &g_st_att[g_shadow_bound_fbo];
+    unsigned v = renderbuffer ? (ST_RBO_FLAG | renderbuffer) : 0;
+    if (attachment == 0x8CE0) a->color0 = v;
+    else if (attachment == 0x8D00) a->depth = v;
+    else if (attachment == 0x8D20) a->stencil = v;
+    else if (attachment == 0x821A) { a->depth = v; a->stencil = v; }
+  }
   if (real_glFramebufferRenderbuffer)
     real_glFramebufferRenderbuffer(target, attachment, renderbuffertarget,
                                    renderbuffer);
@@ -1169,6 +1593,13 @@ static void my_glFramebufferTexture2D(unsigned target, unsigned attachment,
   if (shadow_gl_log_enabled())
     bully_gltrace("glFramebufferTexture2D fbo=%u att=0x%x tex=%u target=0x%x lvl=%d",
                   g_shadow_bound_fbo, attachment, texture, textarget, level);
+  if (g_shadow_bound_fbo < ST_FBO_MAX) {
+    StFboAtt *a = &g_st_att[g_shadow_bound_fbo];
+    if (attachment == 0x8CE0) a->color0 = texture;
+    else if (attachment == 0x8D00) a->depth = texture;
+    else if (attachment == 0x8D20) a->stencil = texture;
+    else if (attachment == 0x821A) { a->depth = texture; a->stencil = texture; }
+  }
   if (real_glFramebufferTexture2D)
     real_glFramebufferTexture2D(target, attachment, textarget, texture, level);
 }
@@ -1182,6 +1613,15 @@ static void my_glViewport(int x, int y, int w, int h) {
                   h);
   if (real_glViewport)
     real_glViewport(x, y, w, h);
+}
+
+static void (*real_glDepthMask)(unsigned char) = NULL;
+static void my_glDepthMask(unsigned char flag) {
+  if (!real_glDepthMask)
+    real_glDepthMask = dlsym(RTLD_DEFAULT, "glDepthMask");
+  g_st_depthmask = flag ? 1 : 0;
+  if (real_glDepthMask)
+    real_glDepthMask(flag);
 }
 
 static void (*real_glClear)(unsigned) = NULL;
@@ -1201,6 +1641,7 @@ static void my_glUseProgram(unsigned program) {
   if (g_shadow_bound_fbo && shadow_gl_log_enabled())
     bully_gltrace("glUseProgram fbo=%u program=%u", g_shadow_bound_fbo,
                   program);
+  extern unsigned g_cur_prog; g_cur_prog = program;
   if (real_glUseProgram)
     real_glUseProgram(program);
 }
@@ -1213,8 +1654,56 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type,
   if (g_shadow_bound_fbo && shadow_gl_log_enabled())
     bully_gltrace("glDrawElements fbo=%u mode=0x%x count=%d type=0x%x idx=%p",
                   g_shadow_bound_fbo, mode, count, type, indices);
+  extern int is_resolve_prog_ext(unsigned);
+  extern unsigned g_cur_prog, g_shadow_bound_fbo;
+  int resolve_here = resolvedraw_enabled() && is_resolve_prog_ext(g_cur_prog);
+  if (resolve_here) {
+    static int c;
+    if (c++ < 6)
+      fprintf(stderr, "[resolvedraw] RESOLVE DESENHOU(elem) prog=%u mode=0x%x count=%d fbo=%u\n",
+              g_cur_prog, mode, count, g_shadow_bound_fbo);
+  }
+  st_count_draw();
+  int st_res = shadowtrace_enabled() && is_resolve_prog_ext(g_cur_prog);
+  if (st_res)
+    st_resolve_dump("elements", g_cur_prog, count);
+  unsigned fbfix_orig = 0;
+  int fbfix_unit = 0;
+  if (feedback_fix_enabled() && is_resolve_prog_ext(g_cur_prog))
+    fbfix_unit = st_feedback_fix_begin(&fbfix_orig);
   if (real_glDrawElements)
     real_glDrawElements(mode, count, type, indices);
+  if (fbfix_unit)
+    st_feedback_fix_end(fbfix_unit - 1, fbfix_orig);
+  if (st_res)
+    st_resolve_readback();
+  if (resolve_here && resolvedump_enabled()) {
+    static int d;
+    if (d++ < 3) {
+      /* ler de volta o conteudo REAL do FBO de resolve: consulta o
+       * DRAW_FRAMEBUFFER_BINDING atual e o binda p/ leitura (o engine pode ter
+       * usado GL_DRAW_FRAMEBUFFER separado, senao liamos o fb default=preto). */
+      void (*rgp)(int,int,int,int,unsigned,unsigned,void*) = dlsym(RTLD_DEFAULT,"glReadPixels");
+      unsigned (*rge)(unsigned) = dlsym(RTLD_DEFAULT,"glGetError");
+      void (*rgiv)(unsigned,int*) = dlsym(RTLD_DEFAULT,"glGetIntegerv");
+      void (*rbf)(unsigned,unsigned) = dlsym(RTLD_DEFAULT,"glBindFramebuffer");
+      if (rge) rge(0);
+      int draw_fbo=0, old_read=0;
+      if (rgiv){ rgiv(0x8CA6/*DRAW_FRAMEBUFFER_BINDING*/,&draw_fbo);
+                 rgiv(0x8CAA/*READ_FRAMEBUFFER_BINDING*/,&old_read); }
+      if (rbf) rbf(0x8CA8/*READ_FRAMEBUFFER*/,(unsigned)draw_fbo);
+      int W=256,H=256; static unsigned char buf[256*256*4];
+      if (rgp) {
+        rgp(0,0,W,H,0x1908/*RGBA*/,0x1401/*UBYTE*/,buf);
+        unsigned err = rge?rge(0):0;
+        long nz=0,rmin=255,rmax=0,rsum=0;
+        for (int i=0;i<W*H;i++){unsigned char r=buf[i*4];if(r)nz++;if(r<rmin)rmin=r;if(r>rmax)rmax=r;rsum+=r;}
+        fprintf(stderr,"[resolvedump] drawfbo=%d err=0x%x .r nz=%ld min=%ld max=%ld avg=%ld\n",
+                draw_fbo,err,nz,rmin,rmax,rsum/(W*H));
+      }
+      if (rbf) rbf(0x8CA8,(unsigned)old_read);
+    }
+  }
 }
 
 static void (*real_glDeleteTextures)(int, const unsigned *) = NULL;
@@ -1466,6 +1955,7 @@ static unsigned (*real_eglSwapBuffers)(void *, void *) = NULL;
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   static unsigned long n;
   void *engine_surf = surf;
+  bully_shadowtrace_frame();
   /* kmsdrm/wayland/x11, ou mali-G/H700 (blitter): present pelo caminho do SDL
    * (SDL_GL_SwapWindow), que aciona o page-flip/blitter. O eglSwapBuffers cru
    * NAO apresenta nesses backends. bully_swap_buffers decide raw vs SwapWindow. */
@@ -1731,8 +2221,11 @@ DynLibFunction bully_stub_table[] = {
     {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
     {"glViewport", (uintptr_t)my_glViewport},
     {"glClear", (uintptr_t)my_glClear},
+    {"glDepthMask", (uintptr_t)my_glDepthMask},
     {"glUseProgram", (uintptr_t)my_glUseProgram},
     {"glDrawElements", (uintptr_t)my_glDrawElements},
+    {"glAttachShader", (uintptr_t)my_glAttachShader},
+    {"glDrawArrays", (uintptr_t)my_glDrawArrays},
     {"glGenVertexArrays", (uintptr_t)my_glGenVertexArrays},
     {"glBindVertexArray", (uintptr_t)my_glBindVertexArray},
     {"glDeleteVertexArrays", (uintptr_t)my_glDeleteVertexArrays},
