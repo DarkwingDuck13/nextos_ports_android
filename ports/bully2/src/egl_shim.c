@@ -14,6 +14,7 @@
 
 static SDL_Window *g_win;
 static SDL_GLContext g_ctx;
+static void *g_egl_display, *g_egl_surface, *g_egl_context;
 static int g_w = 1280;
 static int g_h = 720;
 static int g_is_kmsdrm = 0;   /* kmsdrm/wayland precisam SDL_GL_SwapWindow p/ page-flip; mali fbdev usa eglSwapBuffers cru */
@@ -133,6 +134,14 @@ int bully_init_gl(void) {
     fprintf(stderr, "[gl] backend video='%s' kmsdrm=%d\n", drv ? drv : "?", g_is_kmsdrm); }
 
   SDL_GL_MakeCurrent(g_win, g_ctx);
+  /* captura ESTAVEL da surface/display/context de scan-out do SDL (a que mostra
+   * a splash e apresenta de verdade). Guardada agora, no init, pois depois a
+   * engine faz eglMakeCurrent na SUA surface e eglGetCurrentSurface deixaria de
+   * retornar a do SDL. Usada pelo pin de surface (imports.c) p/ devices onde a
+   * surface recriada da engine nao fica ligada ao scanout (H700/Knulli). */
+  g_egl_display = eglGetCurrentDisplay();
+  g_egl_surface = eglGetCurrentSurface(EGL_DRAW);
+  g_egl_context = eglGetCurrentContext();
   const GLubyte *renderer = glGetString(GL_RENDERER);
   const GLubyte *version = glGetString(GL_VERSION);
   fprintf(stderr, "[gl] %dx%d driver=%s | EGL d=%p s=%p c=%p | %s / %s\n",
@@ -151,6 +160,12 @@ void bully_egl_objects(uintptr_t *d, uintptr_t *s, uintptr_t *c) {
   if (c)
     *c = (uintptr_t)eglGetCurrentContext();
 }
+
+/* handles ESTAVEIS de scan-out do SDL, capturados no init (nao mudam quando a
+ * engine faz makeCurrent na surface dela). Usados pelo pin de surface. */
+void *bully_sdl_surface(void) { return g_egl_surface; }
+void *bully_sdl_display(void) { return g_egl_display; }
+void *bully_sdl_context(void) { return g_egl_context; }
 
 int bully_make_current(void) {
   return SDL_GL_MakeCurrent(g_win, g_ctx) == 0 ? 1 : 0;

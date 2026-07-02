@@ -1243,6 +1243,64 @@ static void my_glDrawBuffers(int n, const unsigned *b) {
 extern void bully_swap_buffers(void);
 extern int bully_is_kmsdrm(void);
 extern void bully_maybe_screenshot(void);
+extern void *bully_sdl_surface(void);
+
+/* PIN DE SURFACE (fix tela-preta H700/Knulli e afins):
+ * a engine destroi a surface EGL do SDL e recria a propria via
+ * eglCreateWindowSurface sobre o native-window fake 0xB211FACE. No blob
+ * Utgard (Mali-450) isso devolve a surface do fb0 e funciona; no blob do
+ * Mali-G31 r20p0 (H700/CubeXX Knulli) a surface recriada nao fica ligada ao
+ * scanout -> jogo renderiza no vazio (audio+frames, painel congelado na
+ * splash). Interceptamos create/destroy p/ SEMPRE devolver a surface de
+ * scan-out do SDL (a que apresenta de verdade) e nunca destrui-la.
+ * Auto-ON em fbdev (nao-kmsdrm); em kmsdrm o swap ja vai por SDL_GL_SwapWindow.
+ * BULLY2_PIN_SURFACE=0 desliga, =1 forca. */
+static int surface_pin_enabled(void) {
+  static int en = -1;
+  if (en < 0) {
+    const char *e = getenv("BULLY2_PIN_SURFACE");
+    if (e && *e)
+      en = strcmp(e, "0") != 0;
+    else
+      en = bully_is_kmsdrm() ? 0 : 1; /* auto: pin em fbdev, dispensa em kmsdrm */
+    fprintf(stderr, "[egl] surface pin=%d (kmsdrm=%d)\n", en, bully_is_kmsdrm());
+  }
+  return en;
+}
+
+static void *(*real_eglCreateWindowSurface)(void *, void *, void *,
+                                            const int *) = NULL;
+static void *my_eglCreateWindowSurface(void *dpy, void *cfg, void *win,
+                                       const int *attr) {
+  if (surface_pin_enabled()) {
+    void *s = bully_sdl_surface();
+    if (s) {
+      fprintf(stderr,
+              "[egl] CreateWindowSurface PINNED -> SDL scanout %p (win=%p)\n", s,
+              win);
+      return s;
+    }
+  }
+  if (!real_eglCreateWindowSurface)
+    real_eglCreateWindowSurface =
+        dlsym(RTLD_DEFAULT, "eglCreateWindowSurface");
+  return real_eglCreateWindowSurface
+             ? real_eglCreateWindowSurface(dpy, cfg, win, attr)
+             : NULL;
+}
+
+static unsigned (*real_eglDestroySurface)(void *, void *) = NULL;
+static unsigned my_eglDestroySurface(void *dpy, void *surf) {
+  if (surface_pin_enabled() && surf == bully_sdl_surface()) {
+    fprintf(stderr, "[egl] DestroySurface no-op (SDL scanout preservada) %p\n",
+            surf);
+    return 1; /* EGL_TRUE */
+  }
+  if (!real_eglDestroySurface)
+    real_eglDestroySurface = dlsym(RTLD_DEFAULT, "eglDestroySurface");
+  return real_eglDestroySurface ? real_eglDestroySurface(dpy, surf) : 1;
+}
+
 static unsigned (*real_eglSwapBuffers)(void *, void *) = NULL;
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   if (bully_is_kmsdrm()) {
@@ -1250,6 +1308,13 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
     return 1;
   }
   bully_maybe_screenshot();
+  /* com o pin, sempre apresenta a surface de scan-out do SDL (a engine pode
+   * ter passado a sua, ja redirecionada pra esta, mas garantimos). */
+  if (surface_pin_enabled()) {
+    void *s = bully_sdl_surface();
+    if (s)
+      surf = s;
+  }
   if (!real_eglSwapBuffers)
     real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
@@ -1471,6 +1536,8 @@ DynLibFunction bully_stub_table[] = {
     {"AAsset_close", (uintptr_t)aa_close},
     {"eglGetProcAddress", (uintptr_t)my_eglGetProcAddress},
     {"eglSwapBuffers", (uintptr_t)my_eglSwapBuffers},
+    {"eglCreateWindowSurface", (uintptr_t)my_eglCreateWindowSurface},
+    {"eglDestroySurface", (uintptr_t)my_eglDestroySurface},
     {"glGetString", (uintptr_t)w_glGetString},
     {"glShaderSource", (uintptr_t)my_glShaderSource},
     {"glTexParameteri", (uintptr_t)my_glTexParameteri},
