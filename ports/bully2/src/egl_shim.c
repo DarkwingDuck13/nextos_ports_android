@@ -124,10 +124,12 @@ int bully_init_gl(void) {
    * SDL_GL_SwapWindow (page-flip no scanout); 'mali' e qualquer fbdev
    * desconhecido apresentam via eglSwapBuffers cru (backends fbdev variantes
    * de outros CFWs nao fazem page-flip pelo SDL). */
+  /* comparacao case-INsensitive: o SDL do EmuELEC novo (X5M) reporta
+   * "KMSDRM" em maiusculas — case-sensitive caia no present cru = tela preta. */
   { const char *drv = SDL_GetCurrentVideoDriver();
-    g_is_kmsdrm = (drv && (SDL_strcmp(drv, "kmsdrm") == 0 ||
-                           SDL_strcmp(drv, "wayland") == 0 ||
-                           SDL_strcmp(drv, "x11") == 0)) ? 1 : 0;
+    g_is_kmsdrm = (drv && (SDL_strcasecmp(drv, "kmsdrm") == 0 ||
+                           SDL_strcasecmp(drv, "wayland") == 0 ||
+                           SDL_strcasecmp(drv, "x11") == 0)) ? 1 : 0;
     fprintf(stderr, "[gl] backend video='%s' kmsdrm=%d\n", drv ? drv : "?", g_is_kmsdrm); }
 
   SDL_GL_MakeCurrent(g_win, g_ctx);
