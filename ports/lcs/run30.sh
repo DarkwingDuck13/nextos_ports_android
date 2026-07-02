@@ -42,7 +42,7 @@ else
 fi
 echo "[run30] mem_tier=$LCS_MEM_TIER mem_kb=$mem_kb" >&2
 : "${LCS_MAXSECONDS:=45}"
-: "${LCS_STREAMER_MAX:=80}"
+: "${LCS_STREAMER_MAX:=3000}"  # 80 truncava o load do RESPAWN (finished=0 -> leques de geometria lixo); 3000 deixa terminar (morte real terminou em 171 pumps)
 : "${LCS_INITLIMIT:=2}"
 : "${LCS_ENABLE_CUTSCENE:=1}"
 : "${LCS_ENABLE_HELI:=1}"
