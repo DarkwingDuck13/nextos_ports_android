@@ -36,6 +36,7 @@ prog() { # prog estado feito total "MENSAGEM"
 }
 
 splash_start() {
+  [ -n "${SONIC_NO_SPLASH:-}" ] && return 0   # o binario ja desenha o bake (first-run integrado)
   rm -f "$STOPF"
   SONIC_SETUPSPLASH=1 SONIC_SETUP_FILE="$SETUPF" SONIC_SETUP_STOP="$STOPF" \
     "$GAMEDIR/sonic4.arm64" >>"$BAKELOG" 2>&1 &

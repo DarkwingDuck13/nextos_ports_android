@@ -946,6 +946,23 @@ int main(int argc, char *argv[]) {
   jni_shim_set_package("com.sega.sonic4episode2", 22);
   { const char *d = getenv("SONIC_DATADIR"); jni_shim_set_local_path(d ? d : "."); }
 
+#ifdef __aarch64__
+  /* 🔑 FIRST-RUN INTEGRADO (v5): se faltam lib/data, extrai AQUI mostrando o bake
+     na MESMA sessao de video do jogo (o launcher/helper do CFW ja escolheu o
+     display — funciona em ArchR/sway, X5M/kmsdrm, weston, fbdev...). */
+  if (access(GAME_SO, F_OK) != 0 || access("data/data.obb", F_OK) != 0) {
+    if (access("tools/sonic4ep2_extract.sh", F_OK) == 0) {
+      extern int sonic_run_firstrun_bake(void);
+      fprintf(stderr, "=== first-run: extraindo dados (bake integrado) ===\n");
+      sonic_run_firstrun_bake();
+    }
+    if (access(GAME_SO, F_OK) != 0 || access("data/data.obb", F_OK) != 0) {
+      fprintf(stderr, "ERRO: faltam %s / data/data.obb — copie o APK do jogo "
+                      "(splits da Play Store, .apks do SAI ou .apkm) pro gamedir.\n", GAME_SO);
+      return 1;
+    }
+  }
+#endif
   build_base_table();
   load_module(GAME_SO, GAME_HEAP_MB, g_base, g_base_n);
   if (getenv("SONIC_DEBUG")) { fprintf(stderr, "== load_module OK, aplicando patches ==\n"); fflush(stderr); }

@@ -74,54 +74,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# NextOS novo (S905X5M etc): o mod do sistema define pm_platform_helper e roda
-# ports com SDL_VIDEODRIVER=kmsdrm parando a essway (que segura o DRM). Pro BAKE
-# do first-run aparecer, replicamos a MESMA convencao do sistema so nessa fase.
-NEXTOS_NOVO=0
-command -v pm_platform_helper >/dev/null 2>&1 && NEXTOS_NOVO=1
+# First-run: quando o CFW tem pm_platform_helper (NextOS novo, ArchR...), a
+# extracao+bake rodam DENTRO do proprio binario (first-run integrado) na sessao
+# de video que o helper fornecer — o launcher NAO adivinha driver nem para ES.
+# Sem helper, o weston fallback abaixo cobre sistemas SDL-wayland sem sessao.
+command -v pm_platform_helper >/dev/null 2>&1 || start_weston_if_needed
 
-NEED_EXTRACT=0
-{ [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; } || NEED_EXTRACT=1
-
-if [ "$NEXTOS_NOVO" = 1 ]; then
-  if [ "$NEED_EXTRACT" = 1 ] && command -v systemd-run >/dev/null 2>&1; then
-    # ⚠️ Este launcher roda DENTRO do cgroup da essway (runemu): um systemctl stop
-    # essway aqui mataria a nos mesmos (e a extracao no meio!). Igual ao
-    # pm_platform_helper do mod: delega TUDO (bake+extracao+jogo+restauracao da
-    # ES) pra um service transiente independente e sai.
-    FRWRAP="/tmp/sonic_v5_first_run_$$.sh"
-    cat > "$FRWRAP" <<FRE
-#!/bin/bash
-cd "$GAMEDIR"
-export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
-bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
-if [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; then
-  GP="${controlfolder}/gptokeyb"
-  [ -x "\$GP" ] && "\$GP" -1 "sonic4.arm64" -c "$GAMEDIR/sonic4.gptk" &
-  GPID=\$!
-  ./sonic4.arm64
-  kill -9 \$GPID 2>/dev/null
-fi
-systemd-run --no-block --collect /bin/sh -c 'touch /var/lock/start.games; systemctl reset-failed essway 2>/dev/null; systemctl start essway' 2>/dev/null
-rm -f "\$0"
-FRE
-    chmod +x "$FRWRAP"
-    systemd-run --no-block --collect --unit="sonic4-firstrun-$$" \
-      --service-type=simple --working-directory="$GAMEDIR" \
-      --setenv=SDL_VIDEODRIVER=kmsdrm --setenv=SDL_KMSDRM_VSYNC_DEFAULT=1 \
-      --setenv=HOME=/storage \
-      --property=ExecStartPre='/bin/sh -c "rm -f /var/lock/start.games; systemctl stop essway"' \
-      "$FRWRAP" 2>>/tmp/mod_NextOS.log
-    exit 0
-  fi
-else
-  start_weston_if_needed
+# ---- FIRST RUN (fallback p/ sistemas SEM helper): extrai com a tela bake ----
+if ! command -v pm_platform_helper >/dev/null 2>&1; then
+  bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
 fi
 
-# ---- FIRST RUN: extrai do .apkm com a tela bake (o proprio binario desenha) ----
-bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
-
-if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb" ]; then
+HAS_SOURCE=0
+for _src in "$GAMEDIR"/*.apk "$GAMEDIR"/*.APK "$GAMEDIR"/*.apkm "$GAMEDIR"/*.APKM "$GAMEDIR"/*.apks "$GAMEDIR"/*.APKS "$GAMEDIR"/*.obb; do
+  [ -f "$_src" ] && HAS_SOURCE=1 && break
+done
+if { [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb" ]; } && [ "$HAS_SOURCE" = 0 ]; then
   echo "############################################################"
   echo " Faltam os dados do Sonic 4 Episode II (arm64)."
   echo " Copie para $GAMEDIR/:"
@@ -130,7 +98,6 @@ if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb
   echo " e abra o Sonic 4 EP2 de novo."
   echo "############################################################"
   sleep 8
-  [ "$NEXTOS_NOVO" = 1 ] && command -v systemctl >/dev/null 2>&1 && systemctl start essway 2>/dev/null
   command -v pm_finish >/dev/null 2>&1 && pm_finish
   exit 1
 fi

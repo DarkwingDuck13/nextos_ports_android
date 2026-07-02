@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int sp_file_exists(const char *path) {
@@ -112,7 +113,36 @@ static int read_setup_state(const char *path, int *state, int *done, int *total,
   return 1;
 }
 
-int sonic_run_setup_splash(void) {
+/* desenha o loop do bake ate o stop-file existir (ou filho informado sair). */
+static int splash_loop(pid_t child);
+
+int sonic_run_setup_splash(void) { return splash_loop(-1); }
+
+/* 🔑 FIRST-RUN INTEGRADO: chamado pelo main ANTES de carregar a libfox quando
+   faltam lib/data. Spawna o extrator (sem splash proprio) e desenha o bake AQUI,
+   na MESMA sessao de video que o jogo vai usar em seguida — funciona em qualquer
+   CFW porque quem escolheu o display foi o launcher/helper do sistema, nao nos. */
+int sonic_run_firstrun_bake(void) {
+  const char *stopf = getenv("SONIC_SETUP_STOP");
+  if (!stopf || !*stopf) stopf = "/tmp/sonic_setup_stop";
+  unlink(stopf);
+  pid_t pid = fork();
+  if (pid == 0) {
+    setenv("SONIC_NO_SPLASH", "1", 1);        /* o binario ja desenha o bake */
+    execlp("bash", "bash", "tools/sonic4ep2_extract.sh", (char *)NULL);
+    _exit(127);
+  }
+  if (pid < 0) return -1;
+  int rc = splash_loop(pid);
+  int st = 0;
+  waitpid(pid, &st, 0);
+  unlink(stopf);
+  fprintf(stderr, "[bake] extrator terminou (status=%d, splash=%d)\n",
+          WIFEXITED(st) ? WEXITSTATUS(st) : -1, rc);
+  return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static int splash_loop(pid_t child) {
   const char *setup = getenv("SONIC_SETUP_FILE");
   const char *stop = getenv("SONIC_SETUP_STOP");
   if (!setup || !*setup)
@@ -141,6 +171,18 @@ int sonic_run_setup_splash(void) {
       SDL_Quit();
       usleep(500 * 1000);
       continue;
+    }
+    {
+      const char *vd = SDL_GetCurrentVideoDriver();
+      if (vd && (strcmp(vd, "offscreen") == 0 || strcmp(vd, "dummy") == 0)) {
+        /* driver INVISIVEL nao serve pro bake — conta como falha e re-tenta
+           (apos o unset do herdado, o SDL pode escolher outro quando a sessao
+           real ficar disponivel). */
+        fprintf(stderr, "[setup] driver '%s' e invisivel -> re-tenta (try %d)\n", vd, try);
+        SDL_Quit();
+        usleep(500 * 1000);
+        continue;
+      }
     }
     w = SDL_CreateWindow("Sonic 4 EP2 setup", SDL_WINDOWPOS_UNDEFINED,
                          SDL_WINDOWPOS_UNDEFINED, 640, 480,
@@ -176,6 +218,10 @@ int sonic_run_setup_splash(void) {
   }
 
   while (!sp_file_exists(stop)) {
+    if (child > 0) {
+      int st;
+      if (waitpid(child, &st, WNOHANG) == child) { child = -1; break; }
+    }
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
       if (ev.type == SDL_QUIT)
