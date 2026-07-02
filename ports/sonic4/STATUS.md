@@ -1,5 +1,28 @@
 # Sonic 4 EP2 - STATUS
 
+## Sessao 2026-07-01 (noite 2) — MULTI-DEVICE: SFX arm64 validado + X5M COMPLETO + R36S parcial
+- ✅ **Mali-450 .79 (NextOS): fix SFX arm64 VALIDADO** — tsRead alloc/buf resolvem (fallback
+  ...Pm), `LPK read alloc ok` nos OGGs, `play sfx key="Ok" handle=1` tocando. Binario c20d52f.
+- 🏆 **S905X5M .103 (NextOS aarch64, Mali-G310 Valhall, 3.7GB RAM): ARM64 COMPLETO VALIDADO** —
+  titulo (sprites+logo) -> menu (musica+Ok sfx) -> GAMEPLAY Sylvania Castle (Sonic+Tails+HUD)
+  em **1920x1080, GL ES 3.2**, musica+SFX pelo LPK. Screenshots x5m_title.png/x5m_2.png.
+  🔑 **Requisitos X5M descobertos (p/ o launcher/pacote arm64):**
+  (1) o SDL2 do X5M e **wayland-only** (sem kmsdrm/fbdev/x11) e a ES (essway) roda KMSDRM
+  direto SEM sessao wayland -> port precisa subir **weston** (existe em /usr/bin) e rodar
+  dentro dele: `XDG_RUNTIME_DIR=/run/user/0 weston &` + jogo (nosso binario acha o socket
+  sozinho). Padrao westonpack/SWD2.
+  (2) **libmpg123.so.0 NAO existe no sistema** -> bundlar no gamedir + LD_LIBRARY_PATH
+  (a copia aarch64 de 28/06 no gamedir funciona).
+  Setup deployado: sonic4.arm64 + libfox v3 + data/data.obb v3 (md5 4c7745b1) + sfx_map 730
+  + launcher Sonic4EP2-arm64.sh (launcher ainda NAO sobe weston — TODO empacotar).
+- ✅ **R36S cabeado .170.2 (ArchR): fluxo de INSTALACAO 100%** — zip v4.5 + APK/cache BYO ->
+  extracao first-run perfeita (libfox 8.8MB + OBB 594MB). ⚠️ No LAUNCH o device CAIU da rede
+  (sem rota) — suspeita: parei a `essway` (ES+sway = o compositor wayland que o SDL do jogo
+  usa la) antes de lancar; sem display + algo derrubou o usb-eth. Instalacao antiga preservada
+  em sonic4ep2.prev_s4test_20260701. LICAO: **no ArchR NAO parar a essway** — lancar via
+  sessao (ES/PortMaster) ou com o sway vivo. PENDENTE: revalidar quando o device voltar.
+- ⏳ **R36S WiFi (ArkOS)**: offline a sessao toda (desligado). PENDENTE.
+
 ## Sessao 2026-07-01 (noite) — ARM64 v3: os 2 bugs de render RESOLVIDOS (validado pelo usuario)
 Commit `54b7322`. Binario `sonic4.arm64` deployado no .79. Usuario validou: menu abre,
 fase abre/retorna sem tela preta, **Electric Road "ficou perfeita"** (fundo preto, luzes finas,
