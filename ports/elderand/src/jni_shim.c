@@ -850,6 +850,25 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     }
     if (strcmp(nm, "getPackageName") == 0)
       return make_jstring(g_package_name);
+    /* 🔑 Unity Android lê a command-line da ENGINE do extra "unity" do Intent
+       (Activity.getIntent().getStringExtra("unity") -> updateUnityCommandLineArguments).
+       Injetamos -force-gfx-direct: o render MULTI-THREAD (GfxDeviceWorker submete GL de
+       outra thread) trava no Mali-400 Utgard — a notificação de conclusão de job da GPU
+       (_mali_uku_wait_for_notification) NUNCA chega -> deadlock, 0 draws, tela preta.
+       gfx-direct = TODO o GL na main thread (que é dona do contexto Mali/EGL). O
+       /proc/self/cmdline NÃO é lido no Android (por isso cmdline_fd nunca dispara).
+       ELD_UNITY_ARGS sobrescreve; CUP_NOGFXARGS desliga. */
+    if (strcmp(nm, "getStringExtra") == 0) {
+      void *key_j = va_arg(ap, void *);
+      const char *key = resolve_jstring(key_j);
+      if (key && strcmp(key, "unity") == 0 && !getenv("CUP_NOGFXARGS")) {
+        const char *uargs = getenv("ELD_UNITY_ARGS");
+        if (!uargs) uargs = "-force-gfx-direct -force-gles20";
+        debugPrintf("[UNITYARGS] getStringExtra(unity) -> \"%s\"\n", uargs);
+        return make_jstring(uargs);
+      }
+      return NULL;
+    }
     /* ---- Gamepad Xbox 360 virtual (TER_GAMEPAD): InputManager.getInputDevice(id) + getters ---- */
     if (strcmp(nm, "getInputDevice") == 0) return &g_gamepad_device;
     if (obj == (void *)&g_gamepad_device) {

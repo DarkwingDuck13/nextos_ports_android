@@ -1083,7 +1083,12 @@ static int make_catalog_overlay(const char *src, char *out, size_t outsz) {
     return 1;
   }
 
+  /* O path que a Unity passa p/ o catálogo vem MALFORMADO (RuntimePath do Android
+     resolve p/ "jar:file://<apk>!/assets/aa", e no so-loader o APK é vazio ->
+     "/storage/.../jar:file://!/assets/aa/catalog.json") e não abre. Como só existe
+     UM catálogo, caímos no path canônico real. */
   int in = open(src_copy, O_RDONLY);
+  if (in < 0) in = open(ASSET_BASE_M "assets/aa/catalog.json", O_RDONLY);
   if (in < 0) return 0;
   struct stat sb;
   if (fstat(in, &sb) < 0 || sb.st_size <= 0) { close(in); return 0; }
