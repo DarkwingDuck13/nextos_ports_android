@@ -549,6 +549,19 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     out[s] = (int16_t)x;
   }
 
+  /* FF7_MIXDUMP: grava a saida FINAL mixada (s16 44100 stereo) p/ analise
+   * offline de chiado/clip/click (primeiros ~45s; ~8MB). */
+  if (getenv("FF7_MIXDUMP")) {
+    static FILE *df = NULL; static long dumped = 0;
+    if (!df && dumped == 0) { const char *h = getenv("HOME"); if (!h) h = "/tmp";
+      char pth[256]; snprintf(pth, sizeof pth, "%s/mixdump.raw", h);
+      df = fopen(pth, "wb"); }
+    if (df) {
+      fwrite(out, 2, out_samples, df);
+      dumped += out_samples * 2;
+      if (dumped > 44100L * 4 * 45) { fclose(df); df = NULL; dumped = -1; }
+    }
+  }
   /* DIAG FF7_AUDDIAG: a cada ~40 callbacks, pico do mix (pre-gain) + players. */
   if (getenv("FF7_AUDDIAG") && (callback_count % 40 == 1)) {
     float mixpk = 0; for (int s = 0; s < out_samples; s++) { float a = mix_buf[s]<0?-mix_buf[s]:mix_buf[s]; if (a>mixpk) mixpk=a; }
