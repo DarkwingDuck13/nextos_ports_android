@@ -1857,9 +1857,50 @@ static void my_SceneView_RenderFullScreen(void *self, void *material) {
     tramp_scene_fullscreen(self, material);
 }
 
+/* Diagnostico: a sombra (shadow map) esta sendo ENTREGUE ao renderer?
+ * RendererES3::SetShadowTexture(Texture2D*) e RendererES::SetShadowMatrix.
+ * Se nunca chamados -> o shadow map renderiza mas nao vai pro shader do mundo
+ * = raiz do "sem sombra". */
+static void (*tramp_set_shadow_tex)(void *, void *) = NULL;
+static void (*tramp_set_shadow_mat)(void *, const void *) = NULL;
+static void my_SetShadowTexture(void *r, void *tex) {
+  static long n;
+  if (shadow_log_enabled() && (n < 8 || (n % 300) == 0))
+    fprintf(stderr, "[shadowlog] SetShadowTexture #%ld renderer=%p tex=%p\n", n,
+            r, tex);
+  n++;
+  if (tramp_set_shadow_tex)
+    tramp_set_shadow_tex(r, tex);
+}
+static void my_SetShadowMatrix(void *r, const void *m) {
+  static long n;
+  if (shadow_log_enabled() && (n < 8 || (n % 300) == 0))
+    fprintf(stderr, "[shadowlog] SetShadowMatrix #%ld renderer=%p\n", n, r);
+  n++;
+  if (tramp_set_shadow_mat)
+    tramp_set_shadow_mat(r, m);
+}
+
 static void hook_shadow_diagnostics(void) {
   if (!shadow_log_enabled())
     return;
+
+  uintptr_t sst = so_symbol(&mod_game,
+                            "_ZN11RendererES316SetShadowTextureEP9Texture2D");
+  uintptr_t ssm = so_symbol(&mod_game,
+                            "_ZN10RendererES15SetShadowMatrixERK8matrix44");
+  if (sst) {
+    tramp_set_shadow_tex = (void (*)(void *, void *))make_callthrough(sst);
+    if (tramp_set_shadow_tex)
+      hook_x64(sst, (uintptr_t)my_SetShadowTexture);
+  }
+  if (ssm) {
+    tramp_set_shadow_mat = (void (*)(void *, const void *))make_callthrough(ssm);
+    if (tramp_set_shadow_mat)
+      hook_x64(ssm, (uintptr_t)my_SetShadowMatrix);
+  }
+  fprintf(stderr, "[shadowlog] shadow-apply hooks sst=%p ssm=%p\n", (void *)sst,
+          (void *)ssm);
 
   uintptr_t rt = so_symbol(&mod_game,
                            "_ZN16RenderTarget2DES14InitWithFormatEjj11RTDepthType11RTColorTypeS1_S1_S1_");

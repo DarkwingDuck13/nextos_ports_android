@@ -129,6 +129,22 @@ O experimento decisivo (`BULLY2_REAL_GL_VERSION=1`, sem spoof ES2) no X5M:
 - SSAO e a projeção de sombra do personagem ficam como trabalho futuro
   (arriscado; precisa RE do composite de sombra + fix do material param do SSAO).
 
+## 9. Diagnóstico do composite (2026-07-02, hooks SetShadowTexture/Matrix)
+
+Hookei `RendererES3::SetShadowTexture` (0x95bd5c) e `RendererES::SetShadowMatrix`
+(0x956b74) — os que entregam o shadow map ao shader do mundo:
+- **AMBOS SÃO CHAMADOS** com textura válida (tex=0x55607c55e0) e matriz. Ou
+  seja, **a pipeline de sombra está LIGADA**: o shadow map (renderizado,
+  512x512) É aplicado ao renderer/shader. Não é o composite que falta.
+- Então a sombra ou (a) renderiza SUTIL demais na iluminação da cena, (b) fica
+  ATRÁS do personagem (câmera é traseira, sol parece à frente → sombra projetada
+  pro lado oposto da câmera, escondida pelo corpo), ou (c) o conteúdo do shadow
+  map / matriz de projeção está deslocado.
+- Determinar qual exige teste INTERATIVO (rotacionar câmera, mover personagem,
+  mudar hora do dia) ou comparar com a referência (celular) — não dá pra
+  resolver por screenshot estático de câmera fixa.
+- Hooks de diagnóstico ficam opt-in (BULLY2_SHADOWLOG=1); não afetam jogo normal.
+
 ## Próximo passo (futuro, arriscado)
 - Investigar por que o shadow map não é projetado no mundo (composite/sampling)
   — possível shader específico. Testar em ES3 com log de shaders.
