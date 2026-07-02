@@ -1992,6 +1992,14 @@ int ter_install_hook4(unsigned long off, void* fn, void** orig_out) {
   return 1;
 }
 static volatile void *g_player_create_menu_inst, *g_world_create_menu_inst, *g_player_name_menu_inst;
+static void ter_invoke0(const char *ns, const char *cn, const char *mn, void *obj);
+/* UX "campo = Criar": frame do commit do nome; o Draw do menu de criacao dispara a
+   criacao ~15 frames depois (deixa o teclado fechar/estado assentar). -1 = nada. */
+static volatile int g_pending_create_player = -1, g_pending_create_world = -1;
+/* menuMode do menu de criacao (capturado no Draw dele) p/ o BOUNCE da tela de nome:
+   o botao Criar so troca o menuMode p/ a tela "Digite o Nome" (teclado PC morto);
+   devolvemos o menuMode na hora + disparamos a criacao = Criar CRIA direto. */
+static volatile int g_menumode_create_p = -1, g_menumode_create_w = -1;
 static volatile void *g_world_name_menu_inst;
 static volatile int g_world_name_menu_frame = -999999;
 static volatile void *g_menu_nameedit_inst;
@@ -2008,6 +2016,14 @@ static void (*g_orig_world_create)(void*, void*);
 static void ter_player_create_draw_hook(void *self, void *mi) {
   g_player_create_menu_inst = self;
   g_player_create_menu_frame = g_render_frame;
+  { int (*getmm)(void *) = (int (*)(void *))(g_il2cpp_base + 0xF79984);
+    g_menumode_create_p = getmm(NULL); }
+  if (g_pending_create_player >= 0 && !ter_vkbd_blocking() &&
+      g_render_frame - g_pending_create_player > 15) {
+    g_pending_create_player = -1;
+    fprintf(stderr, "[AUTONAME] nome confirmado no menu -> CreateAndSave (campo = Criar)\n"); fsync(2);
+    ter_invoke0("", "GUIPlayerCreateMenu", "CreateAndSave", self);
+  }
   if (g_orig_player_create_draw) g_orig_player_create_draw(self, mi);
 }
 /* 🔑 A tela de nome usa o caminho de texto ESTILO PC: GetInputText(oldString, region, ...)
@@ -2051,6 +2067,7 @@ static void *ter_getinputtext_hook(long a0,long a1,long a2,long a3,long a4,
    TER_VK_DEFAULT. Tela morta nunca mais aparece. */
 static void ter_invoke0(const char *ns, const char *cn, const char *mn, void *obj);
 static void ter_il2cpp_set_string_field(void *obj, size_t off, void *s);
+
 static void (*g_orig_player_entername)(void*, void*);
 static void (*g_orig_world_entername)(void*, void*);
 static void ter_player_entername_hook(void *self, void *mi) {
@@ -2067,6 +2084,13 @@ static void (*g_orig_world_name_draw)(void*, void*);
 static void ter_world_name_draw_hook(void *self, void *mi) {
   g_world_name_menu_inst = self;
   g_world_name_menu_frame = g_render_frame;
+  if (g_menumode_create_w >= 0 && g_render_frame - g_world_create_menu_frame < 300) {
+    void (*setmm)(int, void *) = (void (*)(int, void *))(g_il2cpp_base + 0xF799D8);
+    setmm(g_menumode_create_w, NULL);
+    g_pending_create_world = g_render_frame;
+    fprintf(stderr, "[AUTONAME] Criar(mundo): bounce menuMode->%d + criacao agendada\n", g_menumode_create_w); fsync(2);
+    return;
+  }
   { static int upct; static int last = -999999;
     if (!jni_softinput_active()) upct++; else upct = 0;
     if (upct >= 30 && g_render_frame - last > 300) {
@@ -2079,6 +2103,15 @@ static void ter_world_name_draw_hook(void *self, void *mi) {
 static void ter_player_name_draw_hook(void *self, void *mi) {
   g_player_name_menu_inst = self;
   g_player_name_menu_frame = g_render_frame;
+  /* Criar apertado: BOUNCE imediato de volta pro menu de criacao + criacao agendada
+     (CreateAndSave dispara no Draw do menu, ~15 frames). A tela morta nem renderiza. */
+  if (g_menumode_create_p >= 0 && g_render_frame - g_player_create_menu_frame < 300) {
+    void (*setmm)(int, void *) = (void (*)(int, void *))(g_il2cpp_base + 0xF799D8);
+    setmm(g_menumode_create_p, NULL);
+    g_pending_create_player = g_render_frame;
+    fprintf(stderr, "[AUTONAME] Criar: bounce menuMode->%d + criacao agendada\n", g_menumode_create_p); fsync(2);
+    return;
+  }
   /* tela de nome do PERSONAGEM: liga o GUARD de edicao ativa (o byte que um TAP no campo
      ligaria) pela MESMA cadeia que o Draw dela le (disasm 0xD360E4: [[base+0x2fc2cb0]+0]
      ->+0xB8->[deref]->+0x2F0->byte+0x18) e arma o auto-enter. Com o guard=1, o Draw chama
@@ -2152,6 +2185,14 @@ static void ter_player_name_draw_hook(void *self, void *mi) {
 static void ter_world_create_draw_hook(void *self, void *mi) {
   g_world_create_menu_inst = self;
   g_world_create_menu_frame = g_render_frame;
+  { int (*getmm)(void *) = (int (*)(void *))(g_il2cpp_base + 0xF79984);
+    g_menumode_create_w = getmm(NULL); }
+  if (g_pending_create_world >= 0 && !ter_vkbd_blocking() &&
+      g_render_frame - g_pending_create_world > 15) {
+    g_pending_create_world = -1;
+    fprintf(stderr, "[AUTONAME] nome confirmado no menu -> CreateWorld (campo = Criar)\n"); fsync(2);
+    ter_invoke0("", "GUIWorldCreateMenu", "CreateWorld", self);
+  }
   if (g_orig_world_create_draw) g_orig_world_create_draw(self, mi);
 }
 static void ter_nameedit_enable_hook(void *self, void *arg, void *mi) {
@@ -2399,10 +2440,9 @@ static void ter_name_commit_text(const char *text) {
     ter_il2cpp_set_string_field(pinst, 0x88, s);  /* editPlayerName */
     *(unsigned char *)((char *)pinst + 0x18) = 0; /* editingPlayerName = false */
     fprintf(stderr, "[VKBD] player name aplicado: \"%s\" inst=%p forCreate=%d\n", text, pinst, for_create); fsync(2);
-    if (for_create) {
-      ter_invoke0("", "GUIPlayerCreateMenu", "CreateAndSave", pinst);
-      fprintf(stderr, "[VKBD] CreateAndSave invocado — criacao completada\n"); fsync(2);
-    }
+    /* 🔑 UX "o campo E o Criar": confirmou o nome no menu de criacao -> CRIA.
+       Agendado p/ o Draw do PROPRIO menu (thread do jogo, mesmo contexto do botao). */
+    g_pending_create_player = g_render_frame;
     return;
   }
   if (winst && fw >= 0 && fw < 180) {
@@ -2414,6 +2454,7 @@ static void ter_name_commit_text(const char *text) {
     ter_invoke0("", "GUIWorldCreateMenu", "CloseNameEdit", winst);
     if (wn) *(unsigned char *)((char *)wn + 0x14) = 0;        /* editingWorldName = false */
     ter_il2cpp_set_string_field(winst, 0x70, s);  /* _worldName */
+    g_pending_create_world = g_render_frame;
     fprintf(stderr, "[VKBD] world name aplicado: \"%s\" inst=%p\n", text, winst); fsync(2);
     if (wfor_create) {
       ter_invoke0("", "GUIWorldCreateMenu", "CreateWorld", winst);
