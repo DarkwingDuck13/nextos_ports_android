@@ -6180,6 +6180,19 @@ static void ff9_ebgdiag_scene(const char *tag, void *scene, void *fieldMap, int 
           *(uint32_t *)((char *)scene + 0x98), *(uint32_t *)((char *)scene + 0x9c),
           *(uint8_t *)((char *)scene + 0xa0), *(uint8_t *)((char *)scene + 0xa8),
           g_render_frame);
+  /* geometria REAL do mesh combinado: scene.vertices[]@0xB8 e indices[]@0xC0 (arrays il2cpp;
+     count em +0x18). Se vertCount>0 o mesh EXISTE (fundo preto = shader/material/RT, não falta
+     de geometria); se 0, a geração de quads do combined-path saiu vazia. */
+  {
+    void *verts = *(void **)((char *)scene + 0xb8);
+    void *inds = *(void **)((char *)scene + 0xc0);
+    long vc = (verts && !((uintptr_t)verts >> 40) && addr_readable((uintptr_t)verts + 0x18))
+                  ? *(int *)((char *)verts + 0x18) : -1;
+    long ic = (inds && !((uintptr_t)inds >> 40) && addr_readable((uintptr_t)inds + 0x18))
+                  ? *(int *)((char *)inds + 0x18) : -1;
+    fprintf(stderr, "[FF9_EBGDIAG]   MESH verts=%p vertCount=%ld indices=%p indCount=%ld\n",
+            verts, vc, inds, ic);
+  }
   if (overlays && overlay_size > 0) {
     int verbose = getenv("FF9_EBGDIAG_VERBOSE") != NULL;
     int max = verbose ? overlay_size : (overlay_size < 10 ? overlay_size : 10);
