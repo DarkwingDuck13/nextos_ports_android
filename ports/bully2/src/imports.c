@@ -914,6 +914,22 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
    * tem highp bom no fragment). No modo ES3 (GPU capaz) MANTEM highp: a
    * amostragem de shadow map / comparacao de profundidade precisa de precisao
    * alta -- em mediump (fp16) a sombra sai errada/invisivel. */
+  /* dump opt-in dos shaders p/ diagnostico (BULLY2_DUMP_SHADERS=1) */
+  if (getenv("BULLY2_DUMP_SHADERS")) {
+    static int sn = 0;
+    char path[128];
+    snprintf(path, sizeof(path), "/tmp/shaders/sh_%04d.glsl", sn++);
+    mkdir("/tmp/shaders", 0777);
+    FILE *sf = fopen(path, "w");
+    if (sf) {
+      fwrite(cat, 1, strlen(cat), sf);
+      fclose(sf);
+    }
+    if (strstr(cat, "hadow") || strstr(cat, "Shadow"))
+      fprintf(stderr, "[shaderdump] %s tem 'shadow' (%zu bytes)\n", path,
+              strlen(cat));
+  }
+
   int is_vertex = strstr(cat, "gl_Position") != NULL;
   char *patched;
   if (is_vertex || es3_quality_mode())
@@ -947,6 +963,14 @@ static void (*real_glTexParameteri)(unsigned, unsigned, int) = NULL;
 static void my_glTexParameteri(unsigned target, unsigned pname, int param) {
   if (!real_glTexParameteri)
     real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  /* diag sombra: COMPARE_MODE(0x884C)/COMPARE_FUNC(0x884D) — sampler2DShadow
+   * so funciona se COMPARE_MODE=COMPARE_REF_TO_TEXTURE(0x884E). */
+  if ((pname == 0x884C || pname == 0x884D) && getenv("BULLY2_SHADOWLOG")) {
+    static int c;
+    if (c++ < 20)
+      fprintf(stderr, "[shadowlog] glTexParameteri pname=0x%x param=0x%x\n",
+              pname, param);
+  }
   if (pname == 0x813D)
     return;
   /* Em half mode, LINEAR_MIPMAP_* so e permitido em texturas que REALMENTE tem a
