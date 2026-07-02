@@ -3666,9 +3666,34 @@ static void *os_thread_entry(void *p) {
   return (void *)(intptr_t)ret;
 }
 
+/* true se todos os cores online tem a mesma cpuinfo_max_freq (homogeneo:
+ * RK3326/H700/A133/S905). Em big.LITTLE (RK3588/T618) pinar em core fixo
+ * pode cair num core LENTO -> nao pina. */
+static int cpu_cores_homogeneous(long ncores) {
+  long first = -1;
+  for (long c = 0; c < ncores && c < 16; c++) {
+    char p[96];
+    snprintf(p, sizeof(p),
+             "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", c);
+    FILE *f = fopen(p, "r");
+    if (!f)
+      return 1; /* sem cpufreq: assume homogeneo (kernels antigos) */
+    long v = 0;
+    if (fscanf(f, "%ld", &v) != 1)
+      v = 0;
+    fclose(f);
+    if (first < 0)
+      first = v;
+    else if (v != first)
+      return 0;
+  }
+  return 1;
+}
+
 /* Afinidade por thread do engine (receita bully_vita: GameMain, RenderThread
  * e CDStreamThread em cores dedicados; streaming nunca disputa com render).
- * Default: ligado em devices com >=4 cores; BULLY2_THREAD_PIN=0 desliga. */
+ * Default: ligado em devices com >=4 cores HOMOGENEOS; BULLY2_THREAD_PIN=0
+ * desliga, =1 forca mesmo em big.LITTLE. */
 static void pin_engine_thread(pthread_t t, const char *name) {
   static int mode = -1;
   static long ncores;
@@ -3677,8 +3702,10 @@ static void pin_engine_thread(pthread_t t, const char *name) {
     const char *e = getenv("BULLY2_THREAD_PIN");
     if (e && strcmp(e, "0") == 0)
       mode = 0;
-    else
+    else if (e && strcmp(e, "1") == 0)
       mode = (ncores >= 4) ? 1 : 0;
+    else
+      mode = (ncores >= 4 && cpu_cores_homogeneous(ncores)) ? 1 : 0;
     fprintf(stderr, "[thr] pin mode=%d cores=%ld\n", mode, ncores);
   }
   if (!mode || !name)

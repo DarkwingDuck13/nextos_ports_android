@@ -20,6 +20,7 @@
 
 #include "jni_shim.h"
 #include "so_util.h"
+#include "util.h"
 
 volatile long g_asset_bytes_frame = 0;
 
@@ -1347,6 +1348,91 @@ static void my_glTexSubImage2D(unsigned target, int level, int x, int y, int w,
 }
 
 static void tl_noop(void) {}
+
+/* === OpenAL mute-stubs ===
+ * Registrados SO quando o libopenal.so.1 do sistema nao existe (muOS/Knulli
+ * sem OpenAL-soft): emulam um AL "funcional porem mudo" — jogo roda SEM SOM
+ * em vez de saltar pra NULL na init de audio. Handles fake nao-NULL; gen*
+ * devolvem nomes 1..n; SOURCE_STATE reporta AL_STOPPED. */
+static void *alstub_open_device(const char *n) {
+  (void)n;
+  fprintf(stderr, "[al-stub] alcOpenDevice: OpenAL ausente -> audio MUDO\n");
+  return (void *)0xA15;
+}
+static void *alstub_create_context(void *d, const int *a) {
+  (void)d;
+  (void)a;
+  return (void *)0xA16;
+}
+static int alstub_ret1(void) { return 1; }
+static void alstub_gen(int n, unsigned *ids) {
+  for (int i = 0; i < n; i++)
+    ids[i] = (unsigned)(i + 1);
+}
+static void alstub_get_srci(unsigned s, int param, int *out) {
+  (void)s;
+  if (out)
+    *out = (param == 0x1010 /*AL_SOURCE_STATE*/) ? 0x1014 /*AL_STOPPED*/ : 0;
+}
+static void alstub_get_srcf(unsigned s, int param, float *out) {
+  (void)s;
+  (void)param;
+  if (out)
+    *out = 0.0f;
+}
+static void alstub_get_src3f(unsigned s, int param, float *a, float *b,
+                             float *c) {
+  (void)s;
+  (void)param;
+  if (a)
+    *a = 0.0f;
+  if (b)
+    *b = 0.0f;
+  if (c)
+    *c = 0.0f;
+}
+static void alstub_get_bufi(unsigned b, int param, int *out) {
+  (void)b;
+  (void)param;
+  if (out)
+    *out = 0;
+}
+
+DynLibFunction bully_al_stub_table[] = {
+    {"alcOpenDevice", (uintptr_t)alstub_open_device},
+    {"alcCloseDevice", (uintptr_t)alstub_ret1},
+    {"alcCreateContext", (uintptr_t)alstub_create_context},
+    {"alcMakeContextCurrent", (uintptr_t)alstub_ret1},
+    {"alcIsExtensionPresent", (uintptr_t)ret0},
+    {"alGetError", (uintptr_t)ret0},
+    {"alGenBuffers", (uintptr_t)alstub_gen},
+    {"alGenSources", (uintptr_t)alstub_gen},
+    {"alGenFilters", (uintptr_t)alstub_gen},
+    {"alDeleteBuffers", (uintptr_t)ret0},
+    {"alDeleteSources", (uintptr_t)ret0},
+    {"alDeleteFilters", (uintptr_t)ret0},
+    {"alIsFilter", (uintptr_t)ret0},
+    {"alFilterf", (uintptr_t)ret0},
+    {"alFilteri", (uintptr_t)ret0},
+    {"alBufferData", (uintptr_t)ret0},
+    {"alGetBufferi", (uintptr_t)alstub_get_bufi},
+    {"alGetSourcei", (uintptr_t)alstub_get_srci},
+    {"alGetSourcef", (uintptr_t)alstub_get_srcf},
+    {"alGetSource3f", (uintptr_t)alstub_get_src3f},
+    {"alSourcei", (uintptr_t)ret0},
+    {"alSourcef", (uintptr_t)ret0},
+    {"alSource3f", (uintptr_t)ret0},
+    {"alSourcePlay", (uintptr_t)ret0},
+    {"alSourcePause", (uintptr_t)ret0},
+    {"alSourceStop", (uintptr_t)ret0},
+    {"alSourceRewind", (uintptr_t)ret0},
+    {"alSourceQueueBuffers", (uintptr_t)ret0},
+    {"alSourceUnqueueBuffers", (uintptr_t)ret0},
+    {"alListener3f", (uintptr_t)ret0},
+    {"alListenerfv", (uintptr_t)ret0},
+};
+int bully_al_stub_count =
+    sizeof(bully_al_stub_table) / sizeof(bully_al_stub_table[0]);
 
 void bully_imports_init(void) {
   ctype_init();

@@ -111,7 +111,52 @@ Sessão real de gameplay 2026-07-01 19:40–19:46 (perfil low ativo, RAM 256 ain
   engine compara contra esses getters fixos em mais de um lugar).
 - Gate `IsThereEnoughFreeMemory` = teto fixo 10MB/objeto (cmp #0xa00,lsl#12).
 
-## 9. Fontes locais dos ports de referência
+## 9. MULTI-DEVICE (estudo 2026-07-01, 4 agentes: auditoria código + libs + comparação ports + matriz CFW)
+
+### O que o binário exige de QUALQUER CFW
+- aarch64 + glibc ≥2.17 (binário único `bully.glibc230`), `libSDL2-2.0.so.0`,
+  `libEGL`, `libGLESv2` (+ extensões OES de VAO / TexStorage2DEXT / DrawBuffersEXT),
+  `libopenal.so.1` (agora com fallback: bundle no GAMEDIR + mute-stubs se faltar).
+- O so-loader NÃO usa NEEDED do libGame: resolve por símbolo (shims → snapshot
+  libc++ → dlsym global). Símbolo não resolvido = slot NULL = SIGSEGV no 1º uso
+  (sem lazy-stub) — por isso os fallbacks de preload importam.
+- `libmpg123` é NEEDED MORTA (0 imports) — removida do preload.
+- GLES3: só 5 símbolos ES3 usados, todos com fallback ES2/OES já shimado
+  (VAO×3, DrawBuffers, TexStorage2D). O resto é ES2 core. Port é genuinamente ES2.
+
+### Fixes desta sessão (commits a seguir)
+1. **Escada de config GL** (egl_shim): ES2{a8,a0}×{d24,d16} → ES3 fallback, com
+   retry na FALHA DE CONTEXTO (não só janela), rejeição de contexto desktop-GL
+   (`ctx_is_gles`, lição Sonic4/ROCKNIX-panfrost) e hints `SDL_OPENGL_ES_DRIVER`/
+   `SDL_VIDEO_X11_FORCE_EGL`. Mali-450 continua batendo na 1ª config (a8/d24).
+2. **Present por lista positiva**: kmsdrm/wayland/x11 → SDL_GL_SwapWindow;
+   "mali" E fbdev desconhecidos → eglSwapBuffers cru (antes qualquer driver
+   ≠"mali" ia pro caminho SDL — fbdev variante de outro CFW daria tela preta).
+3. **Preload com candidatos versionados**: libEGL.so→.so.1, libGLESv2.so→.so.2,
+   libopenal.so.1→.so (CFW sem symlink -dev não crasha mais).
+4. **Guarda big.LITTLE no pin de threads**: só pina se todos os cores têm a
+   mesma cpuinfo_max_freq (RK3588/RK3399/S922X ficam sem pin; RK3326/H700/
+   A133/S905 homogêneos mantêm). `BULLY2_THREAD_PIN=1` força.
+5. **OpenAL**: bundle `libopenal.so.1` (OpenAL-soft 1.21.1 compilado limpo no
+   docker glibc 2.30 — só libc/m/dl/stdc++, ALSA+Pulse via dlopen, sem sndio;
+   sistema ainda vence pela ordem do LD_LIBRARY_PATH) + **mute-stubs de AL**
+   (31 símbolos) registrados quando nem sistema nem bundle têm OpenAL → roda
+   SEM SOM em vez de crashar.
+
+### Riscos restantes mapeados (não bloqueantes, por device)
+- **Telas não-4:3/16:9** (RGCubeXX 720x720, Miyoo Flip): sem pillarbox — HUD/
+  aspecto podem distorcer. Só com tester.
+- **drawbuffers_safe** autodetect via /sys/module/mali (ON só em blob mali =
+  EmuELEC; OFF em ArkOS/panfrost/PowerVR — validado OK onde está OFF). Não
+  mexer sem tester Utgard não-EmuELEC.
+- **GAMEDIR read-only** (config Batocera exótica): saves/log falham — detectar
+  e redirecionar é P2.
+- **Sem gamepad SDL** (TrimUI stock?): sem input (fallback teclado é P2;
+  gptokeyb opt-in cobre).
+- **highp→mediump** em fragment: banding possível em panfrost/PowerVR (cosmético).
+- HDMI/display 1: resolução lida só do display 0.
+
+## 10. Fontes locais dos ports de referência
 
 - `/tmp/.../scratchpad/{gtasa_vita,bully_vita,bully-NX}` (clones; copiar se quiser manter)
 - GTA SA acervo: `/home/nextos/gta-sa-deploy/`, `/home/nextos/ports-staging/gtasa-extract/`

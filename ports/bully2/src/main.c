@@ -29,6 +29,8 @@ extern DynLibFunction bully_stub_table[];
 extern const int bully_stub_count;
 extern DynLibFunction revc_pthread_table[];
 extern const int revc_pthread_count;
+extern DynLibFunction bully_al_stub_table[];
+extern int bully_al_stub_count;
 extern void bully_imports_init(void);
 extern void jni_load(void);
 extern void bully_gltrace_dump(FILE *out);
@@ -77,7 +79,15 @@ static void print_aarch64_frames(uintptr_t fp, uintptr_t sp) {
 }
 
 static void build_base_table(void) {
-  g_base_n = bully_stub_count + revc_pthread_count;
+  /* sem OpenAL no sistema (muOS/Knulli sem OpenAL-soft): registra os
+   * mute-stubs pra rodar SEM SOM em vez de crashar na init de audio. */
+  int use_al_stubs = dlsym(RTLD_DEFAULT, "alcOpenDevice") == NULL;
+  if (use_al_stubs)
+    fprintf(stderr,
+            "AVISO: libopenal.so.1 nao encontrado — audio DESLIGADO "
+            "(mute-stubs)\n");
+  g_base_n = bully_stub_count + revc_pthread_count +
+             (use_al_stubs ? bully_al_stub_count : 0);
   g_base = malloc(sizeof(DynLibFunction) * (size_t)g_base_n);
   if (!g_base) {
     fprintf(stderr, "base table malloc failed\n");
@@ -86,6 +96,9 @@ static void build_base_table(void) {
   memcpy(g_base, bully_stub_table, sizeof(DynLibFunction) * bully_stub_count);
   memcpy(g_base + bully_stub_count, revc_pthread_table,
          sizeof(DynLibFunction) * revc_pthread_count);
+  if (use_al_stubs)
+    memcpy(g_base + bully_stub_count + revc_pthread_count, bully_al_stub_table,
+           sizeof(DynLibFunction) * bully_al_stub_count);
 }
 
 static void crash_handler(int sig, siginfo_t *info, void *uc) {
@@ -130,14 +143,29 @@ static void install_crash_handler(void) {
   sigaction(SIGILL, &sa, NULL);
 }
 
+/* Cada slot tenta candidatos em ordem: CFWs sem pacote -dev muitas vezes so
+ * tem o nome versionado (libEGL.so.1, libGLESv2.so.2) — sem o fallback o
+ * dlopen falha silencioso e os simbolos GL viram UNRESOLVED import. */
 static void preload_device_libs(void) {
-  static const char *libs[] = {
-      "libSDL2-2.0.so.0", "libGLESv2.so", "libEGL.so",
-      "libopenal.so.1",   "libmpg123.so.0", "libm.so.6", NULL,
+  static const char *libs[][3] = {
+      {"libSDL2-2.0.so.0", NULL, NULL},
+      {"libGLESv2.so", "libGLESv2.so.2", NULL},
+      {"libEGL.so", "libEGL.so.1", NULL},
+      /* libmpg123: NEEDED morta do libGame (0 imports) — nao pre-carregar */
+      {"libopenal.so.1", "libopenal.so", NULL},
+      {"libm.so.6", NULL, NULL},
+      {NULL, NULL, NULL},
   };
-  for (int i = 0; libs[i]; i++) {
-    void *h = dlopen(libs[i], RTLD_NOW | RTLD_GLOBAL);
-    fprintf(stderr, "preload: %s %s\n", libs[i], h ? "OK" : dlerror());
+  for (int i = 0; libs[i][0]; i++) {
+    void *h = NULL;
+    const char *got = NULL;
+    for (int j = 0; j < 3 && libs[i][j] && !h; j++) {
+      h = dlopen(libs[i][j], RTLD_NOW | RTLD_GLOBAL);
+      if (h)
+        got = libs[i][j];
+    }
+    fprintf(stderr, "preload: %s %s\n", got ? got : libs[i][0],
+            h ? "OK" : dlerror());
   }
 }
 
