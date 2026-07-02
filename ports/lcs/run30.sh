@@ -11,6 +11,36 @@ done
 for e in /proc/*/exe; do case "$(readlink "$e" 2>/dev/null)" in */lcs) kill -9 $(echo "$e"|sed 's#/proc/##;s#/exe##') 2>/dev/null;; esac; done
 rm -f heartbeat.txt run.log progress3.txt /dev/shm/lcs_shot.raw /dev/shm/lcs_shot.txt /dev/shm/lcs_btn /dev/shm/lcs_axis shot_gameplay.raw shot_gameplay.txt
 swapon -p 20 /storage/roms/swap2g.img 2>/dev/null
+# ES fora do caminho: ele desenha por cima do fbdev do jogo (visto em screenshot) e
+# come ~70MB de RAM. Para durante o jogo; religa no fim so se estava ativo.
+ES_WAS_ACTIVE=0
+if systemctl is-active emustation >/dev/null 2>&1; then ES_WAS_ACTIVE=1; fi
+systemctl stop emustation 2>/dev/null
+# ===== RAM/PERF (estudo RAM-1GB 2026-07-02) =====
+# higiene malloc (receita Dysmantle): menos arenas + trim/mmap agressivos = menos
+# fragmentacao no arena anonimo (o vilao dos ~254MB do smaps)
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
+export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
+echo 60 > /proc/sys/vm/swappiness 2>/dev/null
+# escada por RAM do device (estilo Bully.sh/DYSMANTLE.sh): o port se adapta sozinho
+mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null); mem_kb=${mem_kb:-999999}
+if [ "$mem_kb" -lt 716800 ]; then
+  # <700MB (classe R36S): perfil MEMLOW completo (cortes de mundo p/ caber)
+  : "${LCS_MEM_TIER:=1gb}"
+  : "${LCS_GFX_MEMLOW:=1}"
+  : "${LCS_GFX_STREAM_MEM_MB:=24}"
+  : "${LCS_GFX_DRAW_DISTANCE:=0.45}"
+  export LCS_GFX_MEMLOW LCS_GFX_STREAM_MEM_MB LCS_GFX_DRAW_DISTANCE
+elif [ "$mem_kb" -lt 1228800 ]; then
+  # 700MB-1.2GB (Mali-450 832MB atual): SEM cortes visuais; so throttle de fase
+  : "${LCS_MEM_TIER:=mid}"
+  : "${LCS_STREAM_PHASE:=1}"
+  export LCS_STREAM_PHASE
+else
+  : "${LCS_MEM_TIER:=high}"
+fi
+echo "[run30] mem_tier=$LCS_MEM_TIER mem_kb=$mem_kb" >&2
 : "${LCS_MAXSECONDS:=45}"
 : "${LCS_STREAMER_MAX:=80}"
 : "${LCS_INITLIMIT:=2}"
@@ -155,4 +185,5 @@ for p in run30.watchdog.pid run30.progress.pid run30.guardian.pid; do
 done
 cp -f /dev/shm/lcs_shot.raw shot_gameplay.raw 2>/dev/null
 cp -f /dev/shm/lcs_shot.txt shot_gameplay.txt 2>/dev/null
+[ "$ES_WAS_ACTIVE" = 1 ] && systemctl start emustation 2>/dev/null
 echo "=== run30 done ($(grep -c teardown run.log) teardown) ==="

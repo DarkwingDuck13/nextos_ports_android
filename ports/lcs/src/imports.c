@@ -305,6 +305,38 @@ void bully_page_on_bind(unsigned target, unsigned id) {
             g_page_resident/(1024*1024), bully_page_cap()/(1024*1024), g_pf, g_ev, g_page_n); }
 }
 
+/* ---- VIEWPORT diag (bug "faixa no rodape"/personagem invisivel 2026-07-02): o jogo
+ * passou a renderizar so uma tira de ~170px apos load do save do interior; logamos
+ * TODA mudanca de glViewport/glScissor com caller p/ achar quem estreita. ---- */
+static void (*real_glViewport)(int, int, int, int) = NULL;
+static void (*real_glScissor)(int, int, int, int) = NULL;
+void my_glViewport(int x, int y, int w, int h) {
+  if (!real_glViewport) real_glViewport = dlsym(RTLD_DEFAULT, "glViewport");
+  static int lx = -1, ly = -1, lw = -1, lh = -1;
+  static long logs = 0;
+  if ((x != lx || y != ly || w != lw || h != lh) && logs < 400) {
+    extern void *text_base;
+    uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+    long off = (text_base && ra >= (uintptr_t)text_base) ? (long)(ra - (uintptr_t)text_base) : -1;
+    fprintf(stderr, "[viewport] %d,%d %dx%d caller_off=0x%lx\n", x, y, w, h, off);
+    lx = x; ly = y; lw = w; lh = h; logs++;
+  }
+  if (real_glViewport) real_glViewport(x, y, w, h);
+}
+void my_glScissor(int x, int y, int w, int h) {
+  if (!real_glScissor) real_glScissor = dlsym(RTLD_DEFAULT, "glScissor");
+  static int lx = -1, ly = -1, lw = -1, lh = -1;
+  static long logs = 0;
+  if ((x != lx || y != ly || w != lw || h != lh) && logs < 400) {
+    extern void *text_base;
+    uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+    long off = (text_base && ra >= (uintptr_t)text_base) ? (long)(ra - (uintptr_t)text_base) : -1;
+    fprintf(stderr, "[scissor] %d,%d %dx%d caller_off=0x%lx\n", x, y, w, h, off);
+    lx = x; ly = y; lw = w; lh = h; logs++;
+  }
+  if (real_glScissor) real_glScissor(x, y, w, h);
+}
+
 /* ---- BIGALLOC diag: loga alocacoes >=16MB do engine com caller (offset no libGame).
  * Objetivo: identificar o dono do arena anonimo de ~254MB visto no smaps (estudo RAM
  * 1GB 2026-07-02). Sempre ativo; custo ~zero (1 if por alloc grande). ---- */
@@ -1728,6 +1760,8 @@ DynLibFunction bully_stub_table[] = {
   {"malloc", (uintptr_t)my_malloc_diag},
   {"calloc", (uintptr_t)my_calloc_diag},
   {"memalign", (uintptr_t)my_memalign_diag},
+  {"glViewport", (uintptr_t)my_glViewport},
+  {"glScissor", (uintptr_t)my_glScissor},
   /* stat: ausentes como simbolo em glibc<2.33 -> via syscall (texto/fontes) */
   {"stat", (uintptr_t)my_stat}, {"lstat", (uintptr_t)my_lstat},
   {"fstat", (uintptr_t)my_fstat}, {"fstatat", (uintptr_t)my_fstatat},

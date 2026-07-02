@@ -253,8 +253,46 @@ static void lcs_apply_gfx_profile(void) {
   }
 }
 
+/* HIGIENE DE RAM universal (estudo RAM-1GB 2026-07-02, receitas Dysmantle):
+ * (1) stack-shrink: a stack da main thread cresce com parser/loader e as paginas
+ *     ficam residentes p/ sempre; abaixo do SP e memoria morta -> madvise DONTNEED
+ *     devolve ao kernel (re-toque = zero-fill inofensivo).
+ * (2) malloc_trim: devolve topo do heap glibc ao SO (o [heap] tinha 72MB+62MB swap). */
+extern int malloc_trim(size_t pad);
+static void lcs_ram_hygiene(int frame) {
+  if (lcs_env_flag("LCS_NO_RAM_HYGIENE")) return;
+  if (frame == 0 || (frame % 900) != 0) return;
+  malloc_trim(0);
+  static unsigned long st_lo = 0, st_hi = 0;
+  static int resolved = 0;
+  if (!resolved) {
+    resolved = 1;
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (f) {
+      char ln[256];
+      while (fgets(ln, sizeof ln, f)) {
+        if (strstr(ln, "[stack]")) { sscanf(ln, "%lx-%lx", &st_lo, &st_hi); break; }
+      }
+      fclose(f);
+    }
+    fprintf(stderr, "[hygiene] stack=%lx-%lx (%luMB) malloc_trim ativo\n",
+            st_lo, st_hi, (st_hi - st_lo) >> 20);
+  }
+  if (st_lo && st_hi) {
+    unsigned long sp = (unsigned long)__builtin_frame_address(0);
+    if (sp > st_lo + (2ul << 20)) {
+      unsigned long top = (sp - (2ul << 20)) & ~4095ul;   /* 2MB de margem */
+      if (top > st_lo && top - st_lo >= (4ul << 20))
+        madvise((void *)st_lo, top - st_lo, MADV_DONTNEED);
+    }
+  }
+}
+
 static void lcs_apply_stream_phase_profile(int state) {
-  if (!lcs_env_flag("LCS_GFX_MEMLOW") && !lcs_env_flag("LCS_GFX_LOW")) return;
+  /* LCS_STREAM_PHASE=1: throttle de upload por fase SEM os cortes visuais do MEMLOW
+   * (tier mid 832MB: suaviza streaming/flicker mantendo o visual). */
+  if (!lcs_env_flag("LCS_GFX_MEMLOW") && !lcs_env_flag("LCS_GFX_LOW") &&
+      !lcs_env_flag("LCS_STREAM_PHASE")) return;
 
   int gameplay = (state == 9);
   static int last_gameplay = -1;
@@ -6215,6 +6253,7 @@ void jni_load(void) {
       hb("f=%d state=%d post-draw\n", f, st ? *(int *)st : -1); }
     lcs_cutscene_tick_after_draw(f);
     lcs_resource_manual_drain("frame", f);
+    lcs_ram_hygiene(f);
     /* FPS CAP: o jogo foi feito p/ ~30fps; sem teto roda 40-80fps -> UI/timers da engine
      * (menu, tela de tap/legal, cutscene) ficam rapidos demais. Mantem o frame em
      * LCS_FPS_CAP (default 30). LCS_FPS_CAP=0 desliga. */
