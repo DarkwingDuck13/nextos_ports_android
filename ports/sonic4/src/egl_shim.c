@@ -10,6 +10,7 @@
 
 #include <SDL2/SDL.h>
 #include <GLES2/gl2.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,11 +101,70 @@ void egl_shim_create_window(void) {
     fprintf(stderr, "egl_shim: FORCE_GLES on (SDL_OPENGL_ES_DRIVER=1, X11_FORCE_EGL=1) "
                     "-> driver GLES/EGL p/ Mesa/Panfrost\n");
   }
-  /* resolucao nativa do device (TV 1080p, handheld 480p...) c/ fallback 720p */
-  SDL_DisplayMode dm;
-  if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
-    sonic_screen_w = dm.w; sonic_screen_h = dm.h;
-    debugPrintf("egl_shim: desktop mode %dx%d\n", dm.w, dm.h);
+  /* 🔑 RESOLUÇÃO NATIVA 100% AUTOMÁTICA (TV 1080p, handheld 480p, .79 720p...).
+     BUG antigo: SDL_GetDesktopDisplayMode era chamado ANTES do subsistema de vídeo
+     existir -> falhava SILENCIOSO -> ficava o fallback 1280x720 (no painel 640x480
+     do R36S = ZOOM gigante; no .79 720p coincidia e ninguém via). O CreateWindow
+     auto-inicializa o vídeo, a query não. Agora: init explícito + cadeia de fontes
+     (desktop mode -> current mode -> display bounds -> DRM sysfs do conector
+     conectado -> fb0) e SEMPRE logado p/ diagnosticar device que não temos. */
+  if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+    fprintf(stderr, "egl_shim: SDL_InitSubSystem(VIDEO) falhou: %s\n", SDL_GetError());
+  {
+    SDL_DisplayMode dm;
+    int got_w = 0, got_h = 0; const char *src = NULL;
+    if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+      got_w = dm.w; got_h = dm.h; src = "desktop-mode";
+    } else {
+      /* SDL não soube (headless/kmsdrm capenga): pergunta ao KERNEL. DRM: primeiro
+         modo (= preferido) do primeiro conector CONECTADO. Depois fb0. */
+      char path[128], stat[16], mode[64];
+      for (int card = 0; card < 2 && !src; card++) {
+        char glob_dir[64];
+        snprintf(glob_dir, sizeof glob_dir, "/sys/class/drm");
+        DIR *d = opendir(glob_dir);
+        if (!d) break;
+        struct dirent *e;
+        while ((e = readdir(d)) && !src) {
+          if (strncmp(e->d_name, "card", 4) != 0 || !strchr(e->d_name, '-')) continue;
+          snprintf(path, sizeof path, "/sys/class/drm/%s/status", e->d_name);
+          FILE *f = fopen(path, "r");
+          if (!f) continue;
+          stat[0] = 0; fgets(stat, sizeof stat, f); fclose(f);
+          if (strncmp(stat, "connected", 9) != 0) continue;
+          snprintf(path, sizeof path, "/sys/class/drm/%s/modes", e->d_name);
+          f = fopen(path, "r");
+          if (!f) continue;
+          mode[0] = 0; fgets(mode, sizeof mode, f); fclose(f);
+          int w, h;
+          if (sscanf(mode, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+            got_w = w; got_h = h; src = "drm-sysfs";
+          }
+        }
+        closedir(d);
+        break;
+      }
+      if (!src) {
+        FILE *f = fopen("/sys/class/graphics/fb0/mode", "r");
+        char m[64];
+        if (f) {
+          m[0] = 0; fgets(m, sizeof m, f); fclose(f);
+          int w, h; /* formato "U:640x480p-0" */
+          char *x = strchr(m, ':');
+          if (x && sscanf(x + 1, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+            got_w = w; got_h = h; src = "fb0-mode";
+          }
+        }
+      }
+    }
+    if (src) {
+      sonic_screen_w = got_w; sonic_screen_h = got_h;
+      fprintf(stderr, "egl_shim: resolucao nativa %dx%d (fonte: %s)\n",
+              got_w, got_h, src);
+    } else {
+      fprintf(stderr, "egl_shim: AVISO: nenhuma fonte de resolucao respondeu -> "
+              "fallback %dx%d\n", sonic_screen_w, sonic_screen_h);
+    }
   }
   { const char *e = sonic_env("SONIC_RES"); int w, h; /* override opcional */
     if (e && sscanf(e, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
@@ -239,12 +299,22 @@ void egl_shim_create_window(void) {
      tela, sem número fixo. (R36S 640x480 e Mali 1280x720 batem com o que já usavam,
      então não há regressão.) */
   {
+    /* wayland negocia o tamanho DEPOIS do create (configure assíncrono do
+       compositor): bombear eventos até o drawable estabilizar (~300ms máx). */
     int dw = 0, dh = 0;
-    SDL_GL_GetDrawableSize(egl_window, &dw, &dh);
+    for (int i = 0; i < 30; i++) {
+      SDL_Event ev;
+      while (SDL_PollEvent(&ev)) { /* drena: processa os configure do compositor */ }
+      SDL_GL_GetDrawableSize(egl_window, &dw, &dh);
+      if (dw > 0 && dh > 0 && dw == sonic_screen_w && dh == sonic_screen_h)
+        break;                              /* já bate com o pedido: estável */
+      if (i == 29) break;
+      usleep(10 * 1000);
+    }
     if (dw <= 0 || dh <= 0) { SDL_GetWindowSize(egl_window, &dw, &dh); }
     if (dw > 0 && dh > 0 && (dw != sonic_screen_w || dh != sonic_screen_h)) {
-      debugPrintf("egl_shim: drawable real %dx%d (ajustado de %dx%d)\n",
-                  dw, dh, sonic_screen_w, sonic_screen_h);
+      fprintf(stderr, "egl_shim: drawable real %dx%d (ajustado de %dx%d)\n",
+              dw, dh, sonic_screen_w, sonic_screen_h);
       sonic_screen_w = dw; sonic_screen_h = dh;
     }
   }
