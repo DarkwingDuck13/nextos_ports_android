@@ -1,6 +1,27 @@
 # HANDOFF — Terraria (Unity 2021.3.56f2 IL2CPP) → Mali-450 so-loader
 
-## 🟢 2026-06-17 NOITE — ESTADO VALIDADO: CONTROLES + AUDIO + PLAYER/MUNDO + SEM TELA PRETA
+## 🏆 2026-07-02 — NATPAD: CONTROLES 100% NATIVOS (rewrite, commit 9a35985) — ESTADO ATUAL
+**Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device. Em teste por ssh, PARAR o ES antes (senão briga pelo fb/input).
+
+Os controles foram REFEITOS DO ZERO pelo caminho nativo. Validado pelo usuário no .79 com pad físico: funcionou de primeira (menu navega, gameplay ok).
+
+**Causa raiz do problema antigo:** no so-loader, `Input.GetJoystickNames()` retorna vazio → o InControl nunca atacha um device → `AnyControllerConnected/HasController=false` → toda a UI ignora controle. Os 4 sistemas simulados antigos (TER_CTRL body-swaps de GetKeyRaw/GetAxisRaw, força de `_controllerActive`, region-nav TER_NAVMENU, mouse/teclado FNA) brigavam entre si — a simulação de mouse mantinha o jogo em modo touch, desativando a navegação por controle.
+
+**Novo sistema (`src/native_pad.c`, gated `TER_NATPAD=1`):** o jogo VÊ um controle Xbox real.
+- `Input.GetJoystickNames()` → `["Microsoft X-Box 360 pad"]` (string[] cacheada + gchandle pinado). O `UnityInputDeviceManager` do InControl detecta 1×/s, casa o profile Android (glifos Xbox) e atacha sozinho.
+- `UnityInputDevice.ReadRawButtonState/ReadRawAnalogValue` → corpo substituído lendo SDL_GameController (layout Xbox normalizado; mantém o override do Twin USB PS2 Adapter).
+- `get_IsSupportedOnThisPlatform` → true.
+- Attach CONFIRMADO no log: `_controller` vivo no ControllerActionManager; o profile consulta btn 0-5/8-11 + analog 0-7 → mapa default (0=A 1=B 2=X 3=Y 4=LB 5=RB 8=L3 9=R3 10=Start 11=Back; ax 0-3=sticks 4/5=dpad-hat 6/7=LT/RT) está CERTO.
+- Ferramentas (não precisaram ser usadas): `TER_NPATTACH=1` attach manual via il2cpp; `TER_NATCAL=1` autocalibração de índices; `TER_NATLOG=1` diagnóstico; `TER_NPB<i>/TER_NPA<i>/TER_NPINVY/TER_NPNAME` overrides; `/tmp/tergp` input virtual (TER_GPVIRT=1).
+
+**run.sh:** `TER_NATPAD=1 TER_FIXSP=1 TER_NOVKBD=1` (+ boot/áudio inalterados). SAÍRAM: `TER_GAMEPAD TER_CTRL TER_GPAD TER_CURSPEED TER_SWAPAB TER_SWAPLR`.
+**main.c:** `ter_method_off/ter_install_hook4/ter_static_obj` agora não-static (native_pad.c usa); pump do autoname/vkbd extraído para `ter_name_pump()` (roda incondicional no swap-hook — antes só rodava com TER_CTRL=1).
+
+**PENDENTE (fase 2):** apagar o código morto do main.c (ter_gamepad_poll/ter_ctrl_*/ter_menu_nav/ter_menu_drive/FNA Keyboard-Mouse GetState/ter_navspy/GIRM/cursor) — só com o device livre (rebuild+redeploy+revalidar). NÃO religar os envs antigos.
+
+**🔑 LIÇÃO REUSÁVEL (qualquer Unity+InControl no so-loader):** controle nativo = fazer `GetJoystickNames` devolver um nome de pad conhecido + alimentar o raw-read do `UnityInputDevice`. Não simular mouse/teclado (mantém a UI em modo touch e mata a navegação por controle).
+
+## 🟢 2026-06-17 NOITE — ESTADO VALIDADO: CONTROLES + AUDIO + PLAYER/MUNDO + SEM TELA PRETA (SUPERADO pelo NATPAD acima)
 **Regra operacional do projeto:** antes de copiar binário novo ou lançar build novo, sempre fechar/matar o Terraria no device. Se o jogo estiver criando mundo, **não matar**: aguardar terminar.
 
 Estado validado pelo porter:
