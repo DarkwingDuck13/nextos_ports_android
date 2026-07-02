@@ -6298,7 +6298,10 @@ void jni_load(void) {
         if (!br0) { bfp = (void *(*)(void))so_find_addr_safe("_Z13FindPlayerPedv"); br0 = 1; }
         void *ped = bfp ? bfp() : NULL;
         int cutting = lcs_cutscene_active();
-        if (cutting || cmode == 17) armed = 1;
+        /* 15/18 tambem armam: a cena das escadas roda em 15 e o gap entre cutscenes
+         * passa por 4 (consome o arm) — so 17 nao cobria (run J). O disparo exige ped
+         * imovel 3s, entao nao atropela a cena em andamento (Toni anda nela). */
+        if (cutting || cmode == 17 || cmode == 15 || cmode == 18) armed = 1;
         /* pos-cena a camera fica PRESA em 15/18 com o ped PARADO ate o 1o input
          * (engine so restaura no movimento). Detecta: armado + sem cutscene + modo
          * 15/18 + ped imovel por ~3s -> restore completo (finish+jumpcut+behind). */
