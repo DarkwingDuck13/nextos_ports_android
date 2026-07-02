@@ -626,7 +626,12 @@ static int my_engine_open(const char *path, int flags) {
   const char *bn = bn_ ? bn_ + 1 : path;
   if (path && path[0] == '/' && bn && strncmp(bn, "save", 4) == 0 && strstr(bn, ".ff7")
       && (flags & O_ACCMODE) == O_RDONLY && getenv("FF7_NOOPENFIX") == NULL) {
-    if (access(path, F_OK) != 0 && access(resolve_android_path(path), F_OK) != 0) {
+    /* candidatos: path cru, resolve padrao, E a traducao que o cnv_path do
+     * engine faz p/ os saves: /ff7_1.02/save/X -> $HOME/Documents/X. */
+    char docs[1024]; const char *home = getenv("HOME"); if (!home) home = "/roms/ports/ff7";
+    snprintf(docs, sizeof docs, "%s/Documents/%s", home, bn);
+    if (access(path, F_OK) != 0 && access(resolve_android_path(path), F_OK) != 0
+        && access(docs, F_OK) != 0) {
       if (getenv("FF7_SAVELOG"))
         debugPrintf("SAVELOG __open('%s' RO) INEXISTENTE -> -1 (era pseudo-fd fantasma)\n", path);
       return -1;
