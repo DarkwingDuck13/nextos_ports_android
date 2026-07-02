@@ -4905,6 +4905,21 @@ static void install_hooks(void) {
       }
     }
   }
+  /* 🎯 MUDANÇA #1 (estudo flicker-veiculos, 2026-07-03): CRenderer::GenerateEnvironmentMap
+   * renderiza a CENA num RTT 1024x1024 TODO FRAME p/ o reflexo do veiculo (RenderEffects
+   * @0x522f0c; viewport 1024x1024 flagrado no diag) — FBO-switch mid-frame no tiler
+   * Utgard = flicker SO em carro/moto, pior em cenario pesado. NO-OP no passe inteiro
+   * (o NO_ENVMAP antigo so marcava not-ready e o RTT continuava rodando). Tambem deve
+   * DEVOLVER FPS em veiculo. LCS_NO_ENVMAP_PASS=0 religa o passe. */
+  if (lcs_env_int("LCS_NO_ENVMAP_PASS", 1)) {
+    uintptr_t ge = so_find_addr_safe("_ZN9CRenderer22GenerateEnvironmentMapEv");
+    if (ge) {
+      hook_x64(ge, (uintptr_t)my_pvs_noop);
+      fprintf(stderr, "[fix] CRenderer::GenerateEnvironmentMap NO-OP (passe RTT 1024x1024 do reflexo de veiculo)\n");
+    } else {
+      fprintf(stderr, "[fix] GenerateEnvironmentMap NAO ACHADO\n");
+    }
+  }
   /* VIDRO piscando (dia e noite, relatado 2026-07-02 mesmo com NO_ENVMAP): suspeito
    * atual = CGlass::RenderReflectionPolys (polys de reflexo dos vidros; passe alpha
    * view-dependent que pisca no Utgard). Default OFF p/ teste A/B ao vivo;
