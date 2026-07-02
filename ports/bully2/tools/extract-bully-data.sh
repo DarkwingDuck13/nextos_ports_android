@@ -48,12 +48,23 @@ fail_extract() {
   exit 1
 }
 
-ready && exit 0
-
 zip_has() {
   [ -f "$1" ] || return 1
   unzip -l "$1" "$2" >/dev/null 2>&1
 }
+
+# Dados prontos: apaga APK residual do gamedata (default; exporte
+# BULLY_DELETE_APK_AFTER_EXTRACT=0 para manter o APK e permitir re-extracao
+# sem copiar de novo). So apaga APK que contenha o libGame do Bully.
+if ready; then
+  if [ "${BULLY_DELETE_APK_AFTER_EXTRACT:-1}" = "1" ]; then
+    for candidate in "$GAMEDATA"/*.apk "$GAMEDATA"/*.APK; do
+      [ -f "$candidate" ] || continue
+      zip_has "$candidate" "lib/arm64-v8a/libGame.so" && rm -f "$candidate"
+    done
+  fi
+  exit 0
+fi
 
 find_game_apk() {
   if [ -n "$APK" ] && [ -f "$APK" ]; then
@@ -164,5 +175,7 @@ sleep 1
 finish_splash
 
 ready || exit 1
-[ "${BULLY_DELETE_APK_AFTER_EXTRACT:-0}" = "1" ] && rm -f "$APK"
+# extracao validada: apaga o APK por padrao (economiza ~2.8GB no cartao);
+# BULLY_DELETE_APK_AFTER_EXTRACT=0 mantem.
+[ "${BULLY_DELETE_APK_AFTER_EXTRACT:-1}" = "1" ] && rm -f "$APK"
 exit 0
