@@ -2021,8 +2021,30 @@ static void ff9_fb_scanout_fix(void) {
     struct fb_var_screeninfo vi;
     unsigned yoff = 0;
     if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vi) == 0) yoff = vi.yoffset;
-    if (yoff >= 720) memcpy(fbmap, fbmap + half, half);
-    else memcpy(fbmap + half, fbmap, half);
+    unsigned char *src = (yoff >= 720) ? fbmap + half : fbmap;
+    unsigned char *dst = (yoff >= 720) ? fbmap : fbmap + half;
+    /* FF9_FBBRIGHT=NNN (ex.: 150 = 1.5×): amplifica RGB da metade front ao copiar, p/ compensar
+       a saída HDMI em "Colour range: limited" (16-235) que dima o menu escuro do FF9 na TV.
+       0/ausente = cópia pura. Aplica no dst (a metade que a TV pode escanear) e no src. */
+    static int bright = -1;
+    if (bright < 0) { const char *b = getenv("FF9_FBBRIGHT"); bright = b ? atoi(b) : 0; if (bright < 100) bright = 0; }
+    if (!bright) { memcpy(dst, src, half); }
+    else {
+      /* BGRA: canais 0,1,2 = B,G,R; canal 3 = A (não mexer). Fator fixed-point /100. */
+      size_t n = half / 4;
+      const uint32_t *s = (const uint32_t *)src;
+      uint32_t *d = (uint32_t *)dst;
+      uint32_t *f = (uint32_t *)src; /* também clareia o front visível */
+      for (size_t i = 0; i < n; i++) {
+        uint32_t px = s[i];
+        unsigned b0 = px & 0xff, g0 = (px >> 8) & 0xff, r0 = (px >> 16) & 0xff, a0 = px & 0xff000000u;
+        b0 = b0 * (unsigned)bright / 100; if (b0 > 255) b0 = 255;
+        g0 = g0 * (unsigned)bright / 100; if (g0 > 255) g0 = 255;
+        r0 = r0 * (unsigned)bright / 100; if (r0 > 255) r0 = 255;
+        uint32_t out = a0 | (r0 << 16) | (g0 << 8) | b0;
+        d[i] = out; f[i] = out;
+      }
+    }
   }
 }
 void ter_shot_hook(void) {
