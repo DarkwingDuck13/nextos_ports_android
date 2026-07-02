@@ -17,7 +17,9 @@ Os controles foram REFEITOS DO ZERO pelo caminho nativo. Validado pelo usuário 
 **run.sh:** `TER_NATPAD=1 TER_FIXSP=1 TER_NOVKBD=1` (+ boot/áudio inalterados). SAÍRAM: `TER_GAMEPAD TER_CTRL TER_GPAD TER_CURSPEED TER_SWAPAB TER_SWAPLR`.
 **main.c:** `ter_method_off/ter_install_hook4/ter_static_obj` agora não-static (native_pad.c usa); pump do autoname/vkbd extraído para `ter_name_pump()` (roda incondicional no swap-hook — antes só rodava com TER_CTRL=1).
 
-**PENDENTE (fase 2):** apagar o código morto do main.c (ter_gamepad_poll/ter_ctrl_*/ter_menu_nav/ter_menu_drive/FNA Keyboard-Mouse GetState/ter_navspy/GIRM/cursor) — só com o device livre (rebuild+redeploy+revalidar). NÃO religar os envs antigos.
+**FASE 2 FEITA (commit da61235):** ~1150 linhas dos 4 sistemas antigos DELETADAS do main.c (envs TER_GAMEPAD/TER_CTRL/TER_GPAD/TER_MENU/TER_NAVMENU não existem mais). vkbd opt-in rewired p/ `np_btn/np_btn_down`. Smoke test no .79: boot limpo, 0 crash.
+**+ SELECT+START** segurados ~0.75s fecham o jogo (native_pad.c; TER_NPEXIT=0 desliga, TER_NPEXITF=frames).
+**+ NOME SEM TECLADO** (`TER_AUTONAME=1 TER_VK_DEFAULT=Player` no run.sh): ao abrir a edição de nome (GUIMenuNameEdit.Enable hookado), espera ~40 frames, preenche o default e fecha nativamente (CloseNameEdit via ter_name_commit_text). Criar personagem/mundo novo funciona sem teclado.
 
 **🔑 LIÇÃO REUSÁVEL (qualquer Unity+InControl no so-loader):** controle nativo = fazer `GetJoystickNames` devolver um nome de pad conhecido + alimentar o raw-read do `UnityInputDevice`. Não simular mouse/teclado (mantém a UI em modo touch e mata a navegação por controle).
 
