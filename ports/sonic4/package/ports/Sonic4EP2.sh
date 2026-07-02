@@ -34,6 +34,12 @@ cd "$GAMEDIR" || exit 1
 
 chmod +x "$GAMEDIR/sonic4.arm64" "$GAMEDIR/tools/sonic4ep2_extract.sh" 2>/dev/null
 
+# Ordem do Bully v11: /usr/local (extras do CFW) -> /usr/lib -> gamedir -> resto;
+# libs.aarch64 (bundle: libmpg123) por ULTIMO = so cobre o que o sistema nao tiver.
+# ANTES do first-run: o wrapper/splash herdam este caminho (sem ele o binario nem
+# carrega em device sem libmpg123, ex.: S905X5M).
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:$GAMEDIR/libs.aarch64"
+
 # ---- DISPLAY: alguns NextOS aarch64 (ex.: S905X5M) tem SDL2 wayland-only e a ES
 # roda KMSDRM direto (sem sessao wayland). Se nao ha socket wayland E o SDL do
 # sistema nao tem kmsdrm/fbdev, sobe um weston proprio (drm) e roda dentro dele.
@@ -129,9 +135,6 @@ if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb
   exit 1
 fi
 
-# Ordem do Bully v11: /usr/local (extras do CFW) -> /usr/lib -> gamedir -> resto;
-# libs.aarch64 (bundle: libmpg123) por ULTIMO = so cobre o que o sistema nao tiver.
-export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:$GAMEDIR/libs.aarch64"
 [ -n "${sdl_controllerconfig:-}" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 ${ESUDO:-} chmod 666 /dev/uinput 2>/dev/null
