@@ -1388,7 +1388,13 @@ void ff7_music_feed(const void *pcm, uint32_t bytes) {
     return;
   ensure_audio_initialized();
   AudioPlayer *p = &g_players[MUSIC_SLOT];
-  if (!p->active || p->sample_rate != SDL_OUTPUT_RATE ||
+  /* Reconfigura SO' se o slot nao esta' no modo bypass (32000/playing) — ex.
+   * primeiro uso ou reclaim do modo BGM-PCM (44100). ⚠️BUG HISTORICO: comparar
+   * com SDL_OUTPUT_RATE (44100) fazia esta condicao ser SEMPRE true (o slot e'
+   * 32000) -> player_reset_meta zerava o ring A CADA feed -> readable preso em
+   * 4096 < gate de prebuffer (44100) -> MUSIC_SLOT nunca tocava = TODA BGM MUDA
+   * (titulo, campo, batalha), com o SQEX produzindo audio perfeito. */
+  if (!p->active || p->sample_rate != 32000 ||
       p->play_state != SL_PLAYSTATE_PLAYING) {
     if (g_audio_dev)
       SDL_LockAudioDevice(g_audio_dev);
@@ -1399,8 +1405,9 @@ void ff7_music_feed(const void *pcm, uint32_t bytes) {
      * = ritmo realtime correto. (Se setasse 44100 -> underrun ~27% = 1-32000/44100.) */
     p->sample_rate = 32000;
     p->bits_per_sample = 16;
-    p->volume = 2.0f; /* BGM estava baixa: boost ate o teto do guard (2.0). Pico
-                       * 32750*2.0*0.30=19650 < 28000 threshold -> sem clip. */
+    p->volume = 1.0f; /* ⚠️era 2.0 ("BGM baixa") — mas com o reset-bug consertado a
+                       * fonte chega no volume CERTO do jogo; 2.0 estourava int16
+                       * (peak 65k > 32767) = CLIP = "chiado" no boot e gameplay. */
     p->play_state = SL_PLAYSTATE_PLAYING;
     p->active = 1;
     p->callback = NULL; /* sem refill por callback: alimentado por ff7_music_feed */

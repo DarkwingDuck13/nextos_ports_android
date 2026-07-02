@@ -175,7 +175,11 @@ typedef void (*queuebuf_fn)(void *thisp, void *buf, unsigned size);
 static queuebuf_fn g_orig_queuebuf = NULL;
 static void my_QueueBuffer(void *thisp, void *buf, unsigned size) {
   static unsigned qc = 0; qc++;
-  if (qc <= 12 || qc % 50 == 0) debugPrintf("QBUF #%u size=%u\n", qc, size);
+  if (qc <= 12 || qc % 50 == 0) {
+    int pk = 0; const short *s = (const short *)buf;
+    for (unsigned i = 0; i < size / 2 && i < 8192; i++) { int a = s[i] < 0 ? -s[i] : s[i]; if (a > pk) pk = a; }
+    debugPrintf("QBUF #%u size=%u peak=%d\n", qc, size, pk);
+  }
   g_orig_queuebuf(thisp, buf, size);
 }
 typedef int (*playmidi_fn)(unsigned, unsigned, unsigned);
@@ -535,7 +539,87 @@ static void my_enableOES(int en) {
   g_orig_enableOES(en);
 }
 
+/* ---- FF7_BORDER: override da cor do bezel lateral (opt-in). O engine desenha a
+ * borda como quad de COR gradiente via VIDEO_doQuad_color_forBorder(r1,g1,b1,
+ * r2,g2,b2) — azul e' o default do port mobile. FF7_BORDER="r,g,b" (solido) ou
+ * "r1,g1,b1,r2,g2,b2" (gradiente topo->base), 0-255. Ex: FF7_BORDER=0,0,0 preto. */
+typedef void (*border_fn)(int,int,int,int,int,int);
+static border_fn g_orig_border = NULL;
+static int g_border_c[6];
+static void my_border(int r1, int g1, int b1, int r2, int g2, int b2) {
+  static unsigned bc = 0;
+  if (bc++ < 2) debugPrintf("BORDER: chamado orig=(%d,%d,%d)-(%d,%d,%d) -> override\n",
+                            r1, g1, b1, r2, g2, b2);
+  g_orig_border(g_border_c[0], g_border_c[1], g_border_c[2],
+                g_border_c[3], g_border_c[4], g_border_c[5]);
+}
+
+typedef void (*setvol_fn)(void *, float);
+typedef void (*setvolmx_fn)(void *, float, float);
+static setvol_fn g_orig_setvol = NULL;
+static setvolmx_fn g_orig_setvolmx = NULL;
+static void my_SetVolume(void *thisp, float v) {
+  static unsigned c = 0; c++;
+  if (c <= 20 || c % 100 == 0) debugPrintf("SETVOL #%u this=%p v=%f\n", c, thisp, v);
+  g_orig_setvol(thisp, v);
+}
+static void my_SetVolumeMatrix(void *thisp, float l, float r) {
+  static unsigned c = 0; c++;
+  if (c <= 20 || c % 100 == 0) debugPrintf("SETVOLMX #%u this=%p l=%f r=%f\n", c, thisp, l, r);
+  g_orig_setvolmx(thisp, l, r);
+}
+typedef void (*srcstop_fn)(void *);
+static srcstop_fn g_orig_srcstop = NULL, g_orig_srcstart = NULL;
+static void my_SourceStop(void *thisp) {
+  static unsigned c = 0; c++;
+  debugPrintf("SRCSTOP #%u this=%p (state era %d)\n", c, thisp, *(int *)((char *)thisp + 88));
+  g_orig_srcstop(thisp);
+}
+static void my_SourceStart(void *thisp) {
+  static unsigned c = 0; c++;
+  debugPrintf("SRCSTART #%u this=%p\n", c, thisp);
+  g_orig_srcstart(thisp);
+}
+typedef void (*sdvol_fn)(int, int, float);
+static sdvol_fn g_orig_sdvol = NULL;
+static void my_SdVolume(int id, int trans, float vol) {
+  static unsigned c = 0; c++;
+  if (c <= 40 || c % 100 == 0) debugPrintf("SDVOL #%u id=%d trans=%d vol=%f\n", c, id, trans, vol);
+  g_orig_sdvol(id, trans, vol);
+}
+static setvol_fn g_orig_setpitch = NULL, g_orig_setlpf = NULL, g_orig_setpan = NULL;
+static void my_SetPitch(void *thisp, float v) {
+  static unsigned c = 0; c++;
+  if (c <= 20 || c % 100 == 0) debugPrintf("SETPITCH #%u this=%p v=%f\n", c, thisp, v);
+  g_orig_setpitch(thisp, v);
+}
+static void my_SetIIRLPF(void *thisp, float v) {
+  static unsigned c = 0; c++;
+  if (c <= 20 || c % 100 == 0) debugPrintf("SETLPF #%u this=%p v=%f\n", c, thisp, v);
+  g_orig_setlpf(thisp, v);
+}
+static void my_SetPan(void *thisp, float v) {
+  static unsigned c = 0; c++;
+  if (c <= 20 || c % 100 == 0) debugPrintf("SETPAN #%u this=%p v=%f\n", c, thisp, v);
+  g_orig_setpan(thisp, v);
+}
+
 static void my_RenderMix(void *thisp, void *out, unsigned size) {
+  /* FF7_BGMTRACE: estado interno do CoreSource da musica (callback de refill
+   * [this+96], fila [this+116], idx [this+120], pos [this+124]). */
+  if (getenv("FF7_BGMTRACE")) {
+    static unsigned c = 0; c++;
+    if (c <= 10 || c % 100 == 0) {
+      void *cb = *(void **)((char *)thisp + 96);
+      int qn = *(int *)((char *)thisp + 116);
+      int qi = *(int *)((char *)thisp + 120);
+      int qp = *(int *)((char *)thisp + 124);
+      int st = *(int *)((char *)thisp + 88);
+      float vol = *(float *)((char *)thisp + 176);
+      debugPrintf("BGMTRACE #%u this=%p cb=%p fila=%d idx=%d restante=%d state=%d vol=%f\n",
+                  c, thisp, cb, qn, qi, qp, st, vol);
+    }
+  }
   g_orig_rendermix(thisp, out, size);
   /* BYPASS antigo (RenderMix->MUSIC_SLOT 32000): so' se NAO estiver usando a BGM
    * via PCM (que e' confiavel e usa o MUSIC_SLOT a 44100). Evita conflito/duplo. */
@@ -823,6 +907,14 @@ static void ff7_present_cb(void) {
   if (getenv("FF7_FILLGATE0") && text_base)
     *(unsigned char *)((char *)text_base + 0x1d1a000 + 2464) = 0;
   if (g_frame > 600) { ff7_bgm_maybe_activate(); ff7_bgm_pump(); }
+  /* BGMTRACE: globals do SND (musica FF7-PC): handle da musica corrente
+   * [0x1cce000+2352], volume-config [3568], volume desejado [3576]. */
+  if (getenv("FF7_BGMTRACE") && text_base && g_frame % 120 == 0) {
+    unsigned hd = *(unsigned *)((uintptr_t)text_base + 0x1cce000 + 2352);
+    float vcfg = *(float *)((uintptr_t)text_base + 0x1cce000 + 3568);
+    float vdes = *(float *)((uintptr_t)text_base + 0x1cce000 + 3576);
+    debugPrintf("SNDGLOB frame %ld handle=%u vcfg=%f vdesejado=%f\n", g_frame, hd, vcfg, vdes);
+  }
   /* FIM LIMPO do FMV: quando nosso decode chega no fim, chama fw_stop_movie 1x p/
    * o engine ENCERRAR o filme de vez e o script do campo spawnar o Cloud/party.
    * (campo carrega + musica toca, mas sem o stop limpo o script de entrada nao
@@ -1023,6 +1115,52 @@ int main(int argc, char *argv[]) {
       if (g_orig_avi_open) { hook_arm64(ao, (uintptr_t)&my_avi_open);
         debugPrintf("FMV: hooked AVI_open @%p (overlay=%d)\n", (void*)ao, !g_ff7_fmv_inject); }
     } else debugPrintf("FMV: AVI_open nao achado\n");
+  }
+  /* FF7_BORDER=r,g,b[,r2,g2,b2]: troca a cor do bezel (default = azul do engine). */
+  if (getenv("FF7_BORDER")) {
+    int n = sscanf(getenv("FF7_BORDER"), "%d,%d,%d,%d,%d,%d",
+                   &g_border_c[0], &g_border_c[1], &g_border_c[2],
+                   &g_border_c[3], &g_border_c[4], &g_border_c[5]);
+    if (n >= 3) {
+      if (n < 6) { g_border_c[3] = g_border_c[0]; g_border_c[4] = g_border_c[1]; g_border_c[5] = g_border_c[2]; }
+      uintptr_t bo = so_find_addr_safe("VIDEO_doQuad_color_forBorder");
+      if (bo) {
+        g_orig_border = (border_fn)make_trampoline(bo, 16);
+        if (g_orig_border) { hook_arm64(bo, (uintptr_t)&my_border);
+          debugPrintf("BORDER: hooked (%d,%d,%d)-(%d,%d,%d)\n",
+                      g_border_c[0], g_border_c[1], g_border_c[2],
+                      g_border_c[3], g_border_c[4], g_border_c[5]); }
+      } else debugPrintf("BORDER: simbolo nao achado\n");
+    }
+  }
+  /* NAO hookear SoundManager::Update: prologo tem adrp (PC-relative) na 3a
+   * instrucao -> trampoline de 16B corrompe -> mutex em endereco lixo -> trava. */
+  if (getenv("FF7_BGMTRACE")) {
+    uintptr_t sv = so_find_addr_safe("_ZN4SQEX10CoreSource9SetVolumeEf");
+    if (sv) { g_orig_setvol = (setvol_fn)make_trampoline(sv, 16);
+      if (g_orig_setvol) hook_arm64(sv, (uintptr_t)&my_SetVolume); }
+    uintptr_t sm2 = so_find_addr_safe("_ZN4SQEX10CoreSource15SetVolumeMatrixEff");
+    if (sm2) { g_orig_setvolmx = (setvolmx_fn)make_trampoline(sm2, 16);
+      if (g_orig_setvolmx) hook_arm64(sm2, (uintptr_t)&my_SetVolumeMatrix); }
+    uintptr_t sp2 = so_find_addr_safe("_ZN4SQEX10CoreSource8SetPitchEf");
+    if (sp2) { g_orig_setpitch = (setvol_fn)make_trampoline(sp2, 16);
+      if (g_orig_setpitch) hook_arm64(sp2, (uintptr_t)&my_SetPitch); }
+    uintptr_t lp = so_find_addr_safe("_ZN4SQEX10CoreSource9SetIIRLPFEf");
+    if (lp) { g_orig_setlpf = (setvol_fn)make_trampoline(lp, 16);
+      if (g_orig_setlpf) hook_arm64(lp, (uintptr_t)&my_SetIIRLPF); }
+    uintptr_t pn = so_find_addr_safe("_ZN4SQEX10CoreSource6SetPanEf");
+    if (pn) { g_orig_setpan = (setvol_fn)make_trampoline(pn, 16);
+      if (g_orig_setpan) hook_arm64(pn, (uintptr_t)&my_SetPan); }
+    uintptr_t st2 = so_find_addr_safe("_ZN4SQEX10CoreSource4StopEv");
+    if (st2) { g_orig_srcstop = (srcstop_fn)make_trampoline(st2, 16);
+      if (g_orig_srcstop) hook_arm64(st2, (uintptr_t)&my_SourceStop); }
+    uintptr_t sa = so_find_addr_safe("_ZN4SQEX10CoreSource5StartEv");
+    if (sa) { g_orig_srcstart = (srcstop_fn)make_trampoline(sa, 16);
+      if (g_orig_srcstart) hook_arm64(sa, (uintptr_t)&my_SourceStart); }
+    uintptr_t sd = so_find_addr_safe("SdSoundSystem_SoundCtrl_SetVolume");
+    if (sd) { g_orig_sdvol = (sdvol_fn)make_trampoline(sd, 16);
+      if (g_orig_sdvol) hook_arm64(sd, (uintptr_t)&my_SdVolume); }
+    debugPrintf("BGMTRACE: SetVolume/Matrix/Pitch/LPF/Pan/Start/Stop/SdVol hookados\n");
   }
   if (getenv("FF7_QBUFLOG")) {
     uintptr_t qb = so_find_addr_safe("_ZN4SQEX10CoreSource11QueueBufferEPvm");
