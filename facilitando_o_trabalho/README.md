@@ -32,10 +32,12 @@ Portar para o Amlogic-old não é só "fazer rodar"; é negociar com o hardware.
 9.  [Display e o SDL estático](receitas/09-display-e-sdl-driver.md) — vídeo automático e a armadilha do SDL embutido do jogo.
 10. [Empacotando no PortMaster (BYO-data)](receitas/10-empacotando-portmaster.md) — layout ports_scripts, foreground bash puro, inglês, mate+confirme.
 11. [Ponteiros: handles, GOT/PLT e trampolins](receitas/11-ponteiros-handles-e-hooks.md) — o fio condutor do so-loader: handle-as-pointer, hook por GOT, pool de trampolins.
+12. [Unity por dentro: bootstrap JNI, render loop e GC](receitas/12-unity-bootstrap-render-gc.md) — a sequência exata de boot, o loop `nativeRender` bombeado pelo host, `GC_DISABLE_INCREMENTAL=1`, `nativeInjectEvent`, `ReflectionHelper`.
 
 ### Troubleshooting
 1.  [Diagnóstico de Crash](troubleshooting/01-diagnostico-de-crash.md) — crash handler, stack scan, gdb, BRK traps.
 2.  [Deadlock do Job-System](troubleshooting/02-deadlock-job-system.md) — congelou ao carregar? Semáforo/pthread da engine.
+3.  [Pegando logs: jnitrace e shim IL2CPP](troubleshooting/03-logs-jnitrace-e-shim-il2cpp.md) — mapear os stubs JNI ANTES do port (Frida no Moto G100) e raio-X do runtime IL2CPP em execução.
 
 ### Kit Essencial
 O [`kit_essencial/`](kit_essencial/) tem o `core/` (so_util, egl_shim, opensles_shim, pthread_bridge) e o `templates/main_universal.c` — ponto de partida copiável pra um port novo.
@@ -56,6 +58,7 @@ O [`kit_essencial/`](kit_essencial/) tem o `core/` (so_util, egl_shim, opensles_
 | **Dysmantle** | GameActivity | crash handler + BRK traps; ETC1 cache offline | [troub.01](troubleshooting/01-diagnostico-de-crash.md) · [08](receitas/08-texturas-etc1-etc2.md) |
 | **GTA Vice City** | RenderWare (re3) | limite de instruções do shader (MAX_LIGHTS); Z-clipping 2D | [03](receitas/03-domando-a-mali450.md) |
 | **Elderand** | Unity IL2CPP URP | zram multi-stream (gargalo de RAM); handshake de startup do gfxworker | [07](receitas/07-memoria-vram-e-teardown.md) · [troub.02](troubleshooting/02-deadlock-job-system.md) |
+| **Bogodroid neo** (mineração externa) | loader Unity multi-versão | sequência de boot JNI da Unity; render bombeado pelo host; GC incremental off; jnitrace + shim de log IL2CPP | [12](receitas/12-unity-bootstrap-render-gc.md) · [troub.03](troubleshooting/03-logs-jnitrace-e-shim-il2cpp.md) |
 
 ---
 
@@ -65,6 +68,7 @@ O [`kit_essencial/`](kit_essencial/) tem o `core/` (so_util, egl_shim, opensles_
 *   **Shader não compilou** — cheque o log (`L0005`/`P0004`) ([03](receitas/03-domando-a-mali450.md)).
 *   **Framebuffer sujo do run anterior** — faça o teardown EGL na saída ([07](receitas/07-memoria-vram-e-teardown.md)).
 *   **Depth/Z-clipping** em 2D (Unity/GameMaker).
+*   **Unity: ninguém está bombeando o render** — a Unity não se desenha sozinha; o host precisa chamar `nativeRender()` por frame, depois da sequência completa de boot ([12](receitas/12-unity-bootstrap-render-gc.md)).
 
 ---
 *Este ecossistema cresce a cada port. Descobriu um fix novo? Documente aqui — vira receita pro próximo jogo.*
