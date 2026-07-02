@@ -6192,6 +6192,19 @@ static void ff9_ebgdiag_scene(const char *tag, void *scene, void *fieldMap, int 
                   ? *(int *)((char *)inds + 0x18) : -1;
     fprintf(stderr, "[FF9_EBGDIAG]   MESH verts=%p vertCount=%ld indices=%p indCount=%ld\n",
             verts, vc, inds, ic);
+    /* posições dos 4 vértices (Vector3[] data @+0x20, 12B cada) — revela quad degenerado/offscreen */
+    if (vc > 0 && vc <= 64 && addr_readable((uintptr_t)verts + 0x20 + vc * 12)) {
+      float *v = (float *)((char *)verts + 0x20);
+      for (int k = 0; k < vc && k < 6; k++)
+        fprintf(stderr, "[FF9_EBGDIAG]     v[%d]=(%.1f,%.1f,%.1f)\n", k, v[k*3], v[k*3+1], v[k*3+2]);
+    }
+    /* material[0] do scene: shader name + mainTexture (preto = sample vazio / shader ruim) */
+    void *mats = *(void **)((char *)scene + 0x78);
+    int mcnt = ff9_dict_count_safe(mats);
+    if (g_il2cpp_base && atlas && !((uintptr_t)atlas >> 40)) {
+      /* atlas é o mainTexture esperado; loga se tem dimensões reais (já temos) e o formato */
+      fprintf(stderr, "[FF9_EBGDIAG]     matDictCount=%d atlas=%p\n", mcnt, atlas);
+    }
   }
   if (overlays && overlay_size > 0) {
     int verbose = getenv("FF9_EBGDIAG_VERBOSE") != NULL;

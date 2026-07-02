@@ -47,6 +47,22 @@
   (c) investigar por que ExtractSpriteData/ExtractOverlayData lê 0 sprites do ebgBin (parse/asset).
 - ✅ DEFAULT do launcher agora: FF9_NOSNDSAFE=1 + FF9_FBMIRROR=1 (seguro, menu visível na TV).
 
+### 🔬 s18d — MESH do fundo NÃO está vazio (novo diag scene.vertices@0xB8/indices@0xC0):
+- Campo real FBG: `MESH vertCount=4 indCount=6` = **quad 16x16 na origem** (template compartilhado;
+  cada 1 dos 28 overlays desenha esse quad transformado = tiles PSX do fundo samplando o atlas HD).
+  `matDictCount=6`, atlas 2048² HD. **Geometria + materiais + atlas TODOS presentes.**
+- **SEM erros de shader/GL** no render do campo (shaders compilam; SHFIX normaliza precisão ES2).
+- FIELDGUARD já FORÇA ACTIVE(bit2) em todos os 28 overlays (fallback "anim frames ausentes") →
+  mesh renderers habilitados → **AINDA preto**. Então não é (só) ativação.
+- ⇒ Suspeitos restantes (próxima sessão, cada teste ~8min boot+FMV): (1) **atlas 2048² HD com
+  upload PRETO** no Mali-450 Utgard (NPOT/formato/decode do asset HD falhou silencioso) — dumpar
+  Texture2D.GetPixels/EncodeToPNG do atlas p/ confirmar; (2) tiles renderizados **off-camera/depth**
+  errado (logar world-pos dos Transforms dos overlays + a projeção da fieldCamera/PSXCameraAspect);
+  (3) EBG numa **câmera/RenderTexture separada** que não compõe no Utgard (checar targetTexture).
+- ✅ ESTADO JOGÁVEL ENTREGUE: menu (na TV via FBMIRROR) → New Game → FMV000/001 reais → campo
+  com Zidane + HUD + ÁUDIO real (PCM) + CONTROLE físico USB + evento de abertura (diálogo na lógica).
+  Falta só o BACKGROUND pré-renderizado (tiles EBG pretos). Bin diag: e879698.
+
 ## s18 2026-07-01 — 🎯 tese do evento de abertura + FF9_SNDSAFE (pendente validação: device caiu)
 
 > Device .90 CAIU (sem ping; provável wedge por grep pesado nos logs gigantes com o jogo a 60fps —
