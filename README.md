@@ -26,19 +26,31 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 - **Katana ZERO** (GameMaker Studio 2 / YYC, edição Netflix) — so-loader do `libyoyo.so` no Mali-450 **e no R36S**, com **binário único universal** (glibc 2.27, roda em qualquer device). Jogável com **ataque/controle** (fix do `buttonMask` do gamepad nativo), áudio (música/SFX por OGG streamed), inglês e resolução automática. Destraves: bypass do Netflix SDK via async event, áudio da thread OGG (`getJNIEnv`/`GetJavaVM`), e o `buttonMask` que filtrava todos os botões menos A. Veja [`ports/katanazero`](ports/katanazero/).
 
-E mais jogáveis no Mali-450: **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
+- **Final Fantasy VII** (Square Enix mobile) — o port Android é o **executável do FF7 PC (1998) recompilado pra ARM** sob a camada win32 própria da Square; o so-loader dirige esse engine duplo no Mali-450. **Fluxo completo nativo**: New Game → FMV de abertura (decode VP8 próprio + overlay GL com save/restore total de estado, áudio PCM sincronizado) → campo com Cloud, **sem tela preta**. Áudio 100% (SFX + música de campo/batalha + som dos vídeos), **saves funcionando**, inglês. Destraves: fim de filme = `MyDecoder.FRAME→0` (o -1 deixava o filme "tocando" pra sempre = tela preta E fundo do campo preto), `RenderMix` produz **float32** (alimentado como s16 = chiado), e o `__open` do engine cria pseudo-fd fantasma pra arquivo inexistente (save "invalid"). Veja [`ports/ff7`](ports/ff7/).
+
+- **Sonic the Hedgehog 4: Episode II** (Sega NN/"fox") — so-loader do `libfox.so`, **validado multi-device** (Mali-450, X5M, R36S, muOS, ROCKNIX/Panfrost): vídeo, áudio, controle, bonus stages e resolução nativa; release arm64 via Docker buster (piso GLIBC 2.30). Veja [`ports/sonic4`](ports/sonic4/).
+
+E mais jogáveis no Mali-450: **Hotline Miami 2** (GameMaker/YYC, música + gameplay), **DuckTales Remastered** (WayForward), **Minecraft Bedrock/MCPE** (fullscreen via mcpelauncher + SDL3), **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
 
 ## Jogos portados
 | Jogo | Engine / método | Estado | Pasta |
 |---|---|---|---|
-| **Bully: Anniversary Edition** | so-loader (`libGame.so`) | **Jogável** (Mali-450, GLES2) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
+| **Final Fantasy VII** (SQEX mobile = FF7 PC recompilado p/ ARM) | so-loader (`libjni_ff7.so`) + FMV VP8 próprio | **Jogável** (Mali-450) — fluxo completo New Game→FMV→campo, áudio 100% (SFX+BGM+vídeos), saves, inglês | [`ports/ff7`](ports/ff7/) |
+| **Sonic 4: Episode II** (Sega NN/"fox") | so-loader (`libfox.so`, armv7 + arm64) | **Jogável multi-device** (Mali-450, X5M, R36S, muOS, ROCKNIX) — vídeo, áudio, controle, bonus stages | [`ports/sonic4`](ports/sonic4/) |
+| **Bully: Anniversary Edition** | so-loader (`libGame.so`) | **Jogável** (Mali-450, GLES2, + R36S 1GB via streaming de texturas) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
 | **Castlevania: Symphony of the Night** (DotEmu) | so-loader (SDL2 nativo ES2) | **Jogável** — boot→título→menu→gameplay, áudio, controle, save persiste | [`ports/sotn`](ports/sotn/) |
 | **GTA: Vice City** (reVC) | so-loader 2-módulos | **Jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
 | **Sonic Mania Plus** (RSDKv5) | so-loader | **Jogável com som** — título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
 | **Streets of Rage 4** | MonoGame/.NET 9 nativo (não so-loader) | **Jogável** (Mali-450 GLES2) — música/SFX, texturas ETC1 | [`ports/sor4`](ports/sor4/) |
 | **Carrion** | MonoGame 3.8 / .NET 9 nativo (.NET9 CoreCLR + gl4es) | **Jogável** (Mali-450 + R36S) — render, controle, **som (FMOD)**, jogo completo | [`ports/carrion`](ports/carrion/) |
 | **Katana ZERO** (GameMaker/YYC, ed. Netflix) | so-loader (`libyoyo.so`) — **binário único universal** glibc 2.27 | **Jogável** (Mali-450 + R36S) — ataque/controle nativo, áudio, inglês, resolução auto | [`ports/katanazero`](ports/katanazero/) |
-| **DYSMANTLE** | so-loader (GameActivity) | **Jogável** (Mali-450 + X5M) — mundo com cor, áudio | [`ports/dysmantle`](ports/dysmantle/) |
+| **DYSMANTLE** | so-loader (GameActivity) + streaming nativo de texturas | **Jogável multi-device** (Mali-450, X5M, R36S 1GB) — textura full-res paginada, áudio, bake staged no 1º boot | [`ports/dysmantle`](ports/dysmantle/) |
+| **Hotline Miami 2** (GameMaker/YYC) | so-loader (`libyoyo.so`) | **Jogável** (Mali-450) — gameplay + música + SFX | [`ports/hlm2`](ports/hlm2/) |
+| **DuckTales Remastered** (WayForward) | so-loader (armv7, FMOD) | **Jogável** (Mali-450) — menu confiável, controle, gameplay | [`ports/ducktales`](ports/ducktales/) |
+| **Minecraft Bedrock (MCPE)** | mcpelauncher (armhf) + SDL3 | **Jogável fullscreen** (Mali-450) | [`ports/mcpe`](ports/mcpe/) |
+| **GTA: Liberty City Stories** | so-loader | **Parcial** (Mali-450) — gameplay 3D visível, cutscenes nativas | [`ports/lcs`](ports/lcs/) |
+| **Final Fantasy IX** (Unity 2022 IL2CPP) | so-loader | **Em progresso** (Mali-450) — caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
+| **LEGO Batman 3** (Fusion engine) | so-loader | **Parcial** (Mali-450) — render limpo/estável | [`ports/legobatman`](ports/legobatman/) |
 | **Terraria** (Unity IL2CPP) | so-loader | **Jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | **Jogável** (Mali-450) — render, controle físico (padrão Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
 | **Shantae and the Pirate's Curse** (WayForward "Black") | so-loader (NativeActivity **armv7**, ES2 nativo + OpenSL ES) | **Jogável** (Mali-450) — render + áudio + 60fps + inglês, **controles completos** (dpad/analógico navegam menu e andam, botões Xbox, SELECT+START sai) | [`ports/shantae`](ports/shantae/) |
