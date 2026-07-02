@@ -103,8 +103,9 @@ if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb
   exit 1
 fi
 
-# libs de sistema por ultimo; libs.aarch64 (bundle: libmpg123) SO cobre o que faltar.
-export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/arm64-v8a:/usr/lib:/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}:$GAMEDIR/libs.aarch64"
+# Ordem do Bully v11: /usr/local (extras do CFW) -> /usr/lib -> gamedir -> resto;
+# libs.aarch64 (bundle: libmpg123) por ULTIMO = so cobre o que o sistema nao tiver.
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib:/usr/lib:$GAMEDIR:${LD_LIBRARY_PATH:-}:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:$GAMEDIR/libs.aarch64"
 [ -n "${sdl_controllerconfig:-}" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 ${ESUDO:-} chmod 666 /dev/uinput 2>/dev/null
