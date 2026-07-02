@@ -932,6 +932,12 @@ int main(int argc, char *argv[]) {
      ⚠️ NUNCA forçamos SDL_VIDEODRIVER/SDL_AUDIODRIVER nem driver de GPU: o
      sistema/SDL escolhem wayland/kmsdrm/fbdev e pulse/alsa/pipewire sozinhos. */
   setenv("SDL_NO_SIGNAL_HANDLERS", "1", 0);            /* SDL não pisa nos sinais */
+#ifdef __aarch64__
+  /* v5: sob pm_platform_helper (systemd-run) os exports do launcher NAO chegam;
+     o fix da Electric Road precisa estar ON por default (overwrite=0 preserva
+     o controle do launcher/env quando existir). */
+  setenv("SONIC_CLEARALL", "1", 0);
+#endif
   setenv("SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP", "1", 0);
   setenv("SDL_VIDEO_FULLSCREEN_DESKTOP", "1", 0);
   setenv("SONIC_DATADIR", ".", 0);  /* cwd = GAMEDIR (launcher faz cd); save/dados aqui */
@@ -1240,7 +1246,13 @@ int main(int argc, char *argv[]) {
   const char *gamedir = getenv("SONIC_DATADIR");
   if (!gamedir) gamedir = ".";
   const char *lpk = getenv("SONIC_LPK");
-  if (!lpk) lpk = "data/main.22.com.sega.sonic4episode2.obb"; /* o OBB = LPK */
+  /* default esperto: o v3/arm64 usa data/data.obb; v2 usa o main.22. Importante
+     porque no NextOS novo (pm_platform_helper/systemd-run) os envs do launcher
+     NAO chegam ao binario — o default precisa acertar sozinho. */
+  if (!lpk) {
+    if (access("data/data.obb", F_OK) == 0) lpk = "data/data.obb";
+    else lpk = "data/main.22.com.sega.sonic4episode2.obb"; /* o OBB = LPK */
+  }
 
   /* SetGamePath(env, thiz, int id, String path) -> tsSetFileRootPath(id,path,0):
      id==255(0xff) => tsInitFileRootLPK(path) = fopen+indexa o LPK (o OBB!);

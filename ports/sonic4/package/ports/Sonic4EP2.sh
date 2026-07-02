@@ -68,7 +68,23 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-start_weston_if_needed
+# NextOS novo (S905X5M etc): o mod do sistema define pm_platform_helper e roda
+# ports com SDL_VIDEODRIVER=kmsdrm parando a essway (que segura o DRM). Pro BAKE
+# do first-run aparecer, replicamos a MESMA convencao do sistema so nessa fase.
+NEXTOS_NOVO=0
+command -v pm_platform_helper >/dev/null 2>&1 && NEXTOS_NOVO=1
+
+NEED_EXTRACT=0
+{ [ -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] && [ -f "$GAMEDIR/data/data.obb" ]; } || NEED_EXTRACT=1
+
+if [ "$NEXTOS_NOVO" = 1 ]; then
+  if [ "$NEED_EXTRACT" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl stop essway 2>/dev/null
+    export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-kmsdrm}"   # convencao do mod_NextOS p/ ports
+  fi
+else
+  start_weston_if_needed
+fi
 
 # ---- FIRST RUN: extrai do .apkm com a tela bake (o proprio binario desenha) ----
 bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
@@ -82,6 +98,7 @@ if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb
   echo " e abra o Sonic 4 EP2 de novo."
   echo "############################################################"
   sleep 8
+  [ "$NEXTOS_NOVO" = 1 ] && command -v systemctl >/dev/null 2>&1 && systemctl start essway 2>/dev/null
   command -v pm_finish >/dev/null 2>&1 && pm_finish
   exit 1
 fi
@@ -132,6 +149,12 @@ fi
 [ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
 
 export SONIC_LPK=data/data.obb
+
+# NextOS novo (ex.: S905X5M): o mod define pm_platform_helper, que PARA a ES
+# (libera o DRM pro kmsdrm) e relanca o binario num service systemd com
+# gptokeyb no mesmo cgroup + restauracao da ES no fim (igual Bully). Onde nao
+# existe, e no-op e seguimos com a execucao direta abaixo.
+command -v pm_platform_helper >/dev/null 2>&1 && pm_platform_helper "$GAMEDIR/sonic4.arm64" >/dev/null 2>&1
 
 ./sonic4.arm64
 
