@@ -7,6 +7,25 @@
 
 ---
 
+## s18e 2026-07-01 — 🖥️ "menu escuro na TV do usuário" = DISPLAY/HDMI, não render
+
+- Jogo renderiza CLARO no fb0 (confirmado por `dd if=/dev/fb0` → captura brilhante). Usuário vê
+  escuro/apagado na TV. ⇒ problema no PATH DE SAÍDA HDMI, não no render.
+- Device: `cat /sys/class/amhdmitx/amhdmitx0/config` → **Colourspace: YUV444, Colour range: limited**,
+  720p60. `echo rgb,8bit > attr` NÃO mudou em runtime (range setado no modeset). hpd=1.
+- Funcionava na TV em s11 (usuário confirmou) → **REGRESSÃO pós-reboot** (device crashou/reiniciou
+  esta sessão). Provável: range HDMI limited + estado de display/EDID após reboot, OU picture-mode
+  da TV (modo escuro/cinema).
+- ⚠️ `ter_shot_hook` NÃO é chamado no swap do FF9 (`[SHOTHOOK]` nunca logou) → qualquer
+  pós-processamento de fb TEM que ir no loop de render real (main.c ~9220), NÃO no ter_shot_hook.
+- Tentativa FF9_FBBRIGHT (amplificar RGB do fb por-frame) FUNCIONOU o hook (FBSCAN logou:
+  fb 1280x720 virt 1280x1440 yoff=0, mmap ok) MAS **crashou** (memcpy+math de 3.7MB/frame no CPU
+  fraco / corrida com present) → **default OFF**. Não é a camada certa.
+- ▶️ PRÓXIMO p/ TV: (a) usuário conferir picture-mode da TV / range de entrada; (b) tentar re-setar
+  o modo de display pós-boot (`echo 720p60hz > /sys/class/display/mode`) p/ renegociar range —
+  ARRISCA perder sinal, fazer com usuário presente; (c) se insistir em fb-brightness, fazer LEVE
+  (a cada N frames, não todo frame) e robusto.
+
 ## s18b 2026-07-01 — ✅ RAIZ DO FUNDO PRETO ISOLADA (EBGDIAG no campo real) + evento de abertura roda
 
 > Device .90 voltou. Fluxo validado ao vivo: menu (FBMIRROR nas 2 metades do fb0) → New Game →
