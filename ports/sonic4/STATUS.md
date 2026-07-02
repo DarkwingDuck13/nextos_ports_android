@@ -1,5 +1,11 @@
 # Sonic 4 EP2 - STATUS
 
+## 🏆 2026-07-02 — TESTERS: TODOS os devices OK (relato do usuario)
+muOS OK, ROCKNIX (Mesa/Panfrost) OK, R36S OK — "tudo ok". As apostas de
+compatibilidade sem ter o device na mao funcionaram: audio adaptativo (scan de
+driver SDL, caso muOS/pipewire), rejeicao de contexto desktop-GL (Mesa/Panfrost),
+resolucao nativa automatica (paineis 640x480), CLEARALL default. 
+
 ## Sessao 2026-07-02 — v5 ARM64-ONLY empacotado (bake estilo Bully) + validado nos devices
 Zip: `Sonic4EP2 PortMaster v5 arm64.zip` (Area de trabalho, md5 13380bb1). Commits ate 65c6950.
 - **v5 = so arm64** (pedido do usuario): sonic4.arm64 + launcher unico + extrator do .apkm.
