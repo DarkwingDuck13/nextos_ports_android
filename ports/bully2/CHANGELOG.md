@@ -17,3 +17,7 @@
   397bf74f...662331c1.
 - Hotfix X5M: driver SDL comparado case-insensitive no present (KMSDRM
   maiusculo do EmuELEC novo dava tela preta). Zips v11 regenerados.
+- Opcional BULLY2_NO_CROWD_SND=1: ambiencia (crowd/ambs/chatter) vira
+  sfx_silenceloop.snd (146 arquivos elegiveis; musicas mx_ intactas);
+  NULL crashava -> redirect-a-silencio. Launcher: +libs PortMaster e
+  pm_platform_helper. Zips v11 71e49d78 / COMPLETO 8914c07d.
