@@ -1,5 +1,6 @@
 #!/bin/bash
-# Sonic The Hedgehog 4: Episode II -- Android so-loader for NextOS / PortMaster.
+# Sonic 4 Episode II -- v5 AARCH64 nativo (libfox arm64 v3.0.0 + OBB data.obb).
+# First-run: extrai lib+dados do .apkm do usuario com tela de progresso (bake NextOS).
 
 PORTNAME="Sonic The Hedgehog 4: Episode II"
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
@@ -16,130 +17,126 @@ else
   controlfolder="/storage/.config/PortMaster"
 fi
 
-source $controlfolder/control.txt
-[ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
-get_controls
+[ -f "$controlfolder/control.txt" ] && source "$controlfolder/control.txt"
+[ -n "${CFW_NAME:-}" ] && [ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
+command -v get_controls >/dev/null 2>&1 && get_controls
 
 CUR_TTY=/dev/tty0
-$ESUDO chmod 666 $CUR_TTY 2>/dev/null
+${ESUDO:-} chmod 666 $CUR_TTY 2>/dev/null
 
+directory="${directory:-roms}"
 GAMEDIR="/$directory/ports/sonic4ep2"
+[ -d "$GAMEDIR" ] || for g in /roms/ports/sonic4ep2 /storage/roms/ports/sonic4ep2 /roms2/ports/sonic4ep2; do
+  [ -d "$g" ] && GAMEDIR="$g" && break
+done
 cd "$GAMEDIR" || exit 1
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-# First run: extract libfox.so + OBB from the APK / cache (bring-your-own data).
-extract_data_first_run() {
-  [ -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] && \
-  [ -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ] && return 0
+chmod +x "$GAMEDIR/sonic4.arm64" "$GAMEDIR/tools/sonic4ep2_extract.sh" 2>/dev/null
 
-  echo "First run setup: extracting Sonic 4 Episode II data."
-  $ESUDO chmod +x "$GAMEDIR/tools/sonic4ep2_extract.src" "$GAMEDIR/tools/progressor" 2>/dev/null || true
-
-  PROGRESSOR="$(command -v progressor 2>/dev/null || true)"
-  [ -z "$PROGRESSOR" ] && [ -x "$GAMEDIR/tools/progressor" ] && PROGRESSOR="$GAMEDIR/tools/progressor"
-
-  if [ -n "$PROGRESSOR" ]; then
-    SONIC4EP2_PROGRESSOR=1 "$PROGRESSOR" \
-      --title "Sonic 4 Episode II" \
-      --log "$GAMEDIR/tools/extract.log" \
-      "$GAMEDIR/tools/sonic4ep2_extract.src" || "$GAMEDIR/tools/sonic4ep2_extract.src"
-  else
-    "$GAMEDIR/tools/sonic4ep2_extract.src"
+# ---- DISPLAY: alguns NextOS aarch64 (ex.: S905X5M) tem SDL2 wayland-only e a ES
+# roda KMSDRM direto (sem sessao wayland). Se nao ha socket wayland E o SDL do
+# sistema nao tem kmsdrm/fbdev, sobe um weston proprio (drm) e roda dentro dele.
+# Nada de driver forcado: so provemos a sessao que o SDL do device exige.
+WESTON_PID=""
+start_weston_if_needed() {
+  for d in "${XDG_RUNTIME_DIR:-}" /run/user/0 /run/0-runtime-dir /tmp; do
+    [ -n "$d" ] || continue
+    if ls "$d"/wayland-* >/dev/null 2>&1; then
+      export XDG_RUNTIME_DIR="$d"
+      return 0
+    fi
+  done
+  SDLLIB=$(ls /usr/lib/libSDL2-2.0.so.0 /usr/lib/*/libSDL2-2.0.so.0 /usr/lib64/libSDL2-2.0.so.0 2>/dev/null | head -1)
+  if [ -n "$SDLLIB" ] && strings "$SDLLIB" 2>/dev/null | grep -qxE "kmsdrm|KMSDRM|fbdev|x11"; then
+    return 0   # SDL tem backend de console -> nao precisa de weston
   fi
+  command -v weston >/dev/null 2>&1 || return 0
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+  mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+  echo ">> subindo weston (SDL wayland-only, sem sessao)"
+  weston >/dev/null 2>&1 &
+  WESTON_PID=$!
+  for _i in $(seq 1 50); do
+    ls "$XDG_RUNTIME_DIR"/wayland-* >/dev/null 2>&1 && break
+    sleep 0.2
+  done
 }
+cleanup() {
+  pkill -x gptokeyb 2>/dev/null
+  [ -n "$WESTON_PID" ] && kill "$WESTON_PID" 2>/dev/null
+}
+trap cleanup EXIT INT TERM
 
-trap 'pkill -x gptokeyb 2>/dev/null || true' EXIT INT TERM
-extract_data_first_run
+start_weston_if_needed
 
-if [ ! -f "$GAMEDIR/lib/armeabi-v7a/libfox.so" ] || [ ! -f "$GAMEDIR/data/main.22.com.sega.sonic4episode2.obb" ]; then
+# ---- FIRST RUN: extrai do .apkm com a tela bake (o proprio binario desenha) ----
+bash "$GAMEDIR/tools/sonic4ep2_extract.sh"
+
+if [ ! -f "$GAMEDIR/lib/arm64-v8a/libfox.so" ] || [ ! -f "$GAMEDIR/data/data.obb" ]; then
   echo "############################################################"
-  echo " Missing Sonic 4 Episode II data."
-  echo " Copy these files to: $GAMEDIR/"
-  echo "  - sonic-the-hedgehog-4-episode-ii-2.0.0.apk"
-  echo "  - cache-sonic-the-hedgehog-4-episode-ii-2.0.0.zip"
-  echo "    or main.22.com.sega.sonic4episode2.obb"
-  echo " Then launch Sonic 4 EP2 again."
+  echo " Faltam os dados do Sonic 4 Episode II (arm64)."
+  echo " Copie para $GAMEDIR/:"
+  echo "  - com.sega.sonic4episode2_3.0.0-109_...apkm"
+  echo "    (ou split_config.arm64_v8a.apk + split_packs.apk)"
+  echo " e abra o Sonic 4 EP2 de novo."
   echo "############################################################"
-  echo "Missing Sonic 4 EP2 APK/cache. See $GAMEDIR/README.md" > "$CUR_TTY" 2>/dev/null || true
-  sleep 10
+  sleep 8
   command -v pm_finish >/dev/null 2>&1 && pm_finish
   exit 1
 fi
 
-# ArkOS keeps libmali/GLESv2/EGL (armhf) in /usr/local/lib/arm-linux-gnueabihf; other
-# systems just ignore the missing paths. Display/audio are auto-detected (nothing forced).
-export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/armeabi-v7a:/usr/lib32:/lib32:/usr/lib/arm-linux-gnueabihf:/lib/arm-linux-gnueabihf:/usr/local/lib/arm-linux-gnueabihf:/usr/local/lib32:/usr/local/lib:/usr/lib:$LD_LIBRARY_PATH"
-export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+# libs de sistema por ultimo; libs.aarch64 (bundle: libmpg123) SO cobre o que faltar.
+export LD_LIBRARY_PATH="$GAMEDIR:$GAMEDIR/lib/arm64-v8a:/usr/lib:/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}:$GAMEDIR/libs.aarch64"
+[ -n "${sdl_controllerconfig:-}" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
-$ESUDO chmod +x "$GAMEDIR/sonic4" 2>/dev/null || chmod +x "$GAMEDIR/sonic4"
-$ESUDO chmod 666 /dev/uinput 2>/dev/null || true
+${ESUDO:-} chmod 666 /dev/uinput 2>/dev/null
 
-# Storage read-ahead to smooth OBB streaming (read-only, best-effort).
+# Read-ahead do storage p/ streaming do OBB (read-only, best-effort).
 if command -v blockdev >/dev/null 2>&1; then
   _sdev=$(df "$GAMEDIR" 2>/dev/null | awk 'NR==2{print $1}' | sed 's/p[0-9]*$//; s/[0-9]*$//')
   for _d in "$_sdev" /dev/mmcblk0 /dev/mmcblk1; do
-    [ -b "$_d" ] && $ESUDO blockdev --setra 4096 "$_d" 2>/dev/null || true
+    [ -b "$_d" ] && ${ESUDO:-} blockdev --setra 4096 "$_d" 2>/dev/null
   done
 fi
 
 if [ "${SONIC_GPTOKEYB:-0}" = "1" ]; then
   export SONIC_INPUT=gptk
-  if [ -n "$GPTOKEYB" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
-    $GPTOKEYB "sonic4" -c "$GAMEDIR/sonic4.gptk" &
+  if [ -n "${GPTOKEYB:-}" ] && { set -- $GPTOKEYB; [ -x "$1" ]; }; then
+    $GPTOKEYB "sonic4.arm64" -c "$GAMEDIR/sonic4.gptk" &
   elif command -v gptokeyb >/dev/null 2>&1; then
-    gptokeyb -1 "sonic4" -c "$GAMEDIR/sonic4.gptk" &
+    gptokeyb -1 "sonic4.arm64" -c "$GAMEDIR/sonic4.gptk" &
   fi
 fi
 
-# Audio logging OFF por padrão (o log pesado de PlaySound/StopSound — centenas de linhas/seg via
-# tee no SD — derruba a performance das fases pesadas). Banners de driver + vídeo (GL) + DEMOGUARD
-# + crash continuam SEMPRE visíveis. `touch sonic4ep2/audiolog` religa p/ diagnosticar som.
+# Audio log OFF por padrao (pesado); `touch sonic4ep2/audiolog` religa.
 [ -f "$GAMEDIR/audiolog" ] && export SONIC_AUDIOLOG=1
 
-# muOS/PipeWire 32-bit audio fix (PROVADO na imagem muOS RG35XX-H via qemu-arm).
-# O device roda PipeWire; o SDL2 *32-bit* do muOS so tem backend ALSA, e o ALSA "default"
-# roteia p/ o PipeWire por um plugin. Um processo 32-bit precisa carregar o plugin ALSA, os
-# modulos do PipeWire e os plugins SPA das pastas *32-bit* -- senao pega as 64-bit ("wrong ELF
-# class" / "can't make support.system handle") -> snd_pcm_open("default")=-2 = MUDO (ou HDMI).
-# O muOS le o marcador PORT_32BIT="Y" deste .sh p/ setar as pastas lib32; setamos tambem aqui,
-# guardado por existencia, p/ valer em qualquer fluxo/CFW (inofensivo onde nao ha PipeWire 32-bit).
-PORT_32BIT="Y"
-for _pwl in /usr/lib32 /usr/lib/arm-linux-gnueabihf /usr/local/lib/arm-linux-gnueabihf; do
-  [ -d "$_pwl/pipewire-0.3" ] && export PIPEWIRE_MODULE_DIR="$_pwl/pipewire-0.3"
-  [ -d "$_pwl/spa-0.2" ] && export SPA_PLUGIN_DIR="$_pwl/spa-0.2"
-  [ -e "$_pwl/alsa-lib/libasound_module_pcm_pipewire.so" ] && export ALSA_PLUGIN_DIR="$_pwl/alsa-lib"
-done
-[ -n "$PIPEWIRE_MODULE_DIR" ] && echo "audio: PipeWire 32-bit dirs -> mod=$PIPEWIRE_MODULE_DIR spa=$SPA_PLUGIN_DIR alsaplug=${ALSA_PLUGIN_DIR:-default}"
-
-# Audio: auto by default. Only set this if your device has no sound: alsa | pulseaudio | pipewire
-# (No muOS o SDL 32-bit so tem backend ALSA: use alsa. pulse/pipewire NAO existem no SDL 32-bit de la.)
+# Audio: automatico. So defina se o device ficar mudo: alsa | pulseaudio | pipewire
 AUDIO_DRIVER="${AUDIO_DRIVER:-}"
 [ -n "$AUDIO_DRIVER" ] && export SONIC_AUDIODRIVER="$AUDIO_DRIVER"
 
-# Volume buttons (batocera/Knulli/raw-ALSA): point HOME at the system asoundrc so the
-# ALSA "default" (softvol) opens and the device volume keys work.
-if [ -z "$SONIC_KEEP_HOME" ]; then
+# Botoes de volume (batocera/Knulli): HOME no asoundrc do sistema (softvol).
+if [ -z "${SONIC_KEEP_HOME:-}" ]; then
   for _adir in /userdata/system /storage/.config /root "$HOME" /etc; do
     if [ -f "$_adir/.asoundrc" ]; then export HOME="$_adir"; break; fi
   done
 fi
 
-# Electric Road (Episode Metal) render fix; harmless elsewhere. Disable: SONIC_NO_CLEARALL.
-[ -z "$SONIC_NO_CLEARALL" ] && export SONIC_CLEARALL=1
+# Electric Road (Episode Metal) render fix; inofensivo nas outras fases.
+[ -z "${SONIC_NO_CLEARALL:-}" ] && export SONIC_CLEARALL=1
 
-# Testing aid: `touch sonic4ep2/unlock_all` unlocks every stage (not shipped in releases).
+# Ajudas de teste (nao vao na release): unlock_all / simcrash / no_demoguard
 [ -f "$GAMEDIR/unlock_all" ] && export SONIC_UNLOCK_ALL=1
-
-# Testing aid: `touch sonic4ep2/simcrash` simula o crash de use-after-free do attract-demo no boot.
-#   - com a guarda (padrão): RECUPERA e vai pro título (dá pra jogar) -> veja "SOBREVIVI" no log.txt.
-#   - +`touch sonic4ep2/no_demoguard`: crash CRU (fecha) -> prova que a guarda salva.
-# Remova os arquivos p/ voltar ao normal. (não vão na release.)
 [ -f "$GAMEDIR/simcrash" ] && export SONIC_SIMDEMOCRASH=1
 [ -f "$GAMEDIR/no_demoguard" ] && export SONIC_NO_DEMOGUARD=1
 
-./sonic4
+export SONIC_LPK=data/data.obb
 
-pkill -x gptokeyb 2>/dev/null || true
-$ESUDO chmod 666 "$CUR_TTY" 2>/dev/null || true
-printf "\033c" >> "$CUR_TTY" 2>/dev/null || true
+./sonic4.arm64
+
+cleanup
+${ESUDO:-} chmod 666 "$CUR_TTY" 2>/dev/null
+printf "\033c" >> "$CUR_TTY" 2>/dev/null
 command -v pm_finish >/dev/null 2>&1 && pm_finish
+exit 0

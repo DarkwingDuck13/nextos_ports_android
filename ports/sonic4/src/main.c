@@ -915,6 +915,11 @@ int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
+  /* modo BAKE (tela de setup da extração, estilo Bully v11): standalone, sai no stop-file. */
+  if (getenv("SONIC_SETUPSPLASH")) {
+    extern int sonic_run_setup_splash(void);
+    return sonic_run_setup_splash();
+  }
   fprintf(stderr, "=== SONIC 4 EPISODE II (NN/fox) so-loader / NextOS armv7 Mali-450 ===\n");
 
   if (!getenv("SONIC_NO_CRASHLOG")) sonic_install_crash_handler();
