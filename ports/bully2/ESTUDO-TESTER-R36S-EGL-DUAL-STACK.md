@@ -2,7 +2,9 @@
 
 **Data:** 2026-07-02 · **Fonte:** log de tester (v11 fresh, R36S, CFW "DarkOSre"/Port-in-OS)
 **Sintoma:** extrai tudo (logo + barra OK), depois volta pro menu do frontend.
-**Status:** CAUSA-RAIZ FECHADA + FIX COMMITADO (60a5202) + VALIDADO no R36S cabeado.
+**Status:** ✅ RESOLVIDO — fix (60a5202) validado no R36S cabeado E **confirmado pelo
+tester no DarkOS real em 2026-07-02** ("resolveu mesmo") com o v11.1. Dois devices
+DarkOS apresentavam o mesmo abort (logs idênticos), mesma causa.
 
 ## TL;DR
 
