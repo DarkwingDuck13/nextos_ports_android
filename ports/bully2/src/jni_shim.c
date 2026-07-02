@@ -1121,6 +1121,153 @@ static void build_env(void) {
   SET(0x6B8, RegisterNatives);
 }
 
+/* --- kfix: valida shoulders/stick-clicks contra o BITMAP DO KERNEL ---
+ * Em alguns clones de R36S ("GO-Super Gamepad") o driver expoe os botoes em
+ * ordem diferente da que o gamecontrollerdb do CFW/PortMaster assume: o
+ * leftshoulder/rightshoulder do mapping apontam pros indices dos stick-clicks
+ * e vice-versa -> mira/tiro caem no L3/R3 fisico em vez de L1/R1. A semantica
+ * fisica AUTORITATIVA e a do kernel: BTN_TL/BTN_TR = L1/R1, BTN_THUMBL/
+ * BTN_THUMBR = L3/R3, BTN_TL2/BTN_TR2 = L2/R2. O indice de botao SDL e
+ * deterministico do bitmap EV_KEY (ordem crescente de code a partir de
+ * BTN_JOYSTICK, depois os codes abaixo). Se o mapping divergir do bitmap,
+ * corrigimos so esses campos e re-registramos o mapping. BULLY2_PAD_KFIX=0
+ * desliga. */
+#include <dirent.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+
+#define KFIX_NBITS (KEY_MAX + 1)
+static int kfix_bit(const unsigned long *bits, int b) {
+  return (bits[b / (8 * sizeof(long))] >> (b % (8 * sizeof(long)))) & 1;
+}
+
+/* indice SDL do botao com key-code `code` (replica a enumeracao do joystick
+ * evdev do SDL2: primeiro codes >= BTN_JOYSTICK, depois os < BTN_JOYSTICK). */
+static int kfix_sdl_btn_index(const unsigned long *bits, int code) {
+  if (!kfix_bit(bits, code))
+    return -1;
+  int idx = 0;
+  if (code >= BTN_JOYSTICK) {
+    for (int i = BTN_JOYSTICK; i < code; i++)
+      if (kfix_bit(bits, i))
+        idx++;
+    return idx;
+  }
+  for (int i = BTN_JOYSTICK; i < KEY_MAX; i++)
+    if (kfix_bit(bits, i))
+      idx++;
+  for (int i = 0; i < code; i++)
+    if (kfix_bit(bits, i))
+      idx++;
+  return idx;
+}
+
+static int kfix_find_evdev(const char *jsname, unsigned long *bits) {
+  DIR *d = opendir("/dev/input");
+  if (!d)
+    return 0;
+  struct dirent *de;
+  int found = 0;
+  while (!found && (de = readdir(d))) {
+    if (strncmp(de->d_name, "event", 5))
+      continue;
+    char path[64], name[128] = {0};
+    snprintf(path, sizeof(path), "/dev/input/%s", de->d_name);
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0)
+      continue;
+    if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) >= 0 &&
+        strcmp(name, jsname) == 0 &&
+        ioctl(fd, EVIOCGBIT(EV_KEY, KFIX_NBITS / 8), bits) >= 0)
+      found = 1;
+    close(fd);
+  }
+  closedir(d);
+  return found;
+}
+
+/* troca (ou insere) "campo:bN" numa copia do mapping string */
+static void kfix_set_field(char *map, size_t cap, const char *field, int bidx) {
+  char pat[32], rep[32];
+  snprintf(pat, sizeof(pat), "%s:", field);
+  snprintf(rep, sizeof(rep), "%s:b%d,", field, bidx);
+  char *p = strstr(map, pat);
+  if (p) {
+    char *end = strchr(p, ',');
+    char tail[1024];
+    snprintf(tail, sizeof(tail), "%s", end ? end + 1 : "");
+    snprintf(p, cap - (p - map), "%s%s", rep, tail);
+  } else if (strlen(map) + strlen(rep) + 1 < cap) {
+    strcat(map, rep);
+  }
+}
+
+static int kfix_field_bidx(const char *map, const char *field) {
+  char pat[32];
+  snprintf(pat, sizeof(pat), "%s:b", field);
+  const char *p = strstr(map, pat);
+  return p ? atoi(p + strlen(pat)) : -1;
+}
+
+static void kfix_apply(int dev_index) {
+  const char *e = getenv("BULLY2_PAD_KFIX");
+  if (e && *e == '0')
+    return;
+  const char *jsname = SDL_JoystickNameForIndex(dev_index);
+  char *map = SDL_GameControllerMappingForDeviceIndex(dev_index);
+  if (!jsname || !map) {
+    SDL_free(map);
+    return;
+  }
+  static unsigned long bits[KFIX_NBITS / (8 * sizeof(long)) + 1];
+  memset(bits, 0, sizeof(bits));
+  if (!kfix_find_evdev(jsname, bits)) {
+    fprintf(stderr, "[pad] kfix: evdev de \"%s\" nao encontrado/sem leitura — "
+                    "mapping do CFW mantido\n", jsname);
+    SDL_free(map);
+    return;
+  }
+  const struct {
+    const char *field;
+    int code;
+  } want[] = {
+      {"leftshoulder", BTN_TL},   {"rightshoulder", BTN_TR},
+      {"leftstick", BTN_THUMBL},  {"rightstick", BTN_THUMBR},
+      {"lefttrigger", BTN_TL2},   {"righttrigger", BTN_TR2},
+  };
+  char fixed[1024];
+  snprintf(fixed, sizeof(fixed), "%s", map);
+  int changes = 0;
+  for (unsigned i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+    int kidx = kfix_sdl_btn_index(bits, want[i].code);
+    if (kidx < 0)
+      continue; /* botao nao existe fisicamente nesse driver */
+    int midx = kfix_field_bidx(fixed, want[i].field);
+    if (midx == kidx)
+      continue;
+    /* gatilhos podem ser eixo (aN) no mapping — so corrige se era botao */
+    if (midx < 0 && (want[i].code == BTN_TL2 || want[i].code == BTN_TR2))
+      continue;
+    kfix_set_field(fixed, sizeof(fixed), want[i].field, kidx);
+    fprintf(stderr, "[pad] kfix %s: b%d -> b%d (kernel)\n", want[i].field,
+            midx, kidx);
+    changes++;
+  }
+  if (changes) {
+    if (SDL_GameControllerAddMapping(fixed) >= 0)
+      fprintf(stderr, "[pad] kfix aplicado (%d campos) em \"%s\"\n", changes,
+              jsname);
+    else
+      fprintf(stderr, "[pad] kfix AddMapping falhou: %s\n", SDL_GetError());
+  } else {
+    fprintf(stderr,
+            "[pad] kfix: mapping do CFW ja casa com o kernel em \"%s\"\n",
+            jsname);
+  }
+  SDL_free(map);
+}
+
 void jni_init_input(void) {
   int n = SDL_NumJoysticks();
   fprintf(stderr, "[pad] SDL_NumJoysticks=%d\n", n);
@@ -1128,6 +1275,7 @@ void jni_init_input(void) {
     fprintf(stderr, "[pad] js%d \"%s\" isGameController=%d\n", i,
             SDL_JoystickNameForIndex(i), SDL_IsGameController(i));
     if (SDL_IsGameController(i) && !g_pad) {
+      kfix_apply(i);
       g_pad = SDL_GameControllerOpen(i);
       fprintf(stderr, "[pad] opened: %s\n", g_pad ? "OK" : SDL_GetError());
     }
