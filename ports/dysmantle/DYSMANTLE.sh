@@ -128,8 +128,10 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
   if [ "$DYS_RAM_KB" -ge 716800 ]; then
     export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
   else
-    export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-100}"
-    export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-100}"
+    # R36S-class validado 2026-07-02 (.220 ArkOS 639MB+zram 256): nativo limpo, sem piscada
+    export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-80}"
+    export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-48}"
+    export DYSMANTLE_PAGE_MIN_KB="${DYSMANTLE_PAGE_MIN_KB:-24}"
   fi
   # piso anti-OOM: se MemAvailable cair abaixo disso, despeja mesmo abaixo do cap
   export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-120}"
@@ -188,7 +190,12 @@ if [ -z "$DYSMANTLE_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -x "$GAMEDIR/texba
 fi
 
 # ---------- ambiente ----------
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
+# 🔑 ArkOS: existem DOIS blobs Mali (gbm em /usr/local/lib/<triplet>, wayland-gbm em
+# /usr/lib/<triplet>). Se o EGL vier de um e o GLESv2 do outro = instancias separadas
+# do driver -> glCreateShader devolve 0 SEM erro -> "failed to create a vertex shader"
+# -> popup fatal. Prepender /usr/local/lib/<triplet> (o que o sistema usa) resolve;
+# nos demais CFWs os dirs nem existem (sem efeito).
+export LD_LIBRARY_PATH="/usr/local/lib/aarch64-linux-gnu:/usr/local/lib/arm-linux-gnueabihf:/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL2COMPAT_FORCE_FULLSCREEN_DESKTOP=1
 export SDL_VIDEO_FULLSCREEN_DESKTOP=1
