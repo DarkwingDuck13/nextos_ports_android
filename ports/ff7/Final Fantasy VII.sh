@@ -34,6 +34,16 @@ export FF7_LANG=0
 export FF7_DATA="$GAMEDIR/gamedata"
 
 # 1o-launch: o FF7 mobile EXIGE os arquivos de config/save senao o boot aborta.
+# SAVES: o jogo ESCREVE em $GAMEDIR/Documents mas LE os slots via caminho
+# "roms/ports/ff7/Documents" (resolvido p/ gamedata/...) -> slots "invalid".
+# Unifica com bind-mount (vfat nao tem symlink). Precisa root (NextOS ok).
+mkdir -p "$GAMEDIR/gamedata/ff7_1.02/save"
+for m in "$GAMEDIR/gamedata/roms/ports/ff7/Documents" "$GAMEDIR/roms/ports/ff7/Documents" "$GAMEDIR/gamedata/ff7_1.02/save"; do
+  mkdir -p "$m" "$GAMEDIR/Documents"
+  cp -n "$m"/* "$GAMEDIR/Documents/" 2>/dev/null
+  mountpoint -q "$m" 2>/dev/null || mount --bind "$GAMEDIR/Documents" "$m" 2>/dev/null
+done
+
 for d in "$GAMEDIR/gamedata/roms/ports/ff7/Documents" "$GAMEDIR/roms/ports/ff7/Documents" "$GAMEDIR/Documents"; do
   mkdir -p "$d" 2>/dev/null
   [ -f "$d/MusicVolume.key" ] || printf '100' > "$d/MusicVolume.key"

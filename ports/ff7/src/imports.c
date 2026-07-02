@@ -187,6 +187,20 @@ int __FD_ISSET_chk(int fd, fd_set *set, size_t setlen) {
   return FD_ISSET(fd, set);
 }
 
+/* Paths do engine FF7 PC comecam em "/ff7_1.02/..." (raiz do jogo) — p/ LEITURA
+ * o resolve_android_path achava via access(), mas p/ ESCRITA NOVA (save!) o
+ * arquivo nao existe -> caia no path absoluto invalido -> CreateFile falhava ->
+ * "invalid save file" no save point. Mapeia SEMPRE p/ $FF7_DATA (gamedata). */
+static const char *resolve_ff7_root(const char *path) {
+  static _Thread_local char buf[2048];
+  if (path && strncmp(path, "/ff7_1.02/", 10) == 0) {
+    const char *dp = getenv("FF7_DATA"); if (!dp) dp = "/roms/ports/ff7/gamedata";
+    snprintf(buf, sizeof buf, "%s%s", dp, path);
+    return buf;
+  }
+  return NULL;
+}
+
 static FILE *my_fopen(const char *pathname, const char *mode) {
   /* FMV: detecta o filme atual quando o engine abre um .webm -> carrega o .ivf
    * correspondente p/ nosso decode VP8 (driblando o samplerExternalOES). */
@@ -203,23 +217,40 @@ static FILE *my_fopen(const char *pathname, const char *mode) {
       ff7_bgm_set_akb(resolve_android_path(pathname));
     }
   }
-  return fopen(resolve_android_path(pathname), mode);
+  const char *root = resolve_ff7_root(pathname);
+  FILE *fr = fopen(root ? root : resolve_android_path(pathname), mode);
+  /* FF7_SAVELOG: loga toda escrita e qualquer acesso a save* (debug do save) */
+  if (getenv("FF7_SAVELOG") && pathname && mode &&
+      (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+') ||
+       strstr(pathname, "save") || strstr(pathname, "Save")))
+    debugPrintf("SAVELOG fopen('%s'->'%s', '%s') = %p\n",
+                pathname, resolve_android_path(pathname), mode, (void *)fr);
+  return fr;
 }
 
 static int my_open(const char *pathname, int flags, ...) {
+  const char *root = resolve_ff7_root(pathname);
+  const char *rp = root ? root : resolve_android_path(pathname);
   mode_t mode = 0;
+  int r;
   if (flags & O_CREAT) {
     va_list ap;
     va_start(ap, flags);
     mode = (mode_t)va_arg(ap, int);
     va_end(ap);
-    return open(resolve_android_path(pathname), flags, mode);
+    r = open(rp, flags, mode);
+  } else {
+    r = open(rp, flags);
   }
-  return open(resolve_android_path(pathname), flags);
+  if (getenv("FF7_SAVELOG") && pathname &&
+      ((flags & (O_WRONLY | O_RDWR | O_CREAT)) || strstr(pathname, "save")))
+    debugPrintf("SAVELOG open('%s'->'%s', flags=%#x) = %d\n", pathname, rp, flags, r);
+  return r;
 }
 
 static int my_open_2(const char *pathname, int flags) {
-  return open(resolve_android_path(pathname), flags);
+  const char *root = resolve_ff7_root(pathname);
+  return open(root ? root : resolve_android_path(pathname), flags);
 }
 
 static int mkdir_fake(const char *pathname, mode_t mode) {

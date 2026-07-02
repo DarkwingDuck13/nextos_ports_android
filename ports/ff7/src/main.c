@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <SDL2/SDL.h>
 
@@ -586,6 +587,57 @@ static void my_SourceStart(void *thisp) {
   debugPrintf("SRCSTART #%u this=%p\n", c, thisp);
   g_orig_srcstart(thisp);
 }
+/* ---- SAVELOG: trace do fluxo de gravacao de save (fw_CreateFileA/fw_WriteFile,
+ * Win32 reimplementado; paths sao ponteiros 32-bit do espaco PC -> mk_address). */
+typedef void *(*mkaddr_fn)(unsigned);
+static mkaddr_fn g_mk_address = NULL;
+typedef unsigned (*createfile_fn)(unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned);
+typedef unsigned (*writefile_fn)(unsigned, unsigned, unsigned, unsigned, unsigned);
+static createfile_fn g_orig_createfile = NULL;
+static writefile_fn g_orig_writefile = NULL;
+static unsigned my_fw_CreateFileA(unsigned name32, unsigned access, unsigned share,
+                                  unsigned sec, unsigned disp, unsigned flags, unsigned tmpl) {
+  const char *nm2 = (g_mk_address && name32) ? (const char *)g_mk_address(name32) : NULL;
+  unsigned r = g_orig_createfile(name32, access, share, sec, disp, flags, tmpl);
+  debugPrintf("SAVELOG CreateFileA('%s' acc=%#x disp=%u) = %#x\n",
+              nm2 ? nm2 : "?", access, disp, r);
+  return r;
+}
+static unsigned my_fw_WriteFile(unsigned h, unsigned buf32, unsigned size, unsigned written32, unsigned ovl) {
+  unsigned r = g_orig_writefile(h, buf32, size, written32, ovl);
+  debugPrintf("SAVELOG WriteFile(h=%#x size=%u) = %u\n", h, size, r);
+  return r;
+}
+
+/* ---- __open do engine (usado por fw_CreateFileA e todo file-I/O interno):
+ * quando open() E AAssetManager falham, ainda REGISTRAVA um pseudo-fd "valido"
+ * -> fw_CreateFileA "sucedia" p/ arquivo INEXISTENTE -> o save screen lia lixo
+ * e mostrava "invalid save file" em vez de "Empty" (bloqueando salvar).
+ * Pre-check: leitura de arquivo que nao existe em NENHUM candidato -> -1. ---- */
+typedef int (*engopen_fn)(const char *, int);
+static engopen_fn g_orig_engopen = NULL;
+static int my_engine_open(const char *path, int flags) {
+  /* ⚠️SO' p/ save*.ff7: o pseudo-fd fantasma e' LOAD-BEARING p/ arquivos
+   * legados do FF7 PC ausentes (audio.fmt/music.idx — bloquear = TRAVA o boot
+   * no frame 1) e paths relativos passam pelo cnv_path interno. O guard so'
+   * corrige o caso do save: arquivo de save inexistente tem que falhar de
+   * verdade senao o save screen le lixo -> "invalid save file". */
+  const char *bn_ = path ? strrchr(path, '/') : NULL;
+  const char *bn = bn_ ? bn_ + 1 : path;
+  if (path && path[0] == '/' && bn && strncmp(bn, "save", 4) == 0 && strstr(bn, ".ff7")
+      && (flags & O_ACCMODE) == O_RDONLY && getenv("FF7_NOOPENFIX") == NULL) {
+    if (access(path, F_OK) != 0 && access(resolve_android_path(path), F_OK) != 0) {
+      if (getenv("FF7_SAVELOG"))
+        debugPrintf("SAVELOG __open('%s' RO) INEXISTENTE -> -1 (era pseudo-fd fantasma)\n", path);
+      return -1;
+    }
+  }
+  int r = g_orig_engopen(path, flags);
+  if (getenv("FF7_SAVELOG") && path && (strstr(path, "save") || (flags & (O_WRONLY | O_RDWR | O_CREAT))))
+    debugPrintf("SAVELOG __open('%s', %#x) = %d\n", path, flags, r);
+  return r;
+}
+
 /* ---- Taxa de saida do SQEX: o engine pede 32000 no CoreSystem::Initialize.
  * Com 32000, a BGM (AKB 44100) sofre RESAMPLE DUPLO (SQEX 44100->32000 + nosso
  * 32000->44100, ambos lineares) = aliasing = CHIADO constante na musica.
@@ -595,9 +647,13 @@ int g_ff7_sqex_rate = 32000;   /* lido pelo ff7_music_feed (opensles_shim) */
 typedef int (*coreinit_fn)(int, int);
 static coreinit_fn g_orig_coreinit = NULL;
 static int my_CoreInit(int rate, int ch) {
-  int want = 44100;
+  /* DEFAULT = taxa NATIVA do engine (32000). Forcar 44100 QUEBRAVA os SFX de
+   * menu/ataque (one-shots SQEX autorados p/ 32000 — sumiram no teste do
+   * usuario 2026-07-02); o "chiado" da musica era o bug do float32-como-s16,
+   * nao o resample. FF7_SQEX44K opt-in p/ experimento; FF7_SQEXRATE=N livre. */
+  int want = rate;
+  if (getenv("FF7_SQEX44K")) want = 44100;
   if (getenv("FF7_SQEXRATE")) want = atoi(getenv("FF7_SQEXRATE"));
-  if (getenv("FF7_NOSQEX44K")) want = rate;
   if (want < 8000 || want > 48000) want = rate;
   debugPrintf("COREINIT: engine pediu rate=%d ch=%d -> usando %d\n", rate, ch, want);
   g_ff7_sqex_rate = want;
@@ -1029,6 +1085,19 @@ static void ff7_present_cb(void) {
     debugPrintf("MVOLDIAG frame %ld master_volume=%f\n", g_frame, g_GetMasterVolume());
   if (g_SetMasterVolume && getenv("FF7_FORCEMVOL") && g_frame % 30 == 0)
     g_SetMasterVolume(1.0f, 0);
+  /* FF7_AUTOSAVETEST=N (dev): dispara o AUTOSAVE do port mobile no frame N
+   * (seta is_autosave_mode + o flag BSS exec_autosave que o game loop consome)
+   * p/ exercitar o fluxo de GRAVACAO de save sem jogar ate o save point. */
+  if (getenv("FF7_AUTOSAVETEST") && text_base) {
+    long trg = atol(getenv("FF7_AUTOSAVETEST"));
+    static int fired = 0;
+    if (!fired && g_frame >= trg) {
+      *(unsigned char *)((uintptr_t)text_base + 0x1c99651) = 1; /* is_autosave_mode */
+      *(unsigned *)((uintptr_t)text_base + 0x1cd770c) = 1;      /* exec_autosave */
+      fired = 1;
+      debugPrintf("AUTOSAVETEST: exec_autosave=1 no frame %ld\n", g_frame);
+    }
+  }
   /* FF7_SKIPTEST=N (dev): reproduz o skip do START no frame N do movie, p/
    * depurar o "pulei o video -> jogo sem audio". FF7_SKIPMODE: 0=como o botao
    * (force_eof+fw_stop_movie), 1=NATIVO (so' force_eof -> FRAME=0 -> engine
@@ -1216,6 +1285,25 @@ int main(int argc, char *argv[]) {
                       g_border_c[3], g_border_c[4], g_border_c[5]); }
       } else debugPrintf("BORDER: simbolo nao achado\n");
     }
+  }
+  /* __open do engine: fix do pseudo-fd fantasma (save "invalid"). Prologo
+   * relocavel (str/stp/stp/stp). Default ON; FF7_NOOPENFIX desliga. */
+  {
+    uintptr_t eo = so_find_addr_safe("_Z6__openPKci");
+    if (eo) { g_orig_engopen = (engopen_fn)make_trampoline(eo, 16);
+      if (g_orig_engopen) { hook_arm64(eo, (uintptr_t)&my_engine_open);
+        debugPrintf("OPENFIX: hooked __open @%p\n", (void*)eo); } }
+  }
+  /* SAVELOG: trace do save (fw_CreateFileA/fw_WriteFile, prologos relocaveis). */
+  if (getenv("FF7_SAVELOG")) {
+    g_mk_address = (mkaddr_fn)so_find_addr_safe("mk_address");
+    uintptr_t cf = so_find_addr_safe("_Z14fw_CreateFileAjjjjjjj");
+    if (cf) { g_orig_createfile = (createfile_fn)make_trampoline(cf, 16);
+      if (g_orig_createfile) hook_arm64(cf, (uintptr_t)&my_fw_CreateFileA); }
+    uintptr_t wf = so_find_addr_safe("_Z12fw_WriteFilejjjjj");
+    if (wf) { g_orig_writefile = (writefile_fn)make_trampoline(wf, 16);
+      if (g_orig_writefile) hook_arm64(wf, (uintptr_t)&my_fw_WriteFile); }
+    debugPrintf("SAVELOG: hooks CreateFileA/WriteFile instalados (mk=%p)\n", (void*)g_mk_address);
   }
   /* SQEX @44100 (mata o resample duplo da BGM = chiado). Prologo de
    * CoreSystem::Initialize verificado relocavel (sub/cmp/stp/stp). */

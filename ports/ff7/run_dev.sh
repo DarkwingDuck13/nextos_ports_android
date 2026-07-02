@@ -34,6 +34,13 @@ export FF7_LANG="${FF7_LANG:-0}"  # 0=INGLES (1=FR,2=DE) — regra #5
 
 # 1o-launch: o FF7 mobile EXIGE os arquivos de config/save (senao o boot volta
 # pro Java e aborta). Criamos defaults nos paths que o engine le/escreve.
+# saves: unifica as pastas Documents (jogo escreve numa, le noutra) via bind
+mkdir -p "$GAMEDIR/gamedata/ff7_1.02/save"
+for m in "$GAMEDIR/gamedata/roms/ports/ff7/Documents" "$GAMEDIR/roms/ports/ff7/Documents" "$GAMEDIR/gamedata/ff7_1.02/save"; do
+  mkdir -p "$m" "$GAMEDIR/Documents"
+  cp -n "$m"/* "$GAMEDIR/Documents/" 2>/dev/null
+  mountpoint -q "$m" 2>/dev/null || mount --bind "$GAMEDIR/Documents" "$m" 2>/dev/null
+done
 for d in "$GAMEDIR/gamedata/roms/ports/ff7/Documents" "$GAMEDIR/roms/ports/ff7/Documents" "$GAMEDIR/Documents"; do
   mkdir -p "$d" 2>/dev/null
   [ -f "$d/MusicVolume.key" ] || printf '100' > "$d/MusicVolume.key"
