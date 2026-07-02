@@ -528,6 +528,18 @@ static void wad_lazy_init(void) {
   int ok2 = f2 ? OpenWad(g_wad_music, f2, 1) : 0;
   fprintf(stderr, "[wadfs] data_main ok=%d entries=%d | data_music ok=%d entries=%d\n",
           ok1, GetNum ? GetNum(g_wad_main) : -1, ok2, GetNum ? GetNum(g_wad_music) : -1);
+  /* PROBE p/ o bug do Load Game ("Could not open Models/Generic/WHEELS.TXD"):
+   * descobrir sob QUAL nome (se algum) o wheels.txd existe no FAT do WAD. */
+  if (getenv("LCS_WADPROBE") && ok1 && pWadGetSize) {
+    const char *cands[] = {
+      "Models/Generic/WHEELS.TXD", "MODELS/GENERIC/WHEELS.TXD",
+      "Models\\Generic\\WHEELS.TXD", "WHEELS.TXD", "wheels.txd",
+      "Models/generic/wheels.txd", "models/generic/wheels.txd",
+      "Data/Models/Generic/WHEELS.TXD", "Android/Models/Generic/WHEELS.TXD", NULL };
+    for (int i = 0; cands[i]; i++)
+      fprintf(stderr, "[wadprobe] \"%s\" -> %ld\n", cands[i],
+              pWadGetSize(g_wad_main, cands[i]));
+  }
   g_wad_ready = 1;
 }
 static const char *wad_alias_name(const char *name, const char **why) {

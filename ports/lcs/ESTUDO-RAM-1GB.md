@@ -135,7 +135,7 @@ env-map possa voltar).
    T2 = drenar uploads pós-swap; suspeito 3 = matfx env do vidro (DisableMatFx cirúrgico).
 2. fps na CIDADE dirigindo (usuário sente; headless dirigir é arriscado — autowalk morreu e
    expôs o crash de respawn... que era o pin; re-testar morte/respawn no binário atual).
-3. Load Game: flaky — às vezes OK, às vezes "WHEELS.TXD" (dentro do gta3.img). Repro + fix.
+3. ✅ Load Game: RESOLVIDO pelo fix do pin — a única morte foi em binário com pin de main (crash Mali); pós-fix, todos os loads OK. "WHEELS.TXD" não existe no WAD (probe 9 nomes) = mensagem benigna de era-console (o celular também loga). Observar em sessão longa.
 4. Bug câmera girando/tudo pisca em ângulo (provável morto com ES-fix — confirmar com usuário).
 5. BULLY_PAGE modernizar (floor/cold-guard Dysmantle) SE textura virar pressão real (hoje não é).
 6. R36S 1GB: escada liga MEMLOW sozinha; tunar caps/validar lá. Perfil "igual GTASA" =
