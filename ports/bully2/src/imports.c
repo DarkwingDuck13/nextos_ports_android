@@ -776,6 +776,63 @@ static int my_fstat(int fd, void *buf) {
   return syscall(SYS_fstat, fd, buf);
 }
 
+/* RAM total do device (MB), lida uma vez de /proc/meminfo. */
+static int imports_mem_total_mb(void) {
+  static int mb = -2;
+  if (mb != -2)
+    return mb;
+  mb = -1;
+  FILE *f = fopen("/proc/meminfo", "r");
+  if (f) {
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+      unsigned long kb;
+      if (sscanf(line, "MemTotal: %lu kB", &kb) == 1) {
+        mb = (int)(kb / 1024);
+        break;
+      }
+    }
+    fclose(f);
+  }
+  return mb;
+}
+
+/* MODO DE ALTA QUALIDADE (RendererES3) — estudo 2026-07-02:
+ * No X5M (Mali-G310 ES3.2 real, 4GB) deixar o motor usar RendererES3 (nao
+ * spoofar ES2) da uma imagem visivelmente mais rica (iluminacao/color grading/
+ * post-process do caminho ES3 pra que o jogo mobile foi feito). Estavel 15900+
+ * frames no mundo aberto. Em Mali-450 (Utgard) e Mali-G31/R36S (1GB) o ES3 dava
+ * tela preta -> mantem o spoof ES2. Gate: AUTO liga so em RAM>=2600MB (classe
+ * 4GB) E GL real ES3.x. BULLY2_RENDERER=es3|es2 forca; BULLY2_REAL_GL_VERSION=1
+ * tambem forca ES3 (compat). Default 1GB = ES2 (intocado). */
+static int es3_quality_mode(void) {
+  static int mode = -1;
+  if (mode >= 0)
+    return mode;
+  const char *r = first_env("BULLY2_RENDERER", "BULLY_RENDERER");
+  if (r && (!strcasecmp(r, "es3") || !strcasecmp(r, "gles3"))) {
+    mode = 1;
+  } else if (r && (!strcasecmp(r, "es2") || !strcasecmp(r, "gles2"))) {
+    mode = 0;
+  } else if (getenv("BULLY2_REAL_GL_VERSION")) {
+    mode = 1;
+  } else {
+    /* auto: precisa de RAM alta E contexto GL ES3 real */
+    int es3 = 0;
+    const unsigned char *(*rgs)(unsigned) = dlsym(RTLD_DEFAULT, "glGetString");
+    if (rgs) {
+      const unsigned char *v = rgs(0x1F02); /* GL_VERSION real */
+      if (v && strstr((const char *)v, "OpenGL ES 3"))
+        es3 = 1;
+    }
+    mode = (imports_mem_total_mb() >= 2600 && es3) ? 1 : 0;
+  }
+  fprintf(stderr, "[gl] renderer mode=%s (mem=%dMB)\n",
+          mode ? "ES3 (alta qualidade)" : "ES2 (spoof)",
+          imports_mem_total_mb());
+  return mode;
+}
+
 static const unsigned char *w_glGetString(unsigned name) {
   static const unsigned char *(*real)(unsigned) = NULL;
   if (!real)
@@ -797,7 +854,7 @@ static const unsigned char *w_glGetString(unsigned name) {
    * nao emula -> render preto. Reportando "OpenGL ES 2.0" o motor usa RendererES2
    * (glTexImage2D + GLSL 1.00), que roda no proprio contexto ES3.2 (backward-compat).
    * Desliga com BULLY2_REAL_GL_VERSION=1. */
-  if (getenv("BULLY2_REAL_GL_VERSION") == NULL) {
+  if (!es3_quality_mode()) {
     if (name == 0x1F02) {
       const char *e = getenv("BULLY2_GL_VERSION");
       return (const unsigned char *)((e && *e) ? e : "OpenGL ES 2.0");

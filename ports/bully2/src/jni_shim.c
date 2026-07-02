@@ -1612,6 +1612,68 @@ static int my_GetShadowDefault(void *self) {
   return g_shadow_default >= 0 ? g_shadow_default : 0;
 }
 
+/* === QUALIDADE DE SOMBRA (estudo 2026-07-02) ===
+ * Experimentos gateados por env / RAM. Default: NAO mexe em nada (1GB intacto).
+ * Alvos (VA no libGame, via disasm):
+ *  - shadow map size: ShadowSceneView::RenderView @ 0x884dd8 `mov w10,#0x400`
+ *    (1024) -> #0x800 (2048) deixa a sombra do mundo mais nitida.
+ *  - LUT raw->level @ 0x5d05c0 = {0,1,2,2}: 4a entrada 2->3 faz High != Medium.
+ *  - g_bPlayerHasShadow (.bss @ 0x13d26d9): blob shadow do personagem.
+ * Auto: shadow map 2048 so em RAM alta (>=2600MB ~ 4GB device); 1GB fica 1024. */
+static void patch_shadow_quality(void) {
+  if (!text_base)
+    return;
+  int mem = device_mem_total_mb();
+
+  /* --- shadow map resolution --- */
+  const char *sm = first_env("BULLY2_SHADOW_MAP", "BULLY_SHADOW_MAP");
+  int want2048;
+  if (sm && *sm)
+    want2048 = (atoi(sm) >= 2048);
+  else
+    want2048 = (mem >= 2600); /* auto: só device com RAM sobrando */
+  uintptr_t smaddr = (uintptr_t)text_base + 0x884dd8;
+  uint32_t cur = *(uint32_t *)smaddr;
+  if (want2048 && cur == 0x5280800a) {
+    patch_stream_word(smaddr, 0x5280800a, 0x5281000a, "shadowmap2048");
+    fprintf(stderr, "[shadowq] shadow map 1024 -> 2048 (mem=%dMB)\n", mem);
+  } else {
+    fprintf(stderr, "[shadowq] shadow map fica 1024 (want2048=%d mem=%dMB cur=%08x)\n",
+            want2048, mem, cur);
+  }
+
+  /* --- LUT High distinto de Medium (opt-in) --- */
+  if (env_enabled("BULLY2_SHADOW_LUT_HIGH")) {
+    uintptr_t lut4 = (uintptr_t)text_base + 0x5d05cc; /* 4a entrada */
+    if (*(uint32_t *)lut4 == 2) {
+      patch_stream_word(lut4, 2, 3, "shadowLUThigh");
+      fprintf(stderr, "[shadowq] LUT High 2 -> 3 (Med != High)\n");
+    }
+  }
+
+}
+
+/* Blob shadow do personagem: g_bPlayerHasShadow em .bss (init tardio do jogo),
+ * entao re-forcamos por alguns frames. opt-in via BULLY2_PED_SHADOW=1. */
+static void maybe_force_ped_shadow(int frame) {
+  static int mode = -1;
+  if (mode < 0) {
+    const char *ps = first_env("BULLY2_PED_SHADOW", "BULLY_PED_SHADOW");
+    mode = (ps && *ps && strcmp(ps, "0") != 0) ? 1 : 0;
+  }
+  if (!mode || !text_base)
+    return;
+  if (frame != 60 && frame != 300 && frame != 600 && frame != 1200 &&
+      frame != 2400)
+    return;
+  volatile uint8_t *g = (volatile uint8_t *)((uintptr_t)text_base + 0x13d26d9);
+  if (*g != 1) {
+    fprintf(stderr, "[shadowq] g_bPlayerHasShadow %d -> 1 (frame %d)\n", *g,
+            frame);
+    *g = 1;
+  }
+}
+
 static void hook_shadow_default(void) {
   const char *e = getenv("BULLY2_SHADOW_DEFAULT");
   if (!e || !*e)
@@ -3954,6 +4016,7 @@ static void install_hooks(void) {
   hook_shadow_postprocess_sync();
   hook_shadow_material_vector_fix();
   patch_stream_distances();
+  patch_shadow_quality();
   hook_streaming_evict();
   so_make_text_executable();
   so_flush_caches();
@@ -4153,6 +4216,7 @@ void jni_load(void) {
     maybe_auto_set_shadow(f);
     maybe_runtime_texture_profile(f);
     maybe_force_phone_flag(f);
+    maybe_force_ped_shadow(f);
     OnDrawFrame(fake_env, NULL, 1.0f / 60.0f);
     texture_profile_reload_tick(f);
     if (f > 300 && (f % 300) == 0)

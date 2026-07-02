@@ -337,3 +337,16 @@ minimapa, NPCs), controle nativo SDL ok, usuario aprovou ("rodando bem").
 Baseline pre-patch: RSS ~215MB + swap sistema ~465MB (com ES) / RSS 464MB (sem
 ES). Perfil pos-patch coletado em scratchpad (comparacao na proxima sessao se
 o teste do usuario continuar).
+
+## Estudo sombras/qualidade 2026-07-02 (X5M Mali-G310 4GB)
+
+Diagnostico ao vivo:
+- Shadow map = RT2DES::Init 512x512 (fixo). Mudar Shadows Off/Low/Med/High NAO
+  muda o tamanho -> por isso a opcao "nao funciona" visivelmente.
+- Personagem SEM sombra projetada no chao (cena externa, X5M 1080p RS_High).
+- SSAO=1 CRASHA tambem no Mali-G310 (sig=11 frame 300), NAO so no Utgard:
+  pp_ssao criado com ssao_vec=0/3 (0 vetores enfileirados, 3 esperados) ->
+  RenderGame deref lixo. Bug de port no feed dos parametros do SSAO material,
+  independente de GPU. BULLY2_SHADOW_VECTOR_LOCAL nao previne.
+- Alavancas de qualidade em estudo: shadow map size (512->1024/2048), SSAO
+  (precisa alimentar os 3 vetores), gated por RAM/GPU p/ nao afetar 1GB.
