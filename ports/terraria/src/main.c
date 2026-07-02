@@ -2672,7 +2672,7 @@ float my_ctrl_getaxisraw(void *thiz, int axis) { (void)thiz; g_getaxisraw_calls+
   if (v!=0.0f && getenv("TER_CTRLLOG")) { static int n=0; if(n++<40){ fprintf(stderr,"[AXRAW] axis=%d -> %.2f\n",axis,v); fsync(2);} }
   return v; }
 /* forward decls (definidos adiante, perto de ter_ctrl_feed) */
-static int ter_install_hook4(unsigned long off, void* fn, void** orig_out);
+int ter_install_hook4(unsigned long off, void* fn, void** orig_out);
 void my_setmousepos(void* thiz, int x, int y, int flag, void* mi);
 extern void (*g_orig_setmp)(void*,int,int,int,void*);
 static void ter_ctrl_patch(void) {
@@ -2776,7 +2776,7 @@ static uint32_t ter_reloc_insn(uint32_t insn, uintptr_t opc, uintptr_t npc) {
 }
 /* hook inline genérico: copia 4 instrs (relocando adrp) p/ um trampolim que segue p/ target+16,
    e patcha a entrada do alvo p/ saltar p/ fn. Retorna o trampolim (=original) em *orig_out. */
-static int ter_install_hook4(unsigned long off, void* fn, void** orig_out) {
+int ter_install_hook4(unsigned long off, void* fn, void** orig_out) {
   uintptr_t target=g_il2cpp_base+off; uint32_t*o=(uint32_t*)target; long pgsz=sysconf(_SC_PAGESIZE);
   uint32_t*tr=mmap(NULL,4096,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
   if(tr==MAP_FAILED) return 0;
@@ -2872,7 +2872,7 @@ static void ter_world_create_hook(void *self, void *mi) {
   fprintf(stderr, "[VKBD] CreateWorld forcou nome \"%s\"\n", g_vkbd_force_text); fsync(2);
   if (g_orig_world_create) g_orig_world_create(self, mi);
 }
-static unsigned long ter_method_off(const char *ns, const char *cn, const char *mn, int argc) {
+unsigned long ter_method_off(const char *ns, const char *cn, const char *mn, int argc) {
   if (!g_il2cpp_base) return 0;
   void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
   const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
@@ -2947,7 +2947,7 @@ static void ter_player_name_menu_force_text(const char *text) {
     fsync(2);
   }
 }
-static void *ter_static_obj(const char *ns, const char *cn, const char *fn) {
+void *ter_static_obj(const char *ns, const char *cn, const char *fn) {
   if (!g_il2cpp_base) return NULL;
   void *(*dom_get)(void) = (void*)(g_il2cpp_base + 0x73c860);
   const void **(*dom_asms)(void*, size_t*) = (void*)(g_il2cpp_base + 0x73c86c);
@@ -3237,16 +3237,20 @@ static void ter_menu_nav(void) {
   g_cursor_x=(float)dcx[bidx]; g_cursor_y=(float)dcy[bidx];   /* Mouse.GetState pos p/ o A */
   if (getenv("TER_CTRLLOG")){ static int q=0; if((q++%45)==0){ fprintf(stderr,"[NAV] %d itens %d linhas | linha %d col %d/%d -> (%d,%d) U%d D%d L%d R%d A%d\n",dn2,nrows,row,col+1,len,dcx[bidx],dcy[bidx],U,D,L,R,g_gp_log[4]); fsync(2);} }
 }
-static void ter_ctrl_feed(void) {
-  if (!getenv("TER_CTRL")) return;
+/* pump do autoname/vkbd — ANTES vivia dentro de ter_ctrl_feed (só rodava com TER_CTRL=1);
+   agora é chamado incondicionalmente do swap-hook (o caminho NATPAD não seta TER_CTRL). */
+static void ter_name_pump(void) {
   if (g_vkbd_force_frames > 0) {
     ter_name_force_text(g_vkbd_force_text);
     g_vkbd_force_frames--;
   }
   ter_vkbd_maybe_open();
   if (jni_softinput_active()) ter_vkbd_update();
+  if (!jni_softinput_active() && g_vkbd_swallow > 0) g_vkbd_swallow--;
+}
+static void ter_ctrl_feed(void) {
+  if (!getenv("TER_CTRL")) return;
   if (ter_vkbd_blocking()) {
-    if (!jni_softinput_active() && g_vkbd_swallow > 0) g_vkbd_swallow--;
     g_girm_ovr = 0; g_fcmode = 0; g_nav_x = 0.0f; g_nav_y = 0.0f;
     memset(g_inj_btn,0,sizeof g_inj_btn);
     for (int i=0;i<8;i++) g_inj_axis[i]=0.0f;
@@ -3424,6 +3428,8 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
      Mouse/Keyboard (era o que soltava o cursor na tela toda) e SEM region-nav. ter_gamepad_poll
      (TER_GAMEPAD, no Update) le o SDL -> g_gp_log; ter_ctrl_feed mapeia -> g_inj_*; o jogo le
      pelos hooks instalados por ter_ctrl_patch. */
+  ter_name_pump();  /* autoname/vkbd (independe do sistema de controle) */
+  { extern void np_frame(void); np_frame(); }  /* 🎮 NATPAD: controle NATIVO via InControl attach */
   ter_ctrl_patch();
   ter_ctrl_feed();
   ter_menu_nav();   /* 🎒 SÓ age na UI in-game (bolsa/criação/opções/mapa): D-pad move o cursor

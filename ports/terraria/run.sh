@@ -52,20 +52,16 @@ if [ -d "$GAMEDIR/default_players" ]; then
     [ -e "$dst" ] || cp "$plr" "$dst" 2>/dev/null || true
   done
 fi
-# boot (destrava job-system + render) + controle Xbox real via SDL_GameController.
-# CONTROLES: SDL normaliza o pad para layout Xbox; Terraria recebe InControl + XNA.
-# Menu usa TER_NAVMENU para D-pad/A; TER_RSCURSOR e teclado virtual ficam fora.
+# boot (destrava job-system + render).
 # CUP_NOLOGFILE=1 é OBRIGATÓRIO: sem ele, o log em arquivo trava a inicialização (nem renderiza).
 export CUP_GCOFF=1 TER_INLINETASK=1 TER_SKIPJOBWAIT=1 TER_NUKEKB=1 TER_FIXNANPART=1 CUP_NOLOGFILE=1
 # CUP_FRAMES: o loop encerra nesse nº de frames (default dev=600, antes do menu!). Enorme = joga pra sempre.
 export CUP_FRAMES=999999999
-# CONTROLE NATIVO via InControl do Terraria: o jogo usa o SEU PROPRIO cursor de gamepad (PRESO
-# em volta do player no gameplay; ponteiro no menu) e faz pulo/ataque/troca-de-item/selecao
-# NATIVAMENTE. TER_GAMEPAD le o SDL; TER_CTRL injeta no InControl (GetKeyRaw/GetAxisRaw) e forca
-# _controllerActive; TER_CURSPEED escala o stick direito (mira).
-# Analogico esq = mover personagem; D-pad = navegar UI/inventario (separados, sem conflito).
-# TER_SWAPAB=1 troca A<->B (pedido do porter). TER_CURSPEED escala o stick direito (mira).
-export TER_GAMEPAD=1 TER_CTRL=1 TER_GPAD=1 TER_CURSPEED=0.38 TER_SWAPAB=1 TER_SWAPLR=1 TER_FIXSP=1 TER_NOVKBD=1
+# 🎮 NATPAD (rewrite 2026-07): controle 100% NATIVO. Fazemos o jogo VER um controle Xbox
+# (Input.GetJoystickNames -> profile Android do InControl -> attach) e alimentamos so o
+# raw-read (UnityInputDevice.ReadRawButtonState/ReadRawAnalogValue) com o SDL_GameController.
+# Menu/options/bolsa/gameplay/glifos = codigo do proprio Terraria. Nada de mouse/teclado simulado.
+export TER_NATPAD=1 TER_FIXSP=1 TER_NOVKBD=1
 # SOM: thread C bombeia fmodProcess->SDL (auto pulse/pipewire/alsa). TER_STREAMFALLBACK
 # refaz a MÚSICA (stream, que falha INTERNAL no so-loader) como SAMPLE -> toca. SFX já tocam.
 export TER_AUDIO=1 TER_STREAMFALLBACK=1
