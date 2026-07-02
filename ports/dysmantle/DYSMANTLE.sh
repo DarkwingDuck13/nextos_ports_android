@@ -217,7 +217,7 @@ if [ -n "$DYS_NATIVE_ETC2" ]; then
   # RAM baixa (<=1.25GB, ex: R36S 481MB): downscale interno da CENA (T2) p/ aliviar
   # fill/VRAM do FBO de cena (~89% dos draws); a UI fica nativa. Override por env.
   if [ -n "$DYS_RAM_KB" ] && [ "$DYS_RAM_KB" -le 1310720 ]; then
-    export DYSMANTLE_ISCALE="${DYSMANTLE_ISCALE:-0.65}"
+    export DYSMANTLE_ISCALE_AUTO="${DYSMANTLE_ISCALE_AUTO:-0.65}"   # binario aplica so em janela >=960 (nitido no R36S)
   fi
 else
   # Mali-450/Utgard (ES2) E R36S-low-RAM (ES3 rodando ES2): shader ES2.
@@ -226,7 +226,7 @@ else
   # -> alivia o FBO de cena (~89% dos draws), abre folga de RAM/VRAM no streaming de zona.
   # Combina com o TEXSCALE 3.0 (texturas) -> chega no gameplay sem swap-death.
   if [ -n "$DYS_LOWRAM" ]; then
-    export DYSMANTLE_ISCALE="${DYSMANTLE_ISCALE:-0.65}"
+    export DYSMANTLE_ISCALE_AUTO="${DYSMANTLE_ISCALE_AUTO:-0.65}"   # binario aplica so em janela >=960 (nitido no R36S)
   fi
 fi
 # 🧊 CACHE ETC1 OFFLINE: o binario sobe a ETC1 ja pronta no upload, VERIFICANDO o

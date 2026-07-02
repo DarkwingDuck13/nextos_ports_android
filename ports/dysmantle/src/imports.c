@@ -956,7 +956,14 @@ static float g_iscale = -1.0f;
 static int iscale_on(void) {
   if (g_iscale < 0) {
     const char *e = getenv("DYSMANTLE_ISCALE");
-    g_iscale = e ? (float)atof(e) : 1.0f;
+    if (e) g_iscale = (float)atof(e);
+    else {
+      /* AUTO: só vale em janela GRANDE (>=960 de largura, ex 720p). Em painel
+       * pequeno (R36S 640x480) a cena interna já é ~0.6× — reduzir de novo =
+       * borrado visível sem ganho real (validado 2026-07-02: título 60fps sem). */
+      const char *a = getenv("DYSMANTLE_ISCALE_AUTO");
+      g_iscale = (a && DYS_W >= 960) ? (float)atof(a) : 1.0f;
+    }
     if (g_iscale < 0.4f || g_iscale > 1.0f) g_iscale = 1.0f;
     if (g_iscale < 0.999f) fprintf(stderr, "[ISCALE] resolução interna = %.2f\n", g_iscale);
   }
