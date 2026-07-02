@@ -844,13 +844,21 @@ static void ff7_pump_input(void) {
         if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) hk_start = down;
         if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)  hk_select = down;
         if (hk_start && hk_select) { debugPrintf("SELECT+START -> quit\n"); g_quit = 1; break; }
-        /* SKIP do FMV: durante um filme (nao logo), START sozinho pula o video. */
-        if (down && e.cbutton.button == SDL_CONTROLLER_BUTTON_START && !hk_select) {
+        /* SKIP do FMV REMOVIDO (era feature NOSSA, nao existe no FF7 original):
+         * o script de campo SINCRONIZA com o filme (MVIEF espera frames do
+         * video) — qualquer forma de pular (fw_stop_movie, force_eof, jump do
+         * contador p/ 1791) deixa o script em limbo => campo sem musica/audio
+         * (relato do usuario 2026-07-02). Comportamento nativo = video sempre
+         * toca. FF7_FMVSKIP_BTN reativa p/ estudo (quebra o audio). */
+        if (getenv("FF7_FMVSKIP_BTN") && down
+            && e.cbutton.button == SDL_CONTROLLER_BUTTON_START && !hk_select) {
           const char *mn = fmv_current_name();
           if (fmv_has_movie() && mn && !strstr(mn, "logo") && !fmv_eof()) {
-            extern void fmv_force_eof(void); fmv_force_eof();   /* para a injeção */
-            if (g_fw_stop_movie) g_fw_stop_movie();             /* encerra o movie no engine -> campo */
-            debugPrintf("FMV: SKIP (START) -> force eof + fw_stop_movie\n");
+            extern void fmv_force_eof(void);
+            if (text_base && fmv_total_frames() > 0)
+              *(unsigned *)((uintptr_t)text_base + 0x1cd8c9c) = (unsigned)fmv_total_frames() - 1;
+            fmv_force_eof();
+            debugPrintf("FMV: SKIP (START, opt-in dev) -> jump contador + eof\n");
             break;
           }
         }
@@ -1021,6 +1029,29 @@ static void ff7_present_cb(void) {
     debugPrintf("MVOLDIAG frame %ld master_volume=%f\n", g_frame, g_GetMasterVolume());
   if (g_SetMasterVolume && getenv("FF7_FORCEMVOL") && g_frame % 30 == 0)
     g_SetMasterVolume(1.0f, 0);
+  /* FF7_SKIPTEST=N (dev): reproduz o skip do START no frame N do movie, p/
+   * depurar o "pulei o video -> jogo sem audio". FF7_SKIPMODE: 0=como o botao
+   * (force_eof+fw_stop_movie), 1=NATIVO (so' force_eof -> FRAME=0 -> engine
+   * encerra sozinho pelo caminho normal). */
+  if (getenv("FF7_SKIPTEST")) {
+    static int skipped = 0;
+    extern int g_ff7_movie_active;
+    const char *smn = fmv_current_name();
+    if (!skipped && g_ff7_movie_active && fmv_has_movie() && smn
+        && !strstr(smn, "logo") && !fmv_eof()
+        && fmv_cur_frame() >= atoi(getenv("FF7_SKIPTEST"))) {
+      int mode = getenv("FF7_SKIPMODE") ? atoi(getenv("FF7_SKIPMODE")) : 2;
+      /* modo 2 (NATIVO CORRETO): o script de campo (MVIEF) ESPERA o contador do
+       * filme chegar no frame final — pula avancando o contador pro fim + eof;
+       * o engine encerra sozinho (FRAME=0 -> AVI_draw final -> done=1). */
+      if (mode == 2 && text_base && fmv_total_frames() > 0)
+        *(unsigned *)((uintptr_t)text_base + 0x1cd8c9c) = (unsigned)fmv_total_frames() - 1;
+      extern void fmv_force_eof(void); fmv_force_eof();
+      if (mode == 0 && g_fw_stop_movie) g_fw_stop_movie();
+      skipped = 1;
+      debugPrintf("SKIPTEST: skip no frame %d (modo %d)\n", fmv_cur_frame(), mode);
+    }
+  }
   ff7_pump_input();
   /* o menu de titulo so' atualiza quando callUpdateTitlemenu seta o flag (a Java
    * side chamava isso por frame/touch); no single-thread chamamos nos. */
