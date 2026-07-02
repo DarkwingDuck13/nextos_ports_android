@@ -305,6 +305,32 @@ void bully_page_on_bind(unsigned target, unsigned id) {
             g_page_resident/(1024*1024), bully_page_cap()/(1024*1024), g_pf, g_ev, g_page_n); }
 }
 
+/* ---- BIGALLOC diag: loga alocacoes >=16MB do engine com caller (offset no libGame).
+ * Objetivo: identificar o dono do arena anonimo de ~254MB visto no smaps (estudo RAM
+ * 1GB 2026-07-02). Sempre ativo; custo ~zero (1 if por alloc grande). ---- */
+extern void *memalign(size_t align, size_t sz);
+static void bigalloc_log(const char *tag, size_t sz, void *p, uintptr_t ra) {
+  if (sz < (size_t)16 * 1024 * 1024) return;
+  extern void *text_base;
+  long off = (text_base && ra >= (uintptr_t)text_base) ? (long)(ra - (uintptr_t)text_base) : -1;
+  fprintf(stderr, "[bigalloc] %s %zuMB -> %p caller_off=0x%lx\n", tag, sz >> 20, p, off);
+}
+void *my_malloc_diag(size_t sz) {
+  void *p = malloc(sz);
+  bigalloc_log("malloc", sz, p, (uintptr_t)__builtin_return_address(0));
+  return p;
+}
+void *my_calloc_diag(size_t n, size_t sz) {
+  void *p = calloc(n, sz);
+  bigalloc_log("calloc", n * sz, p, (uintptr_t)__builtin_return_address(0));
+  return p;
+}
+void *my_memalign_diag(size_t align, size_t sz) {
+  void *p = memalign(align, sz);
+  bigalloc_log("memalign", sz, p, (uintptr_t)__builtin_return_address(0));
+  return p;
+}
+
 /* ---- bionic libc bridges ---- */
 static int *bionic___errno(void) { extern int *__errno_location(void); return __errno_location(); }
 static size_t b_strlen_chk(const char *s, size_t n) { (void)n; return strlen(s); }
@@ -1697,6 +1723,11 @@ DynLibFunction bully_stub_table[] = {
   {"glDeleteVertexArrays", (uintptr_t)my_glDeleteVertexArrays},
   {"glDrawBuffers", (uintptr_t)my_glDrawBuffers},
   {"fopen", (uintptr_t)w_fopen},
+  /* BIGALLOC diag: loga malloc/calloc/memalign >=16MB com caller (achar o dono do
+   * arena de ~254MB do smaps — estudo RAM 1GB 2026-07-02). Custo ~zero. */
+  {"malloc", (uintptr_t)my_malloc_diag},
+  {"calloc", (uintptr_t)my_calloc_diag},
+  {"memalign", (uintptr_t)my_memalign_diag},
   /* stat: ausentes como simbolo em glibc<2.33 -> via syscall (texto/fontes) */
   {"stat", (uintptr_t)my_stat}, {"lstat", (uintptr_t)my_lstat},
   {"fstat", (uintptr_t)my_fstat}, {"fstatat", (uintptr_t)my_fstatat},
