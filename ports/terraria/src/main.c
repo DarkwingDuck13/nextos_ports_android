@@ -2081,6 +2081,32 @@ static void ter_world_entername_hook(void *self, void *mi) {
   ter_invoke0("", "GUIWorldCreateMenu", "CreateWorld", self);
 }
 static void (*g_orig_world_name_draw)(void*, void*);
+/* RENOMEAR: GUIPlayerSelectMenu (tela "Selecionar Personagem", botao Renomear).
+   OpenNameEdit abre o GUIMenuNameEdit; CloseNameEditAndSave@0xD3899C pega
+   _editedName e chama PlayerFileData.Rename. O teclado PC esta morto -> escrevemos
+   _editedName (0x10) em TEMPO REAL (aparece na tela) e, no OK, disparamos o save. */
+static volatile void *g_player_select_inst; static volatile int g_player_select_frame = -999999;
+static volatile int g_pending_rename = -1;   /* frame do OK; save dispara no Draw (thread do jogo) */
+static void (*g_orig_player_select_draw)(void*, void*);
+static void ter_player_select_draw_hook(void *self, void *mi) {
+  g_player_select_inst = self;
+  g_player_select_frame = g_render_frame;
+  /* tempo real: enquanto o OSK esta aberto num rename, reflete o texto no editor */
+  if (jni_softinput_active() && g_menu_nameedit_inst &&
+      g_render_frame - g_menu_nameedit_frame < 600 && g_il2cpp_base) {
+    const char *t = jni_softinput_text();
+    if (t && t[0]) {
+      void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x73cc98);
+      ter_il2cpp_set_string_field((void *)g_menu_nameedit_inst, 0x10, isn(t));  /* _editedName */
+    }
+  }
+  if (g_pending_rename >= 0 && !ter_vkbd_blocking() && g_render_frame - g_pending_rename > 8) {
+    g_pending_rename = -1;
+    fprintf(stderr, "[VKBD] rename: CloseNameEditAndSave (grava .plr)\n"); fsync(2);
+    ter_invoke0("", "GUIPlayerSelectMenu", "CloseNameEditAndSave", self);
+  }
+  if (g_orig_player_select_draw) g_orig_player_select_draw(self, mi);
+}
 static void ter_world_name_draw_hook(void *self, void *mi) {
   g_world_name_menu_inst = self;
   g_world_name_menu_frame = g_render_frame;
@@ -2263,6 +2289,10 @@ static void ter_name_hooks_install(void) {
   unsigned long po = ter_method_off("", "GUIPlayerCreateMenu", "Draw", 0);
   unsigned long pno = ter_method_off("", "GUIPlayerNameMenu", "Draw", 0);
   unsigned long wo = ter_method_off("", "GUIWorldCreateMenu", "Draw", 0);
+  unsigned long psd = ter_method_off("", "GUIPlayerSelectMenu", "Draw", 0);
+  if (psd && !g_orig_player_select_draw &&
+      ter_install_hook4(psd, (void*)ter_player_select_draw_hook, (void**)&g_orig_player_select_draw))
+    fprintf(stderr, "[VKBD] GUIPlayerSelectMenu.Draw hookado @0x%lx (rename)\n", psd);
   unsigned long wnn = ter_method_off("", "GUIWorldNameMenu", "Draw", 0);
   if (!g_orig_getinputtext &&
       ter_install_hook4(0xFCD98C, (void*)ter_getinputtext_hook, (void**)&g_orig_getinputtext))
@@ -2426,8 +2456,15 @@ static void ter_name_commit_text(const char *text) {
   if (ninst && fn >= 0 && fn < 600) {
     ter_il2cpp_set_string_field(ninst, 0x10, s);  /* GUIMenuNameEdit._editedName */
     fprintf(stderr, "[VKBD] name edit aplicado: \"%s\" inst=%p\n", text, ninst);
+    /* RENOMEAR: agenda o save p/ o Draw do menu (thread do jogo). Chamar CloseNameEditAndSave
+       aqui (thread de SWAP) crasha — codigo il2cpp so roda na thread do jogo. */
+    if (g_player_select_inst && g_render_frame - g_player_select_frame < 120) {
+      g_pending_rename = g_render_frame;
+      fprintf(stderr, "[VKBD] rename agendado (save no Draw)\n"); fsync(2);
+      return;
+    }
   }
-  if (pinst && fp >= 0 && fp < 180 && (fp <= fw || fw < 0 || fw >= 180)) {
+  if (pinst && fp >= 0 && fp < 3600 && (fp <= fw || fw < 0 || fw >= 3600)) {
     /* o fluxo NATIVO pos-teclado e: CloseNameEdit + (se veio do botao Criar) CreateAndSave.
        O jogo faz isso quando o TouchScreenKeyboard reporta Done — o que nosso teclado fake
        nao convence 100%. Entao NOS completamos: le a flag ANTES do Close (0x19 =
@@ -2445,7 +2482,7 @@ static void ter_name_commit_text(const char *text) {
     g_pending_create_player = g_render_frame;
     return;
   }
-  if (winst && fw >= 0 && fw < 180) {
+  if (winst && fw >= 0 && fw < 3600) {
     int wfor_create = 0;
     void *wn = (void *)g_world_name_menu_inst;
     if (wn && g_render_frame - g_world_name_menu_frame < 900)
