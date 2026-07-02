@@ -910,8 +910,16 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
     if (str && str[i])
       strcat(cat, str[i]);
 
+  /* highp->mediump so em GPU fraca (ES2 spoof, ex. Mali-450 Utgard que nao
+   * tem highp bom no fragment). No modo ES3 (GPU capaz) MANTEM highp: a
+   * amostragem de shadow map / comparacao de profundidade precisa de precisao
+   * alta -- em mediump (fp16) a sombra sai errada/invisivel. */
   int is_vertex = strstr(cat, "gl_Position") != NULL;
-  char *patched = is_vertex ? strdup(cat) : str_replace_all(cat, "highp", "mediump");
+  char *patched;
+  if (is_vertex || es3_quality_mode())
+    patched = strdup(cat);
+  else
+    patched = str_replace_all(cat, "highp", "mediump");
   free(cat);
   if (!patched)
     return;
