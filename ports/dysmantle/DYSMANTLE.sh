@@ -143,17 +143,15 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
   export DYSMANTLE_TEXSCALE=1.0
 fi
 
-# ---------- BYO-DATA: 1a execucao extrai + conserta texturas (janela do progressor) ----------
-# Igual ao Bully/TMNT: a logica toda fica no tools/dysmantle_extract.src; aqui so
-# chamamos a JANELA de extracao (progressor). Ela extrai do APK e roda o fixpak
-# (conserto ETC2->JPEG/PNG) mostrando porcentagem -- funciona no KMSDRM e no fbdev.
+# ---------- BYO-DATA: 1a execucao extrai + conserta texturas (TELA DE BAKE v6) ----------
+# Igual Bully v11/Sonic4EP2 v5: o PROPRIO binario desenha a tela de setup
+# (DYSMANTLE_SETUPSPLASH, assinatura NEXTOS) enquanto o tools/dysmantle_extract.sh
+# extrai o APK e roda o fixpak. Funciona em KMSDRM, fbdev e wayland (retry de
+# janela p/ contencao ao sair do ES).
 if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
-  $ESUDO chmod +x "$GAMEDIR/tools/progressor" "$GAMEDIR/tools"/*.src 2>/dev/null
-  "$GAMEDIR/tools/progressor" \
-    --log "$GAMEDIR/tools/extract.log" \
-    --font "$GAMEDIR/tools/FiraCode-Regular.ttf" \
-    --title "DYSMANTLE" \
-    "$GAMEDIR/tools/dysmantle_extract.src"
+  DYS_NEED_FIXPAK=0; [ -z "$DYS_NATIVE_ETC2" ] && DYS_NEED_FIXPAK=1
+  DYSMANTLE_BINARY="$GAMEDIR/dysmantle" DYS_NEED_FIXPAK="$DYS_NEED_FIXPAK" \
+    bash "$GAMEDIR/tools/dysmantle_extract.sh" "" "$GAMEDIR"
 fi
 if [ ! -f "$GAMEDIR/libNativeGame.so" ] || [ ! -f "$GAMEDIR/assets/data.pak" ]; then
   echo "Faltam os dados do jogo. Copie o APK do DYSMANTLE 1.4.1.12 para roms/ports/dysmantle e abra de novo. (README.md)" > $CUR_TTY

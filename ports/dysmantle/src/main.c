@@ -1317,6 +1317,12 @@ static void load_module(const char *name, int heap_mb, DynLibFunction *tbl, int 
 
 int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
+  /* modo TELA DE SETUP/BAKE (igual Bully v11/Sonic v5): o extrator sobe o
+   * proprio binario com DYSMANTLE_SETUPSPLASH=1 p/ desenhar o progresso. */
+  if (getenv("DYSMANTLE_SETUPSPLASH")) {
+    extern int dys_run_setup_splash(void);
+    return dys_run_setup_splash();
+  }
   install_crash_handler();
   fprintf(stderr, "=== DYSMANTLE (Android) so-loader / NextOS aarch64 Mali-450 ===\n");
 

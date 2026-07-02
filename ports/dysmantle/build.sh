@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 [ -x "$CC" ] || { echo "toolchain não encontrado: $CC"; exit 1; }
 
-SRCS="src/main.c src/so_util.c src/imports.c src/pthread_bridge.c \
+SRCS="src/main.c src/setup_splash.c src/so_util.c src/imports.c src/pthread_bridge.c \
       src/egl_shim.c src/android_shim.c src/opensles_shim.c src/jni_shim.c \
       src/etc2_decode.c src/etc1_encode.c src/util.c src/error.c"
 
