@@ -1310,6 +1310,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   bully_maybe_screenshot();
   /* com o pin, sempre apresenta a surface de scan-out do SDL (a engine pode
    * ter passado a sua, ja redirecionada pra esta, mas garantimos). */
+  void *engine_surf = surf;
   if (surface_pin_enabled()) {
     void *s = bully_sdl_surface();
     if (s)
@@ -1317,7 +1318,17 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   }
   if (!real_eglSwapBuffers)
     real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
-  return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
+  unsigned r = real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
+  /* log persistente do present: 1o swap + a cada 600, mostra se estamos
+   * apresentando a surface do SDL (pin) e o retorno do eglSwapBuffers real
+   * (0 = EGL_FALSE = falhou -> nao pana). Diagnostico p/ o device do tester. */
+  static unsigned long n;
+  if (n == 0 || (n % 600) == 0)
+    fprintf(stderr,
+            "[present] swap #%lu surf=%p engine_surf=%p pinned=%d ret=%u\n", n,
+            surf, engine_surf, surface_pin_enabled(), r);
+  n++;
+  return r;
 }
 
 static void *(*real_eglGetProcAddress)(const char *) = NULL;

@@ -5,10 +5,13 @@
 #include <SDL2/SDL.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/fb.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,6 +33,51 @@ int bully_screen_h(void) { return g_h; }
 static int ctx_is_gles(void) {
   const char *v = (const char *)glGetString(GL_VERSION);
   return v && strstr(v, "OpenGL ES") != NULL;
+}
+
+/* Diagnostico de display PERSISTENTE (vai pro log.txt via tee do launcher).
+ * O ponto critico no fbdev Mali (H700/Knulli tipo RGCubeXX): o blob so
+ * apresenta se yres_virtual == 2*yres (double-buffer). Se a surface do SDL
+ * que pinamos nao for double-buffer, o present nao pana e a tela fica
+ * congelada. Logamos vinfo do /dev/fb0, presenca de /dev/dri e o driver SDL
+ * p/ diagnosticar o device do tester sem ele na mao. */
+void bully_dump_display_diag(const char *when) {
+  const char *drv = SDL_GetCurrentVideoDriver();
+  fprintf(stderr, "[diag] === display diag (%s) ===\n", when ? when : "?");
+  fprintf(stderr, "[diag] SDL video driver='%s'\n", drv ? drv : "(null)");
+  fprintf(stderr, "[diag] /dev/dri: %s | /dev/fb0: %s\n",
+          access("/dev/dri/card0", F_OK) == 0 ? "card0 EXISTE" : "ausente",
+          access("/dev/fb0", F_OK) == 0 ? "existe" : "AUSENTE");
+
+  int fd = open("/dev/fb0", O_RDONLY);
+  if (fd >= 0) {
+    struct fb_var_screeninfo vi;
+    struct fb_fix_screeninfo fi;
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &vi) == 0) {
+      int dbl = (vi.yres > 0 && vi.yres_virtual >= vi.yres * 2);
+      fprintf(stderr,
+              "[diag] fb0 vinfo: %ux%u virtual=%ux%u bpp=%u => %s\n",
+              vi.xres, vi.yres, vi.xres_virtual, vi.yres_virtual,
+              vi.bits_per_pixel,
+              dbl ? "DOUBLE-BUFFER ok (yres_virtual>=2x)"
+                  : "SINGLE-BUFFER (!! present pode nao panar no blob Mali)");
+    } else {
+      fprintf(stderr, "[diag] fb0 FBIOGET_VSCREENINFO falhou: %s\n",
+              strerror(errno));
+    }
+    if (ioctl(fd, FBIOGET_FSCREENINFO, &fi) == 0)
+      fprintf(stderr, "[diag] fb0 id='%s' smem_len=%u line_len=%u\n", fi.id,
+              fi.smem_len, fi.line_length);
+    close(fd);
+  }
+
+  const char *egl_vendor = eglQueryString(eglGetCurrentDisplay(), EGL_VENDOR);
+  const char *egl_ver = eglQueryString(eglGetCurrentDisplay(), EGL_VERSION);
+  fprintf(stderr, "[diag] EGL vendor='%s' version='%s'\n",
+          egl_vendor ? egl_vendor : "?", egl_ver ? egl_ver : "?");
+  const GLubyte *r = glGetString(GL_RENDERER);
+  fprintf(stderr, "[diag] GL_RENDERER='%s'\n", r ? (const char *)r : "?");
+  fprintf(stderr, "[diag] === fim diag ===\n");
 }
 
 int bully_init_gl(void) {
@@ -149,6 +197,7 @@ int bully_init_gl(void) {
           (void *)eglGetCurrentDisplay(), (void *)eglGetCurrentSurface(EGL_DRAW),
           (void *)eglGetCurrentContext(), renderer ? (const char *)renderer : "?",
           version ? (const char *)version : "?");
+  bully_dump_display_diag("apos init GL");
   return 1;
 }
 
