@@ -93,7 +93,17 @@ env-map possa voltar).
    "personagem invisível/faixa no rodapé": fb sujo do ES + jogo desenhando só a área ativa).
    Usuário confirmou: "bugs de câmera/tela resolvidos".
 4. **Perf**: SDL_Delay(16) fixo REMOVIDO do loop (capava <30fps em cena pesada); thread-pin
-   render=core2 exclusivo, engine=0/1/3. Baseline leve: 30.0fps cravado.
+   SÓ das threads do engine → cores 0/1/3 (main/render livre — scheduler usa o core 2 vago).
+   ⚠️ BECO NOVO (bisect 2026-07-02): **pinar o MAIN no core 2 crasha o Mali** (sig11 libMali no
+   swap na fase de load ~f=500 e pós-respawn): as workers do driver nascem do main e HERDAM a
+   afinidade → driver sufoca num core. Baseline leve: 30.0fps cravado.
+5. **Câmera pós-cena presa (bug "começa atrás do carro/parede")**: a engine só restaura a câmera
+   (modo 15/18 → 4) no primeiro INPUT; parado ela fica onde a cena largou (shotB: 80% preto).
+   Fix: [camfix] armado em cutscene/flyby, dispara restore completo (finish+jumpcut+behind)
+   quando modo 15/18 + ped imóvel ~3s sem cutscene ativa. LCS_CAM_BEHIND_AFTER_CUTSCENE=0 off.
+6. **Respawn/restart (Wasted) → crash Mali** descoberto na run A (autowalk morreu): fila item
+   novo — repro = morrer no gameplay; stack igual ao do pin?? re-testar SEM pin (pode ter sido
+   o mesmo bug do pin — run A rodou binário com pin de main!).
 5. Diags permanentes: [bigalloc] (nenhuma alocação >20MB única → arena de 254MB = milhares de
    allocs pequenas do mundo em arena glibc ✓ tese Dysmantle), [viewport]/[scissor].
 

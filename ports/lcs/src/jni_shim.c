@@ -4905,6 +4905,17 @@ static void install_hooks(void) {
       }
     }
   }
+  /* VIDRO piscando (dia e noite, relatado 2026-07-02 mesmo com NO_ENVMAP): suspeito
+   * atual = CGlass::RenderReflectionPolys (polys de reflexo dos vidros; passe alpha
+   * view-dependent que pisca no Utgard). Default OFF p/ teste A/B ao vivo;
+   * LCS_GLASS_REFLECT=1 religa o reflexo do vidro. */
+  if (!lcs_env_flag("LCS_GLASS_REFLECT")) {
+    uintptr_t gr = so_find_addr_safe("_ZN6CGlass21RenderReflectionPolysEv");
+    if (gr) {
+      hook_x64(gr, (uintptr_t)my_pvs_noop);
+      fprintf(stderr, "[fix] CGlass::RenderReflectionPolys NO-OP (teste vidro-flicker)\n");
+    }
+  }
   if (lcs_env_flag("LCS_GFX_LOW") || lcs_env_flag("LCS_GFX_FX_OFF")) {
     const char *gfx_off[] = {
       "_ZN8CCoronas17RenderReflectionsEv",
@@ -5632,15 +5643,15 @@ static int lcs_play_intro(void) {
 }
 
 void jni_load(void) {
-  /* PERF: main/render EXCLUSIVA no core 2 (threads do engine vao pra 0/1/3 via
-   * my_pthread_create_pin em imports.c). LCS_THREAD_PIN=0 desliga. */
+  /* PERF: threads do ENGINE confinadas em 0/1/3 (my_pthread_create_pin, imports.c);
+   * main/render fica LIVRE — o scheduler naturalmente usa o core 2 vago. ⚠️ NAO pinar
+   * o main: as worker-threads do driver Mali nascem dele e HERDAM a afinidade -> com
+   * main preso no core 2 o driver sufocava no load pesado e crashava (sig11 libMali
+   * no swap, bisect 2026-07-02). LCS_THREAD_PIN=0 desliga o confinamento do engine. */
   {
     extern int lcs_thread_pin_on(void);
-    if (lcs_thread_pin_on()) {
-      cpu_set_t cs; CPU_ZERO(&cs); CPU_SET(2, &cs);
-      if (sched_setaffinity(0, sizeof cs, &cs) == 0)
-        fprintf(stderr, "[pin] main/render -> core 2; engine threads -> 0/1/3\n");
-    }
+    if (lcs_thread_pin_on())
+      fprintf(stderr, "[pin] engine threads -> cores 0/1/3 (main/driver livres)\n");
   }
   build_env();
   for (unsigned i = 0; i < sizeof(fake_vm) / sizeof(uintptr_t); i++)
@@ -6265,6 +6276,54 @@ void jni_load(void) {
     lcs_cutscene_tick_after_draw(f);
     lcs_resource_manual_drain("frame", f);
     lcs_ram_hygiene(f);
+    /* CAMERA ATRAS DO PLAYER pos-cutscene (bug "comeca atras do carro/parede", shotB
+     * 2026-07-02): ao fim da cena das escadas a camera volta pro modo follow (4) mas
+     * fica ONDE a cena largou (dentro da parede da mansao) ate o 1o movimento. Fix:
+     * 1x por epoca-de-cutscene, quando state9 + sem cutscene + cmode==4 + ped vivo,
+     * chama SetCameraDirectlyBehindForFollowPed. LCS_CAM_BEHIND_AFTER_CUTSCENE=0 off. */
+    if (lcs_env_int("LCS_CAM_BEHIND_AFTER_CUTSCENE", 1)) {
+      /* arma quando uma cutscene/cena scriptada COMECA (cmode 17/15/18 ou cut ativo);
+       * dispara 1x no primeiro frame follow (cmode==4) depois dela. Cobre intro E
+       * cutscenes de missao; nao dispara no load (nada armou ainda). */
+      static int armed = 0;
+      extern void *text_base; uintptr_t tbc = (uintptr_t)text_base;
+      void *stc = *(void **)(tbc + 0x7fd000 + 2232);
+      if (stc && *(int *)stc == 9) {
+        void *cam = *(void **)(tbc + 0x7f9000 + 400);
+        int aidx = cam ? *(unsigned char *)((char *)cam + 143) : -1;
+        if (aidx != 0 && aidx != 1) aidx = -1;   /* lixo no load -> nao deref */
+        void *accam = (cam && aidx >= 0) ? (void *)((char *)cam + 416 + (long)aidx * 664) : NULL;
+        int cmode = accam ? *(short *)((char *)accam + 28) : -1;
+        static void *(*bfp)(void) = NULL; static int br0 = 0;
+        if (!br0) { bfp = (void *(*)(void))so_find_addr_safe("_Z13FindPlayerPedv"); br0 = 1; }
+        void *ped = bfp ? bfp() : NULL;
+        int cutting = lcs_cutscene_active();
+        if (cutting || cmode == 17) armed = 1;
+        /* pos-cena a camera fica PRESA em 15/18 com o ped PARADO ate o 1o input
+         * (engine so restaura no movimento). Detecta: armado + sem cutscene + modo
+         * 15/18 + ped imovel por ~3s -> restore completo (finish+jumpcut+behind). */
+        static float lpx = 0, lpy = 0; static int still = 0;
+        if (armed && !cutting && ped && (cmode == 15 || cmode == 18)) {
+          float px, py, pz; vec3_read((char *)ped + 64, &px, &py, &pz);
+          float dx = px - lpx, dy = py - lpy;
+          /* tolerancia: idle anim micro-move o ped (igualdade exata nunca acumulava) */
+          if (dx > -0.05f && dx < 0.05f && dy > -0.05f && dy < 0.05f) still++;
+          else { still = 0; lpx = px; lpy = py; }
+          if (still >= 90) {
+            lcs_cutscene_restore_camera("pos-cena-parado");
+            armed = 0; still = 0;
+            fprintf(stderr, "[camfix] restore pos-cena f=%d cmode=%d\n", f, cmode);
+          }
+        } else if (armed && !cutting && cmode == 4) {
+          armed = 0;   /* engine ja restaurou sozinha */
+        } else {
+          still = 0;
+        }
+        if (lcs_env_flag("LCS_CAMFIX_DIAG") && (f % 150) == 0)
+          fprintf(stderr, "[camfix-diag] f=%d armed=%d cut=%d cmode=%d still=%d ped=%p\n",
+                  f, armed, cutting, cmode, still, ped);
+      }
+    }
     /* FPS CAP: o jogo foi feito p/ ~30fps; sem teto roda 40-80fps -> UI/timers da engine
      * (menu, tela de tap/legal, cutscene) ficam rapidos demais. Mantem o frame em
      * LCS_FPS_CAP (default 30). LCS_FPS_CAP=0 desliga. */
