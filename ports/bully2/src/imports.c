@@ -1301,16 +1301,24 @@ static unsigned my_eglDestroySurface(void *dpy, void *surf) {
   return real_eglDestroySurface ? real_eglDestroySurface(dpy, surf) : 1;
 }
 
+extern int bully_mali_swap_sdl(void);
 static unsigned (*real_eglSwapBuffers)(void *, void *) = NULL;
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
-  if (bully_is_kmsdrm()) {
+  static unsigned long n;
+  void *engine_surf = surf;
+  /* kmsdrm/wayland/x11, ou mali-G/H700 (blitter): present pelo caminho do SDL
+   * (SDL_GL_SwapWindow), que aciona o page-flip/blitter. O eglSwapBuffers cru
+   * NAO apresenta nesses backends. bully_swap_buffers decide raw vs SwapWindow. */
+  if (bully_is_kmsdrm() || bully_mali_swap_sdl()) {
     bully_swap_buffers();
+    if (n == 0 || (n % 600) == 0)
+      fprintf(stderr, "[present] swap #%lu via SDL (kmsdrm/blitter) pinned=%d\n",
+              n, surface_pin_enabled());
+    n++;
     return 1;
   }
   bully_maybe_screenshot();
-  /* com o pin, sempre apresenta a surface de scan-out do SDL (a engine pode
-   * ter passado a sua, ja redirecionada pra esta, mas garantimos). */
-  void *engine_surf = surf;
+  /* Amlogic Mali-4xx: eglSwapBuffers cru na surface de scan-out do SDL (pin). */
   if (surface_pin_enabled()) {
     void *s = bully_sdl_surface();
     if (s)
@@ -1319,10 +1327,6 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   if (!real_eglSwapBuffers)
     real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   unsigned r = real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
-  /* log persistente do present: 1o swap + a cada 600, mostra se estamos
-   * apresentando a surface do SDL (pin) e o retorno do eglSwapBuffers real
-   * (0 = EGL_FALSE = falhou -> nao pana). Diagnostico p/ o device do tester. */
-  static unsigned long n;
   if (n == 0 || (n % 600) == 0)
     fprintf(stderr,
             "[present] swap #%lu surf=%p engine_surf=%p pinned=%d ret=%u\n", n,

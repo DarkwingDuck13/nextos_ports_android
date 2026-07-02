@@ -18,11 +18,18 @@
 static SDL_Window *g_win;
 static SDL_GLContext g_ctx;
 static void *g_egl_display, *g_egl_surface, *g_egl_context;
+/* modo de present no fbdev/mali:
+ *  0 = raw eglSwapBuffers (Amlogic Mali-4xx Utgard: presenta direto)
+ *  1 = SDL_GL_SwapWindow (Mali-G/Bifrost H700-Knulli: precisa do BLITTER do
+ *      SDL mali -- o eglSwapBuffers cru NAO aciona o blitter -> tela preta)
+ * auto: Mali-4xx -> raw; qualquer outro -> sdl. BULLY2_MALI_SWAP=raw|sdl. */
+static int g_mali_swap_sdl = 0;
 static int g_w = 1280;
 static int g_h = 720;
 static int g_is_kmsdrm = 0;   /* kmsdrm/wayland precisam SDL_GL_SwapWindow p/ page-flip; mali fbdev usa eglSwapBuffers cru */
 
 int bully_is_kmsdrm(void) { return g_is_kmsdrm; }
+int bully_mali_swap_sdl(void) { return g_mali_swap_sdl; }
 
 int bully_screen_w(void) { return g_w; }
 int bully_screen_h(void) { return g_h; }
@@ -197,6 +204,23 @@ int bully_init_gl(void) {
           (void *)eglGetCurrentDisplay(), (void *)eglGetCurrentSurface(EGL_DRAW),
           (void *)eglGetCurrentContext(), renderer ? (const char *)renderer : "?",
           version ? (const char *)version : "?");
+  /* decide o modo de present no caminho mali/fbdev por familia de GPU */
+  if (!g_is_kmsdrm) {
+    const char *e = getenv("BULLY2_MALI_SWAP");
+    if (e && !SDL_strcasecmp(e, "sdl"))
+      g_mali_swap_sdl = 1;
+    else if (e && !SDL_strcasecmp(e, "raw"))
+      g_mali_swap_sdl = 0;
+    else {
+      /* auto: Mali-4xx (Utgard) presenta com eglSwapBuffers cru; Mali-G e
+       * outros blobs fbdev (H700/Knulli) precisam do blitter via SwapWindow. */
+      const char *rr = renderer ? (const char *)renderer : "";
+      g_mali_swap_sdl = (strstr(rr, "Mali-4") != NULL) ? 0 : 1;
+    }
+    fprintf(stderr, "[gl] mali present mode=%s (renderer='%s')\n",
+            g_mali_swap_sdl ? "SDL_GL_SwapWindow(blitter)" : "eglSwapBuffers(raw)",
+            renderer ? (const char *)renderer : "?");
+  }
   bully_dump_display_diag("apos init GL");
   return 1;
 }
@@ -306,7 +330,8 @@ void bully_swap_buffers(void) {
    * mesmo caminho que o jogo usa e que CHEGA no /dev/fb0. KMSDRM/wayland precisam
    * do page-flip do SDL (drmModePageFlip), senao o buffer GBM nunca vai pro scanout
    * -> tela preta (render + audio OK, mas nada no painel). */
-  if (!g_is_kmsdrm) {
+  if (!g_is_kmsdrm && !g_mali_swap_sdl) {
+    /* Amlogic Mali-4xx: eglSwapBuffers cru chega no /dev/fb0 direto. */
     static unsigned (*raw_swap)(void *, void *) = NULL;
     if (!raw_swap)
       raw_swap = (unsigned (*)(void *, void *))dlsym(RTLD_DEFAULT, "eglSwapBuffers");
@@ -317,5 +342,6 @@ void bully_swap_buffers(void) {
       return;
     }
   }
+  /* kmsdrm/wayland/x11 (page-flip) E mali-G/H700 (blitter do SDL): SwapWindow */
   SDL_GL_SwapWindow(g_win);
 }
