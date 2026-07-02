@@ -20,7 +20,8 @@ cp fixpak.aarch64      "$STAGE/dysmantle/fixpak"
 cp texbake.aarch64     "$STAGE/dysmantle/texbake"
 cp libc++_shared.so "$STAGE/dysmantle/" 2>/dev/null || cp ~/dysmantle-build/stage/libc++_shared.so "$STAGE/dysmantle/"
 cp tools/dysmantle_extract.sh "$STAGE/dysmantle/tools/"
-cp dysmantle.gptk gameinfo.xml port.json cover.png splash.png screenshot.png README.md CHANGELOG.md "$STAGE/dysmantle/"
+cp dysmantle.gptk gameinfo.xml port.json cover.png splash.png screenshot.png \
+   README.md README-pt-BR.md CHANGELOG.md "$STAGE/dysmantle/"
 cp -r licenses "$STAGE/dysmantle/"
 chmod +x "$STAGE/dysmantle/dysmantle" "$STAGE/dysmantle/fixpak" "$STAGE/dysmantle/texbake" \
          "$STAGE/dysmantle/tools/dysmantle_extract.sh" "$STAGE/DYSMANTLE.sh"
