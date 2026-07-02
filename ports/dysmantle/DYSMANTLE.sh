@@ -125,6 +125,8 @@ if [ -z "$DYSMANTLE_NO_PAGE" ] && [ -z "$DYS_NATIVE_ETC2" ] && [ -n "$DYS_LOWRAM
   export DYSMANTLE_PAGE=1
   export DYSMANTLE_PAGE_ASYNC="${DYSMANTLE_PAGE_ASYNC:-1}"
   export DYSMANTLE_PAGE_CAP_MB="${DYSMANTLE_PAGE_CAP_MB:-150}"
+  # piso anti-OOM: se MemAvailable cair abaixo disso, despeja mesmo abaixo do cap
+  export DYSMANTLE_PAGE_FLOOR_MB="${DYSMANTLE_PAGE_FLOOR_MB:-120}"
   export DYSMANTLE_PAGE_SWAP="$GAMEDIR/texswap"
   # swap id-keyed e por-execucao: limpa no boot (ids GL mudam a cada run)
   rm -rf "$GAMEDIR/texswap" 2>/dev/null

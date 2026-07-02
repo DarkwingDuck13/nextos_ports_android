@@ -570,6 +570,15 @@ static const char *dysp_swapdir(void){ static const char*d; static int got; if(!
 static int dysmantle_paging(void){ static int m=-1; if(m<0)m=(getenv("DYSMANTLE_PAGE")&&dysp_swapdir())?1:0; return m; }
 static long long dysp_cap(void){ static long long c=-1; if(c<0){ const char*e=getenv("DYSMANTLE_PAGE_CAP_MB"); c=(long long)(e?atoll(e):200)*1024*1024; } return c; }
 static int dysp_async(void){ static int m=-1; if(m<0)m=getenv("DYSMANTLE_PAGE_ASYNC")?1:0; return m; }
+/* piso de MemAvailable (rede anti-OOM, do texpage do Bully): se a RAM LIVRE do sistema cair
+ * abaixo do piso, despeja frias MESMO abaixo do cap (crucial em device SEM swap, ex R36S). */
+static long long dysp_floor(void){ static long long f=-1; if(f<0){ const char*e=getenv("DYSMANTLE_PAGE_FLOOR_MB"); f=(long long)(e?atoll(e):0)*1024*1024; } return f; }
+static long long dysp_mem_avail(void){
+  FILE *f = fopen("/proc/meminfo", "r"); if (!f) return -1;
+  char ln[160]; long kb = -1;
+  while (fgets(ln, sizeof ln, f)) if (!strncmp(ln, "MemAvailable:", 13)) { kb = atol(ln + 13); break; }
+  fclose(f); return kb >= 0 ? (long long)kb * 1024 : -1;
+}
 static int dysp_bpp(unsigned fmt, unsigned typ) {
   if (typ == 0x8033 /*4444*/ || typ == 0x8034 /*5551*/ || typ == 0x8363 /*565*/) return 2;
   if (typ != 0x1401 /*UBYTE*/) return 0;
@@ -598,8 +607,8 @@ static void dysp_note_upload(unsigned id, int ifmt, int w, int h, unsigned ufmt,
   g_dysp_kind[id] = 2; g_dysp_present[id] = 1; g_dysp_bytes[id] = bytes;
   g_dysp_w[id] = (unsigned short)w; g_dysp_h[id] = (unsigned short)h; g_dysp_use[id] = ++g_dysp_clock;
 }
-/* despeja as mais FRIAS ate voltar ao orcamento (pula a atual e as ja-despejadas) */
-static void dysp_evict(unsigned target, unsigned keep) {
+/* despeja as mais FRIAS ate voltar ao orcamento 'capb' (pula a atual e as ja-despejadas) */
+static void dysp_evict_to(unsigned target, unsigned keep, long long capb) {
   static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
   static void (*rBind)(unsigned,unsigned) = NULL;
   if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
@@ -607,7 +616,7 @@ static void dysp_evict(unsigned target, unsigned keep) {
   if (!rTexImg || !rBind) return;
   static const unsigned char black[4] = {0,0,0,0};
   int guard = 0;
-  while (g_dysp_resident > dysp_cap() && guard++ < 4096) {
+  while (g_dysp_resident > capb && guard++ < 4096) {
     unsigned best = 0, bu = 0xffffffffu; int fi = -1;
     for (int i = 0; i < g_dysp_n; i++) { unsigned id = g_dysp_list[i];
       if (id == keep || g_dysp_kind[id] != 2 || !g_dysp_present[id]) continue;
@@ -713,7 +722,23 @@ static void dysp_on_bind(unsigned target, unsigned id) {
       dysp_drain(id);
     } else if (!g_dysp_present[id]) dysp_fault(id);
   } else if (!g_dysp_present[id]) dysp_fault(id);
-  if (g_dysp_resident > dysp_cap()) dysp_evict(target, id);
+  if (g_dysp_resident > dysp_cap()) dysp_evict_to(target, id, dysp_cap());
+  /* piso anti-OOM: checa MemAvailable a cada ~256 binds; abaixo do piso, encolhe o
+   * residente (8MB por checagem; CRITICO <piso/2 = -25%) mesmo abaixo do cap */
+  if (dysp_floor() > 0) {
+    static unsigned fc = 0;
+    if ((++fc & 0xFF) == 0) {
+      long long avail = dysp_mem_avail();
+      if (avail >= 0 && avail < dysp_floor() && g_dysp_resident > 0) {
+        long long cut = (avail < dysp_floor() / 2) ? g_dysp_resident / 4 : (long long)8 * 1024 * 1024;
+        long long tgt2 = g_dysp_resident - cut; if (tgt2 < 0) tgt2 = 0;
+        dysp_evict_to(target, id, tgt2);
+        if (getenv("DYSMANTLE_PAGELOG"))
+          fprintf(stderr, "[dysp] PRESSAO avail=%lldMB < piso=%lldMB -> evict p/ %lldMB\n",
+                  avail/(1024*1024), dysp_floor()/(1024*1024), tgt2/(1024*1024));
+      }
+    }
+  }
   if (getenv("DYSMANTLE_PAGELOG")) { static long c = 0; if ((c++ % 600) == 0)
     fprintf(stderr, "[dysp] resident=%lldMB cap=%lldMB pf=%ld ev=%ld sub=%ld pageaveis=%d ready=%d\n",
             g_dysp_resident/(1024*1024), dysp_cap()/(1024*1024), g_dysp_pf, g_dysp_ev, g_dysp_sub,
