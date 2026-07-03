@@ -94,10 +94,11 @@ static void (*p_EventKeyboard_dtor)(void *self);
 static void mm_send_cocos_key(int keyCode, int pressed) {
   if (!p_Director_getInstance || !p_EventKeyboard_ctor || !p_EventDispatcher_dispatch) return;
   void *director = p_Director_getInstance();
-  if (!director) return;
+  if (!director) { if(getenv("MM_INPUTLOG"))fprintf(stderr,"[key] director NULL\n"); return; }
+  void *disp = *(void **)((char *)director + 0x98);
+  if (getenv("MM_INPUTLOG")) fprintf(stderr,"[key] kc=%d pr=%d dir=%p disp=%p\n",keyCode,pressed,director,disp);
   char event[96]; memset(event, 0, sizeof event);
   p_EventKeyboard_ctor(event, keyCode, pressed);
-  void *disp = *(void **)((char *)director + 0x98);
   if (disp) p_EventDispatcher_dispatch(disp, event);
   if (p_EventKeyboard_dtor) p_EventKeyboard_dtor(event);
 }
@@ -181,6 +182,43 @@ static void preload_device_libs(void) {
     fprintf(stderr, "preload: %s %s\n", libs[i], h ? "OK" : dlerror());
   }
 }
+
+/* ---- controle gamepad -> MULTITOUCH nos controles virtuais na tela ----
+   O jogo é TOUCH em menus E gameplay. Mapeamos o gamepad físico (Xbox) p/
+   toques nas posições dos controles virtuais (dpad esq, botões dir). ids
+   distintos p/ multitouch (andar+pular+atirar simultâneo). Base 1280x720. */
+#define VP_DPAD_CX  95.0f
+#define VP_DPAD_CY  500.0f
+#define VP_DPAD_OFF 58.0f
+#define VP_JUMP_X   1175.0f   /* pulo (gameplay) / confirmar✓ (menu) */
+#define VP_JUMP_Y   620.0f
+#define VP_SHOOT_X  1085.0f
+#define VP_SHOOT_Y  475.0f
+#define VP_WEAPON_X 1175.0f
+#define VP_WEAPON_Y 310.0f
+#define VP_BACK_X   1175.0f   /* voltar (menu) */
+#define VP_BACK_Y   455.0f
+#define VP_PAUSE_X  1210.0f
+#define VP_PAUSE_Y  55.0f
+enum { TID_DPAD=0, TID_JUMP, TID_SHOOT, TID_WEAPON, TID_BACK, TID_PAUSE };
+
+static void mm_tbegin(int id,float x,float y){ if(nativeTouchesBegin)nativeTouchesBegin(g_env,NULL,id,x,y); }
+static void mm_tend(int id,float x,float y){ if(nativeTouchesEnd)nativeTouchesEnd(g_env,NULL,id,x,y); }
+static void mm_tmove(int id,float x,float y){ if(nativeTouchesMove)nativeTouchesMove(g_env,NULL,id,x,y); }
+
+/* estado direcional (dpad + stick) e toque do dpad */
+static int dp_up,dp_dn,dp_lf,dp_rt, stk_x,stk_y;
+static int dpad_down=0; static float dpad_lx,dpad_ly;
+static void update_dpad(void){
+  int dx=((dp_rt||stk_x>0)?1:0)-((dp_lf||stk_x<0)?1:0);
+  int dy=((dp_dn||stk_y>0)?1:0)-((dp_up||stk_y<0)?1:0);
+  if(dx==0&&dy==0){ if(dpad_down){ mm_tend(TID_DPAD,dpad_lx,dpad_ly); dpad_down=0; } return; }
+  float x=VP_DPAD_CX+dx*VP_DPAD_OFF, y=VP_DPAD_CY+dy*VP_DPAD_OFF;
+  if(!dpad_down){ mm_tbegin(TID_DPAD,x,y); dpad_down=1; } else mm_tmove(TID_DPAD,x,y);
+  dpad_lx=x; dpad_ly=y;
+}
+/* botão de ação -> toque hold (begin/end) numa posição fixa */
+static void btn_touch(int id,int pressed,float x,float y){ if(pressed)mm_tbegin(id,x,y); else mm_tend(id,x,y); }
 
 /* Botões de ação cocos KeyCode (a confirmar semântica em gameplay).
    Da tabela de máscaras: SPACE=0x10000; candidatos de ação em 124-130 e nums. */
@@ -411,29 +449,40 @@ int main(int argc, char *argv[]) {
         case SDL_QUIT: running = 0; break;
         case SDL_KEYDOWN: case SDL_KEYUP: {
           if (e.key.repeat) break;
-          if (e.key.keysym.sym == SDLK_ESCAPE && e.type == SDL_KEYDOWN) { running = 0; break; }
-          int ck = map_key_cocos(e.key.keysym.sym);
-          if (ck >= 0) mm_send_cocos_key(ck, e.type == SDL_KEYDOWN);
+          int pr = (e.type==SDL_KEYDOWN);
+          switch (e.key.keysym.sym) {
+            case SDLK_ESCAPE: if(pr) running=0; break;
+            case SDLK_UP:    dp_up=pr; update_dpad(); break;
+            case SDLK_DOWN:  dp_dn=pr; update_dpad(); break;
+            case SDLK_LEFT:  dp_lf=pr; update_dpad(); break;
+            case SDLK_RIGHT: dp_rt=pr; update_dpad(); break;
+            case SDLK_SPACE: case SDLK_z: btn_touch(TID_JUMP,pr,VP_JUMP_X,VP_JUMP_Y); break;
+            case SDLK_x: btn_touch(TID_SHOOT,pr,VP_SHOOT_X,VP_SHOOT_Y); break;
+            case SDLK_c: btn_touch(TID_WEAPON,pr,VP_WEAPON_X,VP_WEAPON_Y); break;
+            case SDLK_BACKSPACE: btn_touch(TID_BACK,pr,VP_BACK_X,VP_BACK_Y); break;
+            case SDLK_RETURN: btn_touch(TID_PAUSE,pr,VP_PAUSE_X,VP_PAUSE_Y); break;
+          }
           break;
         }
-        case SDL_CONTROLLERBUTTONDOWN: {
-          int ck = map_btn_cocos(e.cbutton.button); if (ck>=0) mm_send_cocos_key(ck, 1); break;
-        }
-        case SDL_CONTROLLERBUTTONUP: {
-          int ck = map_btn_cocos(e.cbutton.button); if (ck>=0) mm_send_cocos_key(ck, 0); break;
+        case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
+          int pr = (e.type==SDL_CONTROLLERBUTTONDOWN);
+          switch (e.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:    dp_up=pr; update_dpad(); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  dp_dn=pr; update_dpad(); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  dp_lf=pr; update_dpad(); break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: dp_rt=pr; update_dpad(); break;
+            case SDL_CONTROLLER_BUTTON_A: btn_touch(TID_JUMP,pr,VP_JUMP_X,VP_JUMP_Y); break;   /* pulo/confirmar */
+            case SDL_CONTROLLER_BUTTON_X: btn_touch(TID_SHOOT,pr,VP_SHOOT_X,VP_SHOOT_Y); break; /* tiro */
+            case SDL_CONTROLLER_BUTTON_Y: btn_touch(TID_WEAPON,pr,VP_WEAPON_X,VP_WEAPON_Y); break;/* arma */
+            case SDL_CONTROLLER_BUTTON_B: btn_touch(TID_BACK,pr,VP_BACK_X,VP_BACK_Y); break;     /* voltar */
+            case SDL_CONTROLLER_BUTTON_START: btn_touch(TID_PAUSE,pr,VP_PAUSE_X,VP_PAUSE_Y); break;
+          }
+          break;
         }
         case SDL_CONTROLLERAXISMOTION: {
-          /* analógico esquerdo -> direcional (com histerese) */
-          static int lx=0, ly=0; const int TH=16000;
-          if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTX) {
-            int nx = e.caxis.value> TH?1: e.caxis.value<-TH?-1:0;
-            if (nx!=lx){ if(lx==1)mm_send_cocos_key(CKEY_RIGHT,0); if(lx==-1)mm_send_cocos_key(CKEY_LEFT,0);
-                         if(nx==1)mm_send_cocos_key(CKEY_RIGHT,1); if(nx==-1)mm_send_cocos_key(CKEY_LEFT,1); lx=nx; }
-          } else if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTY) {
-            int ny = e.caxis.value> TH?1: e.caxis.value<-TH?-1:0;
-            if (ny!=ly){ if(ly==1)mm_send_cocos_key(CKEY_DOWN,0); if(ly==-1)mm_send_cocos_key(CKEY_UP,0);
-                         if(ny==1)mm_send_cocos_key(CKEY_DOWN,1); if(ny==-1)mm_send_cocos_key(CKEY_UP,1); ly=ny; }
-          }
+          const int TH=16000;
+          if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTX) { stk_x = e.caxis.value>TH?1:e.caxis.value<-TH?-1:0; update_dpad(); }
+          else if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTY) { stk_y = e.caxis.value>TH?1:e.caxis.value<-TH?-1:0; update_dpad(); }
           break;
         }
       }
@@ -464,9 +513,16 @@ int main(int argc, char *argv[]) {
       if (f==840){ TAPCHK(); fprintf(stderr,"CONFIRM 4\n"); } if (f==860) RELCHK();
       if (f==1000) mm_shot(w,h,5);                       /* stage select */
       if (f==1060){ TAPCHK(); fprintf(stderr,"CONFIRM 5 (enter stage)\n"); } if (f==1080) RELCHK();
-      if (f==1300) mm_shot(w,h,6);                       /* GAMEPLAY? */
-      if (f==1600) mm_shot(w,h,7);                       /* gameplay depois */
-      if (f==1640) fprintf(stderr,"NAVTEST done\n");
+      if (f==1200) mm_shot(w,h,6);                        /* baseline */
+      /* TAP jump (begin+end) e BURST denso p/ capturar arco do pulo */
+      if (f==1300){ mm_tbegin(TID_JUMP,VP_JUMP_X,VP_JUMP_Y); fprintf(stderr,"JUMP TAP\n"); }
+      if (f==1308){ mm_tend(TID_JUMP,VP_JUMP_X,VP_JUMP_Y); }
+      if (f==1304) mm_shot(w,h,6);
+      if (f==1312) mm_shot(w,h,7);
+      if (f==1320) mm_shot(w,h,8);
+      if (f==1330) mm_shot(w,h,9);
+      if (f==1345) mm_shot(w,h,10);
+      if (f==1400) fprintf(stderr,"NAVTEST done\n");
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
