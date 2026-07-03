@@ -6248,6 +6248,8 @@ static void ff9_ebgdiag_scene(const char *tag, void *scene, void *fieldMap, int 
   fsync(2);
 }
 
+static volatile int g_mrdump_at;   /* frame alvo do MRDUMP (armado no LoadEBG FBG_*) */
+static int g_mrdump_done;
 void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, void *method);
 void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, void *method) {
   char p[192] = {0}, n[96] = {0};
@@ -6273,6 +6275,12 @@ void my_BGSCENE_DEF_LoadEBG(void *self, void *fieldMap, void *path, void *name, 
   if (g_bgscene_loadebg_orig)
     g_bgscene_loadebg_orig(self, fieldMap, path, name, method);
   ff9_ebgdiag_scene("LoadEBG after", self, fieldMap, 1);
+  /* arma o MRDUMP p/ campo REAL (FBG_*): enumeração dos renderers ~300 frames depois */
+  if (!strncmp(n, "FBG_", 4) && !g_mrdump_done) {
+    g_mrdump_at = g_render_frame + 300;
+    fprintf(stderr, "[FF9_MRDUMP] armado p/ f=%d (campo %s)\n", g_mrdump_at, n);
+    fsync(2);
+  }
 }
 
 void my_BGSCENE_DEF_GenerateAtlasFromBinary(void *self, void *method);
@@ -6392,6 +6400,249 @@ static void ff9_ebgdiag_install(uintptr_t base) {
           (void *)g_bgscene_createmats_orig, (void *)g_bgscene_createscene_orig,
           (void *)g_bgscene_createscene_combined_orig, (void *)g_bgscene_createsprites_orig,
           (void *)g_fieldmap_updateoverlayall_orig);
+  fsync(2);
+}
+
+/* ==== FF9_CAMDIAG: raio-X das câmeras do campo + MeshRenderer do EBG combinado.
+   Objetivo: isolar por que o background EBG sai preto (targetTexture/RenderTexture no
+   Mali-450 ES2? cullingMask x layer? transform/bounds fora da câmera? shader?).
+   PSXCameraAspect tem DUAS câmeras (MainCamera+0x38, BgCamera+0x40). Opt-in FF9_CAMDIAG=1.
+   FF9_EBG_SHADER=<nome> (ex.: "PSX/FieldMapActor") troca o shader do material do mesh
+   combinado p/ teste A/B. RVAs do dump il2cpp 2026-07-03 (/tmp/ff9dump). */
+typedef struct { float x, y, z; } ff9_v3;
+typedef struct { float x, y, w, h; } ff9_rect;
+typedef struct { float cx, cy, cz, ex, ey, ez; } ff9_bounds; /* 6 floats -> sret x8 */
+
+#define RVA_CAM_GET_TARGETTEX  0x253AD00
+#define RVA_CAM_GET_CULLMASK   0x253A820
+#define RVA_CAM_GET_ORTHO      0x253A65C
+#define RVA_CAM_GET_ORTHOSIZE  0x253A5D4
+#define RVA_CAM_GET_NEAR       0x253A400
+#define RVA_CAM_GET_FAR        0x253A488
+#define RVA_CAM_GET_DEPTH      0x253A75C
+#define RVA_CAM_GET_CLEARFL    0x253A9B8
+#define RVA_CAM_GET_PIXRECT    0x253ABEC
+#define RVA_BEH_GET_ENABLED    0x255DBC0
+#define RVA_REND_GET_ENABLED   0x25460B8
+#define RVA_REND_GET_BOUNDS    0x2545E0C
+#define RVA_REND_GET_SHMAT     0x25464C0
+#define RVA_MAT_GET_SHADER     0x2547024
+#define RVA_MAT_SET_SHADER     0x2547060
+#define RVA_SHADER_FIND        0x25467D4
+#define RVA_COMP_GET_TRANSFORM 0x255E6F0
+#define RVA_COMP_GET_GO        0x255E72C
+#define RVA_TR_GET_POSITION    0x256A680
+#define RVA_TR_GET_LOSSYSCALE  0x256BAC4
+#define RVA_GO_GET_LAYER       0x2561330
+#define RVA_OBJ_GET_NAME       0x25648C8
+
+static int ff9_obj_ok(void *o) {
+  return o && !((uintptr_t)o >> 40) && addr_readable((uintptr_t)o + 0x10);
+}
+
+static void ff9_camdiag_objname(void *obj, char *out, int cap) {
+  out[0] = 0;
+  if (!ff9_obj_ok(obj) || !g_il2cpp_base) return;
+  void *s = ((void *(*)(void *, void *))(g_il2cpp_base + RVA_OBJ_GET_NAME))(obj, NULL);
+  ff9_copy_il2cpp_string_live(s, out, cap);
+}
+
+static void ff9_camdiag_cam(const char *tag, void *cam) {
+  if (!g_il2cpp_base) return;
+  if (!ff9_obj_ok(cam)) {
+    fprintf(stderr, "[FF9_CAMDIAG] %s cam=%p (nil/bad)\n", tag, cam);
+    return;
+  }
+  uintptr_t B = g_il2cpp_base;
+  char nm[96];
+  ff9_camdiag_objname(cam, nm, sizeof nm);
+  int enabled = ((int (*)(void *, void *))(B + RVA_BEH_GET_ENABLED))(cam, NULL) & 1;
+  void *tt = ((void *(*)(void *, void *))(B + RVA_CAM_GET_TARGETTEX))(cam, NULL);
+  int mask = ((int (*)(void *, void *))(B + RVA_CAM_GET_CULLMASK))(cam, NULL);
+  int ortho = ((int (*)(void *, void *))(B + RVA_CAM_GET_ORTHO))(cam, NULL) & 1;
+  float osz = ((float (*)(void *, void *))(B + RVA_CAM_GET_ORTHOSIZE))(cam, NULL);
+  float nearp = ((float (*)(void *, void *))(B + RVA_CAM_GET_NEAR))(cam, NULL);
+  float farp = ((float (*)(void *, void *))(B + RVA_CAM_GET_FAR))(cam, NULL);
+  float depth = ((float (*)(void *, void *))(B + RVA_CAM_GET_DEPTH))(cam, NULL);
+  int clearfl = ((int (*)(void *, void *))(B + RVA_CAM_GET_CLEARFL))(cam, NULL);
+  ff9_rect pr = ((ff9_rect (*)(void *, void *))(B + RVA_CAM_GET_PIXRECT))(cam, NULL);
+  ff9_v3 pos = {0, 0, 0};
+  void *tr = ((void *(*)(void *, void *))(B + RVA_COMP_GET_TRANSFORM))(cam, NULL);
+  if (ff9_obj_ok(tr))
+    pos = ((ff9_v3 (*)(void *, void *))(B + RVA_TR_GET_POSITION))(tr, NULL);
+  char ttnm[96] = {0};
+  if (tt) ff9_camdiag_objname(tt, ttnm, sizeof ttnm);
+  fprintf(stderr,
+          "[FF9_CAMDIAG] %s cam=%p \"%s\" en=%d targetTex=%p\"%s\" mask=0x%x ortho=%d osz=%.1f near=%.2f far=%.1f depth=%.1f clear=%d pixRect=%.0f,%.0f %.0fx%.0f pos=(%.1f,%.1f,%.1f)\n",
+          tag, cam, nm, enabled, tt, ttnm, mask, ortho, osz, nearp, farp, depth,
+          clearfl, pr.x, pr.y, pr.w, pr.h, pos.x, pos.y, pos.z);
+  fsync(2);
+}
+
+/* PSXCameraAspect.LateUpdate hook: captura this e loga MainCamera/BgCamera. */
+static void (*g_psxcam_lateupdate_orig)(void *, void *);
+void my_PSXCameraAspect_LateUpdate(void *self, void *method);
+void my_PSXCameraAspect_LateUpdate(void *self, void *method) {
+  static unsigned n;
+  if (g_psxcam_lateupdate_orig) g_psxcam_lateupdate_orig(self, method);
+  if (!ff9_obj_ok(self) || !addr_readable((uintptr_t)self + 0x48)) return;
+  if (n < 3 || (g_render_frame > 0 && (g_render_frame % 600) == 0)) {
+    n++;
+    void *maincam = *(void **)((char *)self + 0x38);
+    void *bgcam = *(void **)((char *)self + 0x40);
+    float ratio = *(float *)((char *)self + 0x20);
+    float *border = (float *)((char *)self + 0x24);
+    float *size = (float *)((char *)self + 0x2c);
+    fprintf(stderr,
+            "[FF9_CAMDIAG] PSXCameraAspect this=%p ratio=%.3f border=(%.1f,%.1f) size=(%.1f,%.1f) f=%d\n",
+            self, ratio, border[0], border[1], size[0], size[1], g_render_frame);
+    ff9_camdiag_cam("  MainCamera", maincam);
+    ff9_camdiag_cam("  BgCamera  ", bgcam);
+  }
+}
+
+/* BGSCENE_DEF.InitMeshRenderer hook: loga o MeshRenderer do mesh combinado do EBG
+   (enabled, bounds WORLD, layer, shader, transform) + FF9_EBG_SHADER troca o shader. */
+static void (*g_bgscene_initmr_orig)(void *, void **, void *);
+void my_BGSCENE_DEF_InitMeshRenderer(void *self, void **mrRef, void *method);
+void my_BGSCENE_DEF_InitMeshRenderer(void *self, void **mrRef, void *method) {
+  if (g_bgscene_initmr_orig) g_bgscene_initmr_orig(self, mrRef, method);
+  if (!g_il2cpp_base || !mrRef || !addr_readable((uintptr_t)mrRef)) return;
+  void *mr = *mrRef;
+  if (!ff9_obj_ok(mr)) {
+    fprintf(stderr, "[FF9_CAMDIAG] InitMeshRenderer mr=%p (nil/bad)\n", mr);
+    return;
+  }
+  uintptr_t B = g_il2cpp_base;
+  int enabled = ((int (*)(void *, void *))(B + RVA_REND_GET_ENABLED))(mr, NULL) & 1;
+  /* Bounds = 6 floats (não-HFA) -> retorno via x8 (sret); declarar como retorno de struct
+     faz o compilador montar o x8 certo. */
+  ff9_bounds bo = ((ff9_bounds (*)(void *, void *))(B + RVA_REND_GET_BOUNDS))(mr, NULL);
+  int layer = -1;
+  char gonm[96] = {0};
+  void *go = ((void *(*)(void *, void *))(B + RVA_COMP_GET_GO))(mr, NULL);
+  if (ff9_obj_ok(go)) {
+    layer = ((int (*)(void *, void *))(B + RVA_GO_GET_LAYER))(go, NULL);
+    ff9_camdiag_objname(go, gonm, sizeof gonm);
+  }
+  ff9_v3 pos = {0, 0, 0}, scl = {1, 1, 1};
+  void *tr = ((void *(*)(void *, void *))(B + RVA_COMP_GET_TRANSFORM))(mr, NULL);
+  if (ff9_obj_ok(tr)) {
+    pos = ((ff9_v3 (*)(void *, void *))(B + RVA_TR_GET_POSITION))(tr, NULL);
+    scl = ((ff9_v3 (*)(void *, void *))(B + RVA_TR_GET_LOSSYSCALE))(tr, NULL);
+  }
+  void *mat = ((void *(*)(void *, void *))(B + RVA_REND_GET_SHMAT))(mr, NULL);
+  char shnm[96] = {0};
+  void *sh = NULL;
+  if (ff9_obj_ok(mat)) {
+    sh = ((void *(*)(void *, void *))(B + RVA_MAT_GET_SHADER))(mat, NULL);
+    ff9_camdiag_objname(sh, shnm, sizeof shnm);
+  }
+  fprintf(stderr,
+          "[FF9_CAMDIAG] EBG MeshRenderer mr=%p go=\"%s\" layer=%d en=%d shader=%p\"%s\" "
+          "bounds c=(%.1f,%.1f,%.1f) e=(%.1f,%.1f,%.1f) pos=(%.1f,%.1f,%.1f) scale=(%.2f,%.2f,%.2f) f=%d\n",
+          mr, gonm, layer, enabled, sh, shnm, bo.cx, bo.cy, bo.cz, bo.ex, bo.ey, bo.ez,
+          pos.x, pos.y, pos.z, scl.x, scl.y, scl.z, g_render_frame);
+  const char *swap = getenv("FF9_EBG_SHADER");
+  if (swap && *swap && ff9_obj_ok(mat)) {
+    void *(*isn)(const char *) = (void *(*)(const char *))so_find_addr_safe("il2cpp_string_new");
+    if (isn) {
+      void *snm = isn(swap);
+      void *ns = ((void *(*)(void *, void *))(B + RVA_SHADER_FIND))(snm, NULL);
+      if (ff9_obj_ok(ns)) {
+        ((void (*)(void *, void *, void *))(B + RVA_MAT_SET_SHADER))(mat, ns, NULL);
+        fprintf(stderr, "[FF9_CAMDIAG] EBG shader TROCADO -> \"%s\" (%p)\n", swap, ns);
+      } else {
+        fprintf(stderr, "[FF9_CAMDIAG] EBG shader \"%s\" NAO achado (Shader.Find=%p)\n", swap, ns);
+      }
+    }
+  }
+  fsync(2);
+}
+
+/* FF9_MRDUMP: enumera TODOS os Renderers da cena (FindObjectsOfType) ~300 frames após o
+   LoadEBG de um campo FBG_* real. Loga GO/layer/enabled/isVisible(culling!)/bounds/shader.
+   Fecha de vez: os tiles do EBG existem? em que layer? a câmera os culla? shader?
+   get_isVisible=0x2546540 (Renderer). */
+#define RVA_REND_GET_ISVIS     0x2546540
+#define RVA_OBJ_FINDOBJSOFTYPE 0x2564D38
+
+static void ff9_mrdump_one(int i, void *mr) {
+  uintptr_t B = g_il2cpp_base;
+  if (!ff9_obj_ok(mr)) { fprintf(stderr, "[FF9_MRDUMP] [%02d] bad=%p\n", i, mr); return; }
+  int enabled = ((int (*)(void *, void *))(B + RVA_REND_GET_ENABLED))(mr, NULL) & 1;
+  int visible = ((int (*)(void *, void *))(B + RVA_REND_GET_ISVIS))(mr, NULL) & 1;
+  ff9_bounds bo = ((ff9_bounds (*)(void *, void *))(B + RVA_REND_GET_BOUNDS))(mr, NULL);
+  int layer = -1;
+  char gonm[80] = {0};
+  void *go = ((void *(*)(void *, void *))(B + RVA_COMP_GET_GO))(mr, NULL);
+  if (ff9_obj_ok(go)) {
+    layer = ((int (*)(void *, void *))(B + RVA_GO_GET_LAYER))(go, NULL);
+    ff9_camdiag_objname(go, gonm, sizeof gonm);
+  }
+  void *mat = ((void *(*)(void *, void *))(B + RVA_REND_GET_SHMAT))(mr, NULL);
+  char shnm[80] = {0};
+  if (ff9_obj_ok(mat)) {
+    void *sh = ((void *(*)(void *, void *))(B + RVA_MAT_GET_SHADER))(mat, NULL);
+    ff9_camdiag_objname(sh, shnm, sizeof shnm);
+  }
+  fprintf(stderr,
+          "[FF9_MRDUMP] [%02d] go=\"%s\" layer=%d en=%d vis=%d sh=\"%s\" c=(%.1f,%.1f,%.1f) e=(%.1f,%.1f,%.1f)\n",
+          i, gonm, layer, enabled, visible, shnm,
+          bo.cx, bo.cy, bo.cz, bo.ex, bo.ey, bo.ez);
+}
+
+static void ff9_mrdump_run(void) {
+  if (!g_il2cpp_base) return;
+  uintptr_t B = g_il2cpp_base;
+  /* classe UnityEngine.Renderer via domain->assemblies (pega Mesh+Skinned+tudo) */
+  void *(*dom_get)(void) = (void *)(B + 0xff7bb0);
+  const void **(*dom_asms)(void *, size_t *) = (void *)(B + 0xff7bbc);
+  void *(*asm_img)(const void *) = (void *)(B + 0xff7680);
+  void *(*cls_from_name)(void *, const char *, const char *) = (void *)(B + 0xff76b8);
+  void *(*cls_get_type)(void *) = (void *)so_find_addr_safe("il2cpp_class_get_type");
+  void *(*type_get_object)(void *) = (void *)so_find_addr_safe("il2cpp_type_get_object");
+  if (!cls_get_type || !type_get_object) {
+    fprintf(stderr, "[FF9_MRDUMP] sem il2cpp_class_get_type/type_get_object\n"); return;
+  }
+  void *domain = dom_get();
+  size_t na = 0;
+  const void **as = domain ? dom_asms(domain, &na) : NULL;
+  void *cls = NULL;
+  for (size_t i = 0; as && i < na && !cls; i++) {
+    void *img = asm_img(as[i]);
+    if (img) cls = cls_from_name(img, "UnityEngine", "Renderer");
+  }
+  if (!cls) { fprintf(stderr, "[FF9_MRDUMP] classe Renderer nao achada\n"); return; }
+  void *typeObj = type_get_object(cls_get_type(cls));
+  if (!typeObj) { fprintf(stderr, "[FF9_MRDUMP] Type object nil\n"); return; }
+  void *arr = ((void *(*)(void *, void *))(B + RVA_OBJ_FINDOBJSOFTYPE))(typeObj, NULL);
+  if (!arr || !addr_readable((uintptr_t)arr + 0x18)) {
+    fprintf(stderr, "[FF9_MRDUMP] FindObjectsOfType -> %p\n", arr); return;
+  }
+  int n = *(int *)((char *)arr + 0x18);
+  void **items = (void **)((char *)arr + 0x20);
+  fprintf(stderr, "[FF9_MRDUMP] ==== %d renderers (f=%d) ====\n", n, g_render_frame);
+  int max = n < 96 ? n : 96;
+  for (int i = 0; i < max; i++) ff9_mrdump_one(i, items[i]);
+  if (n > max) fprintf(stderr, "[FF9_MRDUMP] ... %d omitidos\n", n - max);
+  fprintf(stderr, "[FF9_MRDUMP] ==== fim ====\n");
+  fsync(2);
+}
+
+static void ff9_camdiag_install(uintptr_t base) {
+  if (!g_psxcam_lateupdate_orig)
+    g_psxcam_lateupdate_orig = (void (*)(void *, void *))
+        mk_tramp(base + 0x156FDE8, "PSXCameraAspect.LateUpdate");
+  if (!g_bgscene_initmr_orig)
+    g_bgscene_initmr_orig = (void (*)(void *, void **, void *))
+        mk_tramp(base + 0x1136E30, "BGSCENE_DEF.InitMeshRenderer");
+  if (g_psxcam_lateupdate_orig)
+    hook_arm64(base + 0x156FDE8, (uintptr_t)my_PSXCameraAspect_LateUpdate);
+  if (g_bgscene_initmr_orig)
+    hook_arm64(base + 0x1136E30, (uintptr_t)my_BGSCENE_DEF_InitMeshRenderer);
+  fprintf(stderr, "[FF9_CAMDIAG] hooks LateUpdate=%p InitMeshRenderer=%p\n",
+          (void *)g_psxcam_lateupdate_orig, (void *)g_bgscene_initmr_orig);
   fsync(2);
 }
 
@@ -6895,7 +7146,7 @@ uint32_t my_EventInput_ReadInput(void *mi) {
  * NGUI nunca vê o tap. Hookamos UnityEngine.Input.GetMouseButtonDown/GetMouseButton/
  * get_anyKeyDown/get_mousePosition p/ injetar um clique no centro (sequência press->hold->
  * release p/ o NGUI disparar OnClick). g_tap_phase>0 = clique ativo. */
-typedef struct { float x, y, z; } ff9_v3;
+/* ff9_v3 já tipado na seção FF9_CAMDIAG (mesma struct de 3 floats). */
 typedef struct { float x, y; } ff9_v2;
 /* UnityEngine.Touch = 68 bytes (0x44); phase TouchPhase @0x24 (Began0 Moved1 Stationary2 Ended3) */
 typedef struct {
@@ -9343,6 +9594,19 @@ int main(int argc, char **argv) {
       if (!ebgd_hooked && getenv("FF9_EBGDIAG") && g_il2cpp_base && f >= 180) {
         ff9_ebgdiag_install(g_il2cpp_base);
         ebgd_hooked = 1;
+      }
+      /* FF9_CAMDIAG: raio-X câmeras (MainCamera/BgCamera) + MeshRenderer do EBG;
+         FF9_EBG_SHADER=<nome> troca o shader do mesh combinado (teste A/B). */
+      static int camd_hooked = 0;
+      if (!camd_hooked && (getenv("FF9_CAMDIAG") || getenv("FF9_EBG_SHADER")) &&
+          g_il2cpp_base && f >= 180) {
+        ff9_camdiag_install(g_il2cpp_base);
+        camd_hooked = 1;
+      }
+      /* FF9_MRDUMP armado pelo LoadEBG FBG_* — dispara a enumeração no frame alvo */
+      if (g_mrdump_at && !g_mrdump_done && f >= g_mrdump_at) {
+        g_mrdump_done = 1;
+        ff9_mrdump_run();
       }
       /* FF9_SOUNDGUARD (default ON): enquanto sdlib/OpenSL ainda estao stubados, alguns eventos
          de campo pedem sound profiles ausentes (ex.: key 136) e abortam o script. No-op temporario
