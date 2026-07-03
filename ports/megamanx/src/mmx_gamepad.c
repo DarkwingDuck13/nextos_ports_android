@@ -33,6 +33,10 @@ extern struct hk_inject_s g_hk_inject;
 extern struct hk_motion_s g_hk_motion;
 extern void *hk_keyevent_object(void);
 extern void *hk_motionevent_object(void);
+/* multitouch: mmx_gamepad escreve o conjunto de dedos ativos; o jni_shim le por indice. */
+extern float g_mt_x[10], g_mt_y[10];
+extern int g_mt_id[10];
+extern int g_mt_count;
 
 enum {
   GP_A, GP_B, GP_X, GP_Y, GP_LB, GP_RB, GP_BACK, GP_START,
@@ -294,6 +298,99 @@ static void inject_motion(void *env, void *thiz, void *inject) {
             g_axis[AX_LX], g_axis[AX_LY], mmx_gp_axis(15), mmx_gp_axis(16), r);
 }
 
+/* ---- gamepad -> TOUCH (estilo MM5/6): o Mega Man X e port mobile, o jogo le o
+ * proprio input touch (RockmanX.controlKey), NAO o gamepad Android. Convertemos o pad
+ * em toques sinteticos nas posicoes dos controles virtuais na tela (1280x720). O D-pad
+ * e UM dedo radial (8 direcoes = deslocamento do centro); cada botao de acao e um dedo. */
+enum { FG_DPAD, FG_JUMP, FG_SHOOT, FG_DASH, FG_WEAPON, FG_START, FG_MAX };
+static float g_fx[FG_MAX], g_fy[FG_MAX];     /* coord alvo por dedo neste frame */
+static int g_fon[FG_MAX], g_fon_prev[FG_MAX];/* dedo ativo neste/ultimo frame */
+static int g_fid[FG_MAX];                     /* pointerId estavel (0..) do dedo, -1 se solto */
+static long g_touch_down_ms;
+
+static float envf(const char *n, float d) { const char *s = getenv(n); return s && *s ? (float)atof(s) : d; }
+
+/* re-emite g_mt_* a partir do estado atual dos dedos (compactado, na ordem de FG_*) */
+static int build_mt(void) {
+  int c = 0;
+  for (int f = 0; f < FG_MAX; f++) {
+    if (g_fon[f] && g_fid[f] >= 0) {
+      g_mt_x[c] = g_fx[f]; g_mt_y[c] = g_fy[f]; g_mt_id[c] = g_fid[f]; c++;
+    }
+  }
+  g_mt_count = c;
+  return c;
+}
+static int mt_index_of(int fid) { for (int i = 0; i < g_mt_count; i++) if (g_mt_id[i] == fid) return i; return 0; }
+
+static void touch_send(void *env, void *thiz, void *inject, int action, int actionIndex) {
+  long t = now_ms();
+  g_hk_motion.action = action | (actionIndex << 8);
+  g_hk_motion.source = 0x1002;               /* SOURCE_TOUCHSCREEN */
+  g_hk_motion.deviceId = 0;
+  g_hk_motion.metaState = 0; g_hk_motion.buttonState = 0; g_hk_motion.flags = 0;
+  g_hk_motion.pointerId = g_mt_count ? g_mt_id[0] : 0;
+  g_hk_motion.pointerCount = g_mt_count ? g_mt_count : 1;
+  g_hk_motion.actionIndex = actionIndex;
+  g_hk_motion.toolType = 1;                   /* FINGER */
+  g_hk_motion.x = g_hk_motion.rawX = g_mt_count ? g_mt_x[0] : 0.0f;
+  g_hk_motion.y = g_hk_motion.rawY = g_mt_count ? g_mt_y[0] : 0.0f;
+  g_hk_motion.pressure = (action == 1 || action == 6) ? 0.0f : 1.0f;
+  g_hk_motion.size = 0.1f;
+  g_hk_motion.eventTime = t;
+  g_hk_motion.downTime = g_touch_down_ms ? g_touch_down_ms : t;
+  ((int (*)(void *, void *, void *))inject)(env, thiz, hk_motionevent_object());
+  if (env_on("MMX_GPLOG")) {
+    static int n; if (n++ < 200)
+      fprintf(stderr, "[GP_TOUCH] act=%d idx=%d cnt=%d p0=(%.0f,%.0f)\n",
+              action, actionIndex, g_hk_motion.pointerCount, g_hk_motion.x, g_hk_motion.y);
+  }
+}
+
+static int g_next_pid;
+static void gamepad_touch_frame(void *env, void *thiz, void *inject) {
+  float cx = envf("MMX_DP_CX", 180), cy = envf("MMX_DP_CY", 530), off = envf("MMX_DP_OFF", 70);
+  int dx = g_btn[GP_RIGHT] - g_btn[GP_LEFT];
+  int dy = g_btn[GP_DOWN]  - g_btn[GP_UP];
+  if (fabsf(g_axis[AX_LX]) > 0.5f) dx = g_axis[AX_LX] > 0 ? 1 : -1;
+  if (fabsf(g_axis[AX_LY]) > 0.5f) dy = g_axis[AX_LY] > 0 ? 1 : -1;
+  memcpy(g_fon_prev, g_fon, sizeof(g_fon_prev));
+  memset(g_fon, 0, sizeof(g_fon));
+  if (dx || dy) { g_fon[FG_DPAD] = 1; g_fx[FG_DPAD] = cx + dx * off; g_fy[FG_DPAD] = cy + dy * off; }
+  int swap = env_on("MMX_SWAPAB") || env_on("TER_SWAPAB");
+  if (g_btn[swap ? GP_B : GP_A]) { g_fon[FG_JUMP] = 1;  g_fx[FG_JUMP]  = envf("MMX_JX", 1170); g_fy[FG_JUMP]  = envf("MMX_JY", 610); }
+  if (g_btn[GP_X])               { g_fon[FG_SHOOT] = 1; g_fx[FG_SHOOT] = envf("MMX_SX", 1085); g_fy[FG_SHOOT] = envf("MMX_SY", 430); }
+  if (g_btn[GP_Y] || g_btn[GP_RB]){ g_fon[FG_DASH] = 1; g_fx[FG_DASH]  = envf("MMX_DX", 1000); g_fy[FG_DASH]  = envf("MMX_DY", 610); }
+  if (g_btn[GP_LB])              { g_fon[FG_WEAPON] = 1;g_fx[FG_WEAPON]= envf("MMX_WX", 1000); g_fy[FG_WEAPON]= envf("MMX_WY", 430); }
+  if (g_btn[GP_START])           { g_fon[FG_START] = 1; g_fx[FG_START] = envf("MMX_STX", 640); g_fy[FG_START] = envf("MMX_STY", 40); }
+
+  /* processa UPs (dedos que sairam) */
+  for (int f = 0; f < FG_MAX; f++) {
+    if (g_fon_prev[f] && !g_fon[f] && g_fid[f] >= 0) {
+      int idx = mt_index_of(g_fid[f]);
+      int last = (g_mt_count <= 1);
+      /* remove do conjunto ANTES de enviar UP p/ ACTION_UP; p/ POINTER_UP mantem no set */
+      if (last) { g_fid[f] = -1; build_mt(); touch_send(env, thiz, inject, 1, 0); g_touch_down_ms = 0; }
+      else { touch_send(env, thiz, inject, 6, idx); g_fid[f] = -1; build_mt(); }
+    }
+  }
+  /* processa DOWNs (dedos novos) */
+  for (int f = 0; f < FG_MAX; f++) {
+    if (g_fon[f] && !g_fon_prev[f]) {
+      g_fid[f] = g_next_pid++; if (g_next_pid > 9) g_next_pid = 0;
+      int first = (build_mt() == 1);
+      int idx = mt_index_of(g_fid[f]);
+      if (first) { g_touch_down_ms = now_ms(); touch_send(env, thiz, inject, 0, 0); }
+      else touch_send(env, thiz, inject, 5, idx);
+    }
+  }
+  /* MOVE p/ manter os dedos "vivos" e atualizar a posicao do D-pad (troca de direcao) */
+  if (build_mt() > 0) {
+    for (int f = 0; f < FG_MAX; f++) if (g_fon[f] && g_fid[f] >= 0) { int i = mt_index_of(g_fid[f]); g_mt_x[i] = g_fx[f]; g_mt_y[i] = g_fy[f]; }
+    touch_send(env, thiz, inject, 2, 0);
+  }
+}
+
 void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
   if (!mmx_gamepad_enabled() || !inject) return;
   memcpy(g_prev_btn, g_btn, sizeof(g_prev_btn));
@@ -308,6 +405,9 @@ void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
     fsync(2);
     kill(getpid(), SIGKILL);
   }
+
+  /* MMX_GP_TOUCH=1: caminho correto p/ o port mobile (pad -> toque nos controles da tela). */
+  if (env_on("MMX_GP_TOUCH")) { gamepad_touch_frame(env, thiz, inject); return; }
 
   for (int i = 0; i < GP_COUNT; i++) {
     if (g_btn[i] != g_prev_btn[i]) inject_key(env, thiz, inject, i, g_btn[i] ? 1 : 0);

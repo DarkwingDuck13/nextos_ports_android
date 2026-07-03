@@ -540,6 +540,11 @@ struct hk_motion_s { int action, source, deviceId, metaState, buttonState,
                      flags, pointerId, pointerCount, actionIndex, toolType;
                      float x, y, rawX, rawY, pressure, size; long eventTime, downTime; };
 struct hk_motion_s g_hk_motion;       /* exportado p/ main_recon */
+/* multitouch p/ o gamepad->touch (mmx_gamepad): quando g_mt_count>0, getX/getY/getPointerId
+ * por INDICE leem estes arrays (senao caem no g_hk_motion single-pointer). */
+float g_mt_x[10], g_mt_y[10];
+int g_mt_id[10];
+int g_mt_count;
 static int g_obj_motionevent;         /* sentinela do objeto MotionEvent */
 void *hk_motionevent_object(void) { return &g_obj_motionevent; }
 static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virtual) */
@@ -675,14 +680,16 @@ static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list 
   if (obj == (void *)&g_obj_motionevent && nm) {
     int takes_index = sig && sig[0] == '(' && sig[1] == 'I';
     if (strcmp(nm, "getX") == 0) {
-      if (takes_index) (void)va_arg(ap, int);
-      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getX -> %.1f\n", g_hk_motion.x);
-      return g_hk_motion.x;
+      int idx = takes_index ? va_arg(ap, int) : 0;
+      float v = (g_mt_count > 0 && idx >= 0 && idx < g_mt_count) ? g_mt_x[idx] : g_hk_motion.x;
+      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getX[%d] -> %.1f\n", idx, v);
+      return v;
     }
     if (strcmp(nm, "getY") == 0) {
-      if (takes_index) (void)va_arg(ap, int);
-      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getY -> %.1f\n", g_hk_motion.y);
-      return g_hk_motion.y;
+      int idx = takes_index ? va_arg(ap, int) : 0;
+      float v = (g_mt_count > 0 && idx >= 0 && idx < g_mt_count) ? g_mt_y[idx] : g_hk_motion.y;
+      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getY[%d] -> %.1f\n", idx, v);
+      return v;
     }
     if (strcmp(nm, "getRawX") == 0) return g_hk_motion.rawX;
     if (strcmp(nm, "getRawY") == 0) return g_hk_motion.rawY;
@@ -1232,11 +1239,20 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
       }
       if (strcmp(nm, "getActionIndex") == 0) return g_hk_motion.actionIndex;
       if (strcmp(nm, "getPointerCount") == 0) {
-        static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getPointerCount -> %d\n", g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1);
-        return g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1;
+        int pc = g_mt_count > 0 ? g_mt_count : (g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1);
+        static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getPointerCount -> %d\n", pc);
+        return pc;
       }
-      if (strcmp(nm, "getPointerId") == 0) { (void)va_arg(ap, int); return g_hk_motion.pointerId; }
-      if (strcmp(nm, "findPointerIndex") == 0) { (void)va_arg(ap, int); return 0; }
+      if (strcmp(nm, "getPointerId") == 0) {
+        int idx = va_arg(ap, int);
+        if (g_mt_count > 0 && idx >= 0 && idx < g_mt_count) return g_mt_id[idx];
+        return g_hk_motion.pointerId;
+      }
+      if (strcmp(nm, "findPointerIndex") == 0) {
+        int pid = va_arg(ap, int);
+        if (g_mt_count > 0) { for (int i = 0; i < g_mt_count; i++) if (g_mt_id[i] == pid) return i; return -1; }
+        return 0;
+      }
       if (strcmp(nm, "getSource") == 0) return g_hk_motion.source;
       if (strcmp(nm, "getDeviceId") == 0) return g_hk_motion.deviceId;
       if (strcmp(nm, "getMetaState") == 0) return g_hk_motion.metaState;
