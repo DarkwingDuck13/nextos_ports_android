@@ -501,6 +501,8 @@ static void ter_tmp_nuke(void) {
       while ((m = cls_methods(cls, &it))) {
         const char *nm = meth_name(m);
         if (!nm) continue;
+        if (getenv("ELD_VOXDUMP"))
+          fprintf(stderr, "[VOXDUMP] %s.%s :: %s\n", targets[ti].ns, targets[ti].cn, nm);
         int hit = 0;
         for (int ni = 0; targets[ti].names[ni]; ni++)
           if (!strcmp(nm, targets[ti].names[ni])) { hit = 1; break; }
@@ -512,6 +514,7 @@ static void ter_tmp_nuke(void) {
         mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
         uint32_t *pc = (uint32_t *)mp;
         if (targets[ti].mode == 0) { pc[0] = 0xD2800000u; pc[1] = 0xD65F03C0u; }
+        else if (targets[ti].mode == 3) { pc[0] = 0xD2800020u; pc[1] = 0xD65F03C0u; } /* mov x0,#1; ret */
         else pc[0] = 0xD65F03C0u;
         mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
         __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
@@ -559,12 +562,22 @@ static void ter_voxel_nuke(void) {
     "ShowLeaderboards", "ShowAchievements", NULL
   };
   static const char *ret0[] = {
-    "get_IsAuthenticated", "get_IsAvailable", "get_IsInitialized", NULL
+    "get_IsAuthenticated", "get_IsAvailable", NULL
+  };
+  /* 🔑 IsInitialized precisa ser TRUE: o boot do jogo espera
+   * EssentialKitManager.IsInitialized virar true (evento OnInitialize nunca dispara
+   * pq Initialize foi no-op'd) -> o real getter volta false pra sempre -> a cena de
+   * boot NUNCA avança (Update roda, mas o state machine fica preso pos-"Voxel Social
+   * Initialize"). mode 3 = mov x0,#1; ret. */
+  static const char *ret1[] = {
+    "get_IsInitialized", NULL
   };
   const struct target targets[] = {
     { "VoxelBusters.EssentialKit", "GameServices", noop, 2 },
     { "VoxelBusters.EssentialKit", "GameServices", ret0, 0 },
+    { "VoxelBusters.EssentialKit", "GameServices", ret1, 3 },
     { "VoxelBusters.EssentialKit", "EssentialKitManager", noop, 2 },
+    { "VoxelBusters.EssentialKit", "EssentialKitManager", ret1, 3 },
     { "VoxelBusters.CoreLibrary", "PrivateSingletonBehaviour`1", noop, 2 },
   };
 
@@ -578,6 +591,8 @@ static void ter_voxel_nuke(void) {
       while ((m = cls_methods(cls, &it))) {
         const char *nm = meth_name(m);
         if (!nm) continue;
+        if (getenv("ELD_VOXDUMP"))
+          fprintf(stderr, "[VOXDUMP] %s.%s :: %s\n", targets[ti].ns, targets[ti].cn, nm);
         int hit = 0;
         for (int ni = 0; targets[ti].names[ni]; ni++)
           if (!strcmp(nm, targets[ti].names[ni])) { hit = 1; break; }
@@ -589,6 +604,7 @@ static void ter_voxel_nuke(void) {
         mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
         uint32_t *pc = (uint32_t *)mp;
         if (targets[ti].mode == 0) { pc[0] = 0xD2800000u; pc[1] = 0xD65F03C0u; }
+        else if (targets[ti].mode == 3) { pc[0] = 0xD2800020u; pc[1] = 0xD65F03C0u; } /* mov x0,#1; ret */
         else pc[0] = 0xD65F03C0u;
         mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
         __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
@@ -601,6 +617,148 @@ static void ter_voxel_nuke(void) {
     fsync(2);
     done = 1;
   }
+}
+
+/* ELD_CLSDUMP: lista full-names de TODAS as classes il2cpp cujo nome bate keywords de
+ * manager/boot/social — p/ achar o SocialManager/GameManager/Bootstrap do JOGO que
+ * controla a ativação da cena do menu (cameras=0 = cena com câmera não ativa). */
+static void ter_class_dump(void) {
+  static int done = 0;
+  if (done || !getenv("ELD_CLSDUMP") || !g_m_il2cpp) return;
+  so_module *cm = so_save(); so_use(g_m_il2cpp);
+  void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) = (const void **(*)(void *, size_t *))so_find_addr_safe("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) = (void *(*)(const void *))so_find_addr_safe("il2cpp_assembly_get_image");
+  size_t (*img_ccount)(void *) = (size_t (*)(void *))so_find_addr_safe("il2cpp_image_get_class_count");
+  const void *(*img_class)(void *, size_t) = (const void *(*)(void *, size_t))so_find_addr_safe("il2cpp_image_get_class");
+  const char *(*cls_name)(void *) = (const char *(*)(void *))so_find_addr_safe("il2cpp_class_get_name");
+  const char *(*cls_ns)(void *) = (const char *(*)(void *))so_find_addr_safe("il2cpp_class_get_namespace");
+  void *(*cms)(void *, void **) = (void *(*)(void *, void **))so_find_addr_safe("il2cpp_class_get_methods");
+  const char *(*mnm)(void *) = (const char *(*)(void *))so_find_addr_safe("il2cpp_method_get_name");
+  void *(*cls_decl)(void *) = (void *(*)(void *))so_find_addr_safe("il2cpp_class_get_declaring_type");
+  so_use(cm); free(cm);
+  if (!dom_get || !dom_asms || !asm_img || !img_ccount || !img_class || !cls_name || !cls_ns) {
+    fprintf(stderr, "[CLSDUMP] símbolos il2cpp não resolvidos\n"); done = 1; return;
+  }
+  void *domain = dom_get(); size_t na = 0; const void **asms = dom_asms(domain, &na);
+  static const char *kw[] = {"Social","Boot","GameManager","Manager","Achievement","Leaderboard","Init","Splash","Loading","Menu",NULL};
+  int n = 0;
+  for (size_t ai = 0; ai < na; ai++) {
+    void *img = asm_img(asms[ai]); if (!img) continue;
+    size_t nc = img_ccount(img);
+    for (size_t ci = 0; ci < nc; ci++) {
+      void *cls = (void *)img_class(img, ci); if (!cls) continue;
+      const char *nm = cls_name(cls); const char *ns = cls_ns(cls);
+      if (!nm) continue;
+      int is_ugs = nm && (strstr(nm, "UnityServices") != NULL);
+      if (!is_ugs && ns && (strstr(ns, "VoxelBusters") || strstr(ns, "TMPro") || strstr(ns, "System") ||
+                 strstr(ns, "UnityEngine") || strstr(ns, "Unity.") || strstr(ns, "Sirenix"))) continue;
+      /* dump de MÉTODOS das classes-chave do boot */
+      int dump_all = getenv("ELD_MAPALL") && ns && (strncmp(ns, "Elderand", 8) == 0 ||
+                     strstr(nm, "UnityServices") || strstr(nm, "Addressables") || strstr(nm, "ResourceManager"));
+      if (cms && mnm && nm && (dump_all || !strcmp(nm, "GameManager") || !strcmp(nm, "AssetManager") ||
+          strstr(nm, "UnityServicesInternal") || strstr(nm, "UnityServicesInitializer"))) {
+        void *it = NULL, *m = NULL;
+        while ((m = cms(cls, &it))) { const char *mn = mnm(m); if (!mn) continue;
+          void *mp = *(void **)m;
+          long off = (mp && g_il2cpp_base) ? (long)((uintptr_t)mp - g_il2cpp_base) : -1;
+          fprintf(stderr, "[CLSDUMP-M] %s::%s @il2cpp+0x%lx\n", nm, mn, off); }
+      }
+      /* tipo declarante das state machines async <...>d__ (a classe PAI que tem o método outer) */
+      if (cls_decl && nm[0] == '<') {
+        void *dt = cls_decl(cls);
+        if (dt) { const char *dn = cls_name(dt); const char *dns = cls_ns(dt);
+          if (dn && strstr(nm, "Services")) fprintf(stderr, "[CLSDUMP-P] %s <- pai: %s.%s\n", nm, dns && *dns ? dns : "-", dn); }
+      }
+      for (int k = 0; kw[k]; k++)
+        if (strstr(nm, kw[k])) { fprintf(stderr, "[CLSDUMP] %s.%s\n", ns && *ns ? ns : "-", nm); n++; break; }
+    }
+  }
+  fprintf(stderr, "[CLSDUMP] fim (%d classes)\n", n); fsync(2);
+  done = 1;
+}
+
+/* ELD_BOOTPROBE: instala hook de ENTRADA em métodos il2cpp do boot p/ ver QUAIS são
+ * alcançados (cameras=0 = menu não ativa; saber se RequestLoadScene/OnLoadFinish rodam). */
+extern volatile int g_render_frame;
+static void eld_bootprobe_log(const char *name) {
+  static const char *seen[24]; static int ns;
+  for (int i = 0; i < ns; i++) if (seen[i] == name) return;
+  if (ns < 24) seen[ns++] = name;
+  fprintf(stderr, "[BOOTPROBE] >>> %s ENTERED (f=%d)\n", name, g_render_frame); fsync(2);
+}
+static void eld_hook_probe(uintptr_t base, long off, const char *name) {
+  static const uint32_t TMPL[18] = {0xd10183ff,0xa90007e0,0xa9010fe2,0xa90217e4,0xa9031fe6,
+    0xa9047be8,0x58000180,0x580001b0,0xd63f0200,0xa94007e0,0xa9410fe2,0xa94217e4,0xa9431fe6,
+    0xa9447be8,0x910183ff,0xd503201f,0x580000d0,0xd61f0200};
+  uint32_t *m = (uint32_t *)(base + off);
+  long pgsz = sysconf(_SC_PAGESIZE);
+  /* trampolim deve ficar a ±128MB do método (alcance do `b`). i2heap ocupa base..base+96MB;
+     tenta hints logo após/antes dele e valida o alcance. */
+  static const long hints[] = {0x6001000, 0x6801000, 0x7001000, 0x7801000, -0x1001000, -0x2001000, -0x3001000};
+  void *tp = MAP_FAILED; long d = 0;
+  for (unsigned h = 0; h < sizeof hints / sizeof hints[0]; h++) {
+    uintptr_t hint = (base + hints[h]) & ~((uintptr_t)pgsz - 1);
+    void *p = mmap((void *)hint, pgsz, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) continue;
+    long dd = (long)((uintptr_t)p - (uintptr_t)m);
+    if (dd > -0x7000000L && dd < 0x7000000L) { tp = p; d = dd; break; }
+    munmap(p, pgsz);
+  }
+  if (tp == MAP_FAILED) { fprintf(stderr, "[BOOTPROBE] %s: mmap/range fail\n", name); return; }
+  uint32_t *t = (uint32_t *)tp;
+  memcpy(t, TMPL, sizeof TMPL);
+  t[15] = m[0];
+  *(uint64_t *)((char *)tp + 0x48) = (uint64_t)(uintptr_t)name;
+  *(uint64_t *)((char *)tp + 0x50) = (uint64_t)(uintptr_t)eld_bootprobe_log;
+  *(uint64_t *)((char *)tp + 0x58) = (uint64_t)(uintptr_t)(m + 1);
+  __builtin___clear_cache((char *)tp, (char *)tp + pgsz);
+  m[0] = 0x14000000u | (uint32_t)((d >> 2) & 0x03FFFFFF);
+  __builtin___clear_cache((char *)m, (char *)m + 8);
+  fprintf(stderr, "[BOOTPROBE] hook %s @il2cpp+0x%lx -> tramp %p (d=0x%lx)\n", name, off, tp, d);
+}
+
+/* ELD_NULLGUARD: instala guard no ENTRY de um método — se x0(this)==0, `ret` limpo (antes
+ * de qualquer push, x30 intacto, sem desbalancear stack); senão roda o original. Conserta
+ * o crash per-frame do X5M (runtime il2cpp lê obj+0x132 com obj=null todo frame). */
+static void eld_install_nullguard(uintptr_t base, long off) {
+  static const uint32_t NG[8] = {0xB4000080u /*cbz x0,+0x10(ret)*/, 0xd503201fu /*orig*/,
+    0x580000D0u /*ldr x16,[pc,#0x18]*/, 0xD61F0200u /*br x16*/, 0xD65F03C0u /*ret*/,
+    0xd503201fu, 0xd503201fu, 0xd503201fu};
+  uint32_t *m = (uint32_t *)(base + off);
+  long pgsz = sysconf(_SC_PAGESIZE);
+  /* página de trampolins COMPARTILHADA (bump), ±128MB da base -> muitos guards numa página */
+  static char *g_ng_page; static long g_ng_used;
+  if (!g_ng_page) {
+    static const long hints[] = {0x4001000, 0x4801000, 0x5001000, 0x5801000, 0x6001000, 0x6801000,
+      -0x1001000, -0x2001000, -0x3001000, -0x4001000, -0x5001000};
+    for (unsigned h = 0; h < sizeof hints / sizeof hints[0]; h++) {
+      uintptr_t hint = (base + hints[h]) & ~((uintptr_t)pgsz - 1);
+      void *p = mmap((void *)hint, pgsz, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+      if (p == MAP_FAILED) continue;
+      long dd = (long)((uintptr_t)p - (uintptr_t)m);   /* dentro do alcance do `b` p/ o alvo? */
+      if (dd > -0x6000000L && dd < 0x6000000L) { g_ng_page = (char *)p; break; }
+      munmap(p, pgsz);
+    }
+    if (!g_ng_page) { fprintf(stderr, "[NULLGUARD] page mmap/range fail\n"); return; }
+  }
+  if (g_ng_used + 0x30 > pgsz) { fprintf(stderr, "[NULLGUARD] page cheia off=0x%lx\n", off); return; }
+  void *tp = g_ng_page + g_ng_used; g_ng_used += 0x30;
+  long d = (long)((uintptr_t)tp - (uintptr_t)m);
+  if (d <= -0x7000000L || d >= 0x7000000L) { fprintf(stderr, "[NULLGUARD] range fail off=0x%lx\n", off); return; }
+  uint32_t *t = (uint32_t *)tp;
+  memcpy(t, NG, sizeof NG);
+  t[1] = m[0];  /* instrução original (lê ANTES de mprotect; text é legível) */
+  *(uint64_t *)((char *)tp + 0x20) = (uint64_t)(uintptr_t)(m + 1);  /* dst = func+4 */
+  __builtin___clear_cache((char *)tp, (char *)tp + 0x30);
+  /* o text do il2cpp está r-x (W^X) na fase do render loop -> torna a página gravável */
+  void *mpg = (void *)((uintptr_t)m & ~((uintptr_t)pgsz - 1));
+  if (mprotect(mpg, pgsz * 2, PROT_READ|PROT_WRITE|PROT_EXEC) != 0) {
+    fprintf(stderr, "[NULLGUARD] mprotect FALHOU off=0x%lx (%d)\n", off, errno); return; }
+  m[0] = 0x14000000u | (uint32_t)((d >> 2) & 0x03FFFFFF);  /* b trampolim */
+  mprotect(mpg, pgsz * 2, PROT_READ|PROT_EXEC);
+  __builtin___clear_cache((char *)m, (char *)m + 8);
+  fprintf(stderr, "[NULLGUARD] guard @il2cpp+0x%lx -> tramp %p\n", off, tp);
 }
 
 /* 🖤 TER_FIXSP: tela preta ao clicar Single Player. SelectSinglePlayer→Main.LoadPlayers→
@@ -808,6 +966,47 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     if (lr0 >= tbr && lr0 < tbr + text_size) { memcpy(o, "[RAW] lr=unity+", 15); raw_hex(o + 15, lr0 - tbr); o[31] = '\n'; (void)write(2, o, 32); }
     else if (ibr && lr0 >= ibr && lr0 < ibr + 0x4000000) { memcpy(o, "[RAW] lr=il2cpp+", 16); raw_hex(o + 16, lr0 - ibr); o[32] = '\n'; (void)write(2, o, 33); }
     (void)tag;
+    /* dladdr do pc: se o crash NÃO é unity/il2cpp, identifica a lib de sistema
+     * (Mesa/GLES/EGL) + offset. dladdr chama malloc -> NÃO async-signal-safe: só
+     * sob ELD_BT (senão corrompe heap nos MUITOS crashes recuperáveis mascarados). */
+    if (getenv("ELD_BT")) {
+      Dl_info di; char m[200];
+      if (dladdr((void *)pc0, &di) && di.dli_fname) {
+        unsigned long off = pc0 - (uintptr_t)di.dli_fbase;
+        const char *fn = di.dli_fname; int fl = 0; while (fn[fl] && fl < 140) fl++;
+        int k = 0; memcpy(m, "[RAW] pc-lib=", 13); k = 13;
+        memcpy(m + k, fn, fl); k += fl;
+        memcpy(m + k, "+0x", 3); k += 3; raw_hex(m + k, off); k += 16;
+        if (di.dli_sname) { m[k++] = ' '; int sl = 0; while (di.dli_sname[sl] && sl < 40) sl++; memcpy(m + k, di.dli_sname, sl); k += sl; }
+        m[k++] = '\n'; (void)write(2, m, k);
+      }
+    }
+    /* ELD_BT: se o crash é um raise()/abort() (tgkill em libc), o pc/lr não dizem
+     * QUEM abortou. Anda a cadeia de frame-pointer (x29) e resolve cada retorno via
+     * dladdr → mostra o caller unity/il2cpp que decidiu abortar. */
+    if (getenv("ELD_BT")) {
+      uintptr_t fp = uc0->uc_mcontext.regs[29];
+      for (int d = 0; d < 16 && fp; d++) {
+        uintptr_t ra = *(uintptr_t *)(fp + 8);
+        uintptr_t nfp = *(uintptr_t *)fp;
+        if (!ra) break;
+        char bl[220]; int k = 0;
+        memcpy(bl, "[BT] #", 6); k = 6; bl[k++] = '0' + (d / 10); bl[k++] = '0' + (d % 10); bl[k++] = ' ';
+        if (ra >= tbr && ra < tbr + text_size) { memcpy(bl + k, "unity+0x", 8); k += 8; raw_hex(bl + k, ra - tbr); k += 16; }
+        else if (ibr && ra >= ibr && ra < ibr + 0x4000000) { memcpy(bl + k, "il2cpp+0x", 9); k += 9; raw_hex(bl + k, ra - ibr); k += 16; }
+        else {
+          Dl_info d2;
+          if (dladdr((void *)ra, &d2) && d2.dli_fname) {
+            const char *fn = d2.dli_fname, *bn = fn; for (const char *q = fn; *q; q++) if (*q == '/') bn = q + 1;
+            int bl2 = 0; while (bn[bl2] && bl2 < 30) bl2++; memcpy(bl + k, bn, bl2); k += bl2;
+            memcpy(bl + k, "+0x", 3); k += 3; raw_hex(bl + k, ra - (uintptr_t)d2.dli_fbase); k += 16;
+          } else { memcpy(bl + k, "0x", 2); k += 2; raw_hex(bl + k, ra); k += 16; }
+        }
+        bl[k++] = '\n'; (void)write(2, bl, k);
+        if (nfp <= fp || nfp - fp > 0x100000) break;  /* sanidade */
+        fp = nfp;
+      }
+    }
   }
   /* init_array recovery: crash dentro de um static-ctor -> pula esse init e segue. */
   if (g_eld_init_armed) {
@@ -5072,6 +5271,56 @@ static void *my_dlopen(const char *nm, int flag) {
     return &g_dl_self;
   void *h = dlopen(nm, flag); return h ? h : &g_dl_self;
 }
+
+/* ---- FIX DEFAULTS: defaults[256]=System.Threading.Thread e defaults[264]=
+ * System.Threading.InternalThread ficam NULL (init de defaults parcial no il2cpp
+ * deste build). il2cpp registra a thread main logo após il2cpp_init criando um
+ * InternalThread a partir dessa classe -> classe null -> crash em [null+0x132]
+ * (tombstone confirma: il2cpp+0xc35ab8 le this+0x132, this=defaults[264]=null).
+ * Resolve por nome via il2cpp_class_from_name(corlib,...) e preenche os nulos. */
+static void eld_fix_defaults(const char *when) {
+  if (!g_il2cpp_base || !g_m_il2cpp) return;
+  so_module *cm = so_save(); so_use(g_m_il2cpp);
+  void *(*get_corlib)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_get_corlib");
+  void *(*from_name)(void *, const char *, const char *) =
+      (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+  so_use(cm); free(cm);
+  void *defs = *(void **)(g_il2cpp_base + 0x3e40de8);
+  if (!get_corlib || !from_name || !defs) {
+    fprintf(stderr, "[FIXDEF/%s] get_corlib=%p from_name=%p defs=%p (nao aplicado)\n",
+            when, (void *)get_corlib, (void *)from_name, defs);
+    return;
+  }
+  void *img = get_corlib();
+  struct { long off; const char *ns; const char *nm; } want[] = {
+    {256, "System.Threading", "Thread"},
+    {264, "System.Threading", "InternalThread"},
+  };
+  long pgsz = sysconf(_SC_PAGESIZE);
+  for (unsigned i = 0; i < sizeof want / sizeof want[0]; i++) {
+    void **slot = (void **)((char *)defs + want[i].off);
+    if (*slot) { fprintf(stderr, "[FIXDEF/%s] +%ld ja=%p\n", when, want[i].off, *slot); continue; }
+    void *cls = from_name(img, want[i].ns, want[i].nm);
+    fprintf(stderr, "[FIXDEF/%s] from_name(%s.%s)=%p -> +%ld\n", when, want[i].ns, want[i].nm, cls, want[i].off);
+    if (cls) {
+      void *pg = (void *)((uintptr_t)slot & ~((uintptr_t)pgsz - 1));
+      mprotect(pg, pgsz * 2, PROT_READ | PROT_WRITE);
+      *slot = cls;
+    }
+  }
+  fsync(2);
+}
+/* wrapper de il2cpp_init: chama o real e imediatamente conserta os defaults ANTES
+ * de o libunity invocar managed code (que registra a main thread e crasha). */
+static void *(*g_real_il2cpp_init)(const char *) = NULL;
+static void *eld_il2cpp_init_wrap(const char *domain_name) {
+  fprintf(stderr, "[FIXDEF] il2cpp_init wrapper: chamando real...\n");
+  void *dom = g_real_il2cpp_init ? g_real_il2cpp_init(domain_name) : NULL;
+  fprintf(stderr, "[FIXDEF] il2cpp_init real -> %p; consertando defaults\n", dom);
+  eld_fix_defaults("postinit");
+  return dom;
+}
+
 static void *my_dlsym(void *h, const char *nm) {
   if (!nm) return NULL;
   if (g_dllog) fprintf(stderr, "[dlsym] h=%p \"%s\"\n", h, nm);
@@ -5119,6 +5368,14 @@ static void *my_dlsym(void *h, const char *nm) {
     }
     fprintf(stderr, "[DLSYM:SL] %s -> NULL\n", nm);
     return NULL;
+  }
+  /* il2cpp_init: devolve nosso wrapper (conserta defaults[256]/[264] pós-init) */
+  if (getenv("ELD_FIXDEFAULTS") && !strcmp(nm, "il2cpp_init") && g_m_il2cpp) {
+    so_module *c = so_save(); so_use(g_m_il2cpp);
+    g_real_il2cpp_init = (void *(*)(const char *))so_find_addr_safe("il2cpp_init");
+    so_use(c); free(c);
+    fprintf(stderr, "[DLSYM:il2cpp*] il2cpp_init -> WRAPPER (real=%p)\n", (void *)g_real_il2cpp_init);
+    return (void *)eld_il2cpp_init_wrap;
   }
   /* qualquer simbolo il2cpp_* resolve no modulo il2cpp (qualquer handle) */
   if (!strncmp(nm, "il2cpp", 6) && g_m_il2cpp) {
@@ -5461,13 +5718,22 @@ static void *choreo_driver_thread(void *arg) {
   /* libil2cpp é carregado pelo so_util (não via dlopen) -> resolve por NOME (os offsets
      mudam entre versões; Elderand 1.3.22: domain_get=0xcdcbd4, thread_attach=0xcdd028). */
   if (g_m_il2cpp) {
+    /* habilita explicit-thread-registration do Boehm GC ANTES do attach (senão aborta) */
+    if (getenv("ELD_GCREGFLAG") && g_il2cpp_base) {
+      uint32_t *flag = (uint32_t *)(g_il2cpp_base + 0x40e0ed0);
+      long pgsz = sysconf(_SC_PAGESIZE);
+      void *fpg = (void *)((uintptr_t)flag & ~((uintptr_t)pgsz - 1));
+      mprotect(fpg, pgsz * 2, PROT_READ | PROT_WRITE); *flag = 1;
+    }
     so_module *cm = so_save(); so_use(g_m_il2cpp);
     void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
     void *(*thr_attach)(void *) = (void *(*)(void *))so_find_addr_safe("il2cpp_thread_attach");
+    void *(*thr_cur)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_thread_current");
     so_use(cm);
     if (dom_get && thr_attach) {
       void *th = thr_attach(dom_get());
-      fprintf(stderr, "[CHOREO] FrameCallback pronto; il2cpp_thread_attach -> %p\n", th); fsync(2);
+      fprintf(stderr, "[CHOREO] FrameCallback pronto; il2cpp_thread_attach -> %p | current(choreo)=%p\n",
+              th, thr_cur ? thr_cur() : (void *)-1); fsync(2);
     } else fprintf(stderr, "[CHOREO] symbols il2cpp não resolvidos (dom=%p attach=%p)\n",
                    (void*)dom_get, (void*)thr_attach);
   } else fprintf(stderr, "[CHOREO] g_m_il2cpp=0 (sem attach)\n");
@@ -6329,6 +6595,27 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[ELD] shader platform table[8] 0x105abcc %u -> 9 (GLES3Plus)\n", old);
   }
 
+  /* 🔑 FORÇA GFX-DIRECT (single-thread) — Mali-400 Utgard é ES2-only e o render MT
+   * (GfxDeviceWorker submetendo GL de outra thread) TRAVA: handshake racy (~50% stall
+   * no frame 0) + quando voa, 0 draws (worker não apresenta). RE libunity: em 0x476a40
+   * `ldr w8,[x8]` carrega o modo gfx do global; se w8∈{2,3,4} cria a thread worker
+   * (0x476b04->0x97d2c8, nome "UnityGfxDeviceWorker"@0x105ae2e); se w8==0/5 pega o path
+   * DIRECT em 0x476a50 (device na main, SEM worker). -force-gfx-direct via cmdline/intent
+   * não funciona (pairip). Patch: `ldr w8,[x8]`(0xb9400108) -> `mov w8,#0`(0x52800008)
+   * -> sempre path direct. ELD_NO_GFXDIRECT desliga. */
+  if (getenv("ELD_DEVLIB") && !getenv("ELD_NO_GFXDIRECT")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    uint32_t *ins = (uint32_t *)((uintptr_t)text_base + 0x476a40);
+    if (*ins == 0xb9400108u) {
+      so_make_text_writable();
+      *ins = 0x52800008u;   /* mov w8, #0 */
+      so_make_text_executable(); so_flush_caches();
+      fprintf(stderr, "[GFXDIRECT] 0x476a40 ldr w8->mov w8,#0 (gfx single-thread, sem worker)\n");
+    } else {
+      fprintf(stderr, "[GFXDIRECT] AVISO: 0x476a40 = 0x%08x (esperava 0xb9400108) — NAO patchado\n", *ins);
+    }
+  }
+
   /* O FIX REAL do null-deref do Enlighten é o `memalign` (acima, deixou de ser stub).
      Este patch do wrapper 0x861928 -> my_enl_alloc é uma REDE DE SEGURANÇA opcional
      (fallback malloc se o allocator real devolver NULL por qualquer motivo). OPT-IN via
@@ -6840,6 +7127,41 @@ int main(int argc, char **argv) {
     ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ p/ libil2cpp tb */
     so_record_phdr("libil2cpp.so");   /* p/ o dl_iterate_phdr custom (unwind) */
     if (so_register_eh_frame() == 0) fprintf(stderr, "[EH] .eh_frame libil2cpp registrado (exceções C++)\n");
+    /* 🔑 UGS-NUKE: Unity Gaming Services (UnityServicesInternal.InitializeServicesAsync)
+     * faz chamada de REDE p/ registrar o projeto; offline TRAVA o await -> GameManager
+     * nunca chama RequestLoadScene -> menu nunca ativa (cameras=0). No-op das entradas de
+     * init do UGS p/ o boot seguir sem serviços online. Offsets il2cpp 1.3.22:
+     *   InitializeServicesAsync=0x2aa4bb8, EnableServicesInitializationAsync=0x2aa47d8,
+     *   EnableInitializationAsync=0x2aa4aa0. ELD_NO_UGSNUKE desliga. (i2heap é RWX.) */
+    /* ELD_NOPRELOAD: no-op PreloadAddressablesLabel.Awake (0xdd1754) — o boot pré-carrega
+     * ~430 assets por label e a op async NÃO completa -> transição pro menu nunca ocorre
+     * (cameras=0). Se o preload for otimização (não bloqueante de verdade), pular destrava. */
+    if (getenv("ELD_NOPRELOAD")) {
+      uint32_t *pc = (uint32_t *)((uintptr_t)text_base + 0xdd1754);
+      pc[0] = 0xD65F03C0u;  /* ret */
+      so_flush_caches();
+      fprintf(stderr, "[NOPRELOAD] PreloadAddressablesLabel.Awake -> ret\n");
+    }
+    /* ELD_FIXC35: crash per-frame no X5M — libil2cpp+0xc35ab8 `ldrb w8,[x0,#306]` com
+     * x0=NULL (runtime il2cpp, obj null todo frame no nativeRender). O ramo else (0xc35ac0+)
+     * NÃO usa obj (só manipula um global). Força w8=0 (bit1 clear -> tbnz não pega -> vai pro
+     * ramo global sem obj) -> sem null-deref. `ldrb w8,[x0,#306]`(0x3944c808)->`mov w8,#0`. */
+    if (getenv("ELD_FIXC35")) {
+      uint32_t *pc = (uint32_t *)((uintptr_t)text_base + 0xc35ab8);
+      if (*pc == 0x3944c808u) { *pc = 0x52800008u; so_flush_caches();
+        fprintf(stderr, "[FIXC35] 0xc35ab8 ldrb->mov w8,#0 (null-obj guard)\n"); }
+      else fprintf(stderr, "[FIXC35] AVISO 0xc35ab8=0x%08x (esperava 0x3944c808)\n", *pc);
+    }
+    if (getenv("ELD_UGSNUKE")) {
+      const long offs[] = {0x2aa4bb8, 0x2aa47d8, 0x2aa4aa0};
+      for (unsigned k = 0; k < 3; k++) {
+        uint32_t *pc = (uint32_t *)((uintptr_t)text_base + offs[k]);
+        pc[0] = 0xD2800000u;  /* mov x0, #0 */
+        pc[1] = 0xD65F03C0u;  /* ret */
+      }
+      so_flush_caches();
+      fprintf(stderr, "[UGS-NUKE] InitializeServicesAsync/EnableServices* -> ret null (boot sem UGS online)\n");
+    }
     /* il2cpp abre o global-metadata.dat via open() -> intercepta p/ redirecionar.
        patch_got opera no modulo ATIVO (=il2cpp agora). Tb dlopen/dlsym/log. */
     patch_got("open", (void *)my_open);
@@ -7304,8 +7626,120 @@ int main(int argc, char **argv) {
     if (gc_disable) { gc_disable(); fprintf(stderr, "[ELD_GCOFF] il2cpp_gc_disable() chamado\n"); }
     else fprintf(stderr, "[ELD_GCOFF] il2cpp_gc_disable não resolvido\n");
   }
+  /* ELD_MAINATTACH: anexa a thread MAIN (que roda nativeRender) ao il2cpp. Crash per-frame
+   * no X5M = runtime il2cpp lê Thread::Current()+0x132 com Current()=NULL (main não anexada).
+   * Anexar a main resolve o null-obj em todos os call-sites. */
+  if ((getenv("ELD_MAINATTACH") || getenv("ELD_TCHECK")) && g_m_il2cpp) {
+    so_module *cm = so_save(); so_use(g_m_il2cpp);
+    void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+    void *(*thr_attach)(void *) = (void *(*)(void *))so_find_addr_safe("il2cpp_thread_attach");
+    void *(*thr_cur)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_thread_current");
+    so_use(cm);
+    if (getenv("ELD_TCHECK")) fprintf(stderr, "[TCHECK] il2cpp_thread_current(main) ANTES = %p\n",
+                                      thr_cur ? thr_cur() : (void *)-1);
+    /* ELD_DEFPROBE: raiz do crash de attach = defaults[264] (System.Threading.InternalThread
+     * class) NULL. Descobre se o struct de defaults [il2cpp+0x3e40de8] em si existe. */
+    if (getenv("ELD_DEFPROBE") && g_il2cpp_base) {
+      void **defp = (void **)(g_il2cpp_base + 0x3e40de8);
+      void *defs = *defp;
+      fprintf(stderr, "[DEFPROBE] &defaults=%p  defaults=%p  ", (void*)defp, defs);
+      if (defs) {
+        fprintf(stderr, "\n[DEFPROBE] dump defaults[0x00..0x120]:\n");
+        int nnull = 0, ntot = 0;
+        for (int off = 0; off <= 0x120; off += 8) {
+          void *v = *(void **)((char *)defs + off);
+          ntot++; if (!v) nnull++;
+          fprintf(stderr, "  +0x%03x = %p%s\n", off, v, v ? "" : "  <NULL>");
+        }
+        fprintf(stderr, "[DEFPROBE] %d/%d slots NULL (0x10=%p 0x100=%p 0x108=%p)\n",
+                nnull, ntot, *(void**)((char*)defs+0x10),
+                *(void**)((char*)defs+256), *(void**)((char*)defs+264));
+      } else fprintf(stderr, "(defaults NULL -> il2cpp_init nao populou defaults!)\n");
+      fsync(2);
+    }
+    /* ELD_FIXDEFAULTS: os slots defaults[256]=System.Threading.Thread e
+     * defaults[264]=System.Threading.InternalThread ficam NULL (init de defaults
+     * parcial). il2cpp_thread_attach cria um InternalThread a partir dessa classe ->
+     * classe null -> crash em Thread::Attach (c5e2f4 le [null+306]). Resolve as classes
+     * por nome via il2cpp_class_from_name(corlib,...) e preenche os slots nulos. */
+    if (getenv("ELD_FIXDEFAULTS") && g_il2cpp_base && g_m_il2cpp) {
+      so_module *cm2 = so_save(); so_use(g_m_il2cpp);
+      void *(*get_corlib)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_get_corlib");
+      void *(*from_name)(void *, const char *, const char *) =
+          (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+      so_use(cm2);
+      void *defs = *(void **)(g_il2cpp_base + 0x3e40de8);
+      if (get_corlib && from_name && defs) {
+        void *img = get_corlib();
+        struct { long off; const char *ns; const char *nm; } want[] = {
+          {256, "System.Threading", "Thread"},
+          {264, "System.Threading", "InternalThread"},
+        };
+        long pgsz = sysconf(_SC_PAGESIZE);
+        for (unsigned i = 0; i < sizeof want / sizeof want[0]; i++) {
+          void **slot = (void **)((char *)defs + want[i].off);
+          if (*slot) { fprintf(stderr, "[FIXDEF] +%ld ja=%p\n", want[i].off, *slot); continue; }
+          void *cls = from_name(img, want[i].ns, want[i].nm);
+          fprintf(stderr, "[FIXDEF] from_name(%s.%s)=%p -> +%ld\n", want[i].ns, want[i].nm, cls, want[i].off);
+          if (cls) {
+            void *pg = (void *)((uintptr_t)slot & ~((uintptr_t)pgsz - 1));
+            mprotect(pg, pgsz * 2, PROT_READ | PROT_WRITE);
+            *slot = cls;
+          }
+        }
+      } else fprintf(stderr, "[FIXDEF] get_corlib=%p from_name=%p defs=%p (nao aplicado)\n",
+                     (void *)get_corlib, (void *)from_name, defs);
+      fsync(2);
+    }
+    if (getenv("ELD_MAINATTACH") && dom_get && thr_attach) { void *th = thr_attach(dom_get());
+      fprintf(stderr, "[MAINATTACH] il2cpp_thread_attach(main) -> %p\n", th);
+      if (thr_cur) fprintf(stderr, "[TCHECK] thread_current(main) DEPOIS = %p\n", thr_cur()); }
+  }
+  /* ELD_FIXSUBSYS: tabela de subsistemas do Unity em unity+0x13b7358 tem slots NULL (init
+   * pulada) -> getter unity+0x1fa03c devolve null -> caller lê null+0xa0 -> crash (X5M frame 60).
+   * Popula slots null [0..N) com um dummy zerado grande (satisfaz leituras de campo). */
+  if (getenv("ELD_FIXSUBSYS") && g_unity_base) {
+    uintptr_t *tbl = (uintptr_t *)(g_unity_base + 0x13b7358);
+    long pgsz = sysconf(_SC_PAGESIZE);
+    void *pg = (void *)((uintptr_t)tbl & ~((uintptr_t)pgsz - 1));
+    mprotect(pg, pgsz * 2, PROT_READ | PROT_WRITE);
+    int n = 0; int only = getenv("ELD_SUBSYS_SLOT") ? atoi(getenv("ELD_SUBSYS_SLOT")) : 9;
+    if (only >= 0) { if (!tbl[only]) { tbl[only] = (uintptr_t)calloc(1, 4096); n++; } }
+    else for (int i = 0; i < 32; i++) if (!tbl[i]) { tbl[i] = (uintptr_t)calloc(1, 4096); n++; }
+    fprintf(stderr, "[FIXSUBSYS] %d slot(s) null populados (slot=%d) na tabela unity+0x13b7358\n", n, only);
+  }
+  if (getenv("ELD_NULLGUARD") && g_il2cpp_base) {
+    /* funções do runtime il2cpp (range 0xc3xxxx) que leem this(x0)+0x132 com this=null
+     * todo frame no X5M -> return se null. Whack-a-mole: adicionar conforme aparecem. */
+    static const long ng[] = {0xc35aac, 0xc372bc, 0xc37c10};   /* c5e2cc NÃO (o attach precisa dela) */
+    for (unsigned i = 0; i < sizeof ng / sizeof ng[0]; i++)
+      eld_install_nullguard(g_il2cpp_base, ng[i]);
+    so_flush_caches();
+    /* habilita "explicit thread registration" do Boehm GC (flag il2cpp+0x40e0ed0=1) — sem isso
+     * il2cpp_thread_attach aborta. O attach em si roda LATE (no loop, f>=ELD_ATTACH_F). */
+    if (getenv("ELD_ATTACHAFTER")) {
+      uint32_t *flag = (uint32_t *)(g_il2cpp_base + 0x40e0ed0);
+      long pgsz = sysconf(_SC_PAGESIZE);
+      void *fpg = (void *)((uintptr_t)flag & ~((uintptr_t)pgsz - 1));
+      mprotect(fpg, pgsz * 2, PROT_READ | PROT_WRITE);
+      *flag = 1;
+      fprintf(stderr, "[ATTACHAFTER] GC explicit-register flag = 1 (attach no loop f>=%d)\n",
+              getenv("ELD_ATTACH_F") ? atoi(getenv("ELD_ATTACH_F")) : 30);
+    }
+  }
+  int attach_f = getenv("ELD_ATTACH_F") ? atoi(getenv("ELD_ATTACH_F")) : 30;
   for (int f = 0; render && (max_f <= 0 || f < max_f); f++) {
     g_render_frame = f;  /* CUP_DRAWSPY: amarra os draws ao frame */
+    if (getenv("ELD_ATTACHAFTER") && f == attach_f && g_m_il2cpp) {
+      so_module *cm = so_save(); so_use(g_m_il2cpp);
+      void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+      void *(*thr_attach)(void *) = (void *(*)(void *))so_find_addr_safe("il2cpp_thread_attach");
+      void *(*thr_cur)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_thread_current");
+      so_use(cm);
+      if (dom_get && thr_attach) { void *th = thr_attach(dom_get());
+        fprintf(stderr, "[ATTACHLATE] f=%d thread_attach(main) -> %p | current=%p\n",
+                f, th, thr_cur ? thr_cur() : (void *)-1); dbg_sync(); }
+    }
     if (choreo_main && jni_choreo_captured()) {
       struct timespec cts; clock_gettime(CLOCK_MONOTONIC, &cts);
       jni_choreo_doframe(env, (long)cts.tv_sec * 1000000000L + cts.tv_nsec);
@@ -7413,6 +7847,12 @@ int main(int argc, char **argv) {
     ter_fmod_nuke();
     ter_tmp_nuke();
     ter_voxel_nuke();
+    if (f == 200) ter_class_dump();
+    if (getenv("ELD_BOOTPROBE") && f == 100 && g_il2cpp_base) {
+      eld_hook_probe(g_il2cpp_base, 0xdced90, "GameManager.RequestLoadScene");
+      eld_hook_probe(g_il2cpp_base, 0xdcf0e8, "GameManager.OnLoadFinish");
+      eld_hook_probe(g_il2cpp_base, 0xdcee0c, "GameManager.LoadScene");
+    }
     opensles_shim_pump_callbacks();
     /* bombeia eventos SDL (foco/janela) p/ o input do Unity não esfomear */
     SDL_Event ev; while (SDL_PollEvent(&ev)) {}
@@ -7432,6 +7872,32 @@ int main(int argc, char **argv) {
     /* (TER_GAMEPAD agora hooka Input.GetKey direto — ver ter_gamepad_poll/ter_input_hook acima) */
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
     if (f % 60 == 0) { fprintf(stderr, "[render %d]\n", f); dbg_sync(); }
+    /* ELD_SCENEDUMP: discriminador cena-vs-render. Resolve LAZY dentro do loop (il2cpp
+     * quente) e chama com MethodInfo=NULL. camera>0 + 0draws = render; camera==0 = cena
+     * com câmera não carregada. */
+    if (getenv("ELD_SCENEDUMP") && g_m_il2cpp && f >= 180 && f % 300 == 0) {
+      static int (*cam_cnt)(void *) = NULL;
+      so_module *cm = so_save(); so_use(g_m_il2cpp);
+      void *(*dom_get)(void) = (void *(*)(void))so_find_addr_safe("il2cpp_domain_get");
+      const void **(*dom_asms)(void *, size_t *) = (const void **(*)(void *, size_t *))so_find_addr_safe("il2cpp_domain_get_assemblies");
+      void *(*asm_img)(const void *) = (void *(*)(const void *))so_find_addr_safe("il2cpp_assembly_get_image");
+      void *(*cfn)(void *, const char *, const char *) = (void *(*)(void *, const char *, const char *))so_find_addr_safe("il2cpp_class_from_name");
+      void *(*cms)(void *, void **) = (void *(*)(void *, void **))so_find_addr_safe("il2cpp_class_get_methods");
+      const char *(*mnm)(void *) = (const char *(*)(void *))so_find_addr_safe("il2cpp_method_get_name");
+      so_use(cm); free(cm);
+      if (dom_get && dom_asms && asm_img && cfn && cms && mnm) {
+        void *dm = dom_get(); size_t na = 0; const void **as = dom_asms(dm, &na);
+        for (size_t ai = 0; ai < na && !cam_cnt; ai++) {
+          void *img = asm_img(as[ai]); if (!img) continue;
+          void *cls = cfn(img, "UnityEngine", "Camera"); if (!cls) continue;
+          void *it = NULL, *m = NULL;
+          while ((m = cms(cls, &it))) { const char *nm = mnm(m);
+            if (nm && !strcmp(nm, "get_allCamerasCount")) { cam_cnt = (int(*)(void*))*(void**)m; break; } }
+        }
+      }
+      int cc = cam_cnt ? cam_cnt(NULL) : -2;
+      fprintf(stderr, "[SCENEDUMP] f=%d cameras=%d (cnt=%p)\n", f, cc, (void*)cam_cnt); dbg_sync();
+    }
     { /* FPS médio por janela de 600 frames (mede lag do mapa/fases p/ tuning) */
       static struct timespec t0; static int f0 = -1;
       if (f % 600 == 0) {

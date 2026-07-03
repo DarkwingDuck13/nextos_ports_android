@@ -417,10 +417,9 @@ EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
     { extern void ter_shot_hook(void); ter_shot_hook(); }  /* captura na thread DONA da window (antes do swap) */
     SDL_GL_SwapWindow(egl_window);
     int fc = ++frame_count;
-    if (fc <= 10 || fc % 60 == 0) {
-      //debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",
-      //            fc, (unsigned long)pthread_self());
-    }
+    if (fc <= 10 || fc % 120 == 0)
+      debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx win=%d]\n",
+                  fc, (unsigned long)pthread_self(), tls_is_window);
   } else {
     static int noswap_log = 0;
     if (noswap_log < 3) {

@@ -3,9 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-export ELD_HOST="${ELD_HOST:-192.168.31.154}"
+ELD_ALLOWED_HOST=192.168.31.90
+export ELD_HOST="${ELD_HOST:-$ELD_ALLOWED_HOST}"
 export ELD_PASS="${ELD_PASS:-nextos}"
 export ELD_USER="${ELD_USER:-root}"
+if [ "$ELD_HOST" != "$ELD_ALLOWED_HOST" ]; then
+  echo "ABORTO: Elderand autorizado somente no device $ELD_ALLOWED_HOST (ELD_HOST=$ELD_HOST)" >&2
+  exit 2
+fi
 
 secs="${1:-45}"
 shift || true

@@ -7,9 +7,14 @@
 set -u
 PORT="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$PORT/logs"; mkdir -p "$LOGS"
-ELD_HOST="${ELD_HOST:-192.168.31.100}"
+ELD_ALLOWED_HOST=192.168.31.90
+ELD_HOST="${ELD_HOST:-$ELD_ALLOWED_HOST}"
 ELD_PASS="${ELD_PASS:-archr}"
 ELD_USER="${ELD_USER:-root}"
+if [ "$ELD_HOST" != "$ELD_ALLOWED_HOST" ]; then
+  echo "ABORTO: Elderand autorizado somente no device $ELD_ALLOWED_HOST (ELD_HOST=$ELD_HOST)" >&2
+  exit 2
+fi
 D="$ELD_USER@$ELD_HOST"
 SSH="ssh -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=5"
 SCP="scp -F /dev/null -o StrictHostKeyChecking=no -o ConnectTimeout=15"
