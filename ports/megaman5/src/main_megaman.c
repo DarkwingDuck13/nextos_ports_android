@@ -871,9 +871,9 @@ int main(int argc, char *argv[]) {
       if (!g_per_us) {
         long long saved = speed_load();          /* 1) valor salvo (L1/R1) */
         if (saved) g_per_us = saved;
-        else {                                   /* 2) MM_SPF ou 3) default 15fps */
-          const char *e = getenv("MM_SPF"); long long spf = e ? atoll(e) : 2940;
-          if (spf < 1) spf = 2940;               /* 2940 = 44100/15 -> 15.00fps */
+        else {                                   /* 2) MM_SPF ou 3) default 20fps */
+          const char *e = getenv("MM_SPF"); long long spf = e ? atoll(e) : 2205;
+          if (spf < 1) spf = 2205;               /* 2205 = 44100/20 -> 20.00fps */
           g_per_us = spf * 1000000LL / 44100;
         }
         fprintf(stderr, "[speed] inicial per_us=%lld fps=%.1f\n", (long long)g_per_us, 1000000.0/(double)g_per_us);
