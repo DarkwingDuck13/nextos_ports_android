@@ -26,6 +26,7 @@ $ESUDO chmod 666 $CUR_TTY 2>/dev/null
 
 GAMEDIR="/$directory/ports/secretofmana"
 cd "$GAMEDIR" || exit 1
+mkdir -p "$GAMEDIR/userdata"
 
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
