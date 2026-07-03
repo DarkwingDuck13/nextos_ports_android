@@ -87,7 +87,50 @@ static void *g_env = NULL;
 
 /* dispatch cocos EventKeyboard DIRETO (bypass do mapa android->cocos que não
    cobre as setas). Replica nativeKeyEvent: dispatcher = *(Director+0x98). */
+static void *(*p_MultiInput_getInstance)(void);
+static void *(*p_GDM_getInstance)(void);   /* GlobalDataManager (input bitmask em +4/+8) */
 static void *(*p_Director_getInstance)(void);
+/* escreve o bitmask de input onde o Mega Man lê: GlobalDataManager+4 (e +8). */
+static void mm_set_input_mask(unsigned m){
+  if(!p_GDM_getInstance) return;
+  char *gdm=(char*)p_GDM_getInstance(); if(!gdm) return;
+  *(unsigned*)(gdm+4)=m; *(unsigned*)(gdm+8)=m;
+}
+/* mask do gamepad (setado no loop de eventos) OR'd no input do jogo via hook. */
+static volatile unsigned g_pad_mask = 0;
+static void (*g_vpad_orig)(void *self) = NULL;
+__attribute__((target("thumb")))
+static void my_vpad_update(void *self){
+  if(g_vpad_orig) g_vpad_orig(self);         /* roda a VirtualPad::update original */
+  if(g_pad_mask && p_GDM_getInstance){        /* OR o mask do gamepad físico */
+    char *gdm=(char*)p_GDM_getInstance();
+    if(gdm){ *(unsigned*)(gdm+4)|=g_pad_mask; *(unsigned*)(gdm+8)|=g_pad_mask; }
+  }
+}
+/* Popula o Lib_MultiInput DIRETO (bypass do dispatch cocos): marca finger id com
+   estado (1=began, 2=held), bitmask e posição GL (Y-up). Layout do onTouchBegan/
+   Moved: bitmask=*(+56), flags=*(+32)[id], pos=*(+44)[id*2..+1]. */
+static void mm_force_touch(int id, int state, float glx, float gly){
+  if(!p_MultiInput_getInstance) return;
+  char *mi=(char*)p_MultiInput_getInstance(); if(!mi) return;
+  unsigned *bm=*(unsigned**)(mi+56); if(bm){ if(state) bm[id>>5]|=(1u<<(id&31)); else bm[id>>5]&=~(1u<<(id&31)); }
+  int *flags=*(int**)(mi+32); if(flags) flags[id]=state;
+  float *pos=*(float**)(mi+44); if(pos){ pos[id*2]=glx; pos[id*2+1]=gly; }
+}
+/* lê o estado do Lib_MultiInput: bitmask de touches ativas [+56], flags [+32]. */
+static void mm_dump_multiinput(const char *tag){
+  if(!p_MultiInput_getInstance) return;
+  char *mi = (char*)p_MultiInput_getInstance();
+  if(!mi){ fprintf(stderr,"[MTI %s] inst NULL\n",tag); return; }
+  unsigned *bmArr = *(unsigned**)(mi+56);   /* ptr p/ array de bitmask */
+  int *flags = *(int**)(mi+32);              /* ptr p/ array de flags[id] */
+  float *pos = *(float**)(mi+44);            /* ptr p/ array de pos (x,y por id) */
+  unsigned bm = bmArr ? bmArr[0] : 0xdead;
+  int f0 = flags ? flags[0] : -1;
+  fprintf(stderr,"[MTI %s] bmArr=%p bm=0x%x flags=%p f0=%d f1=%d pos=%p p0=(%.1f,%.1f) p_id0=(%.1f,%.1f)\n",
+          tag, (void*)bmArr, bm, (void*)flags, f0, flags?flags[1]:-1, (void*)pos,
+          pos?pos[0]:-1, pos?pos[1]:-1, pos?pos[0]:-1, pos?pos[1]:-1);
+}
 static void (*p_EventKeyboard_ctor)(void *self, int keyCode, int pressed);
 static void (*p_EventDispatcher_dispatch)(void *disp, void *event);
 static void (*p_EventKeyboard_dtor)(void *self);
@@ -206,16 +249,18 @@ static void mm_tbegin(int id,float x,float y){ if(nativeTouchesBegin)nativeTouch
 static void mm_tend(int id,float x,float y){ if(nativeTouchesEnd)nativeTouchesEnd(g_env,NULL,id,x,y); }
 static void mm_tmove(int id,float x,float y){ if(nativeTouchesMove)nativeTouchesMove(g_env,NULL,id,x,y); }
 
-/* estado direcional (dpad + stick) e toque do dpad */
+/* estado direcional (dpad + stick). Direcional vai por INJEÇÃO DE BITS direta
+   (g_pad_mask -> hook -> GDM), determinístico (touch do dpad erra right/down).
+   Bits (= GetMaskCode): LEFT=0x1000 RIGHT=0x2000 UP=0x4000 DOWN=0x8000. */
 static int dp_up,dp_dn,dp_lf,dp_rt, stk_x,stk_y;
-static int dpad_down=0; static float dpad_lx,dpad_ly;
+static volatile unsigned g_pad_mask;   /* fwd: bits injetados no input do jogo */
 static void update_dpad(void){
-  int dx=((dp_rt||stk_x>0)?1:0)-((dp_lf||stk_x<0)?1:0);
-  int dy=((dp_dn||stk_y>0)?1:0)-((dp_up||stk_y<0)?1:0);
-  if(dx==0&&dy==0){ if(dpad_down){ mm_tend(TID_DPAD,dpad_lx,dpad_ly); dpad_down=0; } return; }
-  float x=VP_DPAD_CX+dx*VP_DPAD_OFF, y=VP_DPAD_CY+dy*VP_DPAD_OFF;
-  if(!dpad_down){ mm_tbegin(TID_DPAD,x,y); dpad_down=1; } else mm_tmove(TID_DPAD,x,y);
-  dpad_lx=x; dpad_ly=y;
+  unsigned m=0;
+  if(dp_rt||stk_x>0) m|=0x2000;
+  if(dp_lf||stk_x<0) m|=0x1000;
+  if(dp_up||stk_y<0) m|=0x4000;
+  if(dp_dn||stk_y>0) m|=0x8000;
+  g_pad_mask = m;
 }
 /* botão de ação -> toque hold (begin/end) numa posição fixa */
 static void btn_touch(int id,int pressed,float x,float y){ if(pressed)mm_tbegin(id,x,y); else mm_tend(id,x,y); }
@@ -329,6 +374,53 @@ static void patch_thumb(const char *sym, const uint16_t *hw, int n) {
 /* movs r0,#0 ; bx lr */
 static void patch_thumb_ret0(const char *sym) {
   uint16_t hw[] = {0x2000, 0x4770}; patch_thumb(sym, hw, 2);
+}
+
+/* ---- hook Thumb inline (call-original) ----
+   Faz o símbolo saltar p/ `repl` (Thumb). Devolve um trampolim que executa o
+   PREFIXO original (relocando 1 bl) e retorna ao resto da função. Prefixo
+   suportado: 8 bytes = 2 instr curtas (2B) + 1 bl (4B) [caso VirtualPad::update]. */
+static void thumb_encode_bl(uint16_t *out, uintptr_t at, uintptr_t target){
+  int32_t off = (int32_t)(target - (at + 4));
+  uint32_t S=(off>>24)&1, I1=(off>>23)&1, I2=(off>>22)&1;
+  uint32_t imm10=(off>>12)&0x3FF, imm11=(off>>1)&0x7FF;
+  uint32_t J1=(~(I1^S))&1, J2=(~(I2^S))&1;
+  out[0]=0xF000|(S<<10)|imm10;
+  out[1]=0xD000|(J1<<13)|(J2<<11)|imm11;
+}
+static void *hook_thumb_call(const char *sym, void *repl){
+  uintptr_t a = so_find_addr_safe(sym);
+  if(!a){ fprintf(stderr,"hook: %s nao achado\n",sym); return NULL; }
+  a &= ~1u;
+  uint16_t *o = (uint16_t*)a;
+  /* trampolim: [instr0][instr1][bl relocado][ldr.w pc,[pc]][addr a+8] */
+  uint16_t *tr = mmap(NULL, 64, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+  if(tr==MAP_FAILED) return NULL;
+  /* decodifica o bl original (o[2],o[3]) -> alvo absoluto (getInstance) */
+  uint32_t S=(o[2]>>10)&1, J1=(o[3]>>13)&1, J2=(o[3]>>11)&1;
+  uint32_t I1=(~J1^S)&1, I2=(~J2^S)&1;
+  int32_t imm=(S<<24)|(I1<<23)|(I2<<22)|((o[2]&0x3FF)<<12)|((o[3]&0x7FF)<<1);
+  if(S) imm|=0xFE000000;
+  uintptr_t bltgt = (a+4+4) + imm;
+  /* trampolim (Thumb), com BL substituído por ldr ip,[pc];blx ip (alcance ∞):
+     [0]push [1]adds [2-3]ldr.w ip,[pc,#8] [4]blx ip [5-6]ldr.w pc,[pc,#8]
+     [7]nop  [8-9].word bltgt|1  [10-11].word (a+8)|1 */
+  tr[0]=o[0]; tr[1]=o[1];
+  tr[2]=0xF8DF; tr[3]=0xC008;   /* ldr.w ip,[pc,#8] -> byte16 */
+  tr[4]=0x47E0;                 /* blx ip (chama getInstance, lr=byte10) */
+  tr[5]=0xF8DF; tr[6]=0xF008;   /* ldr.w pc,[pc,#8] -> byte20 */
+  tr[7]=0xBF00;                 /* nop */
+  *(uint32_t*)&tr[8]=(uint32_t)bltgt|1;
+  *(uint32_t*)&tr[10]=(uint32_t)(a+8)|1;
+  __builtin___clear_cache((char*)tr,(char*)tr+64);
+  /* patch entry: ldr.w pc,[pc,#0] ; addr=repl */
+  uintptr_t pg=a&~0xFFFUL;
+  mprotect((void*)pg,0x2000,PROT_READ|PROT_WRITE|PROT_EXEC);
+  o[0]=0xF8DF; o[1]=0xF000; *(uint32_t*)&o[2]=(uint32_t)repl; /* repl já é Thumb (bit0 set pelo compilador? garantir) */
+  mprotect((void*)pg,0x2000,PROT_READ|PROT_EXEC);
+  __builtin___clear_cache((char*)a,(char*)a+8);
+  fprintf(stderr,"hook %s @0x%lx -> repl=%p tramp=%p bltgt=0x%lx\n",sym,(unsigned long)a,repl,tr,(unsigned long)bltgt);
+  return (void*)((uintptr_t)tr | 1);   /* Thumb bit: chamadas ao trampolim entram em Thumb */
 }
 /* bx lr (retorno void, preserva r0) */
 static void patch_thumb_ret(const char *sym) {
@@ -451,6 +543,10 @@ int main(int argc, char *argv[]) {
     patch_thumb_ret0("_ZN8fine_lib18Lib_SoundCkManager6playSeEiii");
     patch_thumb_ret0("_ZN13MEDIA_MANAGER7se_playEii");
   }
+  /* CONTROLE: hook em VirtualPad::update (chama original + OR o mask do gamepad
+     em GlobalDataManager+4/+8, onde o Mega Man lê o input). */
+  if (!getenv("MM_NOPADHOOK"))
+    g_vpad_orig = (void(*)(void*))hook_thumb_call("_ZN10VirtualPad6updateEv", (void*)my_vpad_update);
 
   p_JNI_OnLoad    = (void *)so_find_addr_safe("JNI_OnLoad");
   nativeSetContext= (void *)so_find_addr_safe("Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetContext");
@@ -465,6 +561,8 @@ int main(int argc, char *argv[]) {
   nativeTouchesMove  = (void *)so_find_addr_safe("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesMove");
   initCricket     = (void *)so_find_addr_safe("Java_org_cocos2dx_cpp_AppActivity_initCricket");
 
+  p_MultiInput_getInstance = (void *)so_find_addr_safe("_ZN8fine_lib14Lib_MultiInput11getInstanceEv");
+  p_GDM_getInstance = (void *)so_find_addr_safe("_ZN17GlobalDataManager11getInstanceEv");
   p_Director_getInstance   = (void *)so_find_addr_safe("_ZN7cocos2d8Director11getInstanceEv");
   p_EventKeyboard_ctor     = (void *)so_find_addr_safe("_ZN7cocos2d13EventKeyboardC1ENS0_7KeyCodeEb");
   p_EventDispatcher_dispatch = (void *)so_find_addr_safe("_ZN7cocos2d15EventDispatcher13dispatchEventEPNS_5EventE");
@@ -566,20 +664,15 @@ int main(int argc, char *argv[]) {
       if (f==840){ TAPCHK(); fprintf(stderr,"CONFIRM 4\n"); } if (f==860) RELCHK();
       if (f==1000) mm_shot(w,h,5);                       /* stage select */
       if (f==1060){ TAPCHK(); fprintf(stderr,"CONFIRM 5 (enter stage)\n"); } if (f==1080) RELCHK();
-      if (f==1200) mm_shot(w,h,6);                        /* baseline gameplay */
-      /* jump como TAP usando MESMO id do pause que funcionou (id 5) */
-      if (f==1300){ mm_tbegin(5,1173,620); fprintf(stderr,"JUMP id5\n"); }
-      if (f==1312){ mm_tend(5,1173,620); }
-      if (f==1330) mm_shot(w,h,7);
-      /* jump como TAP id0 na MESMA posição */
-      if (f==1400){ mm_tbegin(0,1173,620); fprintf(stderr,"JUMP id0\n"); }
-      if (f==1412){ mm_tend(0,1173,620); }
-      if (f==1430) mm_shot(w,h,8);
-      /* shoot tap id5 */
-      if (f==1500){ mm_tbegin(5,1085,465); fprintf(stderr,"SHOOT id5\n"); }
-      if (f==1512){ mm_tend(5,1085,465); }
-      if (f==1530) mm_shot(w,h,9);
-      if (f==1600) fprintf(stderr,"NAVTEST done\n");
+      /* VALIDA right/down via injeção direta de bits (dpad agora usa g_pad_mask) */
+      if (f==1250) mm_shot(w,h,6);
+      if (f==1300){ dp_rt=1; update_dpad(); fprintf(stderr,"DIR RIGHT\n"); }
+      if (f==1440) mm_shot(w,h,7);                 /* andou p/ direita? */
+      if (f==1460){ dp_rt=0; update_dpad(); }
+      if (f==1520){ dp_dn=1; update_dpad(); fprintf(stderr,"DIR DOWN\n"); }
+      if (f==1600) mm_shot(w,h,8);
+      if (f==1620){ dp_dn=0; update_dpad(); }
+      if (f==1700) fprintf(stderr,"NAVTEST done\n");
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
