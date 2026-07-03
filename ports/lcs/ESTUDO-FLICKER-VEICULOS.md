@@ -192,3 +192,27 @@ termina, `finished=1`), mas o RELOAD de respawn ainda estoura em segundos.
 3. Pressão de RAM é o multiplicador de tudo (swap no SD) — perfil MEMLOW longo pendente.
 - ⚠️ Não é lib de áudio (já usamos a do sistema); não é envmap (já OFF); não é o flush
   (já capado). O que falta é tirar o SD do caminho síncrono do main.
+
+## ⚠️⚠️ CORREÇÃO (mesma sessão, teste decisivo de I/O) — **NÃO É O SD**
+Usuário garantiu "não é SD" e o argumento dele é definitivo: **o GTASA lê o rádio do MESMO
+cartão SD e não pisca** → a velocidade do SD não pode ser o bloqueio. Medição confirmou:
+- Watch dos contadores `/sys/block/mmcblk1/stat` (setores lidos) + `/proc/vmstat` (pswpin/out)
+  DURANTE várias entradas de carro: no freeze, **SD_rd = +0 setores** na quase totalidade das
+  amostras e **swpin = 0 o tempo TODO** (zero swap-in). O main dorme em `clock_nanosleep`
+  (sc=115) / `futex` (sc=98) **sem ler nada do disco**.
+- ⇒ O freeze é **CPU/LOCK, não I/O**. O main fica num LOOP DE ESPERA (poll + nanosleep 1ms)
+  enquanto a estação do rádio é PREPARADA/decodificada numa outra thread (tid quente 247227,
+  R w=0 = rodando em userspace; provável mpg123 decode / fill de buffer). Rádio OFF = ninguém
+  pede a estação = main não espera = sem flicker. Mesma essência da comparação com o GTASA,
+  mas o gargalo é **preparação síncrona da estação bloqueando o main**, NÃO leitura de SD.
+- Correção de rota: **parar de perseguir SD/prefetch/read-ahead**. O alvo é **desacoplar a
+  preparação da estação do main** (estilo thread de áudio do GTASA) OU **bound no loop de
+  espera** (o main segue renderizando; o áudio entra 1 frame depois, sem freeze).
+
+## ▶️ PRÓXIMO PASSO (quando retomar) — achar o loop de espera exato
+O hook `my_lglSleep` (mainsleep) NÃO pegou esse sleep → é um `nanosleep`/`usleep` de OUTRA
+primitiva (libc direto pelo libGame OU o `tramp_lglSleep` do próprio flush-bounded, que chama
+o lglSleep ORIGINAL sem re-logar). Plano: **hookar `clock_nanosleep`/`nanosleep`/`usleep`
+(libc, via imports.c) logando caller_off quando o main dorme em state 9** → identifica a
+função do wait-loop (do rádio/estação) → aí sim bound/async cirúrgico nela. 1 build + 1
+entrada de carro fecha. Reforço: **NÃO é SD; NÃO gastar tempo com prefetch de WAD.**
