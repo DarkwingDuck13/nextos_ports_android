@@ -28,6 +28,17 @@ def xlate_section(src, stage):
         r'#define UNITY_BINDING\(x\) layout\(binding = x, std140\)\n#else\n'
         r'#define UNITY_LOCATION\(x\)\n#define UNITY_BINDING\(x\) layout\(std140\)\n#endif\n',
         '', s)
+    # 1b) o mesmo bloco de macros, mas SEM o preambulo HLSLCC_ENABLE_UNIFORM_BUFFERS na frente
+    #     (o HLSLcc emite so o UNITY_SUPPORTS_UNIFORM_LOCATION nos fragments sem UBO). Sem remover
+    #     aqui, os passos 2/4 abaixo transformam o #if/#define/#else/#endif em GLSL invalido
+    #     ("#define  #define  #else") e o shader falha ao carregar (ex.: Sprites/CutOut do MMX ->
+    #     Hidden/InternalErrorShader). Remove linha-a-linha, robusto a espacamento; a ORDEM importa
+    #     (apaga o bloco #if..#endif INTEIRO antes, senao sobra #else/#endif orfao = erro de preproc).
+    s = re.sub(r'^[ \t]*#define[ \t]+UNITY_SUPPORTS_UNIFORM_LOCATION\b[^\n]*\n', '', s, flags=re.M)
+    s = re.sub(r'^[ \t]*#if[ \t]+UNITY_SUPPORTS_UNIFORM_LOCATION[ \t]*\n(?:[^\n]*\n)*?[ \t]*#endif[ \t]*\n', '', s, flags=re.M)
+    s = re.sub(r'^[ \t]*#define[ \t]+HLSLCC_ENABLE_UNIFORM_BUFFERS\b[^\n]*\n', '', s, flags=re.M)
+    s = re.sub(r'^[ \t]*#if[ \t]+HLSLCC_ENABLE_UNIFORM_BUFFERS[ \t]*\n(?:[^\n]*\n)*?[ \t]*#endif[ \t]*\n', '', s, flags=re.M)
+    s = re.sub(r'^[ \t]*#define[ \t]+UNITY_(?:LOCATION|BINDING|UNIFORM)\b[^\n]*\n', '', s, flags=re.M)
     # 2) expande as macros manualmente: UNITY_UNIFORM->'', UNITY_LOCATION(x)/UNITY_BINDING(x)->''
     s = re.sub(r'\bUNITY_LOCATION\s*\([^)]*\)', '', s)
     s = re.sub(r'\bUNITY_BINDING\s*\([^)]*\)', '', s)
@@ -43,8 +54,9 @@ def xlate_section(src, stage):
             out.append('uniform ' + line)
         return '\n'.join(out) + '\n'
     s = re.sub(r'(?:layout\s*\([^)]*\)\s*)?uniform\s+\w+\s*\{([^}]*)\}\s*;', flat_ubo, s)
-    # 4) remove qualquer layout(...) restante
-    s = re.sub(r'layout\s*\([^)]*\)\s*', '', s)
+    # 4) remove qualquer layout(...) restante. So espaco/tab depois (NUNCA \n): senao o remove
+    #    junta a proxima diretiva de preprocessador na mesma linha e quebra o GLSL.
+    s = re.sub(r'layout\s*\([^)]*\)[ \t]*', '', s)
     # 4b) GLES2 nao tem 'flat' nem interpolation qualifiers
     s = re.sub(r'^\s*flat\s+', '', s, flags=re.M)
     # 5) in/out por stage
@@ -61,6 +73,12 @@ def xlate_section(src, stage):
     # 6) texture()->texture2D()
     s = re.sub(r'\btextureLod\s*\(', 'texture2DLod(', s)
     s = re.sub(r'\btexture\s*\(', 'texture2D(', s)
+    # 6b) Mali-450 (Utgard) NAO tem highp no fragment: troca 'precision highp float;' cru pelo
+    #     bloco guardado que o GLES2 real do Unity emite; sem isto o Unity REJEITA o blob GLES2.
+    if stage == 'frag':
+        s = re.sub(r'^[ \t]*precision[ \t]+highp[ \t]+float[ \t]*;[ \t]*$',
+                   '#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif',
+                   s, count=1, flags=re.M)
     # 7) precisao no fragment se faltar
     if stage == 'frag' and 'precision ' not in s:
         s = s.replace('#version 100\n', '#version 100\nprecision highp float;\n', 1)
@@ -129,8 +147,11 @@ def transpile_blob(raw):
             continue
         glsl = bytes(sub[h:h+glen])
         head = bytes(sub[:h-4])
+        trailing = bytes(sub[h+glen:])   # 🔑 canal/binding (m_ChannelCount etc.) que o Unity LE
+                                         # depois do GLSL. Descartar isto = "Failed to load GpuProgram
+                                         # from binary shader data" (ex.: Sprites/CutOut do MMX).
         newglsl = xlate_glsl(glsl)
-        nb = head + struct.pack('<i', len(newglsl)) + newglsl
+        nb = head + struct.pack('<i', len(newglsl)) + newglsl + trailing
         while len(nb) % 4 != 0: nb += b'\x00'
         index_map[i] = len(new_subs) + 1
         new_subs.append(nb)
@@ -243,4 +264,5 @@ def main():
     open(path, 'wb').write(env.file.save(packer='lz4'))
     print(f'transpilados {ns} shaders -> GLES2 (platform 5)')
 
-main()
+if __name__ == '__main__':
+    main()
