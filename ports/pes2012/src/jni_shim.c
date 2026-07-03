@@ -17,6 +17,7 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 #include <SDL2/SDL.h>
 
@@ -24,6 +25,7 @@
 #include "egl_shim.h"
 #include "ep1_audio.h"
 #include "jni_shim.h"
+#include "so_util.h"
 #include "util.h"
 
 #define JNI_VTABLE_SIZE 512
@@ -65,6 +67,61 @@ static void (*g_run_on_os_tick_native)(void *, void *);
 static void (*g_on_motion_event_native)(void *, void *, int, int, int, int);
 static unsigned char (*g_on_key_event_native)(void *, void *, int, int, int);
 static void (*g_generate_audio_native)(void *, void *, void *, int);
+static void *g_dc_native;  /* callback nativo de download-state (gdrm) */
+
+/* Stub da função de free-space do disco (gdrm chama p/ ver se cabe a instalação).
+ * O path que ela recebe é inválido (scheme raw://) -> statfs falha -> retorna 0
+ * -> "0 >= 0" -> erro 317 "not enough space". Forçamos ~1GB livre. Retorno é
+ * int64 em r0:r1. */
+static long long freespace_stub(void *path, int unit) {
+  (void)path;
+  (void)unit;
+  return 0x40000000LL; /* 1 GiB */
+}
+
+/* Hook de instrumentação do FSM de download (gdrm) p/ rastrear a sequência de
+ * estados. g_fsm_tramp = trampoline (2 instr originais + salto p/ FSM+8). */
+static void *g_fsm_tramp;
+static void fsm_hook(void *self) {
+  static int last = -999, lastidx = -1, n = 0;
+  int st = *(int *)((char *)self + 12);
+  int idx = *(int *)((char *)self + 0x928);
+  int tot = *(int *)((char *)self + 0x950);
+  if (st != last || idx != lastidx || n < 4) {
+    debugPrintf("FSMLOG state=%d [0x95c]=%d idx[0x928]=%d tot[0x950]=%d "
+                "[0x918]=%d\n", st, *(int *)((char *)self + 0x95c), idx, tot,
+                *(int *)((char *)self + 0x918));
+    last = st;
+    lastidx = idx;
+    n++;
+  }
+  /* Estado 10 = mount do package.dz feito -> libera o extract-on-demand do
+   * archive (real_s3eFileOpen só é seguro após o mount). */
+  if (st == 10) {
+    extern void pes_archive_set_ready(void);
+    pes_archive_set_ready();
+  }
+  /* TESTE (thread MAIN): alguns ticks após o mount+índice, extrai soundmenu p/
+   * ver se a extração funciona na thread certa. */
+  if (getenv("PES_TEST_EXTRACT2")) {
+    extern int pes_try_extract(const char *);
+    static int seen10 = 0, wait = 0, done = 0;
+    if (st == 10) seen10 = 1;
+    if (seen10 && !done && ++wait >= 20) {
+      int r = pes_try_extract("sound/menu/soundmenu.group.bin");
+      debugPrintf("FSMLOG: TEST2 extract soundmenu (main thread) -> %d\n", r);
+      done = 1;
+    }
+  }
+  /* Estado 9 = "installing": extrai os 2 expansion files pro dir de trabalho.
+   * Os assets já estão extraídos (menu/,database/,string/) e a extração real
+   * (0xdb80ae38) não completa (assíncrona/sem serviço). Forçamos idx=tot ->
+   * estado 9 vê "tudo instalado" -> estado 10. */
+  if (st == 9 && !getenv("PES_NO_SKIPINSTALL"))
+    *(int *)((char *)self + 0x928) = tot;
+  ((void (*)(void *))g_fsm_tramp)(self);
+}
+
 static int g_in_os_tick = 0;
 static int g_os_tick_log_count = 0;
 static int g_swap_autotap_x = 640;
@@ -1539,6 +1596,64 @@ static int jni_RegisterNatives(void *env, void *clazz, const void *methods,
       g_natives[g_natives_count].fn = fn;
       g_natives_count++;
     }
+    /* PATCH do gate de expansion/"Not enough space": o exec soma os tamanhos
+     * dos expansion files (required) e compara com o free -> `bge SUCCESS`. Sem
+     * download real o required fica lixo/gigante -> erro. Trocamos o `bge`
+     * (cond) por `b` (incondicional) p/ sempre seguir o caminho de sucesso e
+     * carregar os assets já extraídos. comp = &dc - 0x52f10 (offset fixo do
+     * exec; ancorado no native dc). */
+    if (name && strcmp(name, "dc") == 0)
+      g_dc_native = fn;
+    if (name && strcmp(name, "dc") == 0 && getenv("PES_DUMPFSM")) {
+      uintptr_t dcb = (uintptr_t)fn;
+      debugPrintf("jni_shim: DUMPFSM dc=%p\n", (void *)dcb);
+      FILE *f = fopen("/storage/roms/ports/pes2012/fsm2.bin", "wb");
+      if (f) { fwrite((void *)(dcb - 0x54800), 1, 0x2800, f); fclose(f); }
+      FILE *g = fopen("/storage/roms/ports/pes2012/mount.bin", "wb");
+      if (g) { fwrite((void *)(dcb + 0x98000), 1, 0x2000, g); fclose(g); }
+      FILE *h = fopen("/storage/roms/ports/pes2012/start.bin", "wb");
+      if (h) { fwrite((void *)(dcb - 0x88800), 1, 0x2000, h); fclose(h); }
+    }
+    if (name && strcmp(name, "dc") == 0 && getenv("PES_FSMLOG")) {
+      uintptr_t fsm = (uintptr_t)fn - 0x534e4; /* início da FSM de download */
+      uint32_t *src = (uint32_t *)fsm;
+      if (src[0] == 0xe92d5ff0 && src[1] == 0xe1a04000) {
+        uint32_t *tr = mmap(NULL, 32, PROT_READ | PROT_WRITE | PROT_EXEC,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        tr[0] = src[0]; /* push {...} */
+        tr[1] = src[1]; /* mov r4,r0 */
+        tr[2] = 0xe51ff004; /* ldr pc,[pc,#-4] */
+        tr[3] = (uint32_t)(fsm + 8);
+        g_fsm_tramp = tr;
+        __builtin___clear_cache((void *)tr, (void *)(tr + 8));
+        mprotect((void *)(fsm & ~0xFFFUL), 0x2000,
+                 PROT_READ | PROT_WRITE | PROT_EXEC);
+        hook_arm(fsm, (uintptr_t)fsm_hook);
+        __builtin___clear_cache((void *)fsm, (void *)(fsm + 8));
+        debugPrintf("FSMLOG: hook instalado fsm=%p tramp=%p\n", (void *)fsm,
+                    (void *)tr);
+      } else
+        debugPrintf("FSMLOG: fsm=%p inesperado %08x %08x\n", (void *)fsm, src[0],
+                    src[1]);
+    }
+    if (name && strcmp(name, "dc") == 0 && !getenv("PES_NO_SPACEPATCH")) {
+      uintptr_t dcb = (uintptr_t)fn;
+      /* Estado 8 do FSM de download: `bge 0xdb..df4` = SE (required[0x918] >=
+       * freespace) -> ERRO 317 "not enough space"; fall-through (cabe) -> estado
+       * 9 (prossegue a instalação). Como o path do statfs é inválido, freespace
+       * fica 0 e required 0 -> "0>=0" -> erro. Fazemos o bge NUNCA pegar (NOP) ->
+       * sempre "cabe" -> o FSM avança pro estado 9. comp = &dc - 0x52f10. */
+      uintptr_t comp = dcb - 0x52f10;
+      mprotect((void *)(comp & ~0xFFFUL), 0x2000,
+               PROT_READ | PROT_WRITE | PROT_EXEC);
+      volatile uint32_t *pc1 = (uint32_t *)comp;
+      if (*pc1 == 0xaa00002a || *pc1 == 0xea00002a) { /* bge (ou já-b de antes) */
+        *pc1 = 0xe320f000; /* NOP (nunca desvia -> fall-through = cabe) */
+        __builtin___clear_cache((void *)comp, (void *)(comp + 4));
+        debugPrintf("SPACEPATCH: comp=%p bge->NOP OK\n", (void *)comp);
+      } else
+        debugPrintf("SPACEPATCH: comp=%p inesperado=%08x\n", (void *)comp, *pc1);
+    }
     if (name && strcmp(name, "runOnOSTickNative") == 0)
       g_run_on_os_tick_native = (void (*)(void *, void *))fn;
     if (name && strcmp(name, "onMotionEvent") == 0)
@@ -1785,6 +1900,18 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     debugPrintf("jni_shim: APKExpansion dir -> %s\n", dir);
     return make_jstring(dir);
   }
+  /* PES expansion/OBB: png=package name, desg=data/expansion storage dir. O jogo
+   * monta o path do OBB a partir daí (<desg>/Android/obb/<png>/main.<vng>.<png>.obb). */
+  if (id_is(methodID, "png"))
+    return make_jstring("com.konami.pes2012");
+  if (id_is(methodID, "desg")) {
+    /* desg = base da expansion. O jogo faz `<desg>/Android/obb/...` e o VFS s3e
+     * tira o leading '/' -> vira RELATIVO ao cwd. Com desg="" o path fica
+     * "/Android/obb/..." -> "Android/obb/..." (rel cwd) = onde deployamos o OBB.
+     * (desg=cwd dava path DUPLICADO.) */
+    debugPrintf("jni_shim: desg (expansion dir) -> \"\" (rel cwd)\n");
+    return make_jstring("");
+  }
 
   return fake_object();
 }
@@ -1855,7 +1982,12 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     ret = 160;
   else if (id_is(methodID, "getOrientation"))
     ret = 0;
-  else if (id_is(methodID, "audioGetStatus")) {
+  else if (id_is(methodID, "vng")) {
+    /* version number get (OBB version): a expansion baixada é a main.1000005.
+     * Retornar a versão faz o jogo achar que o OBB está presente/baixado. */
+    ret = 1000005;
+    debugPrintf("jni_shim: vng (expansion version) -> %d\n", ret);
+  } else if (id_is(methodID, "audioGetStatus")) {
     int id = va_arg(ap, int);
     ret = ep1_audio_status(id);
   }
@@ -1927,11 +2059,35 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
     egl_shim_bind_main();
     call_os_tick(env, obj, "doDraw");
   } else if (is_swap) {
+    { extern void pes_set_main_tid(void); extern void pes_marshal_drain(void);
+      pes_set_main_tid(); pes_marshal_drain(); }
     egl_shim_bind_main();
     ep1_process_input(env, obj);
     call_os_tick(env, obj, "glSwapBuffers");
     maybe_swap_autotap(env, obj);
     egl_shim_swap_main();
+    /* Sinaliza download COMPLETO ao gdrm p/ o FSM sair do loading. dc despacha
+     * p/ um listener [*(dc+0x20)+48]; cedo (na licença) é null e crasha. Aqui,
+     * já no loop de loading (frame >= N), o listener normalmente foi registrado
+     * -> só chama se != null. Uma vez. Desligável c/ PES_NO_DCDONE. */
+    if (g_dc_native && getenv("PES_DCDONE")) {
+      static int frames = 0, done = 0;
+      if (!done && ++frames >= 15) {
+        uintptr_t global = *(uintptr_t *)((uintptr_t)g_dc_native + 0x20);
+        uintptr_t listener = global ? *(uintptr_t *)(global + 48) : 0;
+        if (listener) {
+          void (*dc)(void *, void *, int) =
+              (void (*)(void *, void *, int))g_dc_native;
+          debugPrintf("jni_shim: DCDONE frame=%d global=%p listener=%p -> dc(5)\n",
+                      frames, (void *)global, (void *)listener);
+          dc(env, obj, 5); /* STATE_COMPLETED */
+          done = 1;
+        } else if ((frames % 30) == 0) {
+          debugPrintf("jni_shim: DCDONE aguardando listener (frame=%d global=%p)\n",
+                      frames, (void *)global);
+        }
+      }
+    }
   } else if (id_is(methodID, "runOnOSSignal")) {
     egl_shim_bind_main();
     call_os_tick(env, obj, "runOnOSSignal");
@@ -1950,6 +2106,59 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
   } else if (id_is(methodID, "videoStop")) {
     int id = va_arg(ap, int);
     debugPrintf("jni_shim: videoStop id=%d\n", id);
+  } else if (id_is(methodID, "ds")) {
+    /* ds = display screen (diálogo de erro "Install error / not enough space").
+     * Com o SPACEPATCH ativo, esse caminho NÃO deve mais ser alcançado. */
+    debugPrintf("jni_shim: ds() (diálogo de erro) chamado\n");
+  } else if (id_is(methodID, "lc")) {
+    /* LICENSE CHECK (Google Play LVL / Konami). O jogo chama Java lc(rsaKey) e
+     * ESPERA o callback nativo lc(int result) com o veredito -> sem isso trava
+     * em "Loading...". Chamamos o nativo lc registrado com "LICENSED". */
+    void (*nlc)(void *, void *, int) =
+        (void (*)(void *, void *, int))jni_find_native("lc");
+    const char *v = getenv("PES_LIC_VAL");
+    int val = v ? atoi(v) : 0; /* 0 = LICENSED (LVL) — passa a verificação */
+    debugPrintf("jni_shim: LICENSE lc() -> chamando native lc(%d) fn=%p\n", val,
+                (void *)nlc);
+    if (nlc)
+      nlc(env, obj, val);
+    /* [OPT-IN experimental, CRASHA] Tentativa de sinalizar ao gdrm que o
+     * expansion está completo via callbacks nativos eic/fcc/dc. Eles despacham
+     * p/ um listener [global+48] AINDA NÃO REGISTRADO (sem DownloaderService) ->
+     * blx null -> SIGSEGV. Desligado por default; o SPACEPATCH cobre o gate. */
+    if (getenv("PES_EXPCB")) {
+      const char *obb_name = "main.1000005.com.konami.pes2012.obb";
+      const char *obb_path =
+          "Android/obb/com.konami.pes2012/main.1000005.com.konami.pes2012.obb";
+      long long obb_size = 178822265LL;
+      void (*eic)(void *, void *, void *, void *, long long) =
+          (void (*)(void *, void *, void *, void *, long long))
+              jni_find_native("eic");
+      void (*fcc)(void *, void *, int, long long) =
+          (void (*)(void *, void *, int, long long))jni_find_native("fcc");
+      void (*dc)(void *, void *, int) =
+          (void (*)(void *, void *, int))jni_find_native("dc");
+      debugPrintf("jni_shim: EXPCB eic=%p fcc=%p dc=%p\n", (void *)eic,
+                  (void *)fcc, (void *)dc);
+      int only = 0;
+      const char *o = getenv("PES_EXPCB_ONLY");
+      if (o) only = atoi(o); /* 1=eic 2=fcc 4=dc bitmask; 0=todos */
+      if (eic && (!only || (only & 1))) {
+        debugPrintf("jni_shim: EXPCB -> eic...\n");
+        eic(env, obj, make_jstring(obb_name), make_jstring(obb_path), obb_size);
+        debugPrintf("jni_shim: EXPCB eic OK\n");
+      }
+      if (fcc && (!only || (only & 2))) {
+        debugPrintf("jni_shim: EXPCB -> fcc...\n");
+        fcc(env, obj, 0, obb_size);
+        debugPrintf("jni_shim: EXPCB fcc OK\n");
+      }
+      if (dc && (!only || (only & 4))) {
+        debugPrintf("jni_shim: EXPCB -> dc...\n");
+        dc(env, obj, 5);
+        debugPrintf("jni_shim: EXPCB dc OK\n");
+      }
+    }
   } else if (id_is(methodID, "audioSetVolume")) {
     int id = va_arg(ap, int);
     int vol = va_arg(ap, int);

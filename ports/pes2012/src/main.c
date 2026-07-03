@@ -6,6 +6,7 @@
  * por libs3e_android.so. Portanto carregamos a principal primeiro, tiramos
  * snapshot dos simbolos dela, e so entao carregamos as extensoes.
  */
+#include <ctype.h>
 #include <setjmp.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -428,6 +429,277 @@ static int marm_s3eKeyboardGetState(int key) {
   return original;
 }
 
+/* trampoline thumb-safe: copia 8 bytes de prologo (sem PC-rel) + salta p/ addr+8 */
+static void *make_thumb_tramp(uintptr_t addr) {
+  uintptr_t a = addr & ~1u;
+  uint16_t *src = (uint16_t *)a;
+  uint16_t *tr = mmap(NULL, 32, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED)
+    return NULL;
+  for (int i = 0; i < 4; i++)
+    tr[i] = src[i];
+  tr[4] = 0xf8df;
+  tr[5] = 0xf000;
+  *(uint32_t *)(tr + 6) = (uint32_t)((a + 8) | 1u);
+  __builtin___clear_cache((char *)tr, (char *)tr + 32);
+  return (void *)((uintptr_t)tr | 1u);
+}
+
+/* Trampoline thumb que RELOCALIZA um BL de 32-bit no prólogo. Copia as 4
+ * halfwords (8 bytes), mas se as halfwords [2..3] forem um BL (F000-F7FF +
+ * D000-FFFF), recomputa o offset p/ o mesmo alvo absoluto a partir da posição do
+ * trampoline. Necessário p/ s3eFileOpen (prólogo `push;movs;bl helper`). */
+static void *make_thumb_tramp_reloc(uintptr_t addr) {
+  uintptr_t a = addr & ~1u;
+  uint16_t *src = (uint16_t *)a;
+  uint16_t *tr = mmap(NULL, 32, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED)
+    return NULL;
+  for (int i = 0; i < 4; i++)
+    tr[i] = src[i];
+  /* halfwords [2..3] = BL? (hw1 em [0xF000..0xF7FF], hw2 em [0xD000..0xFFFF]) */
+  uint16_t h1 = src[2], h2 = src[3];
+  if ((h1 & 0xF800) == 0xF000 && (h2 & 0xD000) == 0xD000) {
+    uint32_t S = (h1 >> 10) & 1, imm10 = h1 & 0x3ff;
+    uint32_t J1 = (h2 >> 13) & 1, J2 = (h2 >> 11) & 1, imm11 = h2 & 0x7ff;
+    uint32_t I1 = 1 - (J1 ^ S), I2 = 1 - (J2 ^ S);
+    int32_t off = (int32_t)((S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) |
+                            (imm11 << 1));
+    if (off & (1 << 24)) off |= 0xFE000000; /* sign-extend 25-bit */
+    uintptr_t target = (a + 2 * 2 + 4) + off;       /* PC do BL orig = a+4, +4 */
+    uintptr_t newpc = (uintptr_t)(tr + 2);          /* posição do BL no tramp */
+    int32_t noff = (int32_t)(target - (newpc + 4));
+    uint32_t nS = (noff >> 24) & 1;
+    uint32_t nI1 = (noff >> 23) & 1, nI2 = (noff >> 22) & 1;
+    uint32_t nimm10 = (noff >> 12) & 0x3ff, nimm11 = (noff >> 1) & 0x7ff;
+    uint32_t nJ1 = (1 - nI1) ^ nS, nJ2 = (1 - nI2) ^ nS;
+    tr[2] = 0xF000 | (nS << 10) | nimm10;
+    tr[3] = 0xD000 | (nJ1 << 13) | (nJ2 << 11) | nimm11;
+  }
+  tr[4] = 0xf8df;
+  tr[5] = 0xf000;
+  *(uint32_t *)(tr + 6) = (uint32_t)((a + 8) | 1u);
+  __builtin___clear_cache((char *)tr, (char *)tr + 32);
+  return (void *)((uintptr_t)tr | 1u);
+}
+
+/* Trampoline thumb COMPLETO: copia 4 halfwords do prólogo relocalizando `ldr
+ * rX,[pc,#imm]` (via literal local) e um `bl` de 32-bit, depois salta p/ addr+8.
+ * Cobre os prólogos de s3eFileGetSize/Close (ldr-pc) e s3eFileOpen (bl). */
+static void *make_thumb_tramp_full(uintptr_t addr) {
+  uintptr_t a = addr & ~1u;
+  uint16_t *src = (uint16_t *)a;
+  uint16_t *tr = mmap(NULL, 64, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED)
+    return NULL;
+  int litn = 0;               /* literais em tr[16..] (halfword idx 16) */
+  uint32_t *litpool = (uint32_t *)(tr + 16);
+  for (int i = 0; i < 4; i++) {
+    uint16_t h = src[i];
+    if ((h & 0xF800) == 0x4800) { /* ldr rX,[pc,#imm8] */
+      uint32_t rd = (h >> 8) & 7, imm8 = h & 0xff;
+      uintptr_t litaddr = ((a + i * 2 + 4) & ~3u) + imm8 * 4;
+      uint32_t val = *(uint32_t *)litaddr;
+      litpool[litn] = val;
+      uintptr_t newpc = ((uintptr_t)(tr + i) + 4) & ~3u;
+      uint32_t noff = (uint32_t)((uintptr_t)&litpool[litn] - newpc) / 4;
+      tr[i] = 0x4800 | (rd << 8) | (noff & 0xff);
+      litn++;
+    } else if (i <= 2 && (h & 0xF800) == 0xF000 &&
+               (src[i + 1] & 0xD000) == 0xD000) { /* bl 32-bit */
+      uint16_t h2 = src[i + 1];
+      uint32_t S = (h >> 10) & 1, imm10 = h & 0x3ff;
+      uint32_t J1 = (h2 >> 13) & 1, J2 = (h2 >> 11) & 1, imm11 = h2 & 0x7ff;
+      uint32_t I1 = 1 - (J1 ^ S), I2 = 1 - (J2 ^ S);
+      int32_t off = (int32_t)((S << 24) | (I1 << 23) | (I2 << 22) |
+                              (imm10 << 12) | (imm11 << 1));
+      if (off & (1 << 24)) off |= 0xFE000000;
+      uintptr_t target = (a + i * 2 + 4) + off;
+      uintptr_t newpc = (uintptr_t)(tr + i);
+      int32_t noff = (int32_t)(target - (newpc + 4));
+      uint32_t nS = (noff >> 24) & 1, nI1 = (noff >> 23) & 1,
+               nI2 = (noff >> 22) & 1;
+      uint32_t nimm10 = (noff >> 12) & 0x3ff, nimm11 = (noff >> 1) & 0x7ff;
+      uint32_t nJ1 = (1 - nI1) ^ nS, nJ2 = (1 - nI2) ^ nS;
+      tr[i] = 0xF000 | (nS << 10) | nimm10;
+      tr[i + 1] = 0xD000 | (nJ1 << 13) | (nJ2 << 11) | nimm11;
+      i++; /* consumiu 2 halfwords */
+    } else {
+      tr[i] = h;
+    }
+  }
+  tr[4] = 0xf8df; tr[5] = 0xf000;              /* ldr.w pc,[pc,#0] */
+  *(uint32_t *)(tr + 6) = (uint32_t)((a + 8) | 1u);
+  __builtin___clear_cache((char *)tr, (char *)tr + 64);
+  return (void *)((uintptr_t)tr | 1u);
+}
+
+typedef int (*fn4_t)(int, int, int, int);
+/* Redirect da API de memória s3e (heaps de tamanho fixo, heap 6 nao criada,
+ * heap 0 pequena) p/ malloc/free/realloc do sistema (RAM 832MB). r0=size no
+ * MallocBase; r0=ptr no Free; (r0=ptr,r1=size) no Realloc. */
+static void *w_s3eMallocBase(int size, int a, int b, int c) {
+  (void)a; (void)b; (void)c;
+  return malloc(size > 0 ? (size_t)size : 1);
+}
+static void w_s3eFreeBase(void *p) { if (p) free(p); }
+/* Bypass da verificação de licença (DRM Google Play LVL): o jogo (EXEC) verifica
+ * a assinatura RSA da resposta via s3eCryptoVerifyRsa -> sem Google Play falha
+ * ("License verification failed"). MAS o mesmo s3eCryptoVerifyRsa é usado pelo
+ * LOADER p/ verificar a assinatura (VÁLIDA) do próprio .s3e. Então: se o caller
+ * for o loader (return-addr na região do .so), roda o REAL; se for o exec
+ * (return-addr fora, addr baixo), força "válido". */
+typedef int (*fn6_t)(int, int, int, int, int, int);
+static fn6_t real_verifyrsa;
+static int w_s3eCryptoVerifyRsa(int a, int b, int c, int d, int e, int f) {
+  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+  if (real_verifyrsa && ra >= g_main_text_base &&
+      ra < g_main_text_base + g_main_text_size) {
+    return real_verifyrsa(a, b, c, d, e, f); /* loader/.s3e: verify real */
+  }
+  const char *v = getenv("PES_RSA_VAL"); /* exec/licença: força válido */
+  return v ? atoi(v) : 1;
+}
+static void *w_s3eReallocBase(void *p, int size, int a, int b) {
+  (void)a; (void)b;
+  return realloc(p, size > 0 ? (size_t)size : 1);
+}
+
+/* 13 inits de subsistema chamados pelas branches por-bit do s3eDeviceCheckCaps.
+ * Um(ns) falha(m) no so-loader -> aborta a cadeia -> ThreadCore/TLS nao roda ->
+ * crash pos-load. Wrapper: roda o original e FORCA return 0 (registra sempre). */
+#define CAPS_INITS(X) \
+  X(38084) X(3b6ac) X(3f22c) X(3f9a8) X(42788) X(42e00) X(438bc) \
+  X(44a64) X(4b89c) X(4ee30) X(59e0c) X(5b198) X(5fc00)
+#define DECL_CI(OFF) \
+  static fn4_t real_ci_##OFF; \
+  static int w_ci_##OFF(int a, int b, int c, int d) { \
+    int r = real_ci_##OFF(a, b, c, d); \
+    if (r) debugPrintf("caps-init 0x" #OFF " retornou %d -> forcando 0\n", r); \
+    return 0; \
+  }
+CAPS_INITS(DECL_CI)
+
+static fn4_t real_ld_2413c, real_ld_2460c, real_ld_248ac, real_ld_24504;
+static fn4_t real_ld_47e64, real_ld_49b70, real_ld_470b0;
+/* s3eFileOpen exportado (0x4753c) — HOOKADO por install_s3efile_exports p/ nosso
+ * fopen real. Chamamos via ponteiro pro endereco hookado. */
+static void *(*g_s3eFileOpen)(const char *, const char *);
+static int w_ld_470b0(int a, int b, int c, int d) {
+  const char *path = (const char *)a;
+  /* 0x470b0 = fopen INTERNO (VFS s3e vazio) -> falha pro exec E pros assets
+   * (menu/hd/*.group.bin etc). Roteia .s3e direto pelo s3eFileOpen exportado
+   * (case-insensitive, fopen real). Pros demais: tenta o original; se FALHAR,
+   * cai no nosso s3eFileOpen (pega assets do fs real). */
+  if (path && g_s3eFileOpen && !getenv("PES_NO_OPEN_BYPASS")) {
+    size_t n = strlen(path);
+    if (n > 4 && !strcmp(path + n - 4, ".s3e")) {
+      void *h = g_s3eFileOpen(path, "rb");
+      debugPrintf("TRACE 0x470b0 OPEN-BYPASS \"%s\" -> %p\n", path, h);
+      return (int)(intptr_t)h;
+    }
+    int r = real_ld_470b0(a, b, c, d);
+    if (r == 0) { /* VFS interno falhou -> tenta fs real */
+      void *h = g_s3eFileOpen(path, "rb");
+      if (h) {
+        debugPrintf("TRACE 0x470b0 FALLBACK \"%s\" -> %p\n", path, h);
+        return (int)(intptr_t)h;
+      }
+    }
+    return r;
+  }
+  return real_ld_470b0(a, b, c, d);
+}
+static int w_ld_47e64(int a, int b, int c, int d) {
+  const char *path = (const char *)a;
+  /* VFS interno do s3e: path sem "raw://" cai no VFS s3e (vazio no so-loader) e
+   * falha. O exec (.s3e) vem como nome puro. Redireciona pro "raw://"+abs =
+   * filesystem real. So o .s3e (nao quebra outros lookups). */
+  if (path && !getenv("PES_NO_VFS_REDIRECT")) {
+    size_t n = strlen(path);
+    int is_s3e = (n > 4 && !strcmp(path + n - 4, ".s3e"));
+    int has_scheme = (strstr(path, "://") != NULL);
+    if (is_s3e && !has_scheme) {
+      static char buf[512];
+      const char *home = getenv("HOME");
+      if (path[0] == '/')
+        snprintf(buf, sizeof(buf), "raw://%s", path);
+      else
+        snprintf(buf, sizeof(buf), "raw://%s/%s", home ? home : ".", path);
+      debugPrintf("TRACE >0x47e64 REDIR \"%s\" -> \"%s\" (mode=%d)\n", path, buf, b);
+      int r = real_ld_47e64((int)(intptr_t)buf, b, c, d);
+      debugPrintf("TRACE <0x47e64 REDIR = 0x%x\n", r);
+      return r;
+    }
+  }
+  debugPrintf("TRACE >0x47e64(path=\"%s\" mode=%d)\n", path ? path : "(null)", b);
+  int r = real_ld_47e64(a, b, c, d);
+  debugPrintf("TRACE <0x47e64 = 0x%x\n", r);
+  return r;
+}
+static int w_ld_49b70(int a, int b, int c, int d) {
+  const char *path = (const char *)b;
+  char *buf = (char *)(intptr_t)a;
+  /* 0x49b70 RESOLVE o path via VFS interno (vazio) -> falha p/ o exec. Bypass:
+   * p/ .s3e, escreve o path real em buf e retorna 0 (sucesso) -> 0x2460c segue
+   * pro add+loader (que abre via fopen). */
+  if (path && buf && !getenv("PES_NO_RESOLVE_BYPASS")) {
+    size_t n = strlen(path);
+    if (n > 4 && !strcmp(path + n - 4, ".s3e")) {
+      strncpy(buf, path, 126);
+      buf[126] = 0;
+      debugPrintf("TRACE 0x49b70 RESOLVE-BYPASS \"%s\" -> buf, ret 0\n", path);
+      return 0;
+    }
+  }
+  debugPrintf("TRACE >0x49b70(buf=0x%x path=\"%s\" r2=%d)\n", a,
+              path ? path : "(null)", c);
+  int r = real_ld_49b70(a, b, c, d);
+  debugPrintf("TRACE <0x49b70 = %d\n", r);
+  return r;
+}
+static int w_ld_2413c(int a, int b, int c, int d) {
+  debugPrintf("TRACE >0x2413c(a=0x%x)\n", a);
+  int r = real_ld_2413c(a, b, c, d);
+  debugPrintf("TRACE <0x2413c = %d\n", r);
+  return r;
+}
+static int w_ld_2460c(int a, int b, int c, int d) {
+  uintptr_t mgr = g_main_text_base + 0x86350;
+  debugPrintf("TRACE >0x2460c(a=0x%x) mgr[0]=0x%x count[+32]=0x%x\n", a,
+              *(unsigned int *)mgr, *(unsigned int *)(mgr + 32));
+  int r = real_ld_2460c(a, b, c, d);
+  debugPrintf("TRACE <0x2460c = %d  mgr[0]=0x%x count[+32]=0x%x\n", r,
+              *(unsigned int *)mgr, *(unsigned int *)(mgr + 32));
+  return r;
+}
+static int w_ld_248ac(int a, int b, int c, int d) {
+  debugPrintf("TRACE >0x248ac(a=0x%x)\n", a);
+  int r = real_ld_248ac(a, b, c, d);
+  debugPrintf("TRACE <0x248ac = %d\n", r);
+  return r;
+}
+static int w_ld_24504(int a, int b, int c, int d) {
+  debugPrintf("TRACE >0x24504(a=0x%x)\n", a);
+  int r = real_ld_24504(a, b, c, d);
+  debugPrintf("TRACE <0x24504 = 0x%x\n", r);
+  return r;
+}
+
+/* DIAGNOSTICO: conta chamadas a s3eDeviceYield. Se o game main LOOPA, dispara
+ * rapido; se retornou/parkou, fica baixo. No-op (retorna 0) -> testa tambem se
+ * o jogo roda inline free-running sem o yield real. */
+static volatile int g_yield_count;
+static int marm_s3eDeviceYield(int ms) {
+  int n = ++g_yield_count;
+  if (n <= 30 || (n % 120) == 0)
+    debugPrintf("YIELD #%d (ms=%d)\n", n, ms);
+  return 0;
+}
+
 static int marm_s3eDebugErrorShow(const char *title, const char *msg) {
   uintptr_t ra = (uintptr_t)__builtin_return_address(0);
   uintptr_t base = g_main_text_base;
@@ -611,8 +883,271 @@ static int ep1_track_close(FILE *f) {
   return 0;
 }
 
+/* Ponteiros pras funções s3eFile REAIS (VFS interno do libpes2012.so, que lê do
+ * package.dz montado e DESCRIPTOGRAFA os grupos on-the-fly). Capturados via
+ * trampoline ANTES de hookar os exports. Usados p/ extrair-sob-demanda os
+ * assets que só existem no OBB cifrado (sound/ etc). */
+static void *(*real_s3eFileOpen)(const char *, const char *);
+static int (*real_s3eFileRead)(void *, unsigned int, unsigned int, void *);
+static int (*real_s3eFileClose)(void *);
+static unsigned int (*real_s3eFileGetSize)(void *);
+static int (*real_s3eFileSeek)(void *, int, int);
+static int (*real_s3eFileTell)(void *);
+
+/* Rastreio de handles NATIVOS (do VFS s3e/archive). Read/Seek/Close/GetSize/Tell
+ * roteiam p/ as funções reais nesses; nos demais (FILE* de disco), usam libc. */
+#define NAT_MAX 1024
+static void *g_nat[NAT_MAX];
+static int g_nat_n;
+static int is_native_handle(void *h) {
+  for (int i = 0; i < g_nat_n; i++) if (g_nat[i] == h) return 1;
+  return 0;
+}
+static void add_native_handle(void *h) {
+  if (h && g_nat_n < NAT_MAX) g_nat[g_nat_n++] = h;
+}
+static void del_native_handle(void *h) {
+  for (int i = 0; i < g_nat_n; i++)
+    if (g_nat[i] == h) { g_nat[i] = g_nat[--g_nat_n]; return; }
+}
+
+/* Extrai `fn` do archive s3e (descriptografando) e grava EM CLARO no disco no
+ * mesmo path, criando os diretórios. Retorna FILE* do arquivo gravado, ou NULL
+ * se o archive não tem o arquivo. */
+/* Só liberado depois que o jogo montou o package.dz (senão o VFS s3e crasha com
+ * estado NULL — aviso do Opus). Setado pelo fsm_hook (jni_shim) no estado 10
+ * (mount) via pes_archive_set_ready(). */
+int g_archive_ready = 0;
+void pes_archive_set_ready(void) { g_archive_ready = 1; }
+
+/* Abre um asset no archive s3e NATIVO tentando variantes de path (o índice do
+ * OBB usa basename lowercase + '\\'; o jogo pede com prefixo data-gles1/, '/' e
+ * case-misto). Retorna handle nativo ou NULL. */
+static void *archive_native_open(const char *fn) {
+  if (!real_s3eFileOpen || !fn)
+    return NULL;
+  const char *base = fn;
+  if (!strncmp(fn, "data-gles1/", 11)) base = fn + 11;
+  else if (!strncmp(fn, "data-gles2/", 11)) base = fn + 11;
+  char lo[1024], bs[1024];
+  snprintf(lo, sizeof(lo), "%s", base);
+  for (char *c = lo; *c; c++) *c = (char)tolower((unsigned char)*c);
+  snprintf(bs, sizeof(bs), "%s", lo);
+  for (char *c = bs; *c; c++) if (*c == '/') *c = '\\';
+  const char *bn = strrchr(lo, '/'); bn = bn ? bn + 1 : lo;
+  /* NÃO tenta o fn cru com prefixo data-gles1/ (o s3eFileOpen nativo entra em
+   * loop de resolução p/ esse path). Usa só as formas do índice do archive. */
+  const char *forms[5] = { bs, lo, bn, base, NULL };
+  static int dbg = 0;
+  int logd = dbg < 8;
+  for (int i = 0; forms[i]; i++) {
+    if (logd) { debugPrintf("NATIVE arch try '%s'...\n", forms[i]); }
+    void *h = real_s3eFileOpen(forms[i], "rb");
+    if (logd) debugPrintf("NATIVE arch try '%s' -> %p\n", forms[i], h);
+    if (h) { if (logd) dbg++; return h; }
+  }
+  if (logd) dbg++;
+  return NULL;
+}
+static FILE *ep1_extract_from_archive(const char *fn);
+/* chamável do fsm_hook (jni_shim, thread MAIN) p/ extrair na thread certa */
+int pes_try_extract(const char *fn) {
+  FILE *f = ep1_extract_from_archive(fn);
+  if (f) { fclose(f); return 1; }
+  return 0;
+}
+
+/* MARSHALING: a Open callback do archive crasha na thread de LOADING (estado s3e)
+ * mas roda OK na MAIN. A thread de loading enfileira e espera; a MAIN
+ * (pes_marshal_drain, no glSwapBuffers) extrai. Na MAIN, extrai direto. */
+static volatile int g_marshal_req = 0, g_marshal_done = 0;
+static char g_marshal_path[512];
+static pthread_mutex_t g_marshal_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile uintptr_t g_main_tid = 0;
+void pes_set_main_tid(void) { if (!g_main_tid) g_main_tid = (uintptr_t)pthread_self(); }
+void pes_marshal_drain(void) {
+  if (!g_marshal_req) return;
+  FILE *f = ep1_extract_from_archive(g_marshal_path);
+  if (f) fclose(f);
+  g_marshal_done = 1;
+  __sync_synchronize();
+  g_marshal_req = 0;
+}
+static int pes_marshal_extract(const char *fn) {
+  static int dbg = 0;
+  int ismain = g_main_tid && (uintptr_t)pthread_self() == g_main_tid;
+  if (dbg < 8) {
+    debugPrintf("MARSHAL: fn=%s main_tid=%lx self=%lx ismain=%d\n", fn,
+                (unsigned long)g_main_tid, (unsigned long)pthread_self(), ismain);
+    dbg++;
+  }
+  if (ismain) {
+    FILE *f = ep1_extract_from_archive(fn);
+    if (f) { fclose(f); return 1; }
+    return 0;
+  }
+  pthread_mutex_lock(&g_marshal_lock);
+  snprintf(g_marshal_path, sizeof(g_marshal_path), "%s", fn);
+  g_marshal_done = 0;
+  __sync_synchronize();
+  g_marshal_req = 1;
+  for (int i = 0; i < 8000 && !g_marshal_done; i++) usleep(1000); /* até 8s */
+  int ok = g_marshal_done;
+  pthread_mutex_unlock(&g_marshal_lock);
+  return ok;
+}
+
+/* callbacks do user-fs do archive (capturadas no hook de s3eFileAddUserFileSys).
+ * Open(filename,mode)=cbs[0]; Read(buf,esz,count,handle)=cbs[1]. A Read
+ * DESCRIPTOGRAFA os dados do OBB on-the-fly. */
+extern void *g_ufs_cbs;
+typedef void *(*ufs_open_fn)(const char *, const char *);
+typedef int (*ufs_read_fn)(void *, unsigned int, unsigned int, void *);
+
+static FILE *ep1_extract_from_archive(const char *fn) {
+  if (getenv("PES_NO_ARCHIVE_EXTRACT") || !fn || !g_archive_ready || !g_ufs_cbs)
+    return NULL;
+  /* só assets .group.bin (carregados após o mount); nunca .s3e/config/early. */
+  size_t n = strlen(fn);
+  if (n < 10 || strcmp(fn + n - 10, ".group.bin") != 0)
+    return NULL;
+  static __thread int busy = 0;
+  if (busy)
+    return NULL;
+  busy = 1;
+  debugPrintf("ARCHIVE: ep1_extract entrou fn=%s cbs=%p\n", fn, g_ufs_cbs);
+  uintptr_t *cbs = (uintptr_t *)g_ufs_cbs;
+  ufs_open_fn Open = (ufs_open_fn)cbs[0];
+  ufs_read_fn Read = (ufs_read_fn)cbs[1];
+  static int dbg = 0;
+  int logd = dbg < 40;
+  FILE *ret = NULL;
+  /* o índice do OBB usa basename lowercase + path com '\\'. O jogo pede com '/'
+   * e case-misto. Tenta variantes até a Open callback achar. */
+  const char *base = fn;
+  if (!strncmp(fn, "data-gles1/", 11)) base = fn + 11;
+  char v[1024];
+  snprintf(v, sizeof(v), "%s", base);
+  for (char *c = v; *c; c++) *c = (char)tolower((unsigned char)*c);
+  char vbs[1024];
+  snprintf(vbs, sizeof(vbs), "%s", v);
+  for (char *c = vbs; *c; c++) if (*c == '/') *c = '\\';
+  const char *bn = strrchr(v, '/'); bn = bn ? bn + 1 : v; /* basename lowercase */
+  /* o índice do OBB indexa por BASENAME lowercase ("soundmenu.group.bin"); as
+   * formas full-path (backslash/barra) fazem o sub_open crashar. Basename 1º. */
+  const char *forms[6] = { bn, v, vbs, base, NULL };
+  void *h = NULL;
+  for (int i = 0; forms[i] && !h; i++) {
+    h = Open(forms[i], "rb");
+    if (logd) debugPrintf("ARCHIVE: ufsOpen('%s') -> %p\n", forms[i], h);
+  }
+  if (logd) dbg++;
+  if (h) {
+    const char *s = base;
+    while (*s == '/') s++;
+    char dirs[1024];
+    snprintf(dirs, sizeof(dirs), "%s", s);
+    for (char *c = dirs; *c; c++)
+      if (*c == '/' || *c == '\\') { *c = 0; if (dirs[0]) mkdir(dirs, 0755); *c = '/'; }
+    FILE *w = fopen(dirs, "wb");
+    unsigned long total = 0;
+    if (w) {
+      static char chunk[65536];
+      for (;;) {
+        int got = Read(chunk, 1, sizeof(chunk), h); /* DESCRIPTOGRAFA */
+        if (got <= 0) break;
+        fwrite(chunk, 1, (size_t)got, w);
+        total += (unsigned long)got;
+        if ((unsigned)got < sizeof(chunk)) break;
+        if (total > 96u * 1024u * 1024u) break;
+      }
+      fclose(w);
+    }
+    debugPrintf("ARCHIVE: extraído '%s' -> '%s' bytes=%lu\n", fn, dirs, total);
+    if (total > 0) ret = fopen(dirs, "rb");
+  }
+  busy = 0;
+  return ret;
+}
+
 static void *my_s3eFileOpen(const char *fn, const char *mode) {
+  int rd = !mode || !(strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+'));
+  int native_ok = fn && real_s3eFileOpen && getenv("PES_NATIVE_ARCHIVE");
+  /* DUAL-MODE: package.dz (backing do archive) SEMPRE pelo VFS s3e NATIVO, p/ o
+   * archive_open ler+DESCRIPTOGRAFAR os grupos. Abre a forma que retorna um
+   * handle LEGÍVEL (magic 79 9c a8 0a); reusa o mesmo p/ todos os opens. */
+  if (native_ok && getenv("PES_PKG_NATIVE") && strstr(fn, "package.dz")) {
+    /* abre SEMPRE a forma raw:// absoluta (handle válido); a forma relativa
+     * "package.dz" dá handle ruim no VFS nativo. Handle independente por open. */
+    const char *openpath = fn;
+    char rawp[640];
+    if (!strstr(fn, "://")) {
+      const char *home = getenv("HOME");
+      snprintf(rawp, sizeof(rawp), "raw://%s/%s", home ? home : ".", fn);
+      openpath = rawp;
+    }
+    void *h = real_s3eFileOpen(openpath, mode ? mode : "rb");
+    /* valida o magic 79 9c a8 0a */
+    if (h) {
+      unsigned char b[4] = {0};
+      if (real_s3eFileSeek) real_s3eFileSeek(h, 0, 0);
+      int g = real_s3eFileRead ? real_s3eFileRead(b, 1, 4, h) : 0;
+      if (real_s3eFileSeek) real_s3eFileSeek(h, 0, 0);
+      if (!(g == 4 && b[0] == 0x79 && b[1] == 0x9c && b[2] == 0xa8 && b[3] == 0x0a)) {
+        debugPrintf("NATIVE pkg('%s'->'%s') %p INVALIDO magic=%02x%02x%02x%02x\n",
+                    fn, openpath, h, b[0], b[1], b[2], b[3]);
+        if (real_s3eFileClose) real_s3eFileClose(h);
+        h = NULL;
+      }
+    }
+    if (h) {
+      add_native_handle(h);
+      g_archive_ready = 1;
+      debugPrintf("NATIVE open pkg('%s'->'%s') -> %p (validado)\n", fn, openpath, h);
+      /* teste: o handle nativo é legível? (magic esperado 79 9c a8 0a) */
+      if (getenv("PES_TEST_PKGREAD") && real_s3eFileRead) {
+        unsigned char b[16] = {0};
+        int g = real_s3eFileRead(b, 1, 16, h);
+        debugPrintf("PKGREAD: got=%d bytes=%02x%02x%02x%02x sz=%u\n", g,
+                    b[0], b[1], b[2], b[3],
+                    real_s3eFileGetSize ? real_s3eFileGetSize(h) : 0);
+        /* teste SEEK (acesso aleatório, o que o archive_open faz) */
+        debugPrintf("PKGSEEK: real_s3eFileSeek=%p tell=%p ...\n",
+                    (void *)real_s3eFileSeek, (void *)real_s3eFileTell);
+        if (real_s3eFileSeek) {
+          int sr = real_s3eFileSeek(h, 0x800, 0); /* SEEK_SET p/ o dir 0x800 */
+          unsigned char c[8] = {0};
+          int g2 = real_s3eFileRead(c, 1, 8, h);
+          int tl = real_s3eFileTell ? real_s3eFileTell(h) : -1;
+          debugPrintf("PKGSEEK: seek=%d tell=%d got=%d bytes=%02x%02x%02x%02x%02x\n",
+                      sr, tl, g2, c[0], c[1], c[2], c[3], c[4]);
+        }
+      }
+      return h;
+    }
+  }
   FILE *f = ep1_file_real_open(fn, mode);
+  /* asset .group.bin que NÃO está no disco: o índice do OBB indexa por BASENAME
+   * lowercase ("soundmenu.group.bin"); o jogo pede o full-path -> o archive não
+   * casa -> "Cannot open". Reescreve p/ basename lowercase e abre pelo VFS s3e
+   * NATIVO (o archive_open casa no índice e a Read descriptografa on-the-fly). */
+  if (!f && native_ok && rd && g_archive_ready) {
+    size_t n = strlen(fn);
+    if (n >= 10 && !strcmp(fn + n - 10, ".group.bin")) {
+      const char *slash = strrchr(fn, '/');
+      const char *bslash = strrchr(fn, '\\');
+      if (bslash && (!slash || bslash > slash)) slash = bslash;
+      const char *base = slash ? slash + 1 : fn;
+      char bn[256]; size_t j = 0;
+      for (const char *c = base; *c && j < sizeof(bn) - 1; c++)
+        bn[j++] = (char)tolower((unsigned char)*c);
+      bn[j] = 0;
+      void *h = real_s3eFileOpen ? real_s3eFileOpen(bn, "rb") : NULL;
+      static int d = 0;
+      if (d < 40) { debugPrintf("GRP native '%s' -> '%s' -> %p\n", fn, bn, h); d++; }
+      if (h) { add_native_handle(h); return h; }
+    }
+  }
   ep1_track_open(f);
   return (void *)f;
 }
@@ -624,6 +1159,7 @@ static void *my_s3eFileOpenFromMemory(void *buf, unsigned int size) {
   return (void *)f;
 }
 static int my_s3eFileClose(void *f) {
+  if (is_native_handle(f)) { del_native_handle(f); return real_s3eFileClose ? real_s3eFileClose(f) : 0; }
   if (f && ep1_track_close((FILE *)f))
     fclose((FILE *)f); /* so fecha se ainda estava aberto (ignora double-close) */
   return 0;            /* S3E_RESULT_SUCCESS */
@@ -632,6 +1168,10 @@ static int my_s3eFileRead(void *buf, unsigned int esz, unsigned int n,
                           void *f) {
   if (!f || esz == 0)
     return 0;
+  if (is_native_handle(f)) {
+    static int d=0; if(d<12){debugPrintf("NATIVE Read h=%p esz=%u n=%u\n",f,esz,n);d++;}
+    return real_s3eFileRead ? real_s3eFileRead(buf, esz, n, f) : 0;
+  }
   int got = (int)fread(buf, esz, n, (FILE *)f);
   if (getenv("SONIC4EP1_FILELOG")) {
     static int rc = 0;
@@ -649,13 +1189,21 @@ static int my_s3eFileWrite(const void *buf, unsigned int esz, unsigned int n,
 static int my_s3eFileSeek(void *f, int off, int origin) {
   if (!f)
     return 1; /* error */
+  if (is_native_handle(f)) {
+    static int d=0; if(d<12){debugPrintf("NATIVE Seek h=%p off=%d org=%d\n",f,off,origin);d++;}
+    return real_s3eFileSeek ? real_s3eFileSeek(f, off, origin) : 1;
+  }
   int whence = origin == 1 ? SEEK_CUR : origin == 2 ? SEEK_END : SEEK_SET;
   return fseek((FILE *)f, off, whence) == 0 ? 0 : 1;
 }
-static int my_s3eFileTell(void *f) { return f ? (int)ftell((FILE *)f) : -1; }
+static int my_s3eFileTell(void *f) {
+  if (is_native_handle(f)) return real_s3eFileTell ? real_s3eFileTell(f) : -1;
+  return f ? (int)ftell((FILE *)f) : -1;
+}
 static unsigned int my_s3eFileGetSize(void *f) {
   if (!f)
     return 0;
+  if (is_native_handle(f)) return real_s3eFileGetSize ? real_s3eFileGetSize(f) : 0;
   long cur = ftell((FILE *)f);
   fseek((FILE *)f, 0, SEEK_END);
   long sz = ftell((FILE *)f);
@@ -672,11 +1220,39 @@ static int my_s3eFileCheckExists(const char *fn) {
   while (*s == '/')
     s++;
   int ok = (access(s, F_OK) == 0) || (s != fn && access(fn, F_OK) == 0);
+  /* não está no disco: checa no archive s3e nativo (.group.bin do OBB). */
+  size_t n = fn ? strlen(fn) : 0;
+  if (!ok && n >= 10 && !strcmp(fn + n - 10, ".group.bin")) {
+    static int dbg = 0;
+    if (dbg < 6) {
+      debugPrintf("CHKEXIST grp '%s' ok=%d ro=%p rdy=%d\n", fn, ok,
+                  (void *)real_s3eFileOpen, g_archive_ready);
+      dbg++;
+    }
+    if (g_archive_ready && getenv("PES_NATIVE_ARCHIVE")) {
+      /* otimista: assume presente no archive; a abertura real (my_s3eFileOpen)
+       * reescreve p/ basename lowercase e abre nativo no momento certo. Abrir
+       * aqui (antes do open do jogo) crasha: o índice ainda não carregou. */
+      ok = 1;
+    }
+  }
   return ok ? 1 : 0; /* S3E_TRUE/FALSE */
 }
 static char *my_s3eFileReadString(char *str, unsigned int maxLen, void *f) {
   if (!f || !str || maxLen == 0)
     return NULL;
+  if (is_native_handle(f)) { /* lê char-a-char via VFS nativo (não fgets) */
+    unsigned int i = 0;
+    while (i + 1 < maxLen) {
+      char c;
+      if (!real_s3eFileRead || real_s3eFileRead(&c, 1, 1, f) != 1) break;
+      str[i++] = c;
+      if (c == '\n') break;
+    }
+    if (i == 0) return NULL;
+    str[i] = 0;
+    return str;
+  }
   return fgets(str, (int)maxLen, (FILE *)f);
 }
 static int my_s3eFileFlush(void *f) {
@@ -1412,10 +1988,47 @@ static void patch_ret0_list_from_env(void) {
   free(copy);
 }
 
+/* Diag: log de s3eFileAddUserFileSys (o archive package.dz registra um user-fs
+ * cujo read DESCRIPTOGRAFA). Vê se/quando é chamado e os args (callbacks). */
+static int (*real_addufs)(void *, void *) = NULL;
+void *g_ufs_cbs = NULL, *g_ufs_ud = NULL;
+static FILE *ep1_extract_from_archive(const char *fn);
+static int my_addufs_diag(void *cbs, void *ud) {
+  int r = real_addufs ? real_addufs(cbs, ud) : -1;
+  g_ufs_cbs = cbs; g_ufs_ud = ud;
+  debugPrintf("USERFS: s3eFileAddUserFileSys(cbs=%p ud=%p) -> %d\n", cbs, ud, r);
+  if (cbs && getenv("PES_DUMP_UFS")) {
+    uintptr_t *p = (uintptr_t *)cbs;
+    for (int i = 0; i < 8; i++)
+      debugPrintf("USERFS: cbs[%d] = %p\n", i, (void *)p[i]);
+    FILE *f = fopen("/storage/roms/ports/pes2012/ufsopen.bin", "wb");
+    if (f && p[0]) { fwrite((void *)(p[0] & ~1u), 1, 0x200, f); fclose(f); }
+    FILE *g = fopen("/storage/roms/ports/pes2012/ufsread.bin", "wb");
+    if (g && p[1]) { fwrite((void *)(p[1] & ~1u), 1, 0x80, g); fclose(g); }
+    /* worker read+decrypt = cbs[1] - 0x1576fc (bl na Read callback) */
+    uintptr_t worker = (p[1] & ~1u) - 0x1576fc;
+    FILE *h = fopen("/storage/roms/ports/pes2012/ufswork.bin", "wb");
+    if (h) { fwrite((void *)worker, 1, 0x800, h); fclose(h); }
+    debugPrintf("USERFS: dumps ok cbs[1]=%p worker=%p\n", (void *)p[1],
+                (void *)worker);
+  }
+  return r;
+}
+
 /* PES: hooka os s3eFile* EXPORTADOS (por simbolo) -> nossas impls libc. O modulo
    XE3U chama a API s3e via o loader; substituindo os entrypoints exportados, todo
    acesso a arquivo (PES2012.s3e, OBB, saves) passa pelo nosso fopen. */
 static void install_s3efile_exports(void) {
+  /* captura sempre o user-fs do archive (Open/Read descriptografam) p/ o
+   * extract-on-demand chamar as callbacks direto. */
+  if (getenv("PES_NATIVE_ARCHIVE")) {
+    uintptr_t au = so_find_addr_safe("s3eFileAddUserFileSys");
+    if (au) {
+      real_addufs = (int (*)(void *, void *))(
+          (au & 1) ? make_thumb_tramp_full(au) : make_arm_trampoline(au));
+      hook_arm(au, (uintptr_t)my_addufs_diag);
+    }
+  }
   if (getenv("PES_NO_FILESHIM")) return;
   struct { const char *sym; void *fn; } m[] = {
     {"s3eFileOpen",           (void *)my_s3eFileOpen},
@@ -1434,6 +2047,32 @@ static void install_s3efile_exports(void) {
     {"s3eFileListNext",       (void *)my_s3eFileListNext},
     {"s3eFileListClose",      (void *)my_s3eFileListClose},
   };
+  /* TLSMAP: o archive_open (na thread de loading) usa s3eThreadLocal; sem o mapa,
+   * getspecific vem NULL -> crash. Habilita p/ o PES também. */
+  if (getenv("PES_NATIVE_ARCHIVE") && !getenv("PES_NO_TLSMAP")) {
+    uintptr_t b = g_main_text_base ? g_main_text_base : (uintptr_t)text_base;
+    hook_arm(b + 0x82d60, (uintptr_t)my_s3e_tls_get);
+    hook_arm(b + 0x82d70, (uintptr_t)my_s3e_tls_set);
+    debugPrintf("ARCHIVE: TLSMAP (s3eThreadLocal) habilitado p/ PES\n");
+  }
+  /* ANTES de sobrescrever: captura trampolines das funções s3eFile REAIS p/
+   * extrair-sob-demanda os assets cifrados do OBB (o VFS interno descriptografa).
+   * thumb (bit0=1) vs ARM. */
+  if (getenv("PES_NATIVE_ARCHIVE")) {
+#define TRAMP(sym) ({ uintptr_t _a = so_find_addr_safe(sym); \
+    (_a & 1) ? make_thumb_tramp_full(_a) : make_arm_trampoline(_a); })
+    real_s3eFileOpen = (void *(*)(const char *, const char *))TRAMP("s3eFileOpen");
+    real_s3eFileRead =
+        (int (*)(void *, unsigned int, unsigned int, void *))TRAMP("s3eFileRead");
+    real_s3eFileClose = (int (*)(void *))TRAMP("s3eFileClose");
+    real_s3eFileGetSize = (unsigned int (*)(void *))TRAMP("s3eFileGetSize");
+    real_s3eFileSeek = (int (*)(void *, int, int))TRAMP("s3eFileSeek");
+    real_s3eFileTell = (int (*)(void *))TRAMP("s3eFileTell");
+#undef TRAMP
+    debugPrintf("ARCHIVE: trampolines reais open=%p read=%p size=%p seek=%p\n",
+                (void *)real_s3eFileOpen, (void *)real_s3eFileRead,
+                (void *)real_s3eFileGetSize, (void *)real_s3eFileSeek);
+  }
   for (unsigned i = 0; i < sizeof(m) / sizeof(m[0]); i++) {
     uintptr_t a = so_find_addr_safe(m[i].sym);
     if (a) { hook_arm(a, (uintptr_t)m[i].fn);
@@ -1462,6 +2101,130 @@ static void patch_marmalade_guards(void) {
   if (getenv("PES_SONICPATCH")) {
     install_s3efile_shims(base);
     install_s3econfig_shims(base);
+  }
+
+  /*
+   * CAPS GATE do exec-loader (causa-raiz s2: exec nunca carrega -> tela preta).
+   * O exec-loader (0x24348) chama s3eDeviceCheckCaps(0xa216148) em 0x41374 e
+   * retorna cedo se falhar -> 0x2d39c pega o RUN-stub (0x2ef88=bx lr) e nada
+   * roda. Em 0x413de o check faz `r4 = required & ~registrados` (bics r4,r6) e
+   * so passa (beq 0x414c0 -> ret 0) se r4==0. Como a ICF (com as device-caps)
+   * NUNCA carrega neste so-loader, registrados=so 0x10000000 e o gate falha.
+   * Fix: patch `bics r4,r6` (0x43b4) -> `movs r4,#0` (0x2400) => r4=0 => passa,
+   * preservando os `str r0/r1,[r5,#32/36]` (device-caps) logo antes.
+   * Confirmado por strace: PES2012.s3e nunca era aberto sem isto.
+   */
+  if (base && !getenv("PES_NO_CAPSGATE")) {
+    if (getenv("PES_CAPS_OLD")) {
+      volatile uint16_t *p = (volatile uint16_t *)(base + 0x413de);
+      *p = 0x2400u; /* movs r4,#0 (modo antigo: pula os inits) */
+      __builtin___clear_cache((char *)(base + 0x413de), (char *)(base + 0x413e2));
+    } else {
+      /* CERTO: deixa o `bics r4,r6` original correr -> a cadeia de tst RODA os 13
+       * inits dos subsistemas (incl ThreadCore/TLS=0x5b198). Cada branch faz
+       * `bl <init>; cmp r0,#0; beq <registra>; b 0x413ba(aborta se falhou)`.
+       * Patchamos o `cmp r0,#0` (0x2800) logo apos cada `bl <init>` p/
+       * `movs r0,#0` (0x2000) -> r0=0 -> beq sempre registra, nunca aborta.
+       * Todos os subsistemas ficam registrados e o gate passa (0x414c0). */
+      static const unsigned cmp_offs[] = {
+        0x414f2, 0x41512, 0x41532, 0x41552, 0x41572, 0x41592, 0x415b2,
+        0x415d2, 0x415f2, 0x41612, 0x41632, 0x41652, 0x41672,
+      };
+      for (unsigned i = 0; i < sizeof(cmp_offs)/sizeof(cmp_offs[0]); i++) {
+        volatile uint16_t *p = (volatile uint16_t *)(base + cmp_offs[i]);
+        if (*p == 0x2800u) {
+          *p = 0x2000u; /* movs r0,#0 */
+          __builtin___clear_cache((char *)(base + cmp_offs[i]),
+                                  (char *)(base + cmp_offs[i] + 2));
+        } else {
+          debugPrintf("WARN caps-init cmp @0x%x = 0x%04x (esperado 0x2800)\n",
+                      cmp_offs[i], *p);
+        }
+      }
+      debugPrintf("patch: CAPS GATE — 13 inits force-success (bics RODA, subsist registram)\n");
+    }
+  }
+
+  /*
+   * CONFIG TABLE pre-alloc (2a causa-raiz: crash apos exec-load).
+   * O subsistema s3eConfig (cluster 0x3b000-0x3d000, exporta s3eConfigGetInt@
+   * 0x3b468 etc) guarda as vars parseadas numa tabela cujo ponteiro vive em
+   * *0x8b3cc (.bss). Normalmente s3eDeviceCreate aloca essa tabela; nosso
+   * so-loader pula isso -> *0x8b3cc=NULL. Ao carregar o exec, o parser de config
+   * faz um LOOKUP (0x3c50c: r4=*0x8b3cc; count=[r4+4]) ANTES de popular ->
+   * NULL-deref em 0x3c522 (r4=0). Mesma tecnica do shim Sonic (*0xc875c):
+   * pre-alocamos uma tabela ZERADA; o caminho de "add" (0x3c5e6) cresce os
+   * buffers via realloc(NULL,...)=malloc, entao o parser REAL popula o config.
+   * (count=0 => lookup cai no add-path gracioso em vez de crashar.)
+   */
+  /* DIAGNOSTICO s4: forca o code-loader do exec (0x2460c) a rodar sempre.
+   * 0x2d368: bl 0x2423c; se r0!=0 RETORNA cedo (pula 0x2460c=code-loader). Se
+   * 0x2423c retorna !=0, o XE3U nunca e lido/descomprimido -> game code nao roda.
+   * Patch: `beq 0x2d382`(0xd004)@0x2d376 -> `b 0x2d382`(0xe004) = sempre chama 0x2460c. */
+  if (base && !getenv("PES_NO_LOADFIX")) {
+    real_ld_2413c = (fn4_t)make_thumb_tramp(base + 0x2413c + 1);
+    real_ld_2460c = (fn4_t)make_thumb_tramp(base + 0x2460c + 1);
+    real_ld_248ac = (fn4_t)make_thumb_tramp(base + 0x248ac + 1);
+    real_ld_24504 = (fn4_t)make_thumb_tramp(base + 0x24504 + 1);
+    real_ld_47e64 = (fn4_t)make_thumb_tramp(base + 0x47e64 + 1);
+    real_ld_49b70 = (fn4_t)make_thumb_tramp(base + 0x49b70 + 1);
+    real_ld_470b0 = (fn4_t)make_thumb_tramp(base + 0x470b0 + 1);
+    /* s3eFileOpen exportado ja esta hookado (install_s3efile_exports) -> chamar
+     * o endereco faz nosso fopen real. */
+    g_s3eFileOpen = (void *(*)(const char *, const char *))(base + 0x4753c + 1);
+    hook_arm(base + 0x470b0 + 1, (uintptr_t)w_ld_470b0);
+    hook_arm(base + 0x47e64 + 1, (uintptr_t)w_ld_47e64);
+    hook_arm(base + 0x49b70 + 1, (uintptr_t)w_ld_49b70);
+    hook_arm(base + 0x2413c + 1, (uintptr_t)w_ld_2413c);
+    hook_arm(base + 0x2460c + 1, (uintptr_t)w_ld_2460c);
+    hook_arm(base + 0x248ac + 1, (uintptr_t)w_ld_248ac);
+    hook_arm(base + 0x24504 + 1, (uintptr_t)w_ld_24504);
+    debugPrintf("hook: TRACE_LOAD em 2413c/2460c/248ac/24504\n");
+  }
+
+  if (base && getenv("PES_FORCE_CODELOAD")) {
+    volatile uint16_t *p = (volatile uint16_t *)(base + 0x2d376);
+    debugPrintf("patch: FORCE_CODELOAD @0x2d376 (era 0x%04x -> 0xe004)\n", *p);
+    *p = 0xe004u; /* beq 0x2d382 -> b 0x2d382 (sempre chama 0x2460c) */
+    /* 0x2460c retorna 1 -> 0x2d390 (bne 0x2d378) pula 0x248ac (loader real).
+     * NOP no bne p/ SEMPRE cair em 0x2d392 = bl 0x248ac. */
+    volatile uint16_t *q = (volatile uint16_t *)(base + 0x2d390);
+    debugPrintf("patch: FORCE 0x248ac @0x2d390 (era 0x%04x -> 0xbf00 nop)\n", *q);
+    *q = 0xbf00u; /* nop */
+    __builtin___clear_cache((char *)(base + 0x2d376), (char *)(base + 0x2d394));
+  }
+
+  /* s7: o caps-fix (0x413de r4=0) passa o s3eDeviceCheckCaps mas PULA as branches
+   * por-bit que sao os INITS dos subsistemas (ThreadCore/TLS=0x5b198, etc). Sem o
+   * ThreadCore, a TLS key (0x8c688) fica 0 -> NULL-deref em 0x437f4 pos-load.
+   * Rodamos os inits dos subsistemas manualmente aqui (idempotentes). */
+  /* s9: o jogo seleciona a heap 6 (via contexto) e aloca -> s3eMallocBase falha
+   * "heap 6 is not created" -> NULL -> crash no jogo. As heaps sao criadas por
+   * config MemSize%d; MemSize6 nao existe. Fix: s3eMallocBase (0x4f178) pega o
+   * indice da heap do CONTEXTO em 0x4f190 (`ldr r4,[r0]`); patch p/ `movs r4,#0`
+   * = sempre heap 0 (a principal, MemSize=64MB). */
+  if (base && !getenv("PES_NO_SYSMEM")) {
+    hook_arm(base + 0x4f178 + 1, (uintptr_t)w_s3eMallocBase);  /* s3eMallocBase */
+    hook_arm(base + 0x4e3ec + 1, (uintptr_t)w_s3eFreeBase);    /* s3eFreeBase */
+    hook_arm(base + 0x4f360 + 1, (uintptr_t)w_s3eReallocBase); /* s3eReallocBase */
+    real_verifyrsa = (fn6_t)make_thumb_tramp(base + 0x3da34 + 1);
+    hook_arm(base + 0x3da34 + 1, (uintptr_t)w_s3eCryptoVerifyRsa); /* licença */
+    debugPrintf("patch: s3e memory API -> system malloc/free/realloc; RSA verify -> valido\n");
+  }
+
+  if (base && getenv("PES_YIELD_NOOP")) {
+    hook_arm(base + 0x41cf0 + 1, (uintptr_t)marm_s3eDeviceYield);
+    debugPrintf("hook: s3eDeviceYield 0x41cf0 -> conta+no-op (diagnostico)\n");
+  }
+
+  if (base && !getenv("PES_NO_CFGTABLE")) {
+    void **slot = (void **)(base + 0x8b3cc);
+    if (*slot == NULL) {
+      *slot = calloc(65536, 1);
+      debugPrintf("patch: CONFIG TABLE pre-alloc @ *0x8b3cc = %p\n", *slot);
+    } else {
+      debugPrintf("patch: CONFIG TABLE ja alocada @ *0x8b3cc = %p\n", *slot);
+    }
   }
 
   /*
@@ -1614,6 +2377,7 @@ static int load_module(const char *name, int heap_mb, int snapshot) {
   if (strcmp(name, SO_NAME) == 0) {
     g_main_text_base = (uintptr_t)text_base;
     g_main_text_size = text_size;
+    debugPrintf("PES_TEXTBASE=%p (add offset for gdb)\n", (void *)g_main_text_base);
     g_main_jni_onload = so_find_addr_safe("JNI_OnLoad");
     g_main_android_main = so_find_addr_safe("android_main");
   } else {
@@ -2195,10 +2959,27 @@ int main(int argc, char *argv[]) {
     maybe_start_autotap(env, thiz);
     if (runNative) {
       debugPrintf("F3: runNative...\n");
+      debugPrintf("F3: runNative@off=0x%lx initNative@off=0x%lx setViewNative@off=0x%lx\n",
+                  g_main_text_base ? (unsigned long)((uintptr_t)runNative - g_main_text_base) : 0ul,
+                  g_main_text_base ? (unsigned long)((uintptr_t)initNative - g_main_text_base) : 0ul,
+                  g_main_text_base ? (unsigned long)((uintptr_t)setViewNative - g_main_text_base) : 0ul);
       snapshot_maps();
       runNative(env, thiz, jni_shim_new_string(arg1),
                 jni_shim_new_string(arg2), jni_shim_new_string(arg3));
       debugPrintf("F3: runNative retornou\n");
+      /* s6: chama DIRETO o s3e-file-loader (0x24504) com o path do exec. Ele faz
+       * fopen("rb")+0x23054 (loader/decompressor XE3U). Normalmente so roda via
+       * 0x248ac quando 0x2460c=0, mas 0x2460c retorna 1 (exec ja "registrado" na
+       * tabela sem descomprimir) -> o code-load nunca dispara. Forcamos aqui. */
+      if (g_main_text_base && getenv("PES_CALL_LOADER")) {
+        uintptr_t b = g_main_text_base;
+        int (*s3e_load)(const char *) =
+            (int (*)(const char *))(b + 0x24504 + 1);
+        const char *xp = env_or_default("PES_EXEC_PATH", "PES2012.s3e");
+        debugPrintf("F3: chamando s3e-file-loader 0x24504(\"%s\")...\n", xp);
+        int lr = s3e_load(xp);
+        debugPrintf("F3: 0x24504 -> %d\n", lr);
+      }
       if (!getenv("SONIC4EP1_EXIT_AFTER_RUN")) {
         /*
          * runNative inicializa o s3e e RETORNA (no Android os frames sao
@@ -2214,9 +2995,27 @@ int main(int argc, char *argv[]) {
         debugPrintf("F3: os_tick=%p\n", (void *)os_tick);
         if (os_tick && !getenv("SONIC4EP1_NO_FRAMELOOP")) {
           debugPrintf("F3: dirigindo loop de frames (runOnOSTickNative)\n");
+          /* PES usa o modelo YIELD/fibre (nao registra OS_TICK callback -> os_tick
+           * 0x5a4c8 e no-op): o game main roda num fibre e deu s3eDeviceYield no
+           * runNative; runOnOSTickNative nao o resume. Chamamos s3eDeviceUnYield
+           * (0x40fcc) por-frame p/ RESUMIR o fibre do jogo (1 frame do game main). */
+          /* pump selecionavel p/ testar o modelo yield/fibre do PES */
+          const char *pump = getenv("PES_PUMP"); /* unyield|sched|execpush|none */
+          uintptr_t b = g_main_text_base;
+          void (*fn_unyield)(void) = (void (*)(void))(b + 0x40fcc + 1);
+          void (*fn_sched)(void)   = (void (*)(void))(b + 0x2d400 + 1); /* wraps 0x2d39c */
+          void (*fn_execpush)(int, int, int) =
+              (void (*)(int, int, int))(b + 0x40cbc + 1);
+          debugPrintf("F3: PES_PUMP=%s (b=%p)\n", pump ? pump : "(default sched)", (void *)b);
           for (;;) {
             egl_shim_bind_main();
             os_tick(env, thiz);
+            if (b && pump) {
+              if (!strcmp(pump, "sched")) fn_sched();
+              else if (!strcmp(pump, "unyield")) fn_unyield();
+              else if (!strcmp(pump, "execpush")) fn_execpush(0, 0, 0);
+              /* default (pump==NULL) ou "none" -> so os_tick */
+            }
             egl_shim_swap_main();
             usleep(16000); /* ~60fps */
           }

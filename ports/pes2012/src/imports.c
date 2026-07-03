@@ -15,6 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <dirent.h>
+#include <sys/vfs.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -93,6 +96,7 @@ static void *b_cxa_type_match(void *a, void *b, char c) { (void)a; (void)b; (voi
 static void b_google_blocking_begin(void) {}
 static void b_google_blocking_end(void) {}
 static int b_sigsetjmp(sigjmp_buf env, int save) { return sigsetjmp(env, save); }
+static int b_atexit(void (*fn)(void)) { return atexit(fn); }
 
 /* ---- allocator isolado para a lib Android ----
  * Marmalade antigo escreve em estruturas assumindo o layout do allocator Android.
@@ -538,7 +542,25 @@ static struct traced_file *trace_file_slot(FILE *fp, int create,
   return NULL;
 }
 
+static const char *ci_path(const char *path, char *buf, size_t bufsz);
+
+/* Marmalade s3e VFS scheme "raw://" = caminho real do SO. Alguns paths chegam
+ * com o scheme LITERAL nos wrappers de libc do exec -> ENOENT. Removemos o
+ * prefixo p/ o arquivo ser achado (ex.: package.dz do OBB). "raw://" = 6 chars. */
+static const char *strip_scheme(const char *path) {
+  if (path && strncmp(path, "raw://", 6) == 0) {
+    if (getenv("PES_TRACE_RAW"))
+      fprintf(stderr, "[raw] \"%s\" -> \"%s\"\n", path, path + 6);
+    return path + 6;
+  }
+  return path;
+}
+
 static FILE *w_fopen(const char *path, const char *mode) {
+  char buf[1024];
+  path = strip_scheme(path);
+  if (mode && (mode[0] == 'r'))
+    path = ci_path(path, buf, sizeof(buf));
   FILE *r = fopen(path, mode);
   if (trace_io()) {
     trace_file_slot(r, 1, path);
@@ -552,6 +574,75 @@ static FILE *w_fopen64(const char *path, const char *mode) {
   return w_fopen(path, mode);
 }
 
+/* Resolve `in` case-insensitively p/ um caminho existente em `out`. O jogo pede
+ * assets com case misto (menuAssetLoader.group.bin) mas os arquivos são
+ * minúsculos -> access()/open() case-sensitive falham. Anda componente a
+ * componente casando ci via readdir. Retorna 1 se resolveu p/ arquivo existente. */
+static int ci_resolve(const char *in, char *out, size_t outsz) {
+  if (!in || !out || !outsz)
+    return 0;
+  if (access(in, F_OK) == 0) {
+    snprintf(out, outsz, "%s", in);
+    return 1;
+  }
+  size_t pos = 0;
+  out[0] = 0;
+  const char *p = in;
+  if (*p == '/') {
+    out[pos++] = '/';
+    out[pos] = 0;
+    p++;
+  }
+  while (*p) {
+    const char *slash = strchr(p, '/');
+    size_t clen = slash ? (size_t)(slash - p) : strlen(p);
+    char comp[256];
+    if (clen == 0) { p = slash + 1; continue; }
+    if (clen >= sizeof(comp))
+      return 0;
+    memcpy(comp, p, clen);
+    comp[clen] = 0;
+    char cur[1024];
+    snprintf(cur, sizeof(cur), "%s%s", out, comp);
+    if (access(cur, F_OK) != 0) {
+      const char *dir = out[0] ? out : ".";
+      DIR *d = opendir(dir);
+      int found = 0;
+      if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+          if (strcasecmp(e->d_name, comp) == 0) {
+            snprintf(cur, sizeof(cur), "%s%s", out, e->d_name);
+            found = 1;
+            break;
+          }
+        }
+        closedir(d);
+      }
+      if (!found)
+        return 0;
+    }
+    pos = (size_t)snprintf(out, outsz, "%s", cur);
+    if (slash) {
+      if (pos + 1 < outsz) {
+        out[pos++] = '/';
+        out[pos] = 0;
+      }
+      p = slash + 1;
+    } else {
+      break;
+    }
+  }
+  return access(out, F_OK) == 0;
+}
+
+/* devolve o path resolvido ci ou o original */
+static const char *ci_path(const char *path, char *buf, size_t bufsz) {
+  if (path && ci_resolve(path, buf, bufsz))
+    return buf;
+  return path;
+}
+
 static int w_open(const char *path, int flags, ...) {
   mode_t mode = 0;
   if (flags & O_CREAT) {
@@ -560,6 +651,10 @@ static int w_open(const char *path, int flags, ...) {
     mode = (mode_t)va_arg(ap, int);
     va_end(ap);
   }
+  char buf[1024];
+  path = strip_scheme(path);
+  if (!(flags & O_CREAT))
+    path = ci_path(path, buf, sizeof(buf));
   int r = open(path, flags, mode);
   if (trace_io())
     fprintf(stderr, "[io] open(\"%s\", 0x%x) -> %d errno=%d\n",
@@ -575,6 +670,7 @@ static int w_open64(const char *path, int flags, ...) {
     mode = (mode_t)va_arg(ap, int);
     va_end(ap);
   }
+  path = strip_scheme(path);
   int r = open(path, flags, mode);
   if (trace_io())
     fprintf(stderr, "[io] open64(\"%s\", 0x%x) -> %d errno=%d\n",
@@ -583,14 +679,19 @@ static int w_open64(const char *path, int flags, ...) {
 }
 
 static int w_access(const char *path, int mode) {
-  int r = access(path, mode);
+  char buf[1024];
+  path = strip_scheme(path);
+  const char *rp = ci_path(path, buf, sizeof(buf));
+  int r = access(rp, mode);
   if (trace_io())
-    fprintf(stderr, "[io] access(\"%s\", 0x%x) -> %d errno=%d\n",
-            path ? path : "(null)", mode, r, errno);
+    fprintf(stderr, "[io] access(\"%s\"->\"%s\", 0x%x) -> %d errno=%d\n",
+            path ? path : "(null)", rp, mode, r, errno);
   return r;
 }
 
 static int w_stat(const char *path, struct stat *st) {
+  char buf[1024];
+  path = ci_path(path, buf, sizeof(buf));
   int r = stat(path, st);
   if (trace_io())
     fprintf(stderr, "[io] stat(\"%s\") -> %d errno=%d\n",
@@ -600,6 +701,44 @@ static int w_stat(const char *path, struct stat *st) {
 
 static int w_stat64(const char *path, struct stat *st) {
   return w_stat(path, st);
+}
+
+/* O jogo checa espaço livre (statfs) antes de "instalar" o OBB (180MB). O vfat
+ * de 120GB pode dar valores errados/overflow no struct 32-bit -> "Not enough
+ * space" mesmo com GBs livres. Forçamos ~2GB livres. */
+static int w_statfs(const char *path, struct statfs *buf) {
+  int r = statfs(path, buf);
+  if (r != 0)
+    memset(buf, 0, sizeof(*buf));
+  /* ~512MB livre: > 180MB exigido, MAS < 2GB p/ NÃO estourar o cálculo 32-bit
+   * signed do jogo (2.7GB reais estouram -> negativo -> "not enough space"). */
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = 262144; /* 1GB total */
+  buf->f_bfree = 131072;  /* 512MB livre */
+  buf->f_bavail = 131072; /* 512MB livre */
+  if (trace_io())
+    fprintf(stderr, "[io] statfs(\"%s\") -> forçando 512MB livre\n",
+            path ? path : "(null)");
+  return 0;
+}
+static int w_statfs64(const char *path, struct statfs *buf) {
+  return w_statfs(path, buf);
+}
+static int w_fstatfs(int fd, struct statfs *buf) {
+  int r = fstatfs(fd, buf);
+  if (r != 0)
+    memset(buf, 0, sizeof(*buf));
+  buf->f_bsize = 4096;
+  buf->f_frsize = 4096;
+  buf->f_blocks = 262144;
+  buf->f_bfree = 131072; /* 512MB */
+  buf->f_bavail = 131072;
+  return 0;
+}
+static int w_fstatfs64(int fd, size_t sz, struct statfs *buf) {
+  (void)sz;
+  return w_fstatfs(fd, buf);
 }
 
 static size_t w_fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
@@ -707,6 +846,14 @@ DynLibFunction port_shims[] = {
     {"calloc", (uintptr_t)w_calloc},
     {"realloc", (uintptr_t)w_realloc},
     {"free", (uintptr_t)w_free},
+    /* C++ operators (libstdc++ nao linkado; PES os importa e ficavam
+     * UNRESOLVED -> operator new[] saltava pro nada e crashava no parser de
+     * config). ABI-compat com w_malloc/w_free (size_t/void* em 32-bit). */
+    {"_Znwj", (uintptr_t)w_malloc},   /* operator new(unsigned) */
+    {"_Znaj", (uintptr_t)w_malloc},   /* operator new[](unsigned) */
+    {"_ZdlPv", (uintptr_t)w_free},    /* operator delete(void*) */
+    {"_ZdaPv", (uintptr_t)w_free},    /* operator delete[](void*) */
+    {"atexit", (uintptr_t)b_atexit},
     {"strdup", (uintptr_t)w_strdup},
     {"valloc", (uintptr_t)w_valloc},
     {"pthread_attr_init", (uintptr_t)b_pthread_attr_init},
@@ -747,6 +894,10 @@ DynLibFunction port_shims[] = {
     {"open64", (uintptr_t)w_open64},
     {"access", (uintptr_t)w_access},
     {"stat", (uintptr_t)w_stat},
+    {"statfs", (uintptr_t)w_statfs},
+    {"statfs64", (uintptr_t)w_statfs64},
+    {"fstatfs", (uintptr_t)w_fstatfs},
+    {"fstatfs64", (uintptr_t)w_fstatfs64},
     {"stat64", (uintptr_t)w_stat64},
     {"AndroidBitmap_getInfo", (uintptr_t)abm_getInfo},
     {"AndroidBitmap_lockPixels", (uintptr_t)abm_lock},
