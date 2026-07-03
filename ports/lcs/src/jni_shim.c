@@ -82,6 +82,13 @@ static float lcs_env_float(const char *name, float def) {
 
 static void *make_callthrough(uintptr_t addr);
 static int lcs_current_app_state(void);
+static void (*tramp_lglSleep)(int);
+static void my_lglSleep(int ms);
+static int g_main_tid;
+static int (*p_rq_flushCommands)(void *, void *, int);
+static void (*p_rq_flushResources)(void);
+static void (*tramp_rq_flushCAR)(void *);
+static void my_rq_flushCommandsAndResources(void *thiz);
 static unsigned char *dv_ptr(const char *name);
 static int dv_bool_get(unsigned char *p);
 static void dv_bool_set(unsigned char *p, int v);
@@ -4912,6 +4919,26 @@ static void install_hooks(void) {
    * Utgard = flicker SO em carro/moto, pior em cenario pesado. NO-OP no passe inteiro
    * (o NO_ENVMAP antigo so marcava not-ready e o RTT continuava rodando). Tambem deve
    * DEVOLVER FPS em veiculo. LCS_NO_ENVMAP_PASS=0 religa o passe. */
+  {
+    uintptr_t sl = so_find_addr_safe("_Z8lglSleepi");
+    if (sl) { tramp_lglSleep = (void (*)(int))make_callthrough(sl);
+              hook_x64(sl, (uintptr_t)my_lglSleep);
+              fprintf(stderr, "[diag] lglSleep hookado (mainsleep)\n"); }
+    uintptr_t fc = so_find_addr_safe("_ZN14lglRenderQueue13flushCommandsEPNS_2CPEb");
+    uintptr_t fr = so_find_addr_safe("_ZN14lglRenderQueue14flushResourcesEv");
+    uintptr_t far = so_find_addr_safe("_ZN14lglRenderQueue25flushCommandsAndResourcesEv");
+    if (fc && fr && far) {
+      p_rq_flushCommands = (int (*)(void *, void *, int))fc;
+      p_rq_flushResources = (void (*)(void))fr;
+      tramp_rq_flushCAR = (void (*)(void *))make_callthrough(far);
+      hook_x64(far, (uintptr_t)my_rq_flushCommandsAndResources);
+      fprintf(stderr, "[fix] flushCommandsAndResources BOUNDED (max %dms)\n",
+              lcs_env_int("LCS_FLUSH_MAX_MS", 120));
+    } else {
+      fprintf(stderr, "[fix] flush bounded: simbolos fc=%p fr=%p far=%p\n",
+              (void *)fc, (void *)fr, (void *)far);
+    }
+  }
   if (lcs_env_int("LCS_NO_ENVMAP_PASS", 1)) {
     uintptr_t ge = so_find_addr_safe("_ZN9CRenderer22GenerateEnvironmentMapEv");
     if (ge) {
@@ -5710,11 +5737,68 @@ static void *lcs_music_prewarm(void *arg) {
   return NULL;
 }
 
+/* 🎯 FLUSH BOUNDED (fix do tranco do modo-direcao, 2026-07-03): lglRenderQueue::
+ * flushCommandsAndResources = flush SINCRONO (espera a fila de comandos+recursos
+ * drenar dormindo 1ms em loop). No enter-car/troca de estacao a fila enche com o SD
+ * lento -> main trava 1-3s (40 sleeps @caller 0x58eb00 no diag; mesma funcao nos
+ * backtraces de crash). Reimplementamos com DEADLINE (LCS_FLUSH_MAX_MS, default 120):
+ * drena o que der e retorna; o resto sobe nos frames seguintes (padrao ja validado
+ * no WaitForStreamer bounded). LCS_FLUSH_BOUNDED=0 volta o original. */
+static void my_rq_flushCommandsAndResources(void *thiz) {
+  if (!lcs_env_int("LCS_FLUSH_BOUNDED", 1)) { if (tramp_rq_flushCAR) tramp_rq_flushCAR(thiz); return; }
+  if (!p_rq_flushCommands || !p_rq_flushResources) { if (tramp_rq_flushCAR) tramp_rq_flushCAR(thiz); return; }
+  long maxms = lcs_env_int("LCS_FLUSH_MAX_MS", 120);
+  struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+  void *cp = (char *)thiz + 0x10;
+  long el = 0; int pend;
+  while ((pend = p_rq_flushCommands(thiz, cp, 0)) != 0) {
+    if (tramp_lglSleep) tramp_lglSleep(1);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    el = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    if (el > maxms) break;
+  }
+  if (*((unsigned char *)thiz + 120)) {
+    while (*((unsigned char *)thiz + 121)) {
+      p_rq_flushResources();
+      if (tramp_lglSleep) tramp_lglSleep(1);
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      el = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+      if (el > maxms * 2) break;
+    }
+  }
+  static int logs = 0;
+  if (el > maxms && logs < 24) {
+    fprintf(stderr, "[flush] bounded: cortado em %ldms (pend=%d)\n", el, pend);
+    logs++;
+  }
+}
+
+/* SLEEP-DIAG (2026-07-03): a radiografia mostrou o MAIN dormindo (nanosleep) durante
+ * o tranco do enter-car/troca de estacao = wait-loop da engine esperando a musica
+ * carregar. Hook em lglSleep: quando o MAIN dorme em state 9, loga o CALLER (offset)
+ * -> identifica a funcao do wait-loop p/ cortar a espera nela. */
+static void my_lglSleep(int ms) {
+  extern volatile unsigned long g_frame_beat;
+  if (g_main_tid && (int)syscall(SYS_gettid) == g_main_tid && g_app_state == 9) {
+    static long total = 0; static int logs = 0;
+    total += ms;
+    if (logs < 40) {
+      extern void *text_base;
+      uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+      long off = (text_base && ra >= (uintptr_t)text_base) ? (long)(ra - (uintptr_t)text_base) : -1;
+      fprintf(stderr, "[mainsleep] ms=%d caller_off=0x%lx total=%ldms f=%lu\n",
+              ms, off, total, g_frame_beat);
+      logs++;
+    }
+  }
+  if (tramp_lglSleep) tramp_lglSleep(ms);
+}
+
 /* STALL-SAMPLER (2026-07-03): quando o frame trava >400ms (o tranco do modo direcao),
  * despeja a pilha do KERNEL do main thread (/proc/self/task/TID/stack) -> mostra ONDE
  * esta preso (fat/mmc read? mali ioctl? page fault?). 1 dump por travada. */
 volatile unsigned long g_frame_beat = 0;
-static int g_main_tid = 0;
+
 static void *lcs_stall_sampler(void *arg) {
   (void)arg;
   unsigned long last = 0; int stuck = 0, dumped = 0;
