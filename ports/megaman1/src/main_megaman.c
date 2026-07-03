@@ -566,16 +566,20 @@ int main(int argc, char *argv[]) {
       if (f==840){ TAPCHK(); fprintf(stderr,"CONFIRM 4\n"); } if (f==860) RELCHK();
       if (f==1000) mm_shot(w,h,5);                       /* stage select */
       if (f==1060){ TAPCHK(); fprintf(stderr,"CONFIRM 5 (enter stage)\n"); } if (f==1080) RELCHK();
-      if (f==1200) mm_shot(w,h,6);                        /* baseline */
-      /* TAP jump (begin+end) e BURST denso p/ capturar arco do pulo */
-      if (f==1300){ mm_tbegin(TID_JUMP,VP_JUMP_X,VP_JUMP_Y); fprintf(stderr,"JUMP TAP\n"); }
-      if (f==1308){ mm_tend(TID_JUMP,VP_JUMP_X,VP_JUMP_Y); }
-      if (f==1304) mm_shot(w,h,6);
-      if (f==1312) mm_shot(w,h,7);
-      if (f==1320) mm_shot(w,h,8);
-      if (f==1330) mm_shot(w,h,9);
-      if (f==1345) mm_shot(w,h,10);
-      if (f==1400) fprintf(stderr,"NAVTEST done\n");
+      if (f==1200) mm_shot(w,h,6);                        /* baseline gameplay */
+      /* jump como TAP usando MESMO id do pause que funcionou (id 5) */
+      if (f==1300){ mm_tbegin(5,1173,620); fprintf(stderr,"JUMP id5\n"); }
+      if (f==1312){ mm_tend(5,1173,620); }
+      if (f==1330) mm_shot(w,h,7);
+      /* jump como TAP id0 na MESMA posição */
+      if (f==1400){ mm_tbegin(0,1173,620); fprintf(stderr,"JUMP id0\n"); }
+      if (f==1412){ mm_tend(0,1173,620); }
+      if (f==1430) mm_shot(w,h,8);
+      /* shoot tap id5 */
+      if (f==1500){ mm_tbegin(5,1085,465); fprintf(stderr,"SHOOT id5\n"); }
+      if (f==1512){ mm_tend(5,1085,465); }
+      if (f==1530) mm_shot(w,h,9);
+      if (f==1600) fprintf(stderr,"NAVTEST done\n");
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
