@@ -99,3 +99,47 @@ view-space (gfx_patch.c:899-913/1051-1061 como referência).
   higiene opt-in; mundo=254MB é o alvo (budget/pools/população); destroy-throttle validado.
 - Falta: medir MEMLOW em sessão LONGA; half-res ETC (LCS_TEX_HALF) como opção 1GB; paging
   (BULLY_PAGE modernizado) só se textura virar pressão; swap/zram do R36S (usar o do sistema).
+
+---
+# 📋 SESSÃO 2026-07-03 (tarde) — CASO DO MODO-DIREÇÃO: diagnóstico FECHADO, fix pendente
+
+## O que foi PROVADO (cadeia completa)
+1. Usuário: **rádio OFF no veículo = ZERO flicker** ao entrar/sair (prova de ouro).
+2. Spike-diag: TODA entrada de veículo = frame de 2.1-2.6s, `tex+0 io+0`.
+3. Stall-sampler (kernel stack): o main está DORMINDO (`nanosleep`) durante o tranco.
+4. Sleep-diag: 40/40 sleeps vêm do caller `0x58eb00` = **`lglRenderQueue::
+   flushCommandsAndResources`** — flush SÍNCRONO que trava o main até a fila de
+   comandos+recursos drenar (loop: flushCommands→sleep(1ms); depois flushResources→sleep).
+   No SD lento = 1-3s. A MESMA função aparece nos backtraces dos crashes sig11 do Mali.
+5. Trocar estação de rádio = novo flush = "flicker atrás de flicker".
+
+## O que foi tentado e o resultado
+- ✅ #1 GenerateEnvironmentMap NO-OP (RTT 1024×1024) — VALIDADO ("coisas fixas", sem regressão).
+- ❌ #2 RslMatFXMaterialSetupEnvMap no-op — crasha o load de material (revertida, opt-in).
+- ❌ Vsync off — sem efeito no tranco.
+- ❌ Create-throttle 8/frame — sem efeito no tranco (ficou, inofensivo).
+- ❌ PlayerInCar no-op — rádio tocava mesmo assim (não é o gate; opt-in).
+- ⚠️ Music PREWARM (aquece a cadeia FAT do data_music.wad no boot) — implementado, ficou
+  default ON, mas NÃO bastou (o custo não era só a FAT chain).
+- ⚠️ FLUSH BOUNDED (reimplementação do flushCommandsAndResources com deadline 120ms) —
+  implementado MAS a validação headless mostrou spikes iguais (2.0-2.7s). **Verificar na
+  próxima: o hook instalou? (procurar "[fix] flushCommandsAndResources BOUNDED" no log);
+  o "[flush] bounded: cortado" nunca apareceu → ou não instalou, ou o wait está em OUTRO
+  caller além do flush (rodar o sleep-diag de novo com o bound ativo).**
+- ⚠️ ALPHA: provado por A/B que o clear-por-frame (fix do chão) causa a "matriz preta
+  piscando" (câmera da morte); surface alpha=0 é mentira no mali fbdev; alpha-MASK total
+  quebra a UI (tela preta com som). → v2 pendente (abaixo).
+
+## ▶️ PRÓXIMAS ETAPAS (domingo)
+1. **Fechar o flush-bounded**: conferir se o hook instalou (log "[fix] ... BOUNDED"); se
+   sim e o spike persiste → rodar sleep-diag de novo (o caller pode ter mudado / haver um
+   segundo wait); considerar hookar TAMBÉM o caller do flush (quem pede o flush no
+   enter-car) e torná-lo assíncrono.
+2. **Alpha v2 (matriz preta)**: clear de alpha a cada N frames (ex. 15) em vez de todo
+   frame — 15× menos janela de flicker, mantém o chão limpo. Simples e seguro.
+3. Rádio: se o flush-bounded fechar, re-testar troca de estação; se sobrar custo, avaliar
+   por o load da estação numa thread (async) ou cache das cabeças de faixa.
+4. Mapa/céu piscando em partes (relato novo) — colher print/observação com o [spike] ao lado.
+5. Retomar a lista numerada (RAM/1GB): #6 low-memory nativo, #7 MEMLOW longa, #11 budget.
+6. Becos do dia (NÃO repetir): alpha-mask total (UI preta), matfx-setup no-op (crash),
+   PlayerInCar no-op (inócuo), prewarm sozinho (insuficiente).
