@@ -19,17 +19,28 @@ com o `blackops_gles1.dz` do jogo). Testado: **boot, New Game, gameplay, fullscr
      pro painel). Aplicado ~4s após lançar; restaurado ao sair.
    - Sem gptokeyb, sem setsid.
 
-2. **`src/nextos-dpad-movement.patch`** — patch em `src/s3e_input.c`:
-   - No game-mode, o **movimento agora aceita D-pad** (além do stick analógico), espelhando
-     `input_update_cursor`. Handhelds **dpad-only** (ex.: "USB Gamepad" 0810:0001) não têm
-     stick esquerdo e sem isto não andavam. Recompilar via `scripts/build-docker.sh` do upstream.
+2. **`src/nextos-fixes.patch`** — patch na fonte do loader (recompilar via
+   `scripts/build-docker.sh` do upstream):
+   - **Input** (`s3e_input.c`): no game-mode o **movimento aceita D-pad** (além do stick),
+     espelhando `input_update_cursor` — handhelds dpad-only não andavam. **Select+Start**
+     = sair do port (hotkey padrão).
+   - **Áudio — tiros que paravam de sair** (`s3e_audio.c` + header): a assinatura real de
+     `s3eSoundChannelRegister` é `(canal, cbid, fn, userData)` — a de 3 args descartava o
+     callback. A engine registra **END_SAMPLE** em cada canal para reciclar as vozes; sem o
+     aviso, achava os canais eternamente ocupados e silenciava sons novos. Agora o loader
+     despacha END_SAMPLE **no pump do frame** (`audio_pump` em `eglSwapBuffers` — nunca
+     re-entrante dentro do próprio `ChannelPlay`, que corrompia o estado da engine).
+   - **Áudio — música de fundo sumindo**: na API s3eAudio, `repeat=0` = **loop infinito**;
+     o original tocava 1 vez e parava. Corrigido em `s3eAudioPlay`/`PlayFromBuffer`.
+   - Auditoria opt-in: `CODBOZ_AUDIO_LOG=1` loga cada pedido de som/música/registro.
 
 3. **`codboz_s3e_loader`** — loader já recompilado (armhf) com o patch acima.
 
 ## Controles
 
-Select = alterna cursor/game-mode. Game-mode: **D-pad = andar**, right-stick = olhar,
-A = action/sprint, B = reload, X = melee, Y = granada, L1/L2 = mira, R1/R2 = tiro, Start = pause.
+Select = alterna cursor/game-mode. **Select+Start = sair**. Game-mode: **D-pad = andar**,
+right-stick = olhar, A = action/sprint, B = reload, X = melee, Y = granada, L1/L2 = mira,
+R1/R2 = tiro, Start = pause.
 
 ## APK: use a STOCK `359ee68…`
 

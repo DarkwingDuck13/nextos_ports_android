@@ -1,0 +1,339 @@
+diff --git a/include/s3e_host_internal.h b/include/s3e_host_internal.h
+index cd95b67..f4be38d 100644
+--- a/include/s3e_host_internal.h
++++ b/include/s3e_host_internal.h
+@@ -221,6 +221,7 @@ void *lookup_egl(const char *symbol);
+ void input_pump(void);
+ void input_shutdown(void);
+ void audio_shutdown(void);
++void audio_pump(void);
+ void dispatch_due_timers(void);
+ void *make_stub(const char *symbol);
+ 
+@@ -337,8 +338,12 @@ int32_t s3eAudioRegister(uint32_t id, void *callback, void *user_data);
+ int32_t s3eSoundGetFreeChannel(void);
+ int32_t s3eSoundSetInt(uint32_t key, int32_t value);
+ int32_t s3eSoundGetInt(uint32_t key);
+-int32_t s3eSoundChannelRegister(uint32_t id, void *callback, void *user_data);
+-int32_t s3eSoundChannelUnRegister(uint32_t id, void *callback);
++/* NextOS: assinatura REAL da s3e = (channel, cbid, fn, userData) — 4 args. A
++   antiga de 3 descartava o ponteiro do callback: a engine nunca recebia
++   END_SAMPLE, achava os canais eternamente ocupados e silenciava sons novos. */
++int32_t s3eSoundChannelRegister(int32_t channel, uint32_t callback_id, void *callback,
++                                void *user_data);
++int32_t s3eSoundChannelUnRegister(int32_t channel, uint32_t callback_id);
+ int32_t s3eSoundChannelPlay(int32_t channel, const void *data, uint32_t size, uint32_t repeat);
+ int32_t s3eSoundChannelStop(int32_t channel);
+ int32_t s3eSoundChannelPause(int32_t channel);
+diff --git a/src/s3e_audio.c b/src/s3e_audio.c
+index 0be71d0..8625dd4 100644
+--- a/src/s3e_audio.c
++++ b/src/s3e_audio.c
+@@ -64,6 +64,30 @@ struct sound_slot {
+     int position;
+ };
+ 
++/* NextOS: callbacks por canal (END_SAMPLE=0, STOP_AUDIO=1). A engine do jogo
++   recicla as vozes dela quando recebe END_SAMPLE; sem despachar isto, ela acha
++   que os canais nunca terminam e para de emitir sons novos (tiros mudos). */
++enum {
++    S3E_CHANNEL_END_SAMPLE = 0,
++    S3E_CHANNEL_STOP_AUDIO = 1,
++    S3E_CHANNEL_GEN_AUDIO = 2,
++    S3E_CHANNEL_GEN_AUDIO_STEREO = 3,
++    SOUND_CALLBACK_TYPES = 2,
++};
++
++struct s3e_sound_end_sample_info {
++    int32_t channel;
++    int32_t reps_remaining;
++};
++
++struct sound_channel_callback {
++    void *fn;
++    void *user_data;
++};
++
++static struct sound_channel_callback g_channel_callbacks[SOUND_CHANNELS][SOUND_CALLBACK_TYPES];
++static int g_audio_pumping;
++
+ static void *g_sdl2_audio;
+ static void *g_sdl_mixer;
+ static struct sdl_audio_api g_sdl_audio;
+@@ -351,6 +375,24 @@ static void sound_channel_finished(int channel) {
+     }
+ }
+ 
++static void dispatch_channel_callback(int channel, int type) {
++    struct sound_channel_callback *cb = &g_channel_callbacks[channel][type];
++    if (!cb->fn) {
++        return;
++    }
++    struct s3e_sound_end_sample_info info = {
++        .channel = channel,
++        .reps_remaining = 0,
++    };
++    ((s3e_callback_fn)(uintptr_t)cb->fn)(&info, cb->user_data);
++}
++
++static uint8_t g_channel_end_pending[SOUND_CHANNELS];
++
++/* NextOS: libera canais terminados e MARCA o END_SAMPLE como pendente. NAO
++   despacha aqui: isto roda dentro de s3eSoundChannelPlay/GetFreeChannel, e
++   callback re-entrante no meio de um Play corrompe o estado de voz da engine
++   (SIGSEGV 0x4a0d71f8). No s3e real, callbacks disparam no yield do frame. */
+ static void service_finished_channels(void) {
+     if (!g_audio_ready) {
+         return;
+@@ -364,9 +406,28 @@ static void service_finished_channels(void) {
+             continue;
+         }
+         free_sound_slot(channel);
++        g_channel_end_pending[channel] = 1;
+     }
+ }
+ 
++/* Despacho dos END_SAMPLE pendentes — chamado SO' no pump do frame
++   (eglSwapBuffers), nunca de dentro da API de som. */
++void audio_pump(void) {
++    if (!g_audio_ready || g_audio_pumping) {
++        return;
++    }
++    g_audio_pumping = 1;
++    service_finished_channels();
++    for (int channel = 0; channel < SOUND_CHANNELS; ++channel) {
++        if (!g_channel_end_pending[channel]) {
++            continue;
++        }
++        g_channel_end_pending[channel] = 0;
++        dispatch_channel_callback(channel, S3E_CHANNEL_END_SAMPLE);
++    }
++    g_audio_pumping = 0;
++}
++
+ static int audio_open(void) {
+     if (g_audio_tried) {
+         return g_audio_ready;
+@@ -474,6 +535,10 @@ static int resolve_audio_path(const char *name, char *out, size_t out_size) {
+     const char *patterns[] = {
+         "%s/%s",
+         "%s/assets/%s",
++        /* NextOS: musica do BOZ vive nestas subpastas; sem isto, pedidos por nome
++           puro (ex.: "115.mp3") nao resolviam -> musica de fundo faltando. */
++        "%s/assets/blackops-music/%s",
++        "%s/assets/deadops-music/%s",
+         "%s/assets/data-gles1/%s",
+         "%s/assets/data-sw/%s",
+     };
+@@ -557,6 +622,11 @@ int32_t s3eAudioGetInt(uint32_t key) {
+ }
+ 
+ int32_t s3eAudioPlay(const char *filename, uint32_t repeat) {
++    /* NextOS: auditoria opt-in — CODBOZ_AUDIO_LOG=1 loga cada pedido de musica. */
++    if (getenv("CODBOZ_AUDIO_LOG")) {
++        fprintf(stderr, "[audio] s3eAudioPlay(\"%s\", repeat=%u)\n",
++                filename ? filename : "(null)", repeat);
++    }
+     if (!audio_open()) {
+         return 1;
+     }
+@@ -576,7 +646,10 @@ int32_t s3eAudioPlay(const char *filename, uint32_t repeat) {
+ 
+     g_audio_paused = 0;
+     g_mixer.VolumeMusic(g_audio_volume_mix);
+-    if (g_mixer.PlayMusic(g_music, repeat ? -1 : 0) != 0) {
++    /* NextOS FIX: na API s3eAudio, repeat=0 = tocar PARA SEMPRE (loop). O codigo
++       original tocava 1 vez e parava -> "musica de fundo sumindo" (ex.: o
++       underscore do menu e' pedido com repeat=0 e deve loopar). */
++    if (g_mixer.PlayMusic(g_music, (repeat == 0) ? -1 : (int)repeat - 1) != 0) {
+         fprintf(stderr, "[audio] music play failed: %s\n", mixer_error());
+         stop_music();
+         return 1;
+@@ -610,7 +683,8 @@ int32_t s3eAudioPlayFromBuffer(const void *buffer, uint32_t size, uint32_t repea
+     }
+     g_audio_paused = 0;
+     g_mixer.VolumeMusic(g_audio_volume_mix);
+-    if (g_mixer.PlayMusic(g_music, repeat ? -1 : 0) != 0) {
++    /* NextOS FIX: idem s3eAudioPlay — repeat=0 = loop infinito na API s3e. */
++    if (g_mixer.PlayMusic(g_music, (repeat == 0) ? -1 : (int)repeat - 1) != 0) {
+         fprintf(stderr, "[audio] buffered music play failed: %s\n", mixer_error());
+         stop_music();
+         return 1;
+@@ -659,6 +733,8 @@ int32_t s3eSoundGetFreeChannel(void) {
+             return channel;
+         }
+     }
++    /* NextOS: canais esgotados = sons novos silenciados; logar sempre (raro e grave). */
++    fprintf(stderr, "[audio] NO FREE SOUND CHANNEL (all %d busy)\n", SOUND_CHANNELS);
+     return -1;
+ }
+ 
+@@ -705,21 +781,44 @@ int32_t s3eSoundGetInt(uint32_t key) {
+     }
+ }
+ 
+-int32_t s3eSoundChannelRegister(uint32_t id, void *callback, void *user_data) {
+-    (void)id;
+-    (void)callback;
+-    (void)user_data;
+-    return 0;
++int32_t s3eSoundChannelRegister(int32_t channel, uint32_t callback_id, void *callback,
++                                void *user_data) {
++    if (getenv("CODBOZ_AUDIO_LOG")) {
++        fprintf(stderr, "[audio] s3eSoundChannelRegister(ch=%d, cbid=%u, fn=%p)%s\n",
++                (int)channel, callback_id, callback,
++                (callback_id == S3E_CHANNEL_GEN_AUDIO ||
++                 callback_id == S3E_CHANNEL_GEN_AUDIO_STEREO)
++                    ? " <-- GEN_AUDIO (nao suportado)"
++                    : "");
++    }
++    if (!channel_valid(channel)) {
++        return 1;
++    }
++    if (callback_id < SOUND_CALLBACK_TYPES) {
++        g_channel_callbacks[channel][callback_id].fn = callback;
++        g_channel_callbacks[channel][callback_id].user_data = user_data;
++        return 0;
++    }
++    /* GEN_AUDIO (2/3) nao suportado: retornar erro faz a engine usar o caminho
++       simples (ChannelPlay) em vez de esperar streaming que nunca tocaria. */
++    return 1;
+ }
+ 
+-int32_t s3eSoundChannelUnRegister(uint32_t id, void *callback) {
+-    (void)id;
+-    (void)callback;
++int32_t s3eSoundChannelUnRegister(int32_t channel, uint32_t callback_id) {
++    if (!channel_valid(channel) || callback_id >= SOUND_CALLBACK_TYPES) {
++        return 1;
++    }
++    g_channel_callbacks[channel][callback_id].fn = NULL;
++    g_channel_callbacks[channel][callback_id].user_data = NULL;
+     return 0;
+ }
+ 
+ int32_t s3eSoundChannelPlay(int32_t channel, const void *data, uint32_t size, uint32_t repeat) {
+     init_sound_slots();
++    if (getenv("CODBOZ_AUDIO_LOG")) {
++        fprintf(stderr, "[audio] s3eSoundChannelPlay(ch=%d, samples=%u, repeat=%u)\n",
++                (int)channel, size, repeat);
++    }
+     if (!audio_open() || !data || size == 0 || size > UINT32_MAX / 2u) {
+         return 1;
+     }
+@@ -763,7 +862,11 @@ int32_t s3eSoundChannelPlay(int32_t channel, const void *data, uint32_t size, ui
+     slot->finished = 0;
+     g_mixer.Volume(channel, mixed_channel_volume(slot));
+ 
+-    int played_channel = g_mixer.PlayChannelTimed(channel, chunk, repeat ? -1 : 0, -1);
++    /* NextOS: EMPIRICO (log de auditoria): este jogo passa repeat=0 em todos os
++       one-shots = tocar UMA vez (a engine recicla via END_SAMPLE, nao via loop).
++       repeat>1 = tocar N vezes. Nunca loop infinito vindo daqui. */
++    int loops = (repeat <= 1) ? 0 : (int)repeat - 1;
++    int played_channel = g_mixer.PlayChannelTimed(channel, chunk, loops, -1);
+     if (played_channel < 0) {
+         fprintf(stderr, "[audio] sound play failed: %s\n", mixer_error());
+         free_sound_slot(channel);
+@@ -776,8 +879,14 @@ int32_t s3eSoundChannelStop(int32_t channel) {
+     if (!audio_open() || !channel_valid(channel)) {
+         return 1;
+     }
++    if (getenv("CODBOZ_AUDIO_LOG")) {
++        fprintf(stderr, "[audio] s3eSoundChannelStop(ch=%d)\n", (int)channel);
++    }
+     g_mixer.HaltChannel(channel);
+     free_sound_slot(channel);
++    /* NextOS: NAO despachar STOP_AUDIO aqui — a engine chamou Stop, ela JA sabe.
++       E cancela END pendente: nao avisar "acabou" de som que ela mandou parar. */
++    g_channel_end_pending[channel] = 0;
+     return 0;
+ }
+ 
+diff --git a/src/s3e_gl.c b/src/s3e_gl.c
+index 52e4ff9..cc71a06 100644
+--- a/src/s3e_gl.c
++++ b/src/s3e_gl.c
+@@ -227,6 +227,7 @@ static EGLBoolean host_eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
+     EGLBoolean (*real)(EGLDisplay, EGLSurface) = lookup_egl("eglSwapBuffers");
+     input_pump();
+     dispatch_due_timers();
++    audio_pump(); /* NextOS: despacha END_SAMPLE p/ engine reciclar as vozes */
+     frontend_cursor_gl_present();
+     EGLBoolean result = real ? real(display, surface) : 0;
+     pace_frame();
+diff --git a/src/s3e_input.c b/src/s3e_input.c
+index 9ecce95..148320b 100644
+--- a/src/s3e_input.c
++++ b/src/s3e_input.c
+@@ -144,10 +144,12 @@ static const struct key_map KEYMAP_MELEE = KEY_MAP(KEY_MELEE);
+ static const struct key_map KEYMAP_GRENADE = KEY_MAP(KEY_GRENADE);
+ static const struct key_map KEYMAP_AIM = KEY_MAP(KEY_AIM);
+ static const struct key_map KEYMAP_SHOOT = KEY_MAP(KEY_SHOOT);
+-static const struct key_map KEYMAP_TACTICAL = KEY_MAP(KEY_TACTICAL);
+-static const struct key_map KEYMAP_CROUCH = KEY_MAP(KEY_CROUCH);
+-static const struct key_map KEYMAP_ALT_FIRE = KEY_MAP(KEY_ALT_FIRE);
+-static const struct key_map KEYMAP_CHANGE_WEAPON = KEY_MAP(KEY_CHANGE_WEAPON);
++/* NextOS: dpad virou movimento; estes 4 (acoes do dpad) ficam sem uso.
++   Mantidos p/ referencia/futuro remapeamento, marcados unused p/ -Werror. */
++static const struct key_map KEYMAP_TACTICAL __attribute__((unused)) = KEY_MAP(KEY_TACTICAL);
++static const struct key_map KEYMAP_CROUCH __attribute__((unused)) = KEY_MAP(KEY_CROUCH);
++static const struct key_map KEYMAP_ALT_FIRE __attribute__((unused)) = KEY_MAP(KEY_ALT_FIRE);
++static const struct key_map KEYMAP_CHANGE_WEAPON __attribute__((unused)) = KEY_MAP(KEY_CHANGE_WEAPON);
+ static const struct key_map KEYMAP_START = KEY_MAP(KEY_START);
+ 
+ #undef KEY_MAP
+@@ -636,18 +638,35 @@ static void input_update_game_keys(void) {
+                           input_trigger(SDL_AXIS_TRIGGERRIGHT),
+                       &KEYMAP_SHOOT);
+     game_action_apply(input_button(SDL_BUTTON_START), &KEYMAP_START);
+-    game_action_apply(input_dpad_up(), &KEYMAP_TACTICAL);
+-    game_action_apply(input_dpad_down(), &KEYMAP_CROUCH);
+-    game_action_apply(input_dpad_left(), &KEYMAP_ALT_FIRE);
+-    game_action_apply(input_dpad_right(), &KEYMAP_CHANGE_WEAPON);
++    /* NextOS: D-pad agora e' MOVIMENTO (ver input_update_game_touchpads).
++       Handhelds dpad-only nao tem stick esquerdo -> sem isto nao ha como andar.
++       As acoes secundarias (tactical/crouch/altfire/changeweapon) sao dropadas;
++       o esquema essencial de FPS (mover/olhar/tiro/aim/recarga/melee/granada)
++       continua completo em dpad + right-stick + ABXY + L/R. */
+ }
+ 
+ static void input_update_game_touchpads(void) {
+     int32_t width = XPERIA_TOUCHPAD_WIDTH;
+     int32_t height = XPERIA_TOUCHPAD_HEIGHT;
+     int32_t center_y = height / 2;
+-    touchpad_update_stick(0, input_xperia_axis(SDL_AXIS_LEFTX), input_xperia_axis(SDL_AXIS_LEFTY),
+-                          width / 5, center_y, width / 5, height / 2);
++
++    /* Movimento = stick esquerdo analogico OU D-pad (o que estiver ativo).
++       Espelha input_update_cursor(): pads dpad-only (ex.: USB Gamepad 0810:0001)
++       passam a andar; pads com stick real continuam usando o analogico. */
++    int32_t lx = input_xperia_axis(SDL_AXIS_LEFTX);
++    int32_t ly = input_xperia_axis(SDL_AXIS_LEFTY);
++    if (input_dpad_left()) {
++        lx = -32767;
++    } else if (input_dpad_right()) {
++        lx = 32767;
++    }
++    if (input_dpad_up()) {
++        ly = -32767;
++    } else if (input_dpad_down()) {
++        ly = 32767;
++    }
++
++    touchpad_update_stick(0, lx, ly, width / 5, center_y, width / 5, height / 2);
+     touchpad_update_stick(1, input_xperia_axis(SDL_AXIS_RIGHTX), input_xperia_axis(SDL_AXIS_RIGHTY),
+                           (width * 4) / 5, center_y, width / 8, height / 8);
+ }
+@@ -665,6 +684,12 @@ void input_pump(void) {
+     g_sdl.GameControllerUpdate();
+     g_hat_mask = input_current_hat_mask();
+ 
++    /* NextOS: Select+Start = sair do port (hotkey padrao dos nossos ports).
++       O launcher restaura o free_scale ao ver o processo terminar. */
++    if (input_button(SDL_BUTTON_BACK) && input_button(SDL_BUTTON_START)) {
++        _exit(0);
++    }
++
+     uint64_t now = monotonic_ms();
+     if (!g_input_last_ms) {
+         g_input_last_ms = now;
