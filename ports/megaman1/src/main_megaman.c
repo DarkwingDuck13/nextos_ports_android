@@ -100,8 +100,10 @@ static void mm_set_input_mask(unsigned m){
 /* mask do gamepad (setado no loop de eventos) OR'd no input do jogo via hook. */
 static volatile unsigned g_pad_mask = 0;
 static void (*g_vpad_orig)(void *self) = NULL;
+static volatile long g_vpad_calls = 0;      /* nº de game-frames (=chamadas a VirtualPad::update) */
 __attribute__((target("thumb")))
 static void my_vpad_update(void *self){
+  g_vpad_calls++;
   if(g_vpad_orig) g_vpad_orig(self);         /* roda a VirtualPad::update original */
   if(g_pad_mask && p_GDM_getInstance){        /* OR o mask do gamepad físico */
     char *gdm=(char*)p_GDM_getInstance();
@@ -255,6 +257,28 @@ static void mm_tmove(int id,float x,float y){ if(nativeTouchesMove)nativeTouches
    Bits (= GetMaskCode): LEFT=0x1000 RIGHT=0x2000 UP=0x4000 DOWN=0x8000. */
 static int dp_up,dp_dn,dp_lf,dp_rt, stk_x,stk_y;
 static volatile unsigned g_pad_mask;   /* fwd: bits injetados no input do jogo */
+static volatile long long g_per_us = 0;   /* microssegundos por frame (velocidade); L1/R1 ajustam */
+#define MM_SPEED_CFG "mm_speed.cfg"        /* persistência da velocidade (na pasta do jogo) */
+static void speed_save(void){
+  FILE *f = fopen(MM_SPEED_CFG, "w");
+  if (f) { fprintf(f, "%lld\n", (long long)g_per_us); fclose(f); }
+}
+static long long speed_load(void){
+  FILE *f = fopen(MM_SPEED_CFG, "r"); if (!f) return 0;
+  long long v = 0; if (fscanf(f, "%lld", &v) != 1) v = 0; fclose(f);
+  if (v < 8000 || v > 120000) v = 0;
+  return v;
+}
+static void adjust_speed(int slower){     /* slower=1: mais lento; 0: mais rápido */
+  long long step = 3000;                   /* passo perceptível (~9% a 30fps) */
+  g_per_us += slower ? step : -step;
+  if (g_per_us < 8000) g_per_us = 8000;    /* teto ~125fps */
+  if (g_per_us > 120000) g_per_us = 120000;/* piso ~8fps */
+  speed_save();
+  double fps = 1000000.0/(double)g_per_us;
+  long long spf = g_per_us*44100/1000000;
+  fprintf(stderr,"[speed] per_us=%lld fps=%.1f MM_SPF=%lld (salvo)\n",(long long)g_per_us,fps,(long long)spf);
+}
 static void update_dpad(void){
   unsigned m=0;
   if(dp_rt||stk_x>0) m|=0x2000;
@@ -703,6 +727,8 @@ int main(int argc, char *argv[]) {
             case SDL_CONTROLLER_BUTTON_Y: btn_touch(TID_WEAPON,pr,VP_WEAPON_X,VP_WEAPON_Y); break;/* arma */
             case SDL_CONTROLLER_BUTTON_B: btn_touch(TID_BACK,pr,VP_BACK_X,VP_BACK_Y); break;     /* voltar */
             case SDL_CONTROLLER_BUTTON_START: btn_touch(TID_PAUSE,pr,VP_PAUSE_X,VP_PAUSE_Y); break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  if(pr) adjust_speed(0); break; /* L1: mais rápido */
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: if(pr) adjust_speed(1); break; /* R1: mais lento */
           }
           break;
         }
@@ -752,30 +778,29 @@ int main(int argc, char *argv[]) {
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
-    /* SYNC vídeo->áudio: o áudio (44100, tempo real) é o clock MESTRE. Renderiza
-       1 frame a cada SPF samples tocados pelo SDL -> vídeo travado no áudio, sem
-       deriva. MM_SPF ajusta a velocidade (735=60fps, 1470=30fps; maior=mais lento).
-       Fallback: se o áudio não avançar (não iniciou), cap por relógio (60fps). */
+    /* PACING preciso do frame (jogo é frame-based; velocidade = fps de render).
+       per_us = MM_SPF samples @44100 em microssegundos (MM_SPF=1470 -> 30.00fps
+       exato; maior=mais lento). Acumulador monotônico -> SEM drift nem jitter.
+       Assim o vídeo casa com o áudio (ambos tempo-real, mesma base). */
     {
-      static long long spf = 0, rbase = 0, rframes = 0, next_us = 0, per_us = 0;
-      if (!spf) { const char *e=getenv("MM_SPF"); spf = e?atoll(e):1470; if(spf<1)spf=1470;
-                  const char *f=getenv("MM_FPS"); int fp=f?atoi(f):60; per_us=1000000LL/(fp<1?60:fp); }
+      static long long next_us = 0;
+      if (!g_per_us) {
+        long long saved = speed_load();          /* 1) valor salvo (L1/R1) */
+        if (saved) g_per_us = saved;
+        else {                                   /* 2) MM_SPF ou 3) default 30fps */
+          const char *e = getenv("MM_SPF"); long long spf = e ? atoll(e) : 1470;
+          if (spf < 1) spf = 1470;
+          g_per_us = spf * 1000000LL / 44100;
+        }
+        fprintf(stderr, "[speed] inicial per_us=%lld fps=%.1f\n", (long long)g_per_us, 1000000.0/(double)g_per_us);
+      }
       struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
       long long now_us = ts.tv_sec*1000000LL + ts.tv_nsec/1000;
-      long long fp0 = g_frames_played;
-      if (fp0 > 0) {                                  /* áudio rodando -> sync nele */
-        if (!rbase) { rbase = fp0; rframes = 0; }
-        rframes++;
-        long long target = rbase + rframes*spf;
-        int guard=0;
-        while (g_frames_played < target) { usleep(500); if(++guard>200) break; }
-      } else {                                        /* áudio ainda não -> cap fixo */
-        if (!next_us) next_us = now_us;
-        next_us += per_us;
-        long long d = next_us - now_us;
-        if (d>0 && d<per_us*3) { struct timespec s={d/1000000,(d%1000000)*1000}; nanosleep(&s,NULL); }
-        else next_us = now_us;
-      }
+      if (!next_us) next_us = now_us;
+      next_us += g_per_us;
+      long long d = next_us - now_us;
+      if (d > 0 && d < g_per_us*4) { struct timespec s={d/1000000,(d%1000000)*1000}; nanosleep(&s,NULL); }
+      else next_us = now_us;                  /* atrasou -> resync */
     }
     if (getenv("MM_ADIAG")) {
       static long fcnt=0; static long long t0=0;
@@ -783,9 +808,9 @@ int main(int argc, char *argv[]) {
       struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
       long long ms=ts.tv_sec*1000LL+ts.tv_nsec/1000000;
       if(!t0)t0=ms;
-      if(ms-t0>=1000){ fprintf(stderr,"[adiag] fps=%ld wr=%ld wrB=%ld cb=%ld ring=%d\n",
-                       fcnt,g_wr_calls,g_wr_bytes,g_cb_calls,aring_used());
-                       fcnt=0; g_wr_calls=0; g_wr_bytes=0; g_cb_calls=0; t0=ms; }
+      if(ms-t0>=1000){ fprintf(stderr,"[adiag] fps=%ld gameframes=%ld wr=%ld cb=%ld ring=%d\n",
+                       fcnt,g_vpad_calls,g_wr_calls,g_cb_calls,aring_used());
+                       fcnt=0; g_vpad_calls=0; g_wr_calls=0; g_wr_bytes=0; g_cb_calls=0; t0=ms; }
     }
   }
 
