@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 #include <SDL2/SDL.h>
@@ -98,9 +99,12 @@ static void mm_set_input_mask(unsigned m){
 }
 /* mask do gamepad (setado no loop de eventos) OR'd no input do jogo via hook. */
 static volatile unsigned g_pad_mask = 0;
+static int g_start_held = 0, g_select_held = 0;   /* p/ hotkey Select+Start = sair */
 static void (*g_vpad_orig)(void *self) = NULL;
+static volatile long g_vpad_calls = 0;      /* nº de game-frames (=chamadas a VirtualPad::update) */
 __attribute__((target("thumb")))
 static void my_vpad_update(void *self){
+  g_vpad_calls++;
   if(g_vpad_orig) g_vpad_orig(self);         /* roda a VirtualPad::update original */
   if(g_pad_mask && p_GDM_getInstance){        /* OR o mask do gamepad físico */
     char *gdm=(char*)p_GDM_getInstance();
@@ -249,16 +253,28 @@ static void mm_tbegin(int id,float x,float y){ if(nativeTouchesBegin)nativeTouch
 static void mm_tend(int id,float x,float y){ if(nativeTouchesEnd)nativeTouchesEnd(g_env,NULL,id,x,y); }
 static void mm_tmove(int id,float x,float y){ if(nativeTouchesMove)nativeTouchesMove(g_env,NULL,id,x,y); }
 
-/* estado direcional (dpad + stick) e toque do dpad */
+/* estado direcional (dpad + stick). Direcional vai por INJEÇÃO DE BITS direta
+   (g_pad_mask -> hook -> GDM), determinístico (touch do dpad erra right/down).
+   Bits (= GetMaskCode): LEFT=0x1000 RIGHT=0x2000 UP=0x4000 DOWN=0x8000. */
 static int dp_up,dp_dn,dp_lf,dp_rt, stk_x,stk_y;
-static int dpad_down=0; static float dpad_lx,dpad_ly;
+static volatile unsigned g_pad_mask;   /* fwd: bits injetados no input do jogo */
+static volatile long long g_per_us = 0;   /* microssegundos por frame (velocidade); L1/R1 ajustam */
+static void adjust_speed(int slower){     /* slower=1: mais lento; 0: mais rápido */
+  long long step = 2000;                   /* ~ passo fino */
+  g_per_us += slower ? step : -step;
+  if (g_per_us < 8000) g_per_us = 8000;    /* teto ~125fps */
+  if (g_per_us > 120000) g_per_us = 120000;/* piso ~8fps */
+  double fps = 1000000.0/(double)g_per_us;
+  long long spf = g_per_us*44100/1000000;
+  fprintf(stderr,"[speed] per_us=%lld fps=%.1f MM_SPF=%lld\n",(long long)g_per_us,fps,(long long)spf);
+}
 static void update_dpad(void){
-  int dx=((dp_rt||stk_x>0)?1:0)-((dp_lf||stk_x<0)?1:0);
-  int dy=((dp_dn||stk_y>0)?1:0)-((dp_up||stk_y<0)?1:0);
-  if(dx==0&&dy==0){ if(dpad_down){ mm_tend(TID_DPAD,dpad_lx,dpad_ly); dpad_down=0; } return; }
-  float x=VP_DPAD_CX+dx*VP_DPAD_OFF, y=VP_DPAD_CY+dy*VP_DPAD_OFF;
-  if(!dpad_down){ mm_tbegin(TID_DPAD,x,y); dpad_down=1; } else mm_tmove(TID_DPAD,x,y);
-  dpad_lx=x; dpad_ly=y;
+  unsigned m=0;
+  if(dp_rt||stk_x>0) m|=0x2000;
+  if(dp_lf||stk_x<0) m|=0x1000;
+  if(dp_up||stk_y<0) m|=0x4000;
+  if(dp_dn||stk_y>0) m|=0x8000;
+  g_pad_mask = m;
 }
 /* botão de ação -> toque hold (begin/end) numa posição fixa */
 static void btn_touch(int id,int pressed,float x,float y){ if(pressed)mm_tbegin(id,x,y); else mm_tend(id,x,y); }
@@ -424,6 +440,19 @@ static void *hook_thumb_call(const char *sym, void *repl){
 static void patch_thumb_ret(const char *sym) {
   uint16_t hw[] = {0x4770}; patch_thumb(sym, hw, 1);
 }
+/* patch entry -> salta p/ target (ldr.w pc,[pc]; addr). NÃO chama original. */
+static void patch_thumb_jump(const char *sym, void *target) {
+  uintptr_t a = so_find_addr_safe(sym);
+  if (!a) { fprintf(stderr, "jump: %s nao achado\n", sym); return; }
+  a &= ~1u;
+  uintptr_t pg = a & ~0xFFFUL;
+  mprotect((void *)pg, 0x2000, PROT_READ|PROT_WRITE|PROT_EXEC);
+  uint16_t *o = (uint16_t *)a;
+  o[0]=0xF8DF; o[1]=0xF000; *(uint32_t *)&o[2]=(uint32_t)target;
+  mprotect((void *)pg, 0x2000, PROT_READ|PROT_EXEC);
+  __builtin___clear_cache((char *)a, (char *)a + 8);
+  fprintf(stderr, "jump %s @0x%lx -> %p\n", sym, (unsigned long)a, target);
+}
 
 static DynLibFunction *g_base; static int g_base_n;
 static void build_base_table(void) {
@@ -432,6 +461,63 @@ static void build_base_table(void) {
   memcpy(g_base, shantae_overrides, sizeof(DynLibFunction) * shantae_overrides_count);
   memcpy(g_base + shantae_overrides_count, revc_pthread_table,
          sizeof(DynLibFunction) * revc_pthread_count);
+}
+
+/* ================= ÁUDIO: Cricket AudioTrack -> SDL ==================
+   Cricket renderiza PCM 16-bit stereo @44100 e escreve via AudioTrackProxy::write
+   (Java AudioTrack, não temos). Hookamos write -> lê o short[] e produz num ring
+   buffer; o callback SDL drena. O produtor BLOQUEIA se o ring encher -> paceia a
+   thread de áudio do Cricket (= paceia a lógica do jogo -> conserta a velocidade). */
+extern unsigned char *jni_shim_get_array(void *handle, int *outlen);
+extern void jni_shim_free_array(void *handle);
+#define ARING (1<<18)               /* 256KB, potência de 2 */
+static unsigned char g_aring[ARING];
+static volatile int g_ahead=0, g_atail=0;
+static SDL_AudioDeviceID g_adev=0;
+static volatile long g_wr_calls=0, g_wr_bytes=0, g_cb_calls=0;
+static volatile long long g_frames_played=0;   /* frames de SAIDA do SDL (inclui silencio) — diag */
+static volatile long long g_written_bytes=0;   /* total de bytes PCM que o Cricket escreveu no ring */
+static int aring_used(void){ int u=g_ahead-g_atail; if(u<0)u+=ARING; return u; }
+static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len){
+  (void)ud; g_cb_calls++;
+  for(int i=0;i<len;i++){
+    if(g_atail!=g_ahead){ stream[i]=g_aring[g_atail]; g_atail=(g_atail+1)&(ARING-1); }
+    else stream[i]=0;
+  }
+  g_frames_played += len/4;   /* 4 bytes/frame (stereo 16-bit) */
+}
+/* hook de AudioTrackProxy::getPlaybackHeadPosition() -> posicao (frames) tocada.
+   MINHA SOLUCAO: retornar frames CONSUMIDOS do stream ESCRITO (= escritos - o que
+   ainda esta no ring), NUNCA o relogio de saida (que conta silencio). Assim
+   played <= written SEMPRE (nao estoura a matematica de buffer do Cricket ->
+   sem corrupcao) e avanca no ritmo REAL do audio (o jogo paceia certo -> sem
+   aceleracao). O jogo do Mega Man usa esta posicao como clock mestre da logica. */
+__attribute__((target("thumb")))
+static int my_getPlaybackHeadPosition(void *self){ (void)self; return (int)g_frames_played; }
+static void aring_write(const unsigned char *d, int n){
+  int off=0;
+  while(off<n){
+    int guard=0;
+    while((ARING-1-aring_used())<=0){ usleep(1000); if(++guard>2000) return; } /* bloqueia (paceia) */
+    int fr=ARING-1-aring_used(); int c=n-off; if(c>fr)c=fr;
+    for(int i=0;i<c;i++){ g_aring[g_ahead]=d[off+i]; g_ahead=(g_ahead+1)&(ARING-1); }
+    g_written_bytes += c;   /* total escrito (p/ getPlaybackHeadPosition=consumidos) */
+    off+=c;
+  }
+}
+/* hook de AudioTrackProxy::write(this, jshortArray, count) -> PCM p/ SDL.
+   count = nº de SHORTS (=frames*2 stereo); PCM = count*2 bytes. retorna count
+   (o assert de renderBuffer exige write_return == count). */
+__attribute__((target("thumb")))
+static int my_audiotrack_write(void *self, void *jarr, int count){
+  (void)self;
+  int len=0; unsigned char *d = jni_shim_get_array(jarr, &len);
+  int bytes=count*2; g_wr_calls++; g_wr_bytes+=bytes;
+  if(d && len>0){ if(bytes>len)bytes=len; if(bytes>0) aring_write(d, bytes); }
+  /* NAO liberar o jarr aqui: o Cricket REUSA o mesmo short[] (nao e' fresco por
+     buffer) -> free = use-after-free -> crash. O pool grande (MAX_JARRAYS=8192)
+     ja evita a volta/reuso-de-slot-ativo por ~39min (churn real ~3.5/s). */
+  return count;
 }
 
 /* screenshot via glReadPixels (fb0 falha durante render Mali). bottom-up. */
@@ -478,6 +564,16 @@ int main(int argc, char *argv[]) {
   int w, h; SDL_GL_GetDrawableSize(window, &w, &h);
   fprintf(stderr, "Window %dx%d\n", w, h);
   open_gamepad();
+
+  /* saída de áudio SDL: Cricket escreve PCM -> ring -> callback drena. */
+  if (!getenv("MM_NOAUDIO")) {
+    SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
+    want.freq = 44100; want.format = AUDIO_S16LSB; want.channels = 2;
+    want.samples = 1024; want.callback = audio_cb;
+    g_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (g_adev) { SDL_PauseAudioDevice(g_adev, 0); fprintf(stderr, "SDL audio: %dHz %dch\n", have.freq, have.channels); }
+    else fprintf(stderr, "SDL_OpenAudioDevice falhou: %s\n", SDL_GetError());
+  }
 
   preload_device_libs();
   build_base_table();
@@ -532,7 +628,12 @@ int main(int argc, char *argv[]) {
      retorna 0 != esperado -> assert (udf). Neutralizar renderBuffer (silencioso)
      p/ o thread de áudio não abortar -> imagem renderiza. TODO: rotear áudio p/
      OpenSL/SDL. MM_KEEPCKOUT=1 mantém (diagnóstico). */
-  if (!getenv("MM_KEEPCKOUT"))
+  /* ÁUDIO: NÃO stubar renderBuffer (deixa renderizar o PCM). Em vez disso,
+     redirecionar AudioTrackProxy::write -> nosso handler (PCM -> SDL ring). */
+  if (!getenv("MM_NOAUDIO")) {
+    patch_thumb_jump("_ZN3Cki15AudioTrackProxy5writeEP12_jshortArrayi", (void*)my_audiotrack_write);
+    patch_thumb_jump("_ZN3Cki15AudioTrackProxy23getPlaybackHeadPositionEv", (void*)my_getPlaybackHeadPosition);
+  } else
     patch_thumb_ret("_ZN3Cki22GraphOutputJavaAndroid12renderBufferEv");
   /* (playSe/se_play NÃO stubados: com o file handler os banks carregam do
      filesystem -> Sound::newBankSound recebe bank válido, sem crash. MM_STUBSE=1
@@ -624,8 +725,12 @@ int main(int argc, char *argv[]) {
             case SDL_CONTROLLER_BUTTON_X: btn_touch(TID_SHOOT,pr,VP_SHOOT_X,VP_SHOOT_Y); break; /* tiro */
             case SDL_CONTROLLER_BUTTON_Y: btn_touch(TID_WEAPON,pr,VP_WEAPON_X,VP_WEAPON_Y); break;/* arma */
             case SDL_CONTROLLER_BUTTON_B: btn_touch(TID_BACK,pr,VP_BACK_X,VP_BACK_Y); break;     /* voltar */
-            case SDL_CONTROLLER_BUTTON_START: btn_touch(TID_PAUSE,pr,VP_PAUSE_X,VP_PAUSE_Y); break;
+            case SDL_CONTROLLER_BUTTON_START: g_start_held=pr; btn_touch(TID_PAUSE,pr,VP_PAUSE_X,VP_PAUSE_Y); break;
+            case SDL_CONTROLLER_BUTTON_BACK:  g_select_held=pr; break; /* Select */
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  if(pr) adjust_speed(0); break; /* L1: mais rápido */
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: if(pr) adjust_speed(1); break; /* R1: mais lento */
           }
+          if(g_start_held && g_select_held) running=0;   /* Select+Start = matar o jogo */
           break;
         }
         case SDL_CONTROLLERAXISMOTION: {
@@ -662,27 +767,50 @@ int main(int argc, char *argv[]) {
       if (f==840){ TAPCHK(); fprintf(stderr,"CONFIRM 4\n"); } if (f==860) RELCHK();
       if (f==1000) mm_shot(w,h,5);                       /* stage select */
       if (f==1060){ TAPCHK(); fprintf(stderr,"CONFIRM 5 (enter stage)\n"); } if (f==1080) RELCHK();
-      /* injeta cada direção via TOUCH e LÊ [gdm+4] p/ descobrir o bit de cada uma */
-      #define GDMLOG(t) do{ if(p_GDM_getInstance){char*g=(char*)p_GDM_getInstance(); if(g)fprintf(stderr,"GDM %s: +0=0x%x +4=0x%x +8=0x%x +12=0x%x +16=0x%x\n",t,*(unsigned*)(g+0),*(unsigned*)(g+4),*(unsigned*)(g+8),*(unsigned*)(g+12),*(unsigned*)(g+16));} }while(0)
-      if (f==1250){ dp_up=1; update_dpad(); }
-      if (f==1270) GDMLOG("UP");
-      if (f==1290){ dp_up=0; update_dpad(); }
-      if (f==1350){ dp_lf=1; update_dpad(); }
-      if (f==1370) GDMLOG("LEFT");
-      if (f==1390){ dp_lf=0; update_dpad(); }
-      if (f==1450){ dp_rt=1; update_dpad(); }
-      if (f==1470) GDMLOG("RIGHT");
-      if (f==1490){ dp_rt=0; update_dpad(); }
-      if (f==1550){ dp_dn=1; update_dpad(); }
-      if (f==1570) GDMLOG("DOWN");
-      if (f==1590){ dp_dn=0; update_dpad(); }
-      if (f==1650){ btn_touch(TID_JUMP,1,VP_JUMP_X,VP_JUMP_Y); }
-      if (f==1670) GDMLOG("JUMP");
-      if (f==1690){ btn_touch(TID_JUMP,0,VP_JUMP_X,VP_JUMP_Y); }
-      if (f==1750) fprintf(stderr,"NAVTEST done\n");
+      /* VALIDA right/down via injeção direta de bits (dpad agora usa g_pad_mask) */
+      if (f==1250) mm_shot(w,h,6);
+      if (f==1300){ dp_rt=1; update_dpad(); fprintf(stderr,"DIR RIGHT\n"); }
+      if (f==1440) mm_shot(w,h,7);                 /* andou p/ direita? */
+      if (f==1460){ dp_rt=0; update_dpad(); }
+      if (f==1520){ dp_dn=1; update_dpad(); fprintf(stderr,"DIR DOWN\n"); }
+      if (f==1600) mm_shot(w,h,8);
+      if (f==1620){ dp_dn=0; update_dpad(); }
+      if (f==1700) fprintf(stderr,"NAVTEST done\n");
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
+    /* PACING preciso do frame (jogo é frame-based; velocidade = fps de render).
+       per_us = MM_SPF samples @44100 em microssegundos (MM_SPF=1470 -> 30.00fps
+       exato; maior=mais lento). Acumulador monotônico -> SEM drift nem jitter.
+       Assim o vídeo casa com o áudio (ambos tempo-real, mesma base). */
+    {
+      static long long next_us = 0;
+      if (!g_per_us) {
+        /* jogo frame-based: velocidade = render fps. 15fps = velocidade correta
+           (MM1 confirmou). MM_SPF=2940 (=44100/15). Ajustavel via MM_SPF. */
+        const char *e = getenv("MM_SPF"); long long spf = e ? atoll(e) : 2940;
+        if (spf < 1) spf = 2940;
+        g_per_us = spf * 1000000LL / 44100;     /* samples -> us */
+      }
+      struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+      long long now_us = ts.tv_sec*1000000LL + ts.tv_nsec/1000;
+      if (!next_us) next_us = now_us;
+      next_us += g_per_us;
+      long long d = next_us - now_us;
+      if (d > 0 && d < g_per_us*4) { struct timespec s={d/1000000,(d%1000000)*1000}; nanosleep(&s,NULL); }
+      else next_us = now_us;                  /* atrasou -> resync */
+    }
+    if (getenv("MM_ADIAG")) {
+      static long fcnt=0; static long long t0=0;
+      fcnt++;
+      struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
+      long long ms=ts.tv_sec*1000LL+ts.tv_nsec/1000000;
+      if(!t0)t0=ms;
+      static long long fp0=0;
+      if(ms-t0>=1000){ fprintf(stderr,"[adiag] fps=%ld gameframes=%ld audioclk=%lld/s (esperado~44100) wr=%ld cb=%ld ring=%d\n",
+                       fcnt,g_vpad_calls,(g_frames_played-fp0),g_wr_calls,g_cb_calls,aring_used());
+                       fcnt=0; g_vpad_calls=0; g_wr_calls=0; g_wr_bytes=0; g_cb_calls=0; fp0=g_frames_played; t0=ms; }
+    }
   }
 
   fprintf(stderr, "Exiting...\n");

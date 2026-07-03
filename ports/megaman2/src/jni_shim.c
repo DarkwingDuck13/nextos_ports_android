@@ -60,7 +60,7 @@ static const char *resolve_jstring(void *jstr) {
 }
 
 /* ---- byte[] reais (texto de entrada + pixels de saida p/ createTextBitmap) ---- */
-#define MAX_JARRAYS 64
+#define MAX_JARRAYS 8192
 static struct { void *handle; unsigned char *data; int len; int owned; } g_jarr[MAX_JARRAYS];
 static int g_jarr_n = 0;
 static void *jarr_new(int len, int owned, unsigned char *existing) {
@@ -297,6 +297,25 @@ static void *jni_GetByteArrayElements(void *env, void *array, void *isCopy) {
   return g_dummy_array;
 }
 static void jni_ReleaseByteArrayElements(void *env, void *array, void *elems, jint mode) {}
+/* short[] p/ o áudio Cricket (AudioTrack): NewShortArray(n) -> n*2 bytes. */
+static void *jni_NewShortArray(void *env, jint len) { return jarr_new(len * 2, 1, NULL); }
+static void *jni_GetShortArrayElements(void *env, void *array, void *isCopy) {
+  if (isCopy) *(unsigned char *)isCopy = 0;
+  int i = jarr_find(array); if (i >= 0) return g_jarr[i].data;
+  return g_dummy_array;
+}
+static void jni_ReleaseShortArrayElements(void *env, void *array, void *elems, jint mode) {}
+/* getter público p/ o hook de áudio (main): dados+len do array. */
+unsigned char *jni_shim_get_array(void *handle, int *outlen) {
+  int i = jarr_find(handle);
+  if (i < 0 || !g_jarr[i].data) { if (outlen) *outlen = 0; return NULL; }
+  if (outlen) *outlen = g_jarr[i].len;
+  return g_jarr[i].data;
+}
+/* libera um jarray pelo handle (usado pelo audio: o Cricket aloca um short[]
+   FRESCO por buffer -> apos consumir no write, liberamos p/ o pool nao vazar
+   nem dar a volta reusando slot ativo -> era a causa do crash de heap). */
+void jni_shim_free_array(void *handle) { jarr_free(handle); }
 static void jni_GetByteArrayRegion(void *env, void *array, jint start, jint len, void *buf) {
   int i = jarr_find(array); if (i < 0 || !g_jarr[i].data) return;
   if (start < 0 || start + len > g_jarr[i].len) return;
@@ -399,6 +418,9 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[192] = (uintptr_t)jni_ReleaseByteArrayElements;
   jni_env_vtable[200] = (uintptr_t)jni_GetByteArrayRegion;
   jni_env_vtable[208] = (uintptr_t)jni_SetByteArrayRegion;
+  jni_env_vtable[178] = (uintptr_t)jni_NewShortArray;         /* áudio */
+  jni_env_vtable[186] = (uintptr_t)jni_GetShortArrayElements;
+  jni_env_vtable[194] = (uintptr_t)jni_ReleaseShortArrayElements;
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;
 
   java_vm_vtable[3] = (uintptr_t)vm_DestroyJavaVM;
