@@ -270,6 +270,48 @@ static void open_gamepad(void) {
   }
 }
 
+/* ================= Cricket Audio: custom file handler ==================
+   Cricket carrega banks/streams via JNI Java AssetManager (não temos) -> banks
+   NULL. Registramos um CkCustomFile handler via ReadStream::setFileHandler: o
+   Cricket chama nosso handler(path) e devolvemos um CkCustomFile que lê o arquivo
+   do filesystem (assets/<path>) via fopen -> banks/streams carregam nativamente.
+   Vtable CkCustomFile: [0]=~dtor [1]=~dtor(del) [2]=isValid [3]=read(buf,n)
+   [4]=getSize [5]=setPos(pos) [6]=getPos. */
+typedef struct { void **vptr; FILE *fp; int size; } MMCkFile;
+static int  ckf_isValid(MMCkFile *s){ return (s && s->fp) ? 1 : 0; }
+static int  ckf_read(MMCkFile *s, void *buf, int n){ return (s && s->fp) ? (int)fread(buf,1,n,s->fp) : 0; }
+static int  ckf_getSize(MMCkFile *s){ return s ? s->size : 0; }
+static void ckf_setPos(MMCkFile *s, int pos){ if(s && s->fp) fseek(s->fp,pos,SEEK_SET); }
+static int  ckf_getPos(MMCkFile *s){ return (s && s->fp) ? (int)ftell(s->fp) : 0; }
+static void ckf_dtor(MMCkFile *s){ if(s && s->fp){ fclose(s->fp); s->fp=NULL; } }
+static void ckf_dtor_del(MMCkFile *s){ if(s){ if(s->fp) fclose(s->fp); free(s); } }
+static void *g_ckf_vtable[8];
+static void mm_ckf_init_vtable(void){
+  g_ckf_vtable[0]=(void*)ckf_dtor; g_ckf_vtable[1]=(void*)ckf_dtor_del;
+  g_ckf_vtable[2]=(void*)ckf_isValid; g_ckf_vtable[3]=(void*)ckf_read;
+  g_ckf_vtable[4]=(void*)ckf_getSize; g_ckf_vtable[5]=(void*)ckf_setPos;
+  g_ckf_vtable[6]=(void*)ckf_getPos; g_ckf_vtable[7]=0;
+}
+/* handler: recebe o path que o Cricket pede; abre assets/<path> (tenta variações) */
+static void *mm_ckfile_handler(const char *path, void *data){
+  (void)data;
+  if(!path) return NULL;
+  char cand[1024]; FILE *fp=NULL;
+  const char *tries[3]; int nt=0;
+  snprintf(cand,sizeof cand,"assets/%s",path); tries[nt++]=strdup(cand);
+  if(!strchr(path,'/')){ snprintf(cand,sizeof cand,"assets/sound/%s",path); tries[nt++]=strdup(cand); }
+  tries[nt++]=strdup(path);
+  const char *opened=NULL;
+  for(int i=0;i<nt;i++){ fp=fopen(tries[i],"rb"); if(fp){opened=tries[i];break;} }
+  if(getenv("MM_CKFLOG")) fprintf(stderr,"[ckf] handler('%s') -> %s\n",path,opened?opened:"MISS");
+  for(int i=0;i<nt;i++) free((void*)tries[i]);
+  if(!fp) return NULL;
+  MMCkFile *f=malloc(sizeof(MMCkFile));
+  f->vptr=g_ckf_vtable; f->fp=fp;
+  fseek(fp,0,SEEK_END); f->size=(int)ftell(fp); fseek(fp,0,SEEK_SET);
+  return f;
+}
+
 /* Patch runtime: escreve halfwords Thumb num símbolo do jogo (do shantae). */
 static void patch_thumb(const char *sym, const uint16_t *hw, int n) {
   uintptr_t a = so_find_addr_safe(sym);
@@ -364,6 +406,18 @@ int main(int argc, char *argv[]) {
   so_execute_init_array();
   fprintf(stderr, "init_array done\n");
 
+  /* Cricket: registrar nosso file handler (lê banks/streams do filesystem)
+     ANTES do initCricket carregar os banks. MM_NOCKF=1 desativa. */
+  if (!getenv("MM_NOCKF")) {
+    void (*setFileHandler)(void*,void*) =
+      (void*)so_find_addr_safe("_ZN3Cki10ReadStream14setFileHandlerEPFP12CkCustomFilePKcPvES5_");
+    if (setFileHandler) {
+      mm_ckf_init_vtable();
+      setFileHandler((void*)mm_ckfile_handler, NULL);
+      fprintf(stderr, "Cricket setFileHandler registrado (filesystem)\n");
+    } else fprintf(stderr, "WARN: setFileHandler não achado\n");
+  }
+
   /* Cricket Audio (debug build) loga via Logger/TextWriter::writef -> glibc
      vsnprintf e crasha (ponteiro-lixo no formato). Logging é não-essencial ->
      neutralizar os formatadores. MM_KEEPCKLOG=1 mantém (p/ diagnóstico). */
@@ -390,11 +444,10 @@ int main(int argc, char *argv[]) {
      OpenSL/SDL. MM_KEEPCKOUT=1 mantém (diagnóstico). */
   if (!getenv("MM_KEEPCKOUT"))
     patch_thumb_ret("_ZN3Cki22GraphOutputJavaAndroid12renderBufferEv");
-  /* Banks Cricket não carregam (asset via JNI Java, não temos) -> bank=NULL ->
-     Sound::newBankSound(NULL) crasha ao tocar SFX (ex: confirmar no menu).
-     Stub playSe (SFX) -> silencioso mas desbloqueia gameplay. TODO áudio real.
-     MM_KEEPSE=1 mantém. */
-  if (!getenv("MM_KEEPSE")) {
+  /* (playSe/se_play NÃO stubados: com o file handler os banks carregam do
+     filesystem -> Sound::newBankSound recebe bank válido, sem crash. MM_STUBSE=1
+     re-stuba se necessário.) */
+  if (getenv("MM_STUBSE")) {
     patch_thumb_ret0("_ZN8fine_lib18Lib_SoundCkManager6playSeEiii");
     patch_thumb_ret0("_ZN13MEDIA_MANAGER7se_playEii");
   }
