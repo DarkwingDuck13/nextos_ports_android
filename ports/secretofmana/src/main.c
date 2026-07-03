@@ -277,12 +277,22 @@ int main(int argc, char *argv[]) {
         }
       }
     }
-    /* SOM_AUTONAV=1: valida input/fontes (toque no centro p/ passar titulo). */
+    /* SOM_AUTONAV=1: passa titulo (toque) e depois navega menu (dpad/A) p/
+     * gerar SFX de cursor/confirma (diagnostico de audio). */
     if (getenv("SOM_AUTONAV")) {
       static int f = 0; f++;
       g_touch_x = w / 2; g_touch_y = h / 2;
       if (f >= 120 && f <= 135) g_touch_down = 1; else if (f == 136) g_touch_down = 0;
       if (f >= 240 && f <= 255) g_touch_down = 1; else if (f == 256) g_touch_down = 0;
+      /* apos ~5s: martela A (confirma menus->New Game->nome->intro->gameplay,
+       * e em gameplay A=ataque=corta grama) + move p/ gerar SFX. */
+      if (f > 300) {
+        int c = f % 24;
+        if (c < 6) g_key_now |= (1 << SB_A); else g_key_now &= ~(1 << SB_A);
+        int mv = (f / 24) % 4;
+        int mb = mv == 0 ? SB_DOWN : mv == 1 ? SB_RIGHT : mv == 2 ? SB_UP : SB_LEFT;
+        if (c >= 12 && c < 20) g_key_now |= (1 << mb); else g_key_now &= ~(1 << mb);
+      }
     }
     update_input(w, h);
     /* Select+Start = matar o jogo (hotkey do binario) */

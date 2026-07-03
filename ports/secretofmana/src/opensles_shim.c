@@ -279,7 +279,10 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
-    if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING)
+    /* Toca tambem players STOPPED que ainda tem dados por drenar (SFX que o
+       engine parou logo apos dar play). Quando o ring esvazia, sao ignorados. */
+    if (!p->active ||
+        (p->play_state != SL_PLAYSTATE_PLAYING && ring_readable(p) == 0))
       continue;
 
     uint32_t src_rate = p->sample_rate;
@@ -347,10 +350,11 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     //resample
     uint32_t total_samples = src_frames_got * src_channels;
     if (bps == 8) {
+      /* 8-bit UNSIGNED (silencio=0x80). SOM_S8=1 forca signed p/ teste. */
+      int s8 = getenv("SOM_S8") != NULL;
       for (uint32_t s = 0; s < total_samples; s++) {
-        /* 8-bit unsigned (0 to 255) -> subtract 128 to make signed -> shift up
-         * to 16-bit */
-        tmp_16bit[s] = (int16_t)((raw_buf[s] - 128) << 8);
+        int v = s8 ? (int)(int8_t)raw_buf[s] : (raw_buf[s] - 128);
+        tmp_16bit[s] = (int16_t)(v << 8);
       }
     } else {
       /* Already 16-bit, just copy into our working array */
@@ -576,6 +580,12 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
       }
     }
   }
+  /* diag: pico do player 0 (bus de SFX) por ~1s -> confirma que o SFX sai */
+  if (getenv("SOM_SFXDIAG")) {
+    static float sfxpk = 0; static uint32_t cc = 0;
+    if (player_peak[0] > sfxpk) sfxpk = player_peak[0];
+    if (++cc % 40 == 0) { debugPrintf("SFXDIAG p0_peak=%.0f\n", sfxpk); sfxpk = 0; }
+  }
 }
 
 /* Thread de audio dedicada (refill desacoplado do framerate). */
@@ -771,23 +781,30 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      /* debugPrintf("opensles_shim: player %d SetPlayState(%u -> %u)\n",
-       *                 i, p->play_state, state); */
+      if (getenv("SOM_SFXDIAG")) {
+        static uint32_t slog = 0;
+        if (slog++ < 120)
+          debugPrintf("SFXDIAG SetPlayState p%d %u->%u readable=%u\n",
+                      i, p->play_state, state, ring_readable(p));
+      }
       if (g_audio_dev)
         SDL_LockAudioDevice(g_audio_dev);
       if (state == SL_PLAYSTATE_STOPPED &&
           p->play_state != SL_PLAYSTATE_STOPPED) {
+        /* NAO apagar o ring aqui: o engine faz PLAYING->STOPPED em 1 frame
+           (mais rapido que o callback SDL consome) e o wipe apagava o SFX
+           antes de tocar. Deixamos o dado ja enfileirado DRENAR: o mix
+           toca players STOPPED que ainda tem dados (ver sdl_audio_callback). */
         p->headatend_fired = 0;
-        p->decoder_done = 0;
-        p->ring_head = 0;
-        p->ring_tail = 0;
-        queue_reset(p);
+        p->decoder_done = 1; /* nao pedir mais dados; so drenar o que ja tem */
       }
       if (state == SL_PLAYSTATE_PLAYING &&
           p->play_state != SL_PLAYSTATE_PLAYING) {
         p->frames_played = 0;
         p->underrun_count = 0;
         p->fadeout_count = 0;
+        p->decoder_done = 0;   /* voltar a pedir dados (ex.: BGM re-tocado) */
+        p->headatend_fired = 0;
       }
       p->play_state = state;
       if (g_audio_dev)
@@ -916,6 +933,18 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
         p->last_enqueue_size = written;
         p->enqueue_counter++;
         p->ever_enqueued = 1;
+        if (getenv("SOM_SFXDIAG")) {
+          /* mede se o buffer 8-bit tem forma de onda real ou so' silencio(0x80) */
+          int dev = 0;
+          if (p->bits_per_sample == 8) {
+            const unsigned char *b = (const unsigned char *)pBuffer;
+            for (uint32_t k = 0; k < size; k++) { int d = (int)b[k] - 128; if (d < 0) d = -d; if (d > dev) dev = d; }
+          }
+          static uint32_t elog = 0;
+          if (elog++ < 80)
+            debugPrintf("SFXDIAG enq p%d size=%u rate=%u ch=%u bps=%u dev8=%d\n",
+                        i, size, p->sample_rate, p->num_channels, p->bits_per_sample, dev);
+        }
         /* if (p->debug_enqueue_logs < 16 || p->enqueue_counter % 64 == 0) {
          *         debugPrintf("opensles_shim: player %d enqueue size=%u
       written=%u
@@ -1206,9 +1235,9 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
         p->num_channels = fmt->numChannels;
         p->sample_rate = fmt->samplesPerSec / 1000;
         p->bits_per_sample = fmt->bitsPerSample;
-        /* debugPrintf("opensles_shim: format: %u ch, %u Hz, %u bit\n",
-         *                   p->num_channels, p->sample_rate,
-         * p->bits_per_sample); */
+        if (getenv("SOM_SFXDIAG"))
+          debugPrintf("SFXDIAG CreateAudioPlayer: %u ch, %u kHz, %u bit\n",
+                      p->num_channels, p->sample_rate, p->bits_per_sample);
       }
     }
   }
@@ -1302,8 +1331,17 @@ void opensles_shim_pump_callbacks(void) {
        fonte@32000. Mantendo so ~3KB, todo callback underrunava 3/4 do buffer.
        Agora manter um alvo FIXO que cobre varios callbacks (~32KB = ~250ms),
        eliminando underrun com latencia OK p/ BGM/SFX. CHRONO_ABUF override (KB). */
-    uint32_t refill_threshold = 32 * 1024;
-    { const char *e = getenv("CHRONO_ABUF"); if (e) refill_threshold = (uint32_t)atoi(e) * 1024; }
+    /* Threshold por TEMPO, nao bytes fixos: 32KB fixo dava 186ms no BGM
+       (44100/2ch/16bit=176KB/s) mas 2 SEGUNDOS no stream de SFX
+       (16kHz/1ch/8bit=16KB/s) -> SFX atrasavam ~2s e amontoavam (pareciam
+       sumir). Alvo ~150ms escalado pelo byte-rate de cada player. */
+    uint32_t brate = (p->sample_rate ? p->sample_rate * 1000 : 44100) *
+                     (p->num_channels ? p->num_channels : 2) *
+                     ((p->bits_per_sample ? p->bits_per_sample : 16) / 8);
+    uint32_t target_ms = 150;
+    { const char *e = getenv("SOM_ABUF_MS"); if (e) target_ms = (uint32_t)atoi(e); }
+    uint32_t refill_threshold = (uint32_t)((uint64_t)brate * target_ms / 1000);
+    if (refill_threshold < 4096) refill_threshold = 4096;
     if (refill_threshold > RING_BUFFER_SIZE / 2)
       refill_threshold = RING_BUFFER_SIZE / 2;
 
