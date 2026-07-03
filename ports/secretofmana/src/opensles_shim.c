@@ -20,7 +20,7 @@
 #define MAX_PLAYERS 16
 #define RING_BUFFER_SIZE (4 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-#define SDL_AUDIO_SAMPLES 4096
+#define SDL_AUDIO_SAMPLES 1024
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -104,6 +104,7 @@ typedef struct {
   volatile SLuint32 play_state;
   float volume;
   int active;
+  int destroy_drain; /* destruido mas com dados por tocar: drena antes de liberar */
   uint64_t played_bytes;
   uint32_t resample_pos;
 
@@ -125,6 +126,23 @@ typedef struct {
 
 static AudioPlayer g_players[MAX_PLAYERS];
 static pthread_mutex_t g_players_lock = PTHREAD_MUTEX_INITIALIZER;
+/* serializa o callback do engine (_slCallbackPlayer) entre a thread do pump e o
+   priming sincrono no SetPlayState(PLAYING). */
+static pthread_mutex_t g_cb_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static inline uint32_t ring_readable(const AudioPlayer *p);
+/* pede dados ao engine chamando o buffer-queue callback ate encher ~alvo bytes
+   (mimica o OpenSLES do Android, que dispara o callback na hora do PLAYING). */
+static void prime_player(AudioPlayer *p, uint32_t target_bytes, int max_calls) {
+  if (!p->callback) return;
+  pthread_mutex_lock(&g_cb_lock);
+  while (ring_readable(p) < target_bytes && max_calls-- > 0) {
+    uint32_t before = p->enqueue_counter;
+    p->callback(&p->bq_ptr, p->callback_context);
+    if (p->enqueue_counter == before) break; /* engine nao tem mais dados */
+  }
+  pthread_mutex_unlock(&g_cb_lock);
+}
 static SDL_AudioDeviceID g_audio_dev = 0;
 static int g_audio_initialized = 0;
 
@@ -279,6 +297,13 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
+    /* voice destruido que ja drenou -> liberar o slot */
+    if (p->destroy_drain && ring_readable(p) == 0) {
+      p->destroy_drain = 0;
+      p->active = 0;
+      p->play_state = SL_PLAYSTATE_STOPPED;
+      continue;
+    }
     /* Toca tambem players STOPPED que ainda tem dados por drenar (SFX que o
        engine parou logo apos dar play). Quando o ring esvazia, sao ignorados. */
     if (!p->active ||
@@ -580,11 +605,14 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
       }
     }
   }
-  /* diag: pico do player 0 (bus de SFX) por ~1s -> confirma que o SFX sai */
+  /* diag: pico dos players de SFX (todos menos o BGM=1) -> confirma que sai */
   if (getenv("SOM_SFXDIAG")) {
     static float sfxpk = 0; static uint32_t cc = 0;
-    if (player_peak[0] > sfxpk) sfxpk = player_peak[0];
-    if (++cc % 40 == 0) { debugPrintf("SFXDIAG p0_peak=%.0f\n", sfxpk); sfxpk = 0; }
+    for (int a = 0; a < num_active; a++) {
+      int pi = player_active_list[a];
+      if (pi != 1 && player_peak[pi] > sfxpk) sfxpk = player_peak[pi];
+    }
+    if (++cc % 40 == 0) { debugPrintf("SFXDIAG sfx_peak=%.0f\n", sfxpk); sfxpk = 0; }
   }
 }
 
@@ -673,6 +701,7 @@ static void player_reset_meta(AudioPlayer *p) {
   p->play_state = SL_PLAYSTATE_STOPPED;
   p->volume = 1.0f;
   p->active = 1;
+  p->destroy_drain = 0;
   p->played_bytes = 0;
   p->resample_pos = 0;
   p->num_channels = 0;
@@ -798,6 +827,7 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
         p->headatend_fired = 0;
         p->decoder_done = 1; /* nao pedir mais dados; so drenar o que ja tem */
       }
+      int do_prime = 0;
       if (state == SL_PLAYSTATE_PLAYING &&
           p->play_state != SL_PLAYSTATE_PLAYING) {
         p->frames_played = 0;
@@ -805,10 +835,17 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
         p->fadeout_count = 0;
         p->decoder_done = 0;   /* voltar a pedir dados (ex.: BGM re-tocado) */
         p->headatend_fired = 0;
+        do_prime = 1;
       }
       p->play_state = state;
       if (g_audio_dev)
         SDL_UnlockAudioDevice(g_audio_dev);
+      /* PRIMING SINCRONO: o engine dispara SFX com PLAYING->STOPPED em 1 frame
+         e so enfileira via callback. No Android o PLAYING chama o callback na
+         hora; replicamos aqui pra o SFX ser pedido/enfileirado ANTES do STOPPED
+         (senao o pump so pegaria 2ms depois, tarde demais -> SFX mudo). */
+      if (do_prime)
+        prime_player(p, 16 * 1024, 32);
       return SL_RESULT_SUCCESS;
     }
   }
@@ -940,8 +977,9 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
             const unsigned char *b = (const unsigned char *)pBuffer;
             for (uint32_t k = 0; k < size; k++) { int d = (int)b[k] - 128; if (d < 0) d = -d; if (d > dev) dev = d; }
           }
+          /* loga SO player!=1 (SFX); o BGM (p1) inunda e nao interessa aqui */
           static uint32_t elog = 0;
-          if (elog++ < 80)
+          if (i != 1 && elog++ < 300)
             debugPrintf("SFXDIAG enq p%d size=%u rate=%u ch=%u bps=%u dev8=%d\n",
                         i, size, p->sample_rate, p->num_channels, p->bits_per_sample, dev);
         }
@@ -963,7 +1001,17 @@ static SLresult bq_Clear(void *self) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      /* debugPrintf("opensles_shim: player %d BufferQueue Clear\n", i); */
+      /* Fire-and-forget: se ha SFX por tocar, NAO apagar no Clear (o engine
+         chama Clear pra reusar o voice, mas nosso callback SDL e' assincrono e
+         ainda nao tocou). Deixa drenar; enqueue novo simplesmente anexa. */
+      if (ring_readable(p) > 0) {
+        if (getenv("SOM_SFXDIAG") && i != 1) {
+          static uint32_t cl = 0;
+          if (cl++ < 120) debugPrintf("SFXDIAG bq_Clear p%d DRAIN readable=%u state=%u\n",
+                                      i, ring_readable(p), p->play_state);
+        }
+        return SL_RESULT_SUCCESS;
+      }
       if (g_audio_dev)
         SDL_LockAudioDevice(g_audio_dev);
       p->ring_head = 0;
@@ -1091,8 +1139,19 @@ static void player_Destroy(void *self) {
       AudioPlayer *p = &g_players[i];
       if (g_audio_dev)
         SDL_LockAudioDevice(g_audio_dev);
-      p->play_state = SL_PLAYSTATE_STOPPED;
-      p->active = 0;
+      /* Fire-and-forget: o engine cria->enfileira SFX->play->Destroy no mesmo
+         frame. Se ainda ha dados por tocar, DRENAR (mantem active, toca ate
+         esvaziar) senao o SFX era abandonado (active=0 -> mix pula) e nunca
+         soava. callback=NULL p/ o pump nao chamar um voice destruido. */
+      if (ring_readable(p) > 0) {
+        p->destroy_drain = 1;
+        p->play_state = SL_PLAYSTATE_PLAYING;
+        p->decoder_done = 1;
+        p->callback = NULL;
+      } else {
+        p->play_state = SL_PLAYSTATE_STOPPED;
+        p->active = 0;
+      }
       if (g_audio_dev)
         SDL_UnlockAudioDevice(g_audio_dev);
       return;
@@ -1352,7 +1411,9 @@ void opensles_shim_pump_callbacks(void) {
       uint32_t counter_before = p->enqueue_counter;
 
       g_dbg_cbcalls++;
+      pthread_mutex_lock(&g_cb_lock);
       p->callback(&p->bq_ptr, p->callback_context);
+      pthread_mutex_unlock(&g_cb_lock);
 
       if (p->enqueue_counter == counter_before) {
         p->decoder_done = 1;
