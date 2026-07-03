@@ -401,6 +401,26 @@ static volatile unsigned long g_recover_n = 0;
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
   ucontext_t *uc0 = (ucontext_t *)uc_;
   uintptr_t pc0 = uc0->uc_mcontext.pc, lr0 = uc0->uc_mcontext.regs[30];
+  /* 🔎 dump async-signal-safe (write(2) cru, imune a stdio/FILE-lock): garante
+     PC/fault/lr mesmo quando o dump rico via fprintf se perde. offsets p/ libunity
+     (g_unity_base) e libil2cpp (g_il2cpp_base) p/ casar com objdump no host. */
+  {
+    char b[256]; int n = 0;
+    static const char hx[] = "0123456789abcdef";
+    #define _EMIT_S(s) do { const char *p=(s); while(*p&&n<240) b[n++]=*p++; } while(0)
+    #define _EMIT_H(v) do { unsigned long _v=(unsigned long)(v); b[n++]='0'; b[n++]='x'; \
+        for(int _i=60;_i>=0;_i-=4) b[n++]=hx[(_v>>_i)&0xf]; } while(0)
+    _EMIT_S("\n[CR!] sig="); b[n++]=hx[sig&0xf];
+    _EMIT_S(" fault="); _EMIT_H((unsigned long)si->si_addr);
+    _EMIT_S(" pc="); _EMIT_H(pc0);
+    if (g_unity_base && pc0>=g_unity_base && pc0<g_unity_base+0x2000000){ _EMIT_S(" unity+"); _EMIT_H(pc0-g_unity_base); }
+    if (g_il2cpp_base && pc0>=g_il2cpp_base && pc0<g_il2cpp_base+0x4000000){ _EMIT_S(" il2cpp+"); _EMIT_H(pc0-g_il2cpp_base); }
+    _EMIT_S(" lr="); _EMIT_H(lr0);
+    if (g_unity_base && lr0>=g_unity_base && lr0<g_unity_base+0x2000000){ _EMIT_S(" unity+"); _EMIT_H(lr0-g_unity_base); }
+    _EMIT_S("\n"); if(n<256){ ssize_t _w=write(2,b,n); (void)_w; }
+    #undef _EMIT_S
+    #undef _EMIT_H
+  }
   /* recovery: crash na thread de render (qualquer fault, não só arena) → volta pro
      loop e pula o frame. Só se armado e na thread certa. */
   if (g_render_jmp_armed && (int)syscall(SYS_gettid) == g_render_tid) {
@@ -469,6 +489,25 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
       { fprintf(stderr, "  [sp+0x%lx] libil2cpp+0x%lx\n", a - sp, v - g_il2cpp_base); hits++; }
   }
   dbg_sync();
+  /* 🔎 unwind por frame-pointer (x29): [x29]=próximo x29, [x29+8]=lr salvo.
+     Reconstrói o backtrace REAL mesmo com pc=0/lr=0 (call-site imediato perdido). */
+  {
+    fprintf(stderr, "[FP] backtrace via x29:\n");
+    uintptr_t fp = uc->uc_mcontext.regs[29];
+    for (int i = 0; i < 24 && fp; i++) {
+      uintptr_t flo=0, fhi=0; char fperm[5]; maps_find(fp, &flo, &fhi, fperm);
+      if (!fhi || fp + 16 > fhi) break;
+      uintptr_t nfp = *(uintptr_t *)fp, ret = *(uintptr_t *)(fp + 8);
+      fprintf(stderr, "[FP]  #%d ret=0x%lx", i, (unsigned long)ret);
+      if (ret >= tb && ret < tb + text_size) fprintf(stderr, " libunity+0x%lx", ret - tb);
+      else if (g_il2cpp_base && ret >= g_il2cpp_base && ret < g_il2cpp_base + 0x3000000)
+        fprintf(stderr, " libil2cpp+0x%lx", ret - g_il2cpp_base);
+      fprintf(stderr, "\n");
+      if (nfp <= fp || nfp - fp > 0x100000) break;  /* cadeia inválida */
+      fp = nfp;
+    }
+    dbg_sync();
+  }
 
   /* ---- dump rico do crash 0x7f10000004 (vtable/delegate corrompido) ---- */
   uintptr_t fault = (uintptr_t)si->si_addr;
@@ -4156,6 +4195,11 @@ int main(int argc, char **argv) {
   set_import("lstat", (void *)my_lstat);
   set_import("stat64", (void *)my_stat64);
   set_import("lstat64", (void *)my_lstat64);
+  /* 🔑 fstat64: glibc≥2.30 NÃO exporta `fstat64` p/ dlsym → passthrough falha → slot
+     GOT NULL. libunity chama fstat64 no RecreateGfxState (kmsdrm/G31) → salta p/ NULL
+     (pc=0). my_fstat64 chama o fstat64 REAL (linka na buster glibc 2.28). Incondicional
+     (antes só com TER_GUIDLOG). Mesma classe do stat/lstat da lição DYSMANTLE. */
+  set_import("fstat64", (void *)my_fstat64);
   set_import("access", (void *)my_access);
   set_import("statfs64", (void *)my_statfs64);
   set_import("statfs", (void *)my_statfs64);
@@ -4238,6 +4282,7 @@ int main(int argc, char **argv) {
   patch_got("lstat", (void *)my_lstat);
   patch_got("stat64", (void *)my_stat64);
   patch_got("lstat64", (void *)my_lstat64);
+  patch_got("fstat64", (void *)my_fstat64);  /* incondicional: dlsym falha na glibc≥2.30 */
   patch_got("access", (void *)my_access);
   patch_got("statfs64", (void *)my_statfs64);
   patch_got("statfs", (void *)my_statfs64);
@@ -4723,6 +4768,27 @@ int main(int argc, char **argv) {
   }
   if ((fn = jni_find_native("nativeRecreateGfxState"))) {
     mm_probe("pre-RecreateGfxState");
+    /* 🔎 RE-ARMA on_crash: SDL_Init(VIDEO) do kmsdrm e/ou o blob Mali reinstalam
+       o SIGSEGV default -> nosso dump nunca roda. Reinstala aqui, colado no ponto
+       de crash, p/ o [CR!] async-safe sair. */
+    {
+      static char rearm_stk[256 * 1024]; stack_t rs = {0};
+      rs.ss_sp = rearm_stk; rs.ss_size = sizeof rearm_stk; rs.ss_flags = 0;
+      sigaltstack(&rs, NULL);
+      struct sigaction sc; memset(&sc, 0, sizeof sc);
+      sc.sa_sigaction = on_crash; sc.sa_flags = SA_SIGINFO | SA_ONSTACK;
+      sigaction(SIGSEGV, &sc, 0); sigaction(SIGBUS, &sc, 0); sigaction(SIGILL, &sc, 0);
+      fprintf(stderr, "[F2] on_crash re-armado pre-RecreateGfxState\n");
+    }
+    /* 🔎 dump de maps p/ correlacionar o pc do dmesg com a lib (blob Mali/libc/unity). */
+    if (getenv("TER_DUMPMAPS")) {
+      int mfd = open("/proc/self/maps", O_RDONLY);
+      if (mfd >= 0) { char mb[4096]; ssize_t r;
+        fprintf(stderr, "[MAPS] ==== inicio ====\n"); dbg_sync();
+        while ((r = read(mfd, mb, sizeof mb)) > 0) { ssize_t w=write(2, mb, r); (void)w; }
+        close(mfd); fprintf(stderr, "\n[MAPS] ==== fim ====\n"); dbg_sync();
+      }
+    }
     /* TESTE: anula o instalador de signal-handlers do Unity (0x360af8) com RET.
        Esse caminho (sigaction QUERY -> map RB-tree de old-handlers via operator-new)
        e' onde o canario estoura. Nao precisamos dos handlers do Unity (temos on_crash). */
