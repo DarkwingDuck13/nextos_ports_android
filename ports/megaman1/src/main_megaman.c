@@ -66,13 +66,41 @@ static void (*nativeRender)(void *env, void *thiz);
 static void (*nativeOnPause)(void *env, void *thiz);
 static void (*nativeOnResume)(void *env, void *thiz);
 static void (*nativeKeyEvent)(void *env, void *thiz, int keyCode, jboolean isPressed);
-static void (*nativeTouchesBegin)(void *env, void *thiz, int id, float x, float y);
-static void (*nativeTouchesEnd)(void *env, void *thiz, int id, float x, float y);
-static void (*nativeTouchesMove)(void *env, void *thiz, int id, float x, float y);
+/* nativeTouches* recebem FLOAT x,y. O jogo é softfp (args float em regs core);
+   nosso código é hardfp -> declarar pcs("aapcs") p/ passar floats corretamente. */
+#define SFCALL __attribute__((pcs("aapcs")))
+static void (SFCALL *nativeTouchesBegin)(void *env, void *thiz, int id, float x, float y);
+static void (SFCALL *nativeTouchesEnd)(void *env, void *thiz, int id, float x, float y);
+static void (SFCALL *nativeTouchesMove)(void *env, void *thiz, int id, float x, float y);
 static void (*initCricket)(void *env, void *thiz);
 
 static SDL_GameController *g_gamepad = NULL;
 static void *g_env = NULL;
+
+/* ---- cocos2d::EventKeyboard::KeyCode (o jogo consome via APPLET::GetMaskCode) ----
+   Decodificado da tabela de máscaras: direcional = arrows; ação = SPACE + outros. */
+#define CKEY_LEFT   26
+#define CKEY_RIGHT  27
+#define CKEY_UP     28
+#define CKEY_DOWN   29
+#define CKEY_SPACE  59
+
+/* dispatch cocos EventKeyboard DIRETO (bypass do mapa android->cocos que não
+   cobre as setas). Replica nativeKeyEvent: dispatcher = *(Director+0x98). */
+static void *(*p_Director_getInstance)(void);
+static void (*p_EventKeyboard_ctor)(void *self, int keyCode, int pressed);
+static void (*p_EventDispatcher_dispatch)(void *disp, void *event);
+static void (*p_EventKeyboard_dtor)(void *self);
+static void mm_send_cocos_key(int keyCode, int pressed) {
+  if (!p_Director_getInstance || !p_EventKeyboard_ctor || !p_EventDispatcher_dispatch) return;
+  void *director = p_Director_getInstance();
+  if (!director) return;
+  char event[96]; memset(event, 0, sizeof event);
+  p_EventKeyboard_ctor(event, keyCode, pressed);
+  void *disp = *(void **)((char *)director + 0x98);
+  if (disp) p_EventDispatcher_dispatch(disp, event);
+  if (p_EventKeyboard_dtor) p_EventKeyboard_dtor(event);
+}
 /* NÃO static: imports.c (my_find_exidx) referencia g_load_base como global. */
 volatile uintptr_t g_load_base = 0;
 
@@ -154,39 +182,44 @@ static void preload_device_libs(void) {
   }
 }
 
-/* SDL keyboard -> Android keycode (mapa provisório; ajustar via GetMaskCode) */
-static int map_key_android(SDL_Keycode k) {
+/* Botões de ação cocos KeyCode (a confirmar semântica em gameplay).
+   Da tabela de máscaras: SPACE=0x10000; candidatos de ação em 124-130 e nums. */
+#define CKEY_ACT_A  CKEY_SPACE     /* A = pulo/confirm (provisório) */
+#define CKEY_ACT_B  124            /* B = tiro (mask 0x400, provisório) */
+#define CKEY_ACT_X  125            /* mask 0x800 */
+#define CKEY_ACT_Y  126            /* mask 0x20000 */
+#define CKEY_START  127            /* mask 0x40000 (start/pause provisório) */
+#define CKEY_SELECT 128            /* mask 0x80000 */
+
+/* SDL keyboard -> cocos KeyCode */
+static int map_key_cocos(SDL_Keycode k) {
   switch (k) {
-    case SDLK_UP: return AKEYCODE_DPAD_UP;
-    case SDLK_DOWN: return AKEYCODE_DPAD_DOWN;
-    case SDLK_LEFT: return AKEYCODE_DPAD_LEFT;
-    case SDLK_RIGHT: return AKEYCODE_DPAD_RIGHT;
-    case SDLK_SPACE: case SDLK_z: return AKEYCODE_BUTTON_A;
-    case SDLK_LCTRL: case SDLK_x: return AKEYCODE_BUTTON_B;
-    case SDLK_LSHIFT: case SDLK_a: return AKEYCODE_BUTTON_X;
-    case SDLK_LALT: case SDLK_s: return AKEYCODE_BUTTON_Y;
-    case SDLK_q: return AKEYCODE_BUTTON_L1;
-    case SDLK_w: return AKEYCODE_BUTTON_R1;
-    case SDLK_RETURN: return AKEYCODE_BUTTON_START;
-    case SDLK_BACKSPACE: return AKEYCODE_BUTTON_SELECT;
-    case SDLK_ESCAPE: return AKEYCODE_BACK;
+    case SDLK_UP: return CKEY_UP;
+    case SDLK_DOWN: return CKEY_DOWN;
+    case SDLK_LEFT: return CKEY_LEFT;
+    case SDLK_RIGHT: return CKEY_RIGHT;
+    case SDLK_SPACE: case SDLK_z: return CKEY_ACT_A;
+    case SDLK_LCTRL: case SDLK_x: return CKEY_ACT_B;
+    case SDLK_a: return CKEY_ACT_X;
+    case SDLK_s: return CKEY_ACT_Y;
+    case SDLK_RETURN: return CKEY_START;
+    case SDLK_BACKSPACE: return CKEY_SELECT;
     default: return -1;
   }
 }
-static int map_btn_android(int b) {
+/* SDL controller (Xbox default) -> cocos KeyCode */
+static int map_btn_cocos(int b) {
   switch (b) {
-    case SDL_CONTROLLER_BUTTON_A: return AKEYCODE_BUTTON_A;
-    case SDL_CONTROLLER_BUTTON_B: return AKEYCODE_BUTTON_B;
-    case SDL_CONTROLLER_BUTTON_X: return AKEYCODE_BUTTON_X;
-    case SDL_CONTROLLER_BUTTON_Y: return AKEYCODE_BUTTON_Y;
-    case SDL_CONTROLLER_BUTTON_START: return AKEYCODE_BUTTON_START;
-    case SDL_CONTROLLER_BUTTON_BACK: return AKEYCODE_BUTTON_SELECT;
-    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return AKEYCODE_BUTTON_L1;
-    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return AKEYCODE_BUTTON_R1;
-    case SDL_CONTROLLER_BUTTON_DPAD_UP: return AKEYCODE_DPAD_UP;
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return AKEYCODE_DPAD_DOWN;
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return AKEYCODE_DPAD_LEFT;
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return AKEYCODE_DPAD_RIGHT;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: return CKEY_UP;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return CKEY_DOWN;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return CKEY_LEFT;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return CKEY_RIGHT;
+    case SDL_CONTROLLER_BUTTON_A: return CKEY_ACT_A;
+    case SDL_CONTROLLER_BUTTON_B: return CKEY_ACT_B;
+    case SDL_CONTROLLER_BUTTON_X: return CKEY_ACT_X;
+    case SDL_CONTROLLER_BUTTON_Y: return CKEY_ACT_Y;
+    case SDL_CONTROLLER_BUTTON_START: return CKEY_START;
+    case SDL_CONTROLLER_BUTTON_BACK: return CKEY_SELECT;
     default: return -1;
   }
 }
@@ -229,6 +262,17 @@ static void build_base_table(void) {
   memcpy(g_base, shantae_overrides, sizeof(DynLibFunction) * shantae_overrides_count);
   memcpy(g_base + shantae_overrides_count, revc_pthread_table,
          sizeof(DynLibFunction) * revc_pthread_count);
+}
+
+/* screenshot via glReadPixels (fb0 falha durante render Mali). bottom-up. */
+extern void glReadPixels(int x, int y, int w, int h, unsigned fmt, unsigned type, void *px);
+static void mm_shot(int w, int h, int id) {
+  size_t n = (size_t)w * h * 4;
+  unsigned char *buf = malloc(n); if (!buf) return;
+  glReadPixels(0, 0, w, h, 0x1908 /*RGBA*/, 0x1401 /*UBYTE*/, buf);
+  char path[256]; snprintf(path, sizeof path, "%s/shot_%d.raw", getenv("HOME") ?: ".", id);
+  FILE *f = fopen(path, "wb"); if (f) { fwrite(buf, 1, n, f); fclose(f); fprintf(stderr, "SHOT %s\n", path); }
+  free(buf);
 }
 
 int main(int argc, char *argv[]) {
@@ -308,6 +352,14 @@ int main(int argc, char *argv[]) {
      OpenSL/SDL. MM_KEEPCKOUT=1 mantém (diagnóstico). */
   if (!getenv("MM_KEEPCKOUT"))
     patch_thumb_ret("_ZN3Cki22GraphOutputJavaAndroid12renderBufferEv");
+  /* Banks Cricket não carregam (asset via JNI Java, não temos) -> bank=NULL ->
+     Sound::newBankSound(NULL) crasha ao tocar SFX (ex: confirmar no menu).
+     Stub playSe (SFX) -> silencioso mas desbloqueia gameplay. TODO áudio real.
+     MM_KEEPSE=1 mantém. */
+  if (!getenv("MM_KEEPSE")) {
+    patch_thumb_ret0("_ZN8fine_lib18Lib_SoundCkManager6playSeEiii");
+    patch_thumb_ret0("_ZN13MEDIA_MANAGER7se_playEii");
+  }
 
   p_JNI_OnLoad    = (void *)so_find_addr_safe("JNI_OnLoad");
   nativeSetContext= (void *)so_find_addr_safe("Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetContext");
@@ -321,6 +373,11 @@ int main(int argc, char *argv[]) {
   nativeTouchesEnd   = (void *)so_find_addr_safe("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd");
   nativeTouchesMove  = (void *)so_find_addr_safe("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesMove");
   initCricket     = (void *)so_find_addr_safe("Java_org_cocos2dx_cpp_AppActivity_initCricket");
+
+  p_Director_getInstance   = (void *)so_find_addr_safe("_ZN7cocos2d8Director11getInstanceEv");
+  p_EventKeyboard_ctor     = (void *)so_find_addr_safe("_ZN7cocos2d13EventKeyboardC1ENS0_7KeyCodeEb");
+  p_EventDispatcher_dispatch = (void *)so_find_addr_safe("_ZN7cocos2d15EventDispatcher13dispatchEventEPNS_5EventE");
+  p_EventKeyboard_dtor     = (void *)so_find_addr_safe("_ZN7cocos2d13EventKeyboardD1Ev");
 
   if (!nativeInit || !nativeRender) { fprintf(stderr, "FALTA nativeInit/nativeRender\n"); return 1; }
 
@@ -355,19 +412,30 @@ int main(int argc, char *argv[]) {
         case SDL_KEYDOWN: case SDL_KEYUP: {
           if (e.key.repeat) break;
           if (e.key.keysym.sym == SDLK_ESCAPE && e.type == SDL_KEYDOWN) { running = 0; break; }
-          if (nativeKeyEvent) {
-            int kc = map_key_android(e.key.keysym.sym);
-            if (kc >= 0) nativeKeyEvent(g_env, NULL, kc, e.type == SDL_KEYDOWN);
+          int ck = map_key_cocos(e.key.keysym.sym);
+          if (ck >= 0) mm_send_cocos_key(ck, e.type == SDL_KEYDOWN);
+          break;
+        }
+        case SDL_CONTROLLERBUTTONDOWN: {
+          int ck = map_btn_cocos(e.cbutton.button); if (ck>=0) mm_send_cocos_key(ck, 1); break;
+        }
+        case SDL_CONTROLLERBUTTONUP: {
+          int ck = map_btn_cocos(e.cbutton.button); if (ck>=0) mm_send_cocos_key(ck, 0); break;
+        }
+        case SDL_CONTROLLERAXISMOTION: {
+          /* analógico esquerdo -> direcional (com histerese) */
+          static int lx=0, ly=0; const int TH=16000;
+          if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTX) {
+            int nx = e.caxis.value> TH?1: e.caxis.value<-TH?-1:0;
+            if (nx!=lx){ if(lx==1)mm_send_cocos_key(CKEY_RIGHT,0); if(lx==-1)mm_send_cocos_key(CKEY_LEFT,0);
+                         if(nx==1)mm_send_cocos_key(CKEY_RIGHT,1); if(nx==-1)mm_send_cocos_key(CKEY_LEFT,1); lx=nx; }
+          } else if (e.caxis.axis==SDL_CONTROLLER_AXIS_LEFTY) {
+            int ny = e.caxis.value> TH?1: e.caxis.value<-TH?-1:0;
+            if (ny!=ly){ if(ly==1)mm_send_cocos_key(CKEY_DOWN,0); if(ly==-1)mm_send_cocos_key(CKEY_UP,0);
+                         if(ny==1)mm_send_cocos_key(CKEY_DOWN,1); if(ny==-1)mm_send_cocos_key(CKEY_UP,1); ly=ny; }
           }
           break;
         }
-        case SDL_CONTROLLERBUTTONDOWN:
-          if (nativeKeyEvent) { int kc = map_btn_android(e.cbutton.button); if (kc>=0) nativeKeyEvent(g_env,NULL,kc,1); }
-          break;
-        case SDL_CONTROLLERBUTTONUP:
-          if (nativeKeyEvent) { int kc = map_btn_android(e.cbutton.button); if (kc>=0) nativeKeyEvent(g_env,NULL,kc,0); }
-          break;
-        case SDL_FINGERDOWN: break;
       }
     }
     /* MM_AUTOPRESS: toca o centro periodicamente p/ passar logos/título (VirtualPad touch) */
@@ -376,6 +444,29 @@ int main(int argc, char *argv[]) {
       int sub = fc % 120;
       if (sub == 30 && nativeTouchesBegin) nativeTouchesBegin(g_env, NULL, 0, w/2.0f, h/2.0f);
       if (sub == 45 && nativeTouchesEnd)   nativeTouchesEnd(g_env, NULL, 0, w/2.0f, h/2.0f);
+    }
+    /* MM_NAVTEST: injeta teclas via nativeKeyEvent p/ validar controle no menu.
+       shot 1=inicial, DOWN, shot 2, DOWN, shot 3, UP+confirm(A/START/ENTER), shot 4. */
+    if (getenv("MM_NAVTEST")) {
+      static long f = 0; f++;
+      #define TOUCH(x,y) do{ if(nativeTouchesBegin)nativeTouchesBegin(g_env,NULL,0,(float)(x),(float)(y)); }while(0)
+      #define UNTOUCH(x,y) do{ if(nativeTouchesEnd)nativeTouchesEnd(g_env,NULL,0,(float)(x),(float)(y)); }while(0)
+      /* checkmark confirmar em (1180,620); drillar main->mode->stage->gameplay */
+      #define TAPCHK() do{ TOUCH(1180,620); }while(0)
+      #define RELCHK() do{ UNTOUCH(1180,620); }while(0)
+      if (f==120) mm_shot(w,h,1);
+      if (f==180){ TAPCHK(); fprintf(stderr,"CONFIRM 1\n"); } if (f==200) RELCHK();
+      if (f==340) mm_shot(w,h,2);
+      if (f==400){ TAPCHK(); fprintf(stderr,"CONFIRM 2\n"); } if (f==420) RELCHK();
+      if (f==560) mm_shot(w,h,3);
+      if (f==620){ TAPCHK(); fprintf(stderr,"CONFIRM 3\n"); } if (f==640) RELCHK();
+      if (f==780) mm_shot(w,h,4);
+      if (f==840){ TAPCHK(); fprintf(stderr,"CONFIRM 4\n"); } if (f==860) RELCHK();
+      if (f==1000) mm_shot(w,h,5);                       /* stage select */
+      if (f==1060){ TAPCHK(); fprintf(stderr,"CONFIRM 5 (enter stage)\n"); } if (f==1080) RELCHK();
+      if (f==1300) mm_shot(w,h,6);                       /* GAMEPLAY? */
+      if (f==1600) mm_shot(w,h,7);                       /* gameplay depois */
+      if (f==1640) fprintf(stderr,"NAVTEST done\n");
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
