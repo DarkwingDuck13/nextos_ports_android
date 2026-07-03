@@ -166,8 +166,14 @@ static jint int_for_tag(void *mid, void *firstArg) {
   if (mid == &g_method_tags[MID_DEV_MAX_MEM]) return 512 * 1024;
   if (mid == &g_method_tags[MID_NAT_TOTAL_MEM]) return 256 * 1024;
   if (mid == &g_method_tags[MID_NAT_FREE_MEM]) return 192 * 1024;
-  if (mid == &g_method_tags[MID_SOUND_LOAD]) return snd_id++;
-  if (mid == &g_method_tags[MID_MUSIC_LOAD]) return mus_id++;
+  if (mid == &g_method_tags[MID_SOUND_LOAD]) {
+    if (getenv("SOM_AUDIOLOG")) debugPrintf("SoundLoad('%s')\n", resolve_jstring(firstArg));
+    return snd_id++;
+  }
+  if (mid == &g_method_tags[MID_MUSIC_LOAD]) {
+    if (getenv("SOM_AUDIOLOG")) debugPrintf("MusicLoad('%s')\n", resolve_jstring(firstArg));
+    return mus_id++;
+  }
   return 0;
 }
 

@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <math.h>
 #include <SDL2/SDL.h>
 
 #include "error.h"
@@ -261,12 +262,19 @@ int main(int argc, char *argv[]) {
           break;
         case SDL_CONTROLLERBUTTONDOWN: set_bit(map_btn_bit(e.cbutton.button), 1); break;
         case SDL_CONTROLLERBUTTONUP:   set_bit(map_btn_bit(e.cbutton.button), 0); break;
-        case SDL_CONTROLLERAXISMOTION:
-          if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) g_som_input.analog_x[0] = e.caxis.value;
-          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) g_som_input.analog_y[0] = e.caxis.value;
-          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTX) g_som_input.analog_x[1] = e.caxis.value;
-          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) g_som_input.analog_y[1] = e.caxis.value;
+        case SDL_CONTROLLERAXISMOTION: {
+          /* O engine espera analog_stick em ±1024 (axis*1024.0f) com deadzone
+           * ±0.1 (ver PlAndroidSensor.handleAnalogKey). Y invertido (up=+). */
+          float n = e.caxis.value / 32768.0f;
+          if (fabsf(n) < 0.1f) n = 0.0f;
+          int vx = (int)(n * 1024.0f);
+          int vy = (int)(-n * 1024.0f);
+          if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) g_som_input.analog_x[0] = vx;
+          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) g_som_input.analog_y[0] = vy;
+          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTX) g_som_input.analog_x[1] = vx;
+          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) g_som_input.analog_y[1] = vy;
           break;
+        }
       }
     }
     /* SOM_AUTONAV=1: valida input/fontes (toque no centro p/ passar titulo). */
