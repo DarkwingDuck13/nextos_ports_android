@@ -752,18 +752,30 @@ int main(int argc, char *argv[]) {
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
-    /* throttle p/ ~fps alvo: sem áudio de saída o jogo não tem pacing e roda
-       acelerado. cap por relógio monotônico. MM_FPS ajusta (default 60). */
+    /* SYNC vídeo->áudio: o áudio (44100, tempo real) é o clock MESTRE. Renderiza
+       1 frame a cada SPF samples tocados pelo SDL -> vídeo travado no áudio, sem
+       deriva. MM_SPF ajusta a velocidade (735=60fps, 1470=30fps; maior=mais lento).
+       Fallback: se o áudio não avançar (não iniciou), cap por relógio (60fps). */
     {
-      static long long next = 0; static long long per = 0;
-      if (!per) { const char *e = getenv("MM_FPS"); int fps = e?atoi(e):60; if(fps<1)fps=60; per = 1000000LL/fps; }
+      static long long spf = 0, rbase = 0, rframes = 0, next_us = 0, per_us = 0;
+      if (!spf) { const char *e=getenv("MM_SPF"); spf = e?atoll(e):1470; if(spf<1)spf=1470;
+                  const char *f=getenv("MM_FPS"); int fp=f?atoi(f):60; per_us=1000000LL/(fp<1?60:fp); }
       struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-      long long now = ts.tv_sec*1000000LL + ts.tv_nsec/1000;
-      if (!next) next = now;
-      next += per;
-      long long d = next - now;
-      if (d > 0 && d < per*3) { struct timespec s = { d/1000000, (d%1000000)*1000 }; nanosleep(&s, NULL); }
-      else next = now;   /* atrasou -> resincroniza */
+      long long now_us = ts.tv_sec*1000000LL + ts.tv_nsec/1000;
+      long long fp0 = g_frames_played;
+      if (fp0 > 0) {                                  /* áudio rodando -> sync nele */
+        if (!rbase) { rbase = fp0; rframes = 0; }
+        rframes++;
+        long long target = rbase + rframes*spf;
+        int guard=0;
+        while (g_frames_played < target) { usleep(500); if(++guard>200) break; }
+      } else {                                        /* áudio ainda não -> cap fixo */
+        if (!next_us) next_us = now_us;
+        next_us += per_us;
+        long long d = next_us - now_us;
+        if (d>0 && d<per_us*3) { struct timespec s={d/1000000,(d%1000000)*1000}; nanosleep(&s,NULL); }
+        else next_us = now_us;
+      }
     }
     if (getenv("MM_ADIAG")) {
       static long fcnt=0; static long long t0=0;
