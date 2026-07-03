@@ -21,6 +21,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
 #include <SDL2/SDL.h>
@@ -676,6 +677,19 @@ int main(int argc, char *argv[]) {
     }
     nativeRender(g_env, NULL);
     SDL_GL_SwapWindow(window);
+    /* throttle p/ ~fps alvo: sem áudio de saída o jogo não tem pacing e roda
+       acelerado. cap por relógio monotônico. MM_FPS ajusta (default 60). */
+    {
+      static long long next = 0; static long long per = 0;
+      if (!per) { const char *e = getenv("MM_FPS"); int fps = e?atoi(e):60; if(fps<1)fps=60; per = 1000000LL/fps; }
+      struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+      long long now = ts.tv_sec*1000000LL + ts.tv_nsec/1000;
+      if (!next) next = now;
+      next += per;
+      long long d = next - now;
+      if (d > 0 && d < per*3) { struct timespec s = { d/1000000, (d%1000000)*1000 }; nanosleep(&s, NULL); }
+      else next = now;   /* atrasou -> resincroniza */
+    }
   }
 
   fprintf(stderr, "Exiting...\n");
