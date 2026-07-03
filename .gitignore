@@ -94,3 +94,11 @@ ports/*/katanazero
 ports/*/*.zero
 options.ini
 ports/sonic4/device_libs_3.0.0_arm64/
+
+# === NextOS: nunca commitar (runs/logs/backups de debug) ===
+ports/*/runs/
+ports/*/logs/
+*.bak
+*.OURS-BACKUP
+*.PRE-DBG
+*.raw
