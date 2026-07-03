@@ -1,0 +1,7 @@
+# payloads do jogo (BYO-data — não versionar)
+payload/
+megamanx
+*.o
+run.out
+debug.log
+fbr.raw
