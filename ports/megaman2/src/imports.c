@@ -221,6 +221,13 @@ extern int b_fseek(void *, long, int);
 extern long b_ftell(void *);
 extern int b_fflush(void *);
 extern int b_fclose(void *);
+extern int b_fprintf(void *, const char *, ...);
+extern int b_vfprintf(void *, const char *, __builtin_va_list);
+extern int b_ungetc(int, void *);
+extern int b_setvbuf(void *, char *, int, size_t);
+extern int b_feof(void *);
+extern int b_ferror(void *);
+extern char *b_fgets(char *, int, void *);
 
 /* memcpy/memmove com guarda de diagnóstico: loga e protege dest/src nulos.
  * (O jogo crasha cedo em memcpy(dest=0,...,11) numa op de std::string na init de
@@ -345,6 +352,13 @@ DynLibFunction shantae_overrides[] = {
     {"ftell", (uintptr_t)b_ftell},
     {"fflush", (uintptr_t)b_fflush},
     {"fclose", (uintptr_t)b_fclose},
+    {"fprintf", (uintptr_t)b_fprintf},
+    {"vfprintf", (uintptr_t)b_vfprintf},
+    {"ungetc", (uintptr_t)b_ungetc},
+    {"setvbuf", (uintptr_t)b_setvbuf},
+    {"feof", (uintptr_t)b_feof},
+    {"ferror", (uintptr_t)b_ferror},
+    {"fgets", (uintptr_t)b_fgets},
     {"memcpy", (uintptr_t)my_memcpy},
     {"memmove", (uintptr_t)my_memmove},
     {"__memcpy_chk", (uintptr_t)my_memcpy_chk},

@@ -755,6 +755,24 @@ int main(int argc, char *argv[]) {
     while (SDL_PollEvent(&e)) {
       switch (e.type) {
         case SDL_QUIT: running = 0; break;
+        /* RECONEXAO: adaptadores baratos caem/reconectam (ou o user troca o
+           controle) -> reabre sem precisar reiniciar o jogo. */
+        case SDL_CONTROLLERDEVICEADDED: {
+          if (!g_gamepad && SDL_IsGameController(e.cdevice.which)) {
+            g_gamepad = SDL_GameControllerOpen(e.cdevice.which);
+            if (g_gamepad) fprintf(stderr,"Gamepad reconectado: %s\n", SDL_GameControllerName(g_gamepad));
+          }
+          break;
+        }
+        case SDL_CONTROLLERDEVICEREMOVED: {
+          if (g_gamepad && e.cdevice.which ==
+              SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_gamepad))) {
+            SDL_GameControllerClose(g_gamepad); g_gamepad = NULL;
+            dp_up=dp_dn=dp_lf=dp_rt=stk_x=stk_y=0; update_dpad();  /* zera estado preso */
+            fprintf(stderr,"Gamepad desconectado\n");
+          }
+          break;
+        }
         case SDL_KEYDOWN: case SDL_KEYUP: {
           if (e.key.repeat) break;
           int pr = (e.type==SDL_KEYDOWN);
