@@ -14,6 +14,7 @@
  */
 #include "jni_shim.h"
 #include "so_util.h"
+#include "text_render.h"
 #include "util.h"
 #include <pthread.h>
 #include <stdarg.h>
@@ -167,12 +168,24 @@ static jint int_for_tag(void *mid, void *firstArg) {
   if (mid == &g_method_tags[MID_NAT_FREE_MEM]) return 192 * 1024;
   if (mid == &g_method_tags[MID_SOUND_LOAD]) return snd_id++;
   if (mid == &g_method_tags[MID_MUSIC_LOAD]) return mus_id++;
-  if (mid == &g_method_tags[MID_FONT_HEIGHT]) return 24;
-  if (mid == &g_method_tags[MID_FONT_WIDTH]) {
-    const char *s = resolve_jstring(firstArg);
-    return (int)strlen(s) * 12 + 8;
-  }
   return 0;
+}
+
+/* FontWidth/Height: args (int type, int size, String). */
+static jint font_metric(void *mid, int size, void *strArg) {
+  if (mid == &g_method_tags[MID_FONT_HEIGHT]) return som_text_height(size);
+  if (mid == &g_method_tags[MID_FONT_WIDTH]) return som_text_width(resolve_jstring(strArg), size);
+  return 0;
+}
+
+/* FontDraw: args (int[] buf, w, h, _, size, x, y, r, g, b, a, String). */
+static void font_draw(void *arr, int w, int h, int size, int x, int y,
+                      int r, int g, int b, void *strArg) {
+  int i = jarr_find(arr);
+  if (i < 0 || !g_jarr[i].data) return;
+  if ((long)w * h * 4 > g_jarr[i].len) return;
+  som_text_draw(resolve_jstring(strArg), size, (unsigned int *)g_jarr[i].data,
+                w, h, x, y, r, g, b);
 }
 static void *obj_for_tag(void *mid) {
   if (mid == &g_method_tags[MID_GET_OBB_PATH]) {
@@ -194,31 +207,65 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *mid, ...) 
 static void *jni_CallStaticObjectMethodV(void *env, void *clazz, void *mid, va_list a) { return obj_for_tag(mid); }
 static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *mid, const void *a) { return obj_for_tag(mid); }
 
+static int is_font_metric(void *mid) {
+  return mid == &g_method_tags[MID_FONT_WIDTH] || mid == &g_method_tags[MID_FONT_HEIGHT];
+}
 static jint jni_CallStaticIntMethod(void *env, void *clazz, void *mid, ...) {
-  va_list ap; va_start(ap, mid); void *a0 = va_arg(ap, void *); va_end(ap);
+  va_list ap; va_start(ap, mid);
+  if (is_font_metric(mid)) {
+    int type = va_arg(ap, int); (void)type;
+    int size = va_arg(ap, int); void *str = va_arg(ap, void *);
+    va_end(ap); return font_metric(mid, size, str);
+  }
+  void *a0 = va_arg(ap, void *); va_end(ap);
   return int_for_tag(mid, a0);
 }
 static jint jni_CallStaticIntMethodV(void *env, void *clazz, void *mid, va_list ap) {
+  if (is_font_metric(mid)) {
+    int type = va_arg(ap, int); (void)type;
+    int size = va_arg(ap, int); void *str = va_arg(ap, void *);
+    return font_metric(mid, size, str);
+  }
   void *a0 = va_arg(ap, void *); return int_for_tag(mid, a0);
 }
 static jint jni_CallStaticIntMethodA(void *env, void *clazz, void *mid, const void *args) {
   const uint64_t *a = (const uint64_t *)args;
+  if (is_font_metric(mid)) return font_metric(mid, (int)a[1], (void *)a[2]);
   return int_for_tag(mid, (void *)a[0]);
 }
 
+static void font_draw_va(void *mid, va_list ap) {
+  void *arr = va_arg(ap, void *);
+  int w = va_arg(ap, int), h = va_arg(ap, int);
+  int p20 = va_arg(ap, int); (void)p20;
+  int size = va_arg(ap, int), x = va_arg(ap, int), y = va_arg(ap, int);
+  int r = va_arg(ap, int), g = va_arg(ap, int), b = va_arg(ap, int);
+  int a = va_arg(ap, int); (void)a;
+  void *str = va_arg(ap, void *);
+  font_draw(arr, w, h, size, x, y, r, g, b, str);
+}
 static void do_static_void(void *mid, void *firstArg) {
   if (mid == &g_method_tags[MID_GET_SENSOR_STATE]) fill_sensor_array(firstArg);
-  /* Sound/Music/Font draw / demais -> no-op por enquanto */
+  /* Sound/Music/demais -> no-op por enquanto */
 }
 static void jni_CallStaticVoidMethod(void *env, void *clazz, void *mid, ...) {
-  va_list ap; va_start(ap, mid); void *a0 = va_arg(ap, void *); va_end(ap);
+  va_list ap; va_start(ap, mid);
+  if (mid == &g_method_tags[MID_FONT_DRAW]) { font_draw_va(mid, ap); va_end(ap); return; }
+  void *a0 = va_arg(ap, void *); va_end(ap);
   do_static_void(mid, a0);
 }
 static void jni_CallStaticVoidMethodV(void *env, void *clazz, void *mid, va_list ap) {
+  if (mid == &g_method_tags[MID_FONT_DRAW]) { font_draw_va(mid, ap); return; }
   void *a0 = va_arg(ap, void *); do_static_void(mid, a0);
 }
 static void jni_CallStaticVoidMethodA(void *env, void *clazz, void *mid, const void *args) {
-  const uint64_t *a = (const uint64_t *)args; do_static_void(mid, (void *)a[0]);
+  const uint64_t *a = (const uint64_t *)args;
+  if (mid == &g_method_tags[MID_FONT_DRAW]) {
+    font_draw((void *)a[0], (int)a[1], (int)a[2], (int)a[4], (int)a[5], (int)a[6],
+              (int)a[7], (int)a[8], (int)a[9], (void *)a[11]);
+    return;
+  }
+  do_static_void(mid, (void *)a[0]);
 }
 static jboolean jni_CallStaticBooleanMethod(void *env, void *clazz, void *mid, ...) { return 0; }
 static jboolean jni_CallStaticBooleanMethodV(void *env, void *clazz, void *mid, va_list a) { return 0; }

@@ -119,6 +119,9 @@ static void open_gamepad(void) {
   }
 }
 
+/* estado de toque (ponteiro 0): touchscreen real ou injecao (autonav). */
+static int g_touch_down = 0, g_touch_x = 0, g_touch_y = 0;
+
 /* atualiza g_som_input (chamado por frame antes de OnFrame). */
 static void update_input(int w, int h) {
   som_input_t *s = &g_som_input;
@@ -128,7 +131,22 @@ static void update_input(int w, int h) {
   s->key_on = ~last & g_key_now;   /* pressionado neste frame */
   s->key_off = ~g_key_now & last;  /* solto neste frame */
   s->touch_max_x = w; s->touch_max_y = h;
-  s->touch_ptr_max = -1; s->touch_count = 0; s->touch_last_ptr = -1;
+
+  int tlast = s->touch_last_b;
+  int tnow = g_touch_down ? 1 : 0;
+  s->touch_now_b = tnow;
+  s->touch_on_b = ~tlast & tnow;
+  s->touch_off_b = ~tnow & tlast;
+  s->touch_moving_b = tnow;
+  s->touch_move_b = tnow;
+  s->touch_last_b = tnow;
+  if (tnow) {
+    s->touch_start_x[0] = g_touch_x; s->touch_start_y[0] = g_touch_y;
+    s->touch_move_x[0] = g_touch_x;  s->touch_move_y[0] = g_touch_y;
+    s->touch_count = 1; s->touch_ptr_max = 0; s->touch_last_ptr = 0;
+  } else {
+    s->touch_count = 0; s->touch_ptr_max = -1; s->touch_last_ptr = -1;
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -250,6 +268,13 @@ int main(int argc, char *argv[]) {
           else if (e.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) g_som_input.analog_y[1] = e.caxis.value;
           break;
       }
+    }
+    /* SOM_AUTONAV=1: valida input/fontes (toque no centro p/ passar titulo). */
+    if (getenv("SOM_AUTONAV")) {
+      static int f = 0; f++;
+      g_touch_x = w / 2; g_touch_y = h / 2;
+      if (f >= 120 && f <= 135) g_touch_down = 1; else if (f == 136) g_touch_down = 0;
+      if (f >= 240 && f <= 255) g_touch_down = 1; else if (f == 256) g_touch_down = 0;
     }
     update_input(w, h);
     /* Select+Start = matar o jogo (hotkey do binario) */

@@ -9,8 +9,9 @@ cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain nao encontrado: $CC"; exit 1; }
 SRCS=$(ls src/*.c)
 $CC --sysroot="$SR" -D_GNU_SOURCE -I src -I "$SR/usr/include" -I "$SR/usr/include/SDL2" \
+    -I "$SR/usr/include/freetype2" \
     -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
     -Wno-int-conversion -Wno-incompatible-pointer-types \
     -o secretofmana $SRCS \
-    -lSDL2 -lGLESv1_CM -lGLESv2 -lEGL -lz -ldl -lm -lpthread -lstdc++ -lgcc_s
+    -lSDL2 -lGLESv1_CM -lGLESv2 -lEGL -lfreetype -lz -ldl -lm -lpthread -lstdc++ -lgcc_s
 echo "BUILD OK -> $(file secretofmana | cut -d, -f1-3)"
