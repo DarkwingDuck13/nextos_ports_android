@@ -166,6 +166,25 @@ int jni_is_empty_args(void *o);
 #define MAX_PREFS 128
 static struct { char *key; char *sval; int ival; int has_s, has_i; } g_prefs[MAX_PREFS];
 static int g_prefs_n = 0;
+static int g_callobjA_fake, g_callstaticobjA_fake, g_callstaticobjV_fake;
+struct barr;
+static struct barr *barr_find(void *h);
+static int mmx_blank_pref_key(const char *key) {
+  return getenv("MMX_FIXGAME") && (!key || !key[0]);
+}
+static void pref_dbg_obj(const char *op, void *obj, const char *key) {
+  if (!getenv("MMX_PREFDBG")) return;
+  static int n;
+  if (n++ >= 240) return;
+  const char *kind = "ptr";
+  if (!obj) kind = "NULL";
+  else if (obj == &g_callobjA_fake) kind = "CallObjectMethodA.fake";
+  else if (obj == &g_callstaticobjA_fake) kind = "CallStaticObjectMethodA.fake";
+  else if (obj == &g_callstaticobjV_fake) kind = "CallStaticObjectMethodV.fake";
+  else if (barr_find(obj)) kind = "byte[]";
+  debugPrintf("[PREFDBG] %s keyo=%p kind=%s key='%s'\n",
+              op, obj, kind, key ? key : "");
+}
 static int prefs_find(const char *key) {
   for (int i = 0; i < g_prefs_n; i++)
     if (g_prefs[i].key && !strcmp(g_prefs[i].key, key)) return i;
@@ -193,7 +212,10 @@ static const char *prefs_get_string(const char *key) {
 }
 static int prefs_contains(const char *key) {
   int i = prefs_find(key);
-  return (i >= 0 && (g_prefs[i].has_s || g_prefs[i].has_i)) ? 1 : 0;
+  if (i >= 0 && (g_prefs[i].has_s || g_prefs[i].has_i)) return 1;
+  if (mmx_blank_pref_key(key) && getenv("MMX_PREFSTRUE")) return 1;
+  if (mmx_blank_pref_key(key)) return 0;
+  return 0;
 }
 
 /* ---- Registry de method/field IDs por NOME (recon Unity) ---- */
@@ -216,6 +238,12 @@ static const char *mid_name(void *tag) {
   if ((char *)tag >= (char *)g_midreg &&
       (char *)tag < (char *)(g_midreg + 1024))
     return ((struct mid_entry *)tag)->name;
+  return NULL;
+}
+static const char *mid_sig(void *tag) {
+  if ((char *)tag >= (char *)g_midreg &&
+      (char *)tag < (char *)(g_midreg + 1024))
+    return ((struct mid_entry *)tag)->sig;
   return NULL;
 }
 
@@ -249,6 +277,41 @@ static struct barr *barr_find(void *h) {
   if ((char *)h >= (char *)g_barr && (char *)h < (char *)(g_barr + MAX_BARR))
     return (struct barr *)h;
   return NULL;
+}
+static void *barr_from_bytes(const void *buf, int len) {
+  void *h = barr_new(len);
+  struct barr *b = barr_find(h);
+  if (b && buf && len > 0) memcpy(b->buf, buf, len);
+  return h;
+}
+static void *jstring_from_byte_array(void *arr) {
+  struct barr *b = barr_find(arr);
+  if (!b || b->len <= 0) return make_jstring("");
+  int ascii = 1;
+  for (int i = 0; i < b->len; i++) {
+    unsigned char c = b->buf[i];
+    if (c < 0x20 || c >= 0x7f) { ascii = 0; break; }
+  }
+  char *tmp;
+  if (ascii) {
+    tmp = (char *)malloc((size_t)b->len + 1);
+    memcpy(tmp, b->buf, (size_t)b->len);
+    tmp[b->len] = 0;
+  } else {
+    static const char hx[] = "0123456789abcdef";
+    tmp = (char *)malloc((size_t)b->len * 2 + 5);
+    memcpy(tmp, "hex:", 4);
+    for (int i = 0; i < b->len; i++) {
+      tmp[4 + i * 2] = hx[b->buf[i] >> 4];
+      tmp[5 + i * 2] = hx[b->buf[i] & 15];
+    }
+    tmp[4 + b->len * 2] = 0;
+  }
+  void *s = make_jstring(tmp);
+  debugPrintf("jni_shim: NewString(byte[%d]) -> \"%.64s\"%s\n",
+              b->len, tmp, ascii ? "" : " (hex)");
+  free(tmp);
+  return s;
 }
 /* int[] real (p/ InputDevice.getDeviceIds): len = nº de ELEMENTOS, buf = 4*len bytes */
 static void *iarr_new(const int *vals, int n) {
@@ -465,15 +528,39 @@ static jint jni_GetVersion(void *env) {
   return 0x00010006;
 }
 
-/* ===== Injeção de input p/ nativeInjectEvent (KeyEvent) =====
-   nativeInjectEvent lê o evento via JNI (getAction/getKeyCode/...). Setamos
-   g_hk_inject ANTES de chamar nativeInjectEvent e os métodos retornam daqui. */
+/* ===== Injeção de input p/ nativeInjectEvent (KeyEvent/MotionEvent) =====
+   nativeInjectEvent lê o evento via JNI (getAction/getKeyCode/getX/...). Setamos
+   os structs ANTES de chamar nativeInjectEvent e os métodos retornam daqui. */
 struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
                      scancode, flags, unicode; long eventTime, downTime; };
 struct hk_inject_s g_hk_inject;       /* exportado p/ main_recon */
 static int g_obj_keyevent;            /* sentinela do objeto KeyEvent */
 void *hk_keyevent_object(void) { return &g_obj_keyevent; }
+struct hk_motion_s { int action, source, deviceId, metaState, buttonState,
+                     flags, pointerId, pointerCount, actionIndex, toolType;
+                     float x, y, rawX, rawY, pressure, size; long eventTime, downTime; };
+struct hk_motion_s g_hk_motion;       /* exportado p/ main_recon */
+static int g_obj_motionevent;         /* sentinela do objeto MotionEvent */
+void *hk_motionevent_object(void) { return &g_obj_motionevent; }
 static int g_gamepad_device;          /* sentinela do InputDevice (Xbox 360 virtual) */
+static int g_touch_device;            /* sentinela do InputDevice touchscreen virtual */
+extern int mmx_gamepad_enabled(void);
+extern float mmx_gp_axis(int axis);
+static int g_gamepad_ranges;          /* java.util.List<InputDevice.MotionRange> */
+static int g_gamepad_range_iter;
+static int g_gamepad_range_objs[8];
+static const int g_gamepad_range_axes[8] = {0, 1, 11, 14, 15, 16, 17, 18};
+static int gp_range_count(void) { return (int)(sizeof(g_gamepad_range_axes) / sizeof(g_gamepad_range_axes[0])); }
+static int gp_range_index(void *obj) {
+  for (int i = 0; i < gp_range_count(); i++)
+    if (obj == (void *)&g_gamepad_range_objs[i]) return i;
+  return -1;
+}
+static void *gp_range_for_axis(int axis) {
+  for (int i = 0; i < gp_range_count(); i++)
+    if (g_gamepad_range_axes[i] == axis) return &g_gamepad_range_objs[i];
+  return NULL;
+}
 static int g_current_activity;        /* UnityPlayer.currentActivity fake */
 static int g_current_activity_field_id;
 static int g_pressedstates_field_obj; /* java.lang.reflect.Field fake */
@@ -582,8 +669,46 @@ static float jni_GetFloatField(void *env, void *obj, void *fieldID) {
 
 /* CallFloatMethodV (idx 56): Display.getRefreshRate() -> 60Hz (0 quebra o engine) */
 static float jni_CallFloatMethodV(void *env, void *obj, void *methodID, va_list ap) {
-  (void)env; (void)obj; (void)ap;
+  (void)env;
   const char *nm = mid_name(methodID);
+  const char *sig = mid_sig(methodID);
+  if (obj == (void *)&g_obj_motionevent && nm) {
+    int takes_index = sig && sig[0] == '(' && sig[1] == 'I';
+    if (strcmp(nm, "getX") == 0) {
+      if (takes_index) (void)va_arg(ap, int);
+      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getX -> %.1f\n", g_hk_motion.x);
+      return g_hk_motion.x;
+    }
+    if (strcmp(nm, "getY") == 0) {
+      if (takes_index) (void)va_arg(ap, int);
+      static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getY -> %.1f\n", g_hk_motion.y);
+      return g_hk_motion.y;
+    }
+    if (strcmp(nm, "getRawX") == 0) return g_hk_motion.rawX;
+    if (strcmp(nm, "getRawY") == 0) return g_hk_motion.rawY;
+    if (strcmp(nm, "getPressure") == 0) { if (takes_index) (void)va_arg(ap, int); return g_hk_motion.pressure; }
+    if (strcmp(nm, "getSize") == 0) { if (takes_index) (void)va_arg(ap, int); return g_hk_motion.size; }
+    if (strcmp(nm, "getAxisValue") == 0) {
+      int axis = 0;
+      if (sig && !strcmp(sig, "(II)F")) { axis = va_arg(ap, int); (void)va_arg(ap, int); }
+      else if (sig && !strcmp(sig, "(I)F")) axis = va_arg(ap, int);
+      float v = mmx_gp_axis(axis);
+      static int n;
+      if (getenv("MMX_GPLOG") && n++ < 80)
+        debugPrintf("[MMX_GAMEPAD] MotionEvent.getAxisValue(%d) -> %.3f\n", axis, v);
+      return v;
+    }
+    if (strcmp(nm, "getOrientation") == 0) { if (takes_index) (void)va_arg(ap, int); return 0.0f; }
+  }
+  int ri = gp_range_index(obj);
+  if (ri >= 0 && nm) {
+    int axis = g_gamepad_range_axes[ri];
+    if (strcmp(nm, "getMin") == 0) return (axis == 17 || axis == 18) ? 0.0f : -1.0f;
+    if (strcmp(nm, "getMax") == 0) return 1.0f;
+    if (strcmp(nm, "getFlat") == 0) return (axis == 15 || axis == 16) ? 0.0f : 0.05f;
+    if (strcmp(nm, "getFuzz") == 0) return 0.0f;
+    if (strcmp(nm, "getResolution") == 0) return 0.0f;
+  }
   if (nm && strcmp(nm, "getRefreshRate") == 0) return 60.0f;
   return 0.0f;
 }
@@ -647,13 +772,60 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     }
     if (strcmp(nm, "getPackageName") == 0)
       return make_jstring(g_package_name);
-    /* ---- Gamepad Xbox 360 virtual (TER_GAMEPAD): InputManager.getInputDevice(id) + getters ---- */
-    if (strcmp(nm, "getInputDevice") == 0) return &g_gamepad_device;
-    if (obj == (void *)&g_gamepad_device) {
-      if (strcmp(nm, "getName") == 0)          return make_jstring("Microsoft X-Box 360 pad");
-      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("xbox360pad-virtual");
+    if (strcmp(nm, "getBytes") == 0) {
+      const char *sig = mid_sig(methodID);
+      if (sig && sig[1] != ')') (void)va_arg(ap, void *); /* charset */
+      const char *s = resolve_jstring(obj);
+      int len = s ? (int)strlen(s) : 0;
+      debugPrintf("jni_shim: getBytes(\"%.48s\") -> byte[%d]\n", s ? s : "", len);
+      return barr_from_bytes(s, len);
+    }
+    /* ---- Gamepad Xbox virtual (MMX_GAMEPAD/TER_GAMEPAD): Unity Input System Android ---- */
+    if (mmx_gamepad_enabled() && strcmp(nm, "getInputDeviceIds") == 0) {
+      int one[1] = {1};
+      static int o;
+      if (!o) { o = 1; debugPrintf("[MMX_GAMEPAD] InputManager.getInputDeviceIds()->[1]\n"); }
+      return iarr_new(one, 1);
+    }
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "iterator") == 0) {
+      g_gamepad_range_iter = 0;
+      return &g_gamepad_range_iter;
+    }
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "get") == 0) {
+      int idx = va_arg(ap, int);
+      return (idx >= 0 && idx < gp_range_count()) ? (void *)&g_gamepad_range_objs[idx] : NULL;
+    }
+    if (obj == (void *)&g_gamepad_range_iter && strcmp(nm, "next") == 0) {
+      int idx = g_gamepad_range_iter++;
+      return (idx >= 0 && idx < gp_range_count()) ? (void *)&g_gamepad_range_objs[idx] : NULL;
+    }
+    if (obj == (void *)&g_obj_motionevent && strcmp(nm, "getDevice") == 0)
+      return g_hk_motion.deviceId == 1 ? (void *)&g_gamepad_device : (void *)&g_touch_device;
+    if (obj == (void *)&g_obj_keyevent && strcmp(nm, "getDevice") == 0)
+      return &g_gamepad_device;
+    if (obj == (void *)&g_touch_device) {
+      if (strcmp(nm, "getName") == 0)          return make_jstring("Virtual Touchscreen");
+      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("mmx-touchscreen-virtual");
       if (strcmp(nm, "getMotionRanges") == 0)  return &g_empty_list;
-      if (strcmp(nm, "getMotionRange") == 0)   return NULL;       /* sem range específico */
+      if (strcmp(nm, "getMotionRange") == 0)   return NULL;
+      if (strcmp(nm, "getVibrator") == 0)      return NULL;
+    }
+    if (mmx_gamepad_enabled() && strcmp(nm, "getInputDevice") == 0) {
+      int id = 1;
+      const char *sig = mid_sig(methodID);
+      if (sig && sig[1] == 'I') id = va_arg(ap, int);
+      return id == 1 ? (void *)&g_gamepad_device : NULL;
+    }
+    if (obj == (void *)&g_gamepad_device) {
+      if (strcmp(nm, "getName") == 0)          return make_jstring("XboxOneGamepadAndroid");
+      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("mmx-xbox-one-gamepad-android");
+      if (strcmp(nm, "getMotionRanges") == 0)  return &g_gamepad_ranges;
+      if (strcmp(nm, "getMotionRange") == 0) {
+        int axis = va_arg(ap, int);
+        const char *sig = mid_sig(methodID);
+        if (sig && !strcmp(sig, "(II)Landroid/view/InputDevice$MotionRange;")) (void)va_arg(ap, int);
+        return gp_range_for_axis(axis);
+      }
       if (strcmp(nm, "getVibrator") == 0)      return obj;        /* não-nulo */
       if (strcmp(nm, "getKeyCharacterMap") == 0) return obj;      /* não-nulo */
       return obj;   /* qualquer outro método do device -> não-nulo */
@@ -741,14 +913,24 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "putString") == 0) {
       void *keyo = va_arg(ap, void *), *valo = va_arg(ap, void *);
       const char *key = resolve_jstring(keyo), *val = resolve_jstring(valo);
-      prefs_put_string(key, val);
-      debugPrintf("[PREFS] putString key='%s' (%zu bytes) ARMAZENADO\n", key, strlen(val));
+      pref_dbg_obj("putString", keyo, key);
+      if (mmx_blank_pref_key(key)) {
+        debugPrintf("[PREFS] putString key='' (%zu bytes) ARMAZENADO (MMX blank)\n", strlen(val));
+      }
+      prefs_put_string(key, (mmx_blank_pref_key(key) && (!val || !val[0])) ? "{}" : val);
+      if (!mmx_blank_pref_key(key))
+        debugPrintf("[PREFS] putString key='%s' (%zu bytes) ARMAZENADO\n", key, strlen(val));
       return obj;
     }
     if (strcmp(nm, "putInt") == 0) {
       void *keyo = va_arg(ap, void *); int val = va_arg(ap, int);
+      pref_dbg_obj("putInt", keyo, resolve_jstring(keyo));
+      if (mmx_blank_pref_key(resolve_jstring(keyo))) {
+        debugPrintf("[PREFS] putInt key='' val=%d ARMAZENADO (MMX blank)\n", val);
+      }
       prefs_put_int(resolve_jstring(keyo), val);
-      debugPrintf("[PREFS] putInt key='%s' val=%d ARMAZENADO\n", resolve_jstring(keyo), val);
+      if (!mmx_blank_pref_key(resolve_jstring(keyo)))
+        debugPrintf("[PREFS] putInt key='%s' val=%d ARMAZENADO\n", resolve_jstring(keyo), val);
       return obj;
     }
     if (strcmp(nm, "putBoolean") == 0 || strcmp(nm, "putFloat") == 0 ||
@@ -768,6 +950,7 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       void *keystr = va_arg(ap, void *);
       void *defstr = va_arg(ap, void *);
       const char *key = resolve_jstring(keystr);
+      pref_dbg_obj("getString", keystr, key);
       /* CUP_NOFX: força o jogo a CARREGAR settings com PÓS-PROCESSAMENTO OFF
          (chromaticAberration/noise/blur) — esses efeitos usam FBO/render-to-texture
          que TRAVAM o GPU Mali Utgard no carregamento do título. */
@@ -786,6 +969,13 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
         return make_jstring(FX_OFF);
       }
       const char *stored = prefs_get_string(key);
+      if (mmx_blank_pref_key(key) && getenv("MMX_PREFSTRUE")) {
+        const char *def = resolve_jstring(defstr);
+        if (!stored && (!def || !def[0])) {
+          debugPrintf("[PREFS] getString key='' -> {} (MMX empty json)\n");
+          return make_jstring("{}");
+        }
+      }
       debugPrintf("[PREFS] getString key='%s' -> %s\n", key, stored ? "ARMAZENADO" : "default");
       if (stored) return make_jstring(stored);
       return defstr ? defstr : make_jstring("");
@@ -823,6 +1013,45 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
 static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (nm) {
+    if (strcmp(nm, "getBytes") == 0) {
+      const char *s = resolve_jstring(obj);
+      int len = s ? (int)strlen(s) : 0;
+      debugPrintf("jni_shim: getBytesA(\"%.48s\") -> byte[%d]\n", s ? s : "", len);
+      return barr_from_bytes(s, len);
+    }
+    if (strcmp(nm, "edit") == 0) return obj;
+    if (strcmp(nm, "putString") == 0) {
+      void *keyo = args ? args[0].l : NULL;
+      void *valo = args ? args[1].l : NULL;
+      const char *key = resolve_jstring(keyo), *val = resolve_jstring(valo);
+      pref_dbg_obj("putStringA", keyo, key);
+      if (mmx_blank_pref_key(key)) {
+        debugPrintf("[PREFS] putStringA key='' (%zu bytes) ARMAZENADO (MMX blank)\n", strlen(val));
+      }
+      prefs_put_string(key, (mmx_blank_pref_key(key) && (!val || !val[0])) ? "{}" : val);
+      if (!mmx_blank_pref_key(key))
+        debugPrintf("[PREFS] putStringA key='%s' (%zu bytes) ARMAZENADO\n", key, strlen(val));
+      return obj;
+    }
+    if (strcmp(nm, "getString") == 0) {
+      void *keyo = args ? args[0].l : NULL;
+      void *defstr = args ? args[1].l : NULL;
+      const char *key = resolve_jstring(keyo);
+      pref_dbg_obj("getStringA", keyo, key);
+      const char *stored = prefs_get_string(key);
+      if (mmx_blank_pref_key(key) && getenv("MMX_PREFSTRUE")) {
+        const char *def = resolve_jstring(defstr);
+        if (!stored && (!def || !def[0])) {
+          debugPrintf("[PREFS] getStringA key='' -> {} (MMX empty json)\n");
+          return make_jstring("{}");
+        }
+      }
+      debugPrintf("[PREFS] getStringA key='%s' -> %s\n", key, stored ? "ARMAZENADO" : "default");
+      if (stored) return make_jstring(stored);
+      return defstr ? defstr : make_jstring("");
+    }
+  }
   if (nm && getenv("TER_KBFIX")) {
     if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
       const char *fnm = args ? resolve_jstring(args[0].l) : "";
@@ -849,8 +1078,25 @@ static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const j
       return make_jstring("[Z");
     }
   }
-  static int fake_obj;
-  return &fake_obj;
+  if (nm && mmx_gamepad_enabled()) {
+    if (strcmp(nm, "getInputDeviceIds") == 0) {
+      int one[1] = {1};
+      static int o;
+      if (!o) { o = 1; debugPrintf("[MMX_GAMEPAD] InputManager.getInputDeviceIdsA()->[1]\n"); }
+      return iarr_new(one, 1);
+    }
+    if (strcmp(nm, "getInputDevice") == 0) {
+      int id = args ? args[0].i : 1;
+      return id == 1 ? (void *)&g_gamepad_device : NULL;
+    }
+  }
+  if (getenv("MMX_PREFDBG")) {
+    static int n;
+    if (n++ < 160)
+      debugPrintf("[PREFDBG] CallObjectMethodA(%s) obj=%p -> fake %p arg0=%p\n",
+                  nm ? nm : "?", obj, &g_callobjA_fake, args ? args[0].l : NULL);
+  }
+  return &g_callobjA_fake;
 }
 
 /* Setado por NewStringUTF("gles-api-check") (logo antes do getBoolean da pref);
@@ -863,14 +1109,14 @@ static volatile int g_internet_deny_arm;  /* ver NewStringUTF/CallIntMethod (INT
 /* CallBooleanMethod V (index 38) — lê args via va_list (variante que il2cpp usa) */
 static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
                                             void *methodID, va_list ap) {
-  (void)obj;
   const char *nm = mid_name(methodID);
   if (nm) {
     if (getenv("TER_REFLOG") && (strstr(nm,"isArray")||strstr(nm,"isPrimitive")||strstr(nm,"isAssign"))) {
       static int bn=0; if (bn++<40) debugPrintf("[REFLOG-bool] %s -> 0\n", nm);
     }
-    if (strcmp(nm, "isEmpty") == 0) return 1;  /* lista vazia */
-    if (strcmp(nm, "hasNext") == 0) return 0;  /* iterator vazio */
+    if (strcmp(nm, "isEmpty") == 0) return obj == &g_gamepad_ranges ? 0 : 1;
+    if (strcmp(nm, "hasNext") == 0)
+      return obj == &g_gamepad_range_iter ? (g_gamepad_range_iter < gp_range_count()) : 0;
     /* Handler.post/postDelayed(Runnable[,delay]) -> RODA o Runnable, retorna true.
        (init deferida do Unity usa Handler.post; sem rodar, o boot trava no poll.) */
     if (strcmp(nm, "post") == 0 || strcmp(nm, "postDelayed") == 0 ||
@@ -883,6 +1129,7 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
     if (strcmp(nm, "contains") == 0) {
       void *keyo = va_arg(ap, void *);
       const char *key = resolve_jstring(keyo);
+      pref_dbg_obj("contains", keyo, key);
       if (getenv("CUP_NOFX") && key && strstr(key, "settings_data")) return 1;
       int has = getenv("CUP_NOCONTAINS") ? 0 : prefs_contains(key);
       debugPrintf("[PREFS] contains key='%s' -> %d\n", key, has);
@@ -908,6 +1155,38 @@ static unsigned char jni_CallBooleanMethod(void *env, void *obj, void *methodID,
   va_end(ap);
   return r;
 }
+static unsigned char jni_CallBooleanMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
+  const char *nm = mid_name(methodID);
+  if (nm) {
+    if (strcmp(nm, "isEmpty") == 0) return obj == &g_gamepad_ranges ? 0 : 1;
+    if (strcmp(nm, "hasNext") == 0)
+      return obj == &g_gamepad_range_iter ? (g_gamepad_range_iter < gp_range_count()) : 0;
+    if (strcmp(nm, "post") == 0 || strcmp(nm, "postDelayed") == 0 ||
+        strcmp(nm, "postAtTime") == 0 || strcmp(nm, "postAtFrontOfQueue") == 0) {
+      void *r = args ? args[0].l : NULL;
+      if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
+      return 1;
+    }
+    if (strcmp(nm, "contains") == 0) {
+      void *keyo = args ? args[0].l : NULL;
+      const char *key = resolve_jstring(keyo);
+      pref_dbg_obj("containsA", keyo, key);
+      if (getenv("CUP_NOFX") && key && strstr(key, "settings_data")) return 1;
+      int has = getenv("CUP_NOCONTAINS") ? 0 : prefs_contains(key);
+      debugPrintf("[PREFS] containsA key='%s' -> %d\n", key, has);
+      return (unsigned char)has;
+    }
+    if (strcmp(nm, "commit") == 0) return 1;
+    if (strcmp(nm, "getBoolean") == 0) {
+      int v = 0;
+      if (g_gles_warn_skip && !getenv("CUP_SHOWGLESWARN")) { v = 1; g_gles_warn_skip = 0; }
+      if (getenv("MMX_PREFSTRUE")) v = 1;
+      debugPrintf("[PREFS] getBooleanA -> %d (gles_skip flag)\n", v);
+      return (unsigned char)v;
+    }
+  }
+  return 0;
+}
 
 /* CallIntMethod — variante V */
 static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
@@ -919,6 +1198,14 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
   /* org.fmod.FMODAudioDevice — qualquer método int/bool (start/isRunning/init...) = sucesso */
   if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%s -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "size") == 0)
+      return gp_range_count();
+    int ri = gp_range_index(obj);
+    if (ri >= 0) {
+      if (strcmp(nm, "getAxis") == 0) return g_gamepad_range_axes[ri];
+      if (strcmp(nm, "getSource") == 0) return 0x1000611;
+      if (strcmp(nm, "getId") == 0) return 1;
+    }
     /* checkPermission(INTERNET): armado pelo NewStringUTF → DENIED(-1) p/ desligar a
        Unity Analytics (pula advertising-id/session-start que travava o boot). */
     if (g_internet_deny_arm &&
@@ -933,12 +1220,48 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "getBlockSize") == 0) return 4096;
     if (strcmp(nm, "getAvailableBlocks") == 0 || strcmp(nm, "getFreeBlocks") == 0) return 50 * 1024 * 256; /* x4096=50GB */
     if (strcmp(nm, "getBlockCount") == 0) return 26214400; /* ×4096=100GB */
+    /* ---- MotionEvent (nativeInjectEvent) ---- */
+    if (obj == (void *)&g_obj_motionevent) {
+      if (strcmp(nm, "getAction") == 0) {
+        static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getAction -> %d\n", g_hk_motion.action);
+        return g_hk_motion.action;
+      }
+      if (strcmp(nm, "getActionMasked") == 0) {
+        static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getActionMasked -> %d\n", g_hk_motion.action & 0xff);
+        return g_hk_motion.action & 0xff;
+      }
+      if (strcmp(nm, "getActionIndex") == 0) return g_hk_motion.actionIndex;
+      if (strcmp(nm, "getPointerCount") == 0) {
+        static int n; if (getenv("MMX_TOUCHLOG") && n++ < 16) debugPrintf("[MOTION] getPointerCount -> %d\n", g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1);
+        return g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1;
+      }
+      if (strcmp(nm, "getPointerId") == 0) { (void)va_arg(ap, int); return g_hk_motion.pointerId; }
+      if (strcmp(nm, "findPointerIndex") == 0) { (void)va_arg(ap, int); return 0; }
+      if (strcmp(nm, "getSource") == 0) return g_hk_motion.source;
+      if (strcmp(nm, "getDeviceId") == 0) return g_hk_motion.deviceId;
+      if (strcmp(nm, "getMetaState") == 0) return g_hk_motion.metaState;
+      if (strcmp(nm, "getButtonState") == 0) return g_hk_motion.buttonState;
+      if (strcmp(nm, "getFlags") == 0) return g_hk_motion.flags;
+      if (strcmp(nm, "getToolType") == 0) { (void)va_arg(ap, int); return g_hk_motion.toolType ? g_hk_motion.toolType : 1; }
+      if (strcmp(nm, "getEdgeFlags") == 0) return 0;
+      if (strcmp(nm, "getHistorySize") == 0) return 0;
+    }
     /* ---- KeyEvent (nativeInjectEvent) ---- */
     /* ---- InputDevice Xbox 360 virtual (getters int) ---- */
+    if (obj == (void *)&g_touch_device) {
+      if (strcmp(nm, "getVendorId") == 0)        return 0;
+      if (strcmp(nm, "getProductId") == 0)       return 0;
+      if (strcmp(nm, "getSources") == 0 || strcmp(nm, "getSource") == 0) return 0x1002; /* TOUCHSCREEN */
+      if (strcmp(nm, "getId") == 0)              return 0;
+      if (strcmp(nm, "getControllerNumber") == 0) return 0;
+      if (strcmp(nm, "getKeyboardType") == 0)    return 0;
+      if (strcmp(nm, "supportsSource") == 0)     return 1;
+      return 0;
+    }
     if (obj == (void *)&g_gamepad_device) {
       if (strcmp(nm, "getVendorId") == 0)        return 1118;       /* 0x045E Microsoft */
       if (strcmp(nm, "getProductId") == 0)       return 654;        /* 0x028E Xbox360 pad */
-      if (strcmp(nm, "getSources") == 0)         return 0x1000611;  /* GAMEPAD|JOYSTICK|DPAD */
+      if (strcmp(nm, "getSources") == 0 || strcmp(nm, "getSource") == 0) return 0x1000611;  /* GAMEPAD|JOYSTICK|DPAD */
       if (strcmp(nm, "getId") == 0)              return 1;
       if (strcmp(nm, "getControllerNumber") == 0) return 1;
       if (strcmp(nm, "getKeyboardType") == 0)    return 0;
@@ -953,8 +1276,10 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     if (strcmp(nm, "getRepeatCount") == 0) return g_hk_inject.repeat;
     if (strcmp(nm, "getScanCode") == 0) return g_hk_inject.scancode;
     if (strcmp(nm, "getInt") == 0) { void *k = va_arg(ap, void *); int d = va_arg(ap, int);
-      const char *key = resolve_jstring(k); int i = prefs_find(key);
-      int v = (i >= 0 && g_prefs[i].has_i) ? g_prefs[i].ival : d;
+      const char *key = resolve_jstring(k); int i = mmx_blank_pref_key(key) ? -1 : prefs_find(key);
+      pref_dbg_obj("getInt", k, key);
+      int v = (i >= 0 && g_prefs[i].has_i) ? g_prefs[i].ival :
+              ((mmx_blank_pref_key(key) && getenv("MMX_PREFSTRUE")) ? 1 : d);
       debugPrintf("[PREFS] getInt key='%s' def=%d -> %d\n", key, d, v); return v; }
     if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
     if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
@@ -991,6 +1316,50 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
   jint r = jni_CallIntMethodV(env, obj, methodID, ap);
   va_end(ap);
   return r;
+}
+static jint jni_CallIntMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
+  (void)env;
+  const char *nm = mid_name(methodID);
+  if (obj == (void *)&g_message_sentinel && nm && strcmp(nm, "getWhat") == 0)
+    return g_message_what;
+  if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%sA -> 1\n", nm?nm:"?"); return 1; }
+  if (nm) {
+    if (g_internet_deny_arm &&
+        (strcmp(nm, "checkCallingOrSelfPermission") == 0 ||
+         strcmp(nm, "checkSelfPermission") == 0 ||
+         strcmp(nm, "checkPermission") == 0)) {
+      g_internet_deny_arm = 0;
+      debugPrintf("jni_shim: %sA(INTERNET) -> -1 (DENIED, analytics off)\n", nm);
+      return -1;
+    }
+    if (strcmp(nm, "getBlockSize") == 0) return 4096;
+    if (strcmp(nm, "getAvailableBlocks") == 0 || strcmp(nm, "getFreeBlocks") == 0) return 50 * 1024 * 256;
+    if (strcmp(nm, "getBlockCount") == 0) return 26214400;
+    if (strcmp(nm, "getAction") == 0) return g_hk_inject.action;
+    if (strcmp(nm, "getKeyCode") == 0) return g_hk_inject.keycode;
+    if (strcmp(nm, "getSource") == 0) return g_hk_inject.source;
+    if (strcmp(nm, "getDeviceId") == 0) return g_hk_inject.deviceId;
+    if (strcmp(nm, "getMetaState") == 0) return g_hk_inject.metaState;
+    if (strcmp(nm, "getRepeatCount") == 0) return g_hk_inject.repeat;
+    if (strcmp(nm, "getScanCode") == 0) return g_hk_inject.scancode;
+    if (strcmp(nm, "getInt") == 0) {
+      void *k = args ? args[0].l : NULL;
+      int d = args ? args[1].i : 0;
+      const char *key = resolve_jstring(k); int i = mmx_blank_pref_key(key) ? -1 : prefs_find(key);
+      pref_dbg_obj("getIntA", k, key);
+      int v = (i >= 0 && g_prefs[i].has_i) ? g_prefs[i].ival :
+              ((mmx_blank_pref_key(key) && getenv("MMX_PREFSTRUE")) ? 1 : d);
+      debugPrintf("[PREFS] getIntA key='%s' def=%d -> %d\n", key, d, v); return v;
+    }
+    if (strcmp(nm, "getFlags") == 0) return g_hk_inject.flags;
+    if (strcmp(nm, "getUnicodeChar") == 0) return g_hk_inject.unicode;
+    if (strcmp(nm, "size") == 0) return 0;
+    if (strcmp(nm, "getWidth") == 0 || strcmp(nm, "getRawWidth") == 0) { int w, h; ter_display_size(&w, &h); return w; }
+    if (strcmp(nm, "getHeight") == 0 || strcmp(nm, "getRawHeight") == 0) { int w, h; ter_display_size(&w, &h); return h; }
+    if (strcmp(nm, "getRotation") == 0) return 0;
+    if (strcmp(nm, "getDisplayId") == 0) return 0;
+  }
+  return 0;
 }
 
 /* CallVoidMethod (index 94) */
@@ -1097,7 +1466,7 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
   if (nm && !strcmp(nm, "getDeviceIds")) {
     int ndev = getenv("CUP_NDEV") ? atoi(getenv("CUP_NDEV")) : 0;
     int ids[8]; for (int i = 0; i < ndev && i < 8; i++) ids[i] = 100 + i;
-    if (getenv("TER_GAMEPAD")) { int one[1] = {1}; static int o2=0; if(!o2){o2=1;debugPrintf("getDeviceIds()->[1] (Xbox virtual)\n");} return iarr_new(one, 1); }
+    if (mmx_gamepad_enabled()) { int one[1] = {1}; static int o2=0; if(!o2){o2=1;debugPrintf("getDeviceIds()->[1] (Xbox virtual)\n");} return iarr_new(one, 1); }
     static int once = 0; if (!once) { once = 1;
       debugPrintf("jni_shim: getDeviceIds() -> int[%d]\n", ndev); }
     return iarr_new(ids, ndev);
@@ -1131,7 +1500,7 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
     }
   }
   /* InputDevice.getDevice(id) é ESTÁTICO → o device Xbox 360 virtual (TER_GAMEPAD). */
-  if (nm && !strcmp(nm, "getDevice")) {
+  if (nm && !strcmp(nm, "getDevice") && mmx_gamepad_enabled()) {
     debugPrintf("jni_shim: getDevice() -> Xbox virtual\n");
     return &g_gamepad_device;
   }
@@ -1150,8 +1519,13 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
     return proxy;
   }
   debugPrintf("jni_shim: CallStaticObjectMethod(%s)\n", nm ? nm : "?");
-  static int fake_result;
-  return &fake_result;  /* fake Class/objeto nao-nulo (forName etc.) */
+  if (getenv("MMX_PREFDBG")) {
+    static int n;
+    if (n++ < 80)
+      debugPrintf("[PREFDBG] CallStaticObjectMethodV(%s) -> fake %p\n",
+                  nm ? nm : "?", &g_callstaticobjV_fake);
+  }
+  return &g_callstaticobjV_fake;  /* fake Class/objeto nao-nulo (forName etc.) */
 }
 static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, ...) {
   va_list ap; va_start(ap, methodID);
@@ -1163,6 +1537,17 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, 
 static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
   (void)env; (void)clazz;
   const char *nm = mid_name(methodID);
+  /* Unity often uses the A variant for android.net.Uri.encode/decode while
+     building PlayerPrefs keys. Returning a fake object here made every key
+     resolve as "", which kept MMX stuck in blank preference state. */
+  if (nm && (!strcmp(nm, "encode") || !strcmp(nm, "decode"))) {
+    void *arg0 = args ? args[0].l : NULL;
+    static int n;
+    if (n++ < 16)
+      debugPrintf("jni_shim: CallStaticObjectMethodA(%s) -> \"%s\"\n",
+                  nm, resolve_jstring(arg0));
+    return arg0;
+  }
   if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
     const char *fnm = args ? resolve_jstring(args[1].l) : "";
     const char *sig = args ? resolve_jstring(args[2].l) : "";
@@ -1179,8 +1564,13 @@ static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID,
       return make_jstring("[Z");
     }
   }
-  static int fake_result;
-  return &fake_result;
+  if (getenv("MMX_PREFDBG")) {
+    static int n;
+    if (n++ < 160)
+      debugPrintf("[PREFDBG] CallStaticObjectMethodA(%s) -> fake %p arg0=%p\n",
+                  nm ? nm : "?", &g_callstaticobjA_fake, args ? args[0].l : NULL);
+  }
+  return &g_callstaticobjA_fake;
 }
 
 /* CallStaticBooleanMethod (index 124) */
@@ -1215,6 +1605,10 @@ static jint jni_CallStaticIntMethodV(void *env, void *clazz, void *methodID, va_
   (void)env; (void)clazz;
   void *a = va_arg(ap, void *);
   return cint_dispatch(methodID, a);
+}
+static jint jni_CallStaticIntMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
+  (void)env; (void)clazz;
+  return cint_dispatch(methodID, args ? args[0].l : NULL);
 }
 
 /* CallStaticVoidMethod (index 145) */
@@ -1350,12 +1744,16 @@ static void jni_DeleteLocalRef(void *env, void *obj) {
 static void *jni_GetObjectClass(void *env, void *obj) {
   (void)env;
   if (obj == &g_obj_keyevent) return class_for("android/view/KeyEvent");
+  if (obj == &g_obj_motionevent) return class_for("android/view/MotionEvent");
   static int fake_obj_class;
   return &fake_obj_class;
 }
 static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
   (void)env;
-  if (obj == &g_obj_keyevent) return clazz == class_for("android/view/KeyEvent");
+  if (obj == &g_obj_keyevent)
+    return clazz == class_for("android/view/KeyEvent") || clazz == class_for("android/view/InputEvent");
+  if (obj == &g_obj_motionevent)
+    return clazz == class_for("android/view/MotionEvent") || clazz == class_for("android/view/InputEvent");
   return 1; /* permissivo p/ outros casts */
 }
 static unsigned char jni_IsSameObject(void *env, void *a, void *b) {
@@ -1366,6 +1764,10 @@ static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap
   (void)env; (void)ap;
   if (obj == (void *)&g_long_box_sentinel) return g_doframe_nanos;  /* Long.longValue() do doFrame */
   const char *nm = mid_name(methodID);
+  if (obj == (void *)&g_obj_motionevent && nm) {
+    if (strcmp(nm, "getEventTime") == 0) return g_hk_motion.eventTime;
+    if (strcmp(nm, "getDownTime") == 0) return g_hk_motion.downTime;
+  }
   if (nm) {
     if (strcmp(nm, "getEventTime") == 0) return g_hk_inject.eventTime;
     if (strcmp(nm, "getDownTime") == 0) return g_hk_inject.downTime;
@@ -1612,15 +2014,44 @@ static long jni_GetDirectBufferCapacity(void *env, void *buf) {
    um device fake não-nulo + métodos (start/etc.) OK; a thread C (fmod_audio_thread) bombeia
    fmodProcess no lugar da thread Java. */
 void *jni_fmod_device(void) { return &g_fmod_device_obj; }
-static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
-  (void)env; (void)mid;
+static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap) {
+  (void)env;
+  const char *nm = mid_name(mid);
+  const char *sig = mid_sig(mid);
+  if (nm && !strcmp(nm, "<init>") && sig &&
+      (!strcmp(sig, "([BLjava/lang/String;)V") || !strcmp(sig, "([B)V")) &&
+      clazz == class_for("java/lang/String")) {
+    void *bytes = va_arg(ap, void *);
+    if (strstr(sig, "Ljava/lang/String;")) (void)va_arg(ap, void *); /* charset */
+    return jstring_from_byte_array(bytes);
+  }
   if (clazz == class_for("org/fmod/FMODAudioDevice")) {
     debugPrintf("jni_shim: NewObject(FMODAudioDevice) -> device fake\n"); return &g_fmod_device_obj;
   }
   return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressão */
 }
-static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){ (void)ap; return jni_NewObject(env,clazz,mid); }
-static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args){ (void)args; return jni_NewObject(env,clazz,mid); }
+static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
+  va_list ap; va_start(ap, mid);
+  void *r = jni_NewObjectV(env, clazz, mid, ap);
+  va_end(ap);
+  return r;
+}
+static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args) {
+  (void)env;
+  const char *nm = mid_name(mid);
+  const char *sig = mid_sig(mid);
+  const jvalue *jargs = (const jvalue *)args;
+  if (nm && !strcmp(nm, "<init>") && sig &&
+      (!strcmp(sig, "([BLjava/lang/String;)V") || !strcmp(sig, "([B)V")) &&
+      clazz == class_for("java/lang/String")) {
+    return jstring_from_byte_array(jargs ? jargs[0].l : NULL);
+  }
+  if (clazz == class_for("org/fmod/FMODAudioDevice")) {
+    debugPrintf("jni_shim: NewObjectA(FMODAudioDevice) -> device fake\n");
+    return &g_fmod_device_obj;
+  }
+  return NULL;
+}
 
 /* GetJavaVM (index 219) — initJni chama isso */
 static jint jni_GetJavaVM(void *env, void **vm) {
@@ -1661,15 +2092,15 @@ void jni_shim_init(void **out_vm, void **out_env) {
    *  31:     GetObjectClass
    *  33:     GetMethodID
    *  34/35/36: CallObjectMethod / V / A
-   *  37/38:  CallBooleanMethod / V
-   *  49/50:  CallIntMethod / V
+   *  37/38/39:  CallBooleanMethod / V / A
+   *  49/50/51:  CallIntMethod / V / A
    *  61/62/63: CallVoidMethod / V / A
    *  94/95:  GetFieldID / GetObjectField
    * 113:     GetStaticMethodID
    * 114/115/116: CallStaticObjectMethod / V / A
-   * 117/118: CallStaticBooleanMethod / V
-   * 129/130: CallStaticIntMethod / V
-   * 141/142: CallStaticVoidMethod / V
+   * 117/118/119: CallStaticBooleanMethod / V / A
+   * 129/130/131: CallStaticIntMethod / V / A
+   * 141/142/143: CallStaticVoidMethod / V / A
    * 144:     GetStaticFieldID
    * 145:     GetStaticObjectField
    * 150:     GetStaticIntField
@@ -1717,8 +2148,10 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[36] = (uintptr_t)jni_CallObjectMethodA;   /* A variant (jvalue*) */
   jni_env_vtable[37] = (uintptr_t)jni_CallBooleanMethod;
   jni_env_vtable[38] = (uintptr_t)jni_CallBooleanMethodV;  /* V (va_list) */
+  jni_env_vtable[39] = (uintptr_t)jni_CallBooleanMethodA;  /* A (jvalue*) */
   jni_env_vtable[49] = (uintptr_t)jni_CallIntMethod;
   jni_env_vtable[50] = (uintptr_t)jni_CallIntMethodV;      /* V (va_list) */
+  jni_env_vtable[51] = (uintptr_t)jni_CallIntMethodA;      /* A (jvalue*) */
   jni_env_vtable[55] = (uintptr_t)jni_CallFloatMethod;     /* getRefreshRate */
   jni_env_vtable[56] = (uintptr_t)jni_CallFloatMethodV;    /* V */
   jni_env_vtable[100] = (uintptr_t)jni_GetIntField;        /* DisplayMetrics int fields */
@@ -1734,10 +2167,13 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[116] = (uintptr_t)jni_CallStaticObjectMethodA; /* A (jvalue*) */
   jni_env_vtable[117] = (uintptr_t)jni_CallStaticBooleanMethod;
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethod; /* V */
+  jni_env_vtable[119] = (uintptr_t)jni_CallStaticBooleanMethod; /* A */
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;
   jni_env_vtable[130] = (uintptr_t)jni_CallStaticIntMethodV; /* V (va_list) */
+  jni_env_vtable[131] = (uintptr_t)jni_CallStaticIntMethodA; /* A (jvalue*) */
   jni_env_vtable[141] = (uintptr_t)jni_CallStaticVoidMethod;
   jni_env_vtable[142] = (uintptr_t)jni_CallStaticVoidMethod; /* V */
+  jni_env_vtable[143] = (uintptr_t)jni_CallStaticVoidMethod; /* A */
   jni_env_vtable[144] = (uintptr_t)jni_GetStaticFieldID;
   jni_env_vtable[145] = (uintptr_t)jni_GetStaticObjectField;
   jni_env_vtable[150] = (uintptr_t)jni_GetStaticIntField;

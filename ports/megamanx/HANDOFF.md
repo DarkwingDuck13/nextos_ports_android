@@ -1,15 +1,34 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
-> Estado em 2026-07-03 (s2). **Boota, roda 60fps, shaders compilam, DRM contornado — mas `draws=0` (tela magenta = cor de clear).** O `BootScene.Start` avança pela integrity mas trava num `await` posterior (job-system / Addressables async). Tudo salvo no `master` (commit `fa7bbd4`).
+> Estado em 2026-07-03 (s3). **Boota, renderiza a tela-titulo real do Mega Man X sem magenta, aceita force-start ate o menu/tela "Buy Full Version", e o touch Android ja entra no parser da Unity.** O muro antigo `draws=0` foi superado. O foco atual e contornar o gate de versao completa/menu para chegar em gameplay, depois fechar controles e audio.
+
+## 2026-07-03 s3 — avanço critico salvo
+
+- **Visual/shaders resolvidos:** a tela-titulo aparece limpa. A tela magenta antiga era `Hidden/InternalErrorShader`, principalmente TMP/texto, nao clear color.
+- **Payload atual bom:** `payload/assets/assets/bin/Data/data.unity3d`
+  - SHA256: `197d3481015ae047e47d424be8a8bb3d73562e6465c0092581166767bdaf0edc`
+  - Tamanho: ~155 MiB, UnityPy uncompressed.
+  - Base: `runs/2026-07-03-codex-shader-sentinel-data/data.unity3d.ref-ter-overlap`
+    SHA256 `8d882d2e49935cf590f3105d6eb0d297e42b5785af35e300778e5ca68c167fe9`.
+  - Fix final: `tmp-textcore-alias`, copiando o corpo real do shader Terraria `Hidden/TextCore/Distance Field SSD` para os shaders TMP do MMX em `resources.assets` pathIDs 388-398, preservando nomes.
+- **Run visual de referencia:** `runs/2026-07-03-codex-shader-tmp-textcore-alias`
+  - Screenshot limpo SHA256 `4c9da24dca2a5a8ada814cafaf50b4eed5c6ea16a60b495f64e4b5644ecffacc`.
+  - Magenta pixels cairam para 0.
+- **Input Android parcial:** `MMX_AUTOTOUCH=1` injeta `MotionEvent`; com `MMX_TOUCHLOG=1`, Unity chama `getPointerCount`, `getActionMasked`, `getX`, `getY`. Isso prova que o evento entra, mas a checagem propria da tela-titulo nao aceita o toque ainda.
+- **Force-start temporario:** `MMX_FORCE_TITLESTART=1` NOPa o `cbz` em `scn_TITLE_run+0x20c` (`libil2cpp+0xdf53d0`) e faz a tela-titulo avancar para `scn_TITLEMENU`. O usuario viu "Buy Full Version" no device; `MMX_RXSPY=scene` confirmou `scn_TITLEMENU_run/draw` rodando.
+- **Controle real ainda pendente:** `MMX_KEEP_CONTROLKEY=1` deixa `RockmanX.controlKey` ativo sem crash imediato, mas o touch ainda nao muda a tela-titulo sozinho.
+- **Audio ainda pendente:** no menu/tela seguinte o log spamma FMOD `Cannot create FMOD::Sound instance for clip "114"`. Na tela-titulo aparece clip `"47"`.
+- **Nao usar PixelCup como referencia:** o usuario confirmou que PixelCup ainda nao roda. A referencia util para shaders continua sendo Terraria.
 
 ---
 
 ## 0. TL;DR — o que fazer na próxima seção
 
 1. Ler este arquivo + `STUDY.md` + a memória `project_megamanx_mali450`.
-2. O muro atual é **`draws=0`**: o jogo roda mas não desenha nada. A cena de boot não termina de carregar.
-3. **Próximo passo concreto já preparado:** inline-hookar o `MoveNext` do state-machine `BootScene.<Start>d__5` (em **`il2cpp_base + 0xe3b438`**) pra logar o campo `<>1__state` (offset **+0x10** no objeto coroutine) a cada chamada → descobrir em QUAL `await` ele parkeia. Usar a rotina `hook_arm64()` que já existe no `main.c` (usada pelo `CUP_CRSPY`, ~linha 4937).
-4. Hipótese forte: o `await` que trava é o **carregamento assíncrono da cena/Addressables**, que depende do job-system. O `MMX_PATCH=0x34eafc` (skip do `WaitForJobGroup`) que destravou o boot é justamente o que quebra o load async. A correção "certa" é fazer o job-system rodar de verdade (ver §6).
+2. O muro antigo **`draws=0` foi resolvido**. Nao volte para o diagnostico de BootScene/Addressables como problema principal sem nova evidencia.
+3. Proximo passo concreto: resolver a tela/menu **"Buy Full Version"**. Suspeita principal: patches IAP/prefs atuais retornam `false` para algo que deveria indicar produto comprado/full unlock (`CStoreKit.getProductUse`, `getProduct`, prefs criptografadas ou metodo equivalente).
+4. Depois de passar do menu: fechar controles reais. `MMX_AUTOTOUCH` entra no parser Android da Unity, mas talvez o jogo use `RockmanX.controlKey`/estado proprio em vez do toque cru.
+5. Audio FMOD fica para depois do primeiro gameplay, mas ja esta marcado: clips `47`/`114` falham.
 
 ---
 

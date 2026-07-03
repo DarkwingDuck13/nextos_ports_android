@@ -148,6 +148,7 @@ static void patch_pthread_shim(void) {
 /* ---------- crash handler (arm64) ---------- */
 static uintptr_t g_unity_base, g_il2cpp_base, g_unity_data;
 static uintptr_t g_i2heap_base, g_i2heap_size;
+extern volatile int g_render_frame;
 /* exposto p/ pthread_fake.c (TER_JOBLOG: symbolizar start_routine dos workers) */
 uintptr_t ter_unity_base(void) { return g_unity_base; }
 uintptr_t ter_il2cpp_base(void) { return g_il2cpp_base; }
@@ -251,16 +252,224 @@ static void ter_nuke_methods(void) {
  * coroutine (IntegrityCheck/<Start>d__X) e patchamos MoveNext -> `mov w0,#0; ret` (IEnumerator
  * "terminou" na hora) -> BootScene prossegue sem o integrity check. Usa a API il2cpp EXPORTADA. */
 static so_module *g_m_il2cpp;  /* fwd tentativo (definicao com =NULL vem depois) */
-/* MMX_BOOTST: wrapper do MoveNext do BootScene.<Start>d__5 — loga o <>1__state (+0x10) a cada
-   chamada (achar em qual await async o boot trava) e chama o original. */
-static void (*g_bootmn_orig)(void *);
-void mmx_bootmn(void *coro);
-void mmx_bootmn(void *coro) {
-  static int last = -999, n = 0;
-  int st = coro ? *(int *)((char *)coro + 0x10) : -1;
-  if (st != last && n++ < 60) { fprintf(stderr, "[BOOTST] state=%d\n", st); fsync(2); last = st; }
-  if (g_bootmn_orig) g_bootmn_orig(coro);
+static volatile int g_mmx_nointegrity_done;
+/* MMX_BOOTST: wrapper inline do MoveNext do BootScene.<Start>d__5. No hook nativo,
+   x0 aponta para a área de fields da state machine, então o state real aparece em +0.
+   Também logamos +0x10 para correlacionar com offsets do dump IL2CPP quando necessário. */
+static long (*g_bootmn_orig)(long, long, long, long, long, long, long, long);
+long mmx_bootmn(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7);
+long mmx_bootmn(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7) {
+  static int last0 = -999, last10 = -999, n = 0, same = 0;
+  void *coro = (void *)a0;
+  int st0 = coro ? *(int *)((char *)coro + 0x0) : -1;
+  int st10 = coro ? *(int *)((char *)coro + 0x10) : -1;
+  if ((st0 != last0 || st10 != last10) && n++ < 96) {
+    fprintf(stderr, "[BOOTST] pre state0=%d state10=%d coro=%p f=%d\n", st0, st10, coro, g_render_frame);
+    fsync(2);
+    last0 = st0; last10 = st10; same = 0;
+  } else if (st0 == last0 && ++same % 300 == 0) {
+    fprintf(stderr, "[BOOTST] parked state0=%d state10=%d x%d f=%d\n", st0, st10, same, g_render_frame);
+    fsync(2);
+  }
+  long r = g_bootmn_orig ? g_bootmn_orig(a0, a1, a2, a3, a4, a5, a6, a7) : 0;
+  int post0 = coro ? *(int *)((char *)coro + 0x0) : -1;
+  int post10 = coro ? *(int *)((char *)coro + 0x10) : -1;
+  if ((post0 != st0 || post10 != st10) || n <= 4) {
+    fprintf(stderr, "[BOOTST] post state0=%d state10=%d ret=%ld f=%d\n", post0, post10, r, g_render_frame);
+    fsync(2);
+  }
+  return r;
 }
+typedef long (*mmx_rx_fn)(long, long, long, long, long, long, long, long);
+typedef long (*mmx_istouchs_fn)(int, long);
+static mmx_istouchs_fn g_mmx_istouchs_orig;
+long mmx_istouchs_spy(int group, long arg) {
+  long r = g_mmx_istouchs_orig ? g_mmx_istouchs_orig(group, arg) : 0;
+  if (getenv("MMX_ISTOUCHSPY") && (group == 2 || group == 3)) {
+    static int n;
+    if (n++ < 180 || (r && (n % 60) == 0)) {
+      int decided = r ? *(unsigned char *)((char *)r + 28) : -1;
+      int code = r ? *(int *)((char *)r + 32) : -1;
+      int touch = r ? *(unsigned char *)((char *)r + 36) : -1;
+      fprintf(stderr, "[ISTOUCHSPY] n=%d f=%d group=%d ret=%p decided=%d code=%d touch=%d\n",
+              n, g_render_frame, group, (void *)r, decided, code, touch);
+      fsync(2);
+    }
+  }
+  return r;
+}
+static int addr_readable(uintptr_t a);
+static int mmx_csv_code_at(const char *s, int idx, int defv) {
+  if (!s || !*s) return defv;
+  const char *p = s;
+  int i = 0;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    if (!*p) break;
+    char *end = NULL;
+    long v = strtol(p, &end, 0);
+    if (end == p) break;
+    if (i++ == idx) return (int)v;
+    p = end;
+  }
+  return defv;
+}
+static void mmx_tmenu_spy(long self, int hit) {
+  if (!getenv("MMX_TMENUSPY") || !self) return;
+  uintptr_t ctx = *(uintptr_t *)((char *)self + 0x370);
+  if (!ctx) return;
+  const char *force = getenv("MMX_TMFORCE_CODES");
+  if (force && *force) {
+    int start = getenv("MMX_TMFORCE_HIT") ? atoi(getenv("MMX_TMFORCE_HIT")) : 180;
+    int gap = getenv("MMX_TMFORCE_GAP") ? atoi(getenv("MMX_TMFORCE_GAP")) : 180;
+    if (gap < 1) gap = 1;
+    if (hit >= start && ((hit - start) % gap) == 0) {
+      int idx = (hit - start) / gap;
+      int code = mmx_csv_code_at(force, idx, -1);
+      if (code >= 0) {
+        typedef void (*set_state_fn)(long, int);
+        set_state_fn set_state = (set_state_fn)(g_il2cpp_base + 0xdecdac);
+        set_state(self, 2);
+        ctx = *(uintptr_t *)((char *)self + 0x370);
+        if (ctx) {
+          *(int *)(ctx + 0x74) = code;
+          *(int *)(ctx + 0x238) = 0;
+        }
+        fprintf(stderr, "[TMFORCE] hit=%d f=%d idx=%d code=%d -> state=2\n",
+                hit, g_render_frame, idx, code);
+        fsync(2);
+      }
+    }
+  }
+  int len = *(int *)(ctx + 0x18);
+  int f80 = *(int *)(ctx + 0x50);
+  int st = *(int *)(ctx + 0x54);
+  int sel = *(int *)(ctx + 0x5c);
+  int code = *(int *)(ctx + 0x74);
+  int f100 = *(int *)(ctx + 0x64);
+  int f536 = *(int *)(ctx + 0x218);
+  int f568 = *(int *)(ctx + 0x238);
+  static int lf80 = -99999, lst = -99999, lsel = -99999, lcode = -99999, lf100 = -99999, lf536 = -99999, lf568 = -99999;
+  if (hit <= 80 || hit % 120 == 0 || f80 != lf80 || st != lst || sel != lsel || code != lcode || f100 != lf100 || f536 != lf536 || f568 != lf568) {
+    fprintf(stderr, "[TMENUSPY] hit=%d f=%d self=%p ctx=%p len=%d f80=%d state=%d sel=%d code=%d f100=%d f536=%d timer568=%d\n",
+            hit, g_render_frame, (void *)self, (void *)ctx, len, f80, st, sel, code, f100, f536, f568);
+    fsync(2);
+    lf80 = f80; lst = st; lsel = sel; lcode = code; lf100 = f100; lf536 = f536; lf568 = f568;
+  }
+}
+static void mmx_prologue_spy(long self, int hit) {
+  if (!self) return;
+  uintptr_t ctx = *(uintptr_t *)((char *)self + 0x370);
+  if (!ctx) return;
+  const char *force_scene_s = getenv("MMX_PROFORCE_SCENE");
+  if (force_scene_s && *force_scene_s) {
+    static int forced;
+    int force_hit = getenv("MMX_PROFORCE_HIT") ? atoi(getenv("MMX_PROFORCE_HIT")) : 60;
+    if (!forced && hit >= force_hit) {
+      int scene = atoi(force_scene_s);
+      typedef void (*go_scene_fn)(long, int, int);
+      go_scene_fn go_scene = (go_scene_fn)(g_il2cpp_base + 0xdecf2c);
+      forced = 1;
+      fprintf(stderr, "[PROFORCE] hit=%d f=%d scn_goLoadScene(self,1,%d)\n",
+              hit, g_render_frame, scene);
+      fsync(2);
+      go_scene(self, 1, scene);
+      return;
+    }
+  }
+  if (!getenv("MMX_PROSPY")) return;
+  int len = *(int *)(ctx + 0x18);
+  int f80 = *(int *)(ctx + 0x50);
+  int st = *(int *)(ctx + 0x54);
+  int timer = *(int *)(ctx + 0x390);
+  int p105 = *(int *)(ctx + 0x13c);
+  int p106 = *(int *)(ctx + 0x140);
+  int p107 = *(int *)(ctx + 0x144);
+  int p108 = *(int *)(ctx + 0x148);
+  int f500 = *(int *)((char *)self + 0x500);
+  int f4f8 = *(int *)((char *)self + 0x4f8);
+  uintptr_t g250 = *(uintptr_t *)((char *)self + 0x250);
+  uintptr_t g258 = *(uintptr_t *)((char *)self + 0x258);
+  uintptr_t f510 = *(uintptr_t *)((char *)self + 0x510);
+  uintptr_t f518 = *(uintptr_t *)((char *)self + 0x518);
+  static int lf80 = -99999, lst = -99999, ltimer = -99999;
+  static int lp105 = -99999, lp106 = -99999, lp107 = -99999, lp108 = -99999, lf500 = -99999, lf4f8 = -99999;
+  if (hit <= 80 || hit % 120 == 0 || f80 != lf80 || st != lst || timer != ltimer ||
+      p105 != lp105 || p106 != lp106 || p107 != lp107 || p108 != lp108 || f500 != lf500 || f4f8 != lf4f8) {
+    fprintf(stderr, "[PROSPY] hit=%d f=%d self=%p ctx=%p len=%d f80=%d state=%d timer390=%d "
+                    "p105=%d p106=%d p107=%d p108=%d f4f8=%d f500=%d g250=%p g258=%p f510=%p f518=%p\n",
+            hit, g_render_frame, (void *)self, (void *)ctx, len, f80, st, timer,
+            p105, p106, p107, p108, f4f8, f500, (void *)g250, (void *)g258, (void *)f510, (void *)f518);
+    fsync(2);
+    lf80 = f80; lst = st; ltimer = timer; lp105 = p105; lp106 = p106; lp107 = p107; lp108 = p108;
+    lf500 = f500; lf4f8 = f4f8;
+  }
+}
+static void mmx_rx_log(const char *name, int *cnt, long a0, long a1) {
+  int n = ++*cnt;
+  if (n <= 40 || n % 300 == 0) {
+    fprintf(stderr, "[RXSPY] %-24s hit=%d f=%d self=%p a1=%ld\n",
+            name, n, g_render_frame, (void *)a0, a1);
+    fsync(2);
+  }
+  if (name && strcmp(name, "scn_TITLEMENU_run") == 0) mmx_tmenu_spy(a0, n);
+  if (name && strcmp(name, "scn_PROLOGUE_run") == 0) mmx_prologue_spy(a0, n);
+}
+#define MMX_RX_WRAP(id, label) \
+  static mmx_rx_fn g_##id##_orig; \
+  long id(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) { \
+    static int cnt; mmx_rx_log(label, &cnt, a0, a1); \
+    return g_##id##_orig ? g_##id##_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0; \
+  }
+MMX_RX_WRAP(mmx_rx_start, "RockmanX.Start")
+MMX_RX_WRAP(mmx_rx_initialize, "RockmanX.Initialize")
+MMX_RX_WRAP(mmx_rx_initgame, "RockmanX.initGame")
+MMX_RX_WRAP(mmx_rx_gameupdate, "RockmanX.GameUpdate")
+MMX_RX_WRAP(mmx_rx_gamerender, "RockmanX.GameRender")
+MMX_RX_WRAP(mmx_rx_scn_run, "RockmanX.scn_run")
+MMX_RX_WRAP(mmx_rx_scn_draw, "RockmanX.scn_draw")
+MMX_RX_WRAP(mmx_rx_startapp_run, "scn_START_APP_run")
+MMX_RX_WRAP(mmx_rx_startapp_draw, "scn_START_APP_draw")
+MMX_RX_WRAP(mmx_rx_loaddata_run, "scn_LOAD_DATA_run")
+MMX_RX_WRAP(mmx_rx_loaddata_draw, "scn_LOAD_DATA_draw")
+MMX_RX_WRAP(mmx_rx_logo_run, "scn_LOGO_run")
+MMX_RX_WRAP(mmx_rx_logo_draw, "scn_LOGO_draw")
+MMX_RX_WRAP(mmx_rx_title_run, "scn_TITLE_run")
+MMX_RX_WRAP(mmx_rx_title_draw, "scn_TITLE_draw")
+MMX_RX_WRAP(mmx_rx_titlemenu_run, "scn_TITLEMENU_run")
+MMX_RX_WRAP(mmx_rx_titlemenu_draw, "scn_TITLEMENU_draw")
+MMX_RX_WRAP(mmx_rx_customize_run, "scn_CUSTOMIZE_run")
+MMX_RX_WRAP(mmx_rx_customize_draw, "scn_CUSTOMIZE_draw")
+MMX_RX_WRAP(mmx_rx_stagesel_run, "scn_STAGESEL_run")
+MMX_RX_WRAP(mmx_rx_stagesel_draw, "scn_STAGESEL_draw")
+MMX_RX_WRAP(mmx_rx_prologue_run, "scn_PROLOGUE_run")
+MMX_RX_WRAP(mmx_rx_prologue_draw, "scn_PROLOGUE_draw")
+MMX_RX_WRAP(mmx_rx_bossintro_run, "scn_BOSSINTRO_run")
+MMX_RX_WRAP(mmx_rx_bossintro_draw, "scn_BOSSINTRO_draw")
+MMX_RX_WRAP(mmx_rx_stage_run, "scn_STAGE_run")
+MMX_RX_WRAP(mmx_rx_stage_draw, "scn_STAGE_draw")
+MMX_RX_WRAP(mmx_rx_nextmap_run, "scn_NEXTMAP_run")
+MMX_RX_WRAP(mmx_rx_nextmap_draw, "scn_NEXTMAP_draw")
+MMX_RX_WRAP(mmx_rx_weaponsel_run, "scn_WEPONSEL_run")
+MMX_RX_WRAP(mmx_rx_weaponsel_draw, "scn_WEPONSEL_draw")
+MMX_RX_WRAP(mmx_rx_option_run, "scn_OPTION_run")
+MMX_RX_WRAP(mmx_rx_option_draw, "scn_OPTION_draw")
+MMX_RX_WRAP(mmx_rx_gameover_run, "scn_GAMEOVER_run")
+MMX_RX_WRAP(mmx_rx_gameover_draw, "scn_GAMEOVER_draw")
+MMX_RX_WRAP(mmx_rx_stageclear_run, "scn_STAGECLEAR_run")
+MMX_RX_WRAP(mmx_rx_stageclear_draw, "scn_STAGECLEAR_draw")
+MMX_RX_WRAP(mmx_rx_rank_result_run, "scn_RANK_RESULT_run")
+MMX_RX_WRAP(mmx_rx_rank_result_draw, "scn_RANK_RESULT_draw")
+MMX_RX_WRAP(mmx_rx_post_message_run, "scn_POST_MESSAGE_run")
+MMX_RX_WRAP(mmx_rx_post_message_draw, "scn_POST_MESSAGE_draw")
+MMX_RX_WRAP(mmx_rx_trial_demo_run, "scn_TRIAL_DEMO_run")
+MMX_RX_WRAP(mmx_rx_opcl_clear_run, "scn_OPCL_CLEAR_run")
+MMX_RX_WRAP(mmx_rx_opcl_clear_draw, "scn_OPCL_CLEAR_draw")
+MMX_RX_WRAP(mmx_rx_opchallenge_run, "scn_OPCHALLENGE_run")
+MMX_RX_WRAP(mmx_rx_opchallenge_draw, "scn_OPCHALLENGE_draw")
+MMX_RX_WRAP(mmx_rx_ending_run, "scn_ENDING_run")
+MMX_RX_WRAP(mmx_rx_ending_draw, "scn_ENDING_draw")
+#undef MMX_RX_WRAP
 static void *mmx_i2sym(const char *n) {
   so_module *c = so_save(); so_use(g_m_il2cpp);
   void *p = (void *)so_find_addr_safe(n); so_use(c); free(c); return p;
@@ -384,6 +593,28 @@ static void mmx_nuke_integrity(void) {
         gp[0] = 0x52800020u; gp[1] = 0xD65F03C0u;  /* mov w0,#1; ret */
         mprotect(ga, pg * 2, PROT_READ | PROT_EXEC); __builtin___clear_cache((char *)ga, (char *)ga + pg * 2);
         fprintf(stderr, "[NOINTEGRITY] get_IsSuccess -> TRUE\n"); fsync(2); } }
+    {
+      uint8_t one = 1; void *exc = NULL;
+      void *(*rt_invoke)(void *, void *, void **, void **) = mmx_i2sym("il2cpp_runtime_invoke");
+      void *ss = cls_method(cls, "set_IsSuccess", 1);
+      if (rt_invoke && ss) {
+        void *params[1] = { &one };
+        rt_invoke(ss, NULL, params, &exc);
+        fprintf(stderr, "[NOINTEGRITY] set_IsSuccess(true) invoked exc=%p\n", exc); fsync(2);
+      }
+      void *(*cls_fields_all)(void *, void **) = mmx_i2sym("il2cpp_class_get_fields");
+      const char *(*field_name_all)(void *) = mmx_i2sym("il2cpp_field_get_name");
+      void (*field_static_set)(void *, void *) = mmx_i2sym("il2cpp_field_static_set_value");
+      if (cls_fields_all && field_name_all && field_static_set) {
+        void *fit = NULL, *ff;
+        while ((ff = cls_fields_all(cls, &fit))) {
+          const char *fn = field_name_all(ff);
+          if (!fn || strcmp(fn, "<IsSuccess>k__BackingField")) continue;
+          field_static_set(ff, &one);
+          fprintf(stderr, "[NOINTEGRITY] <IsSuccess>k__BackingField = true\n"); fsync(2);
+        }
+      }
+    }
     /* 🔑 IntegrityCheck::Start retorna um IEnumerator (coroutine Unity) — o BootScene faz
        `await Start()` via Cysharp EnumeratorAsyncExtensions.GetAwaiter. Se Start() retornar NULL,
        GetAwaiter(null) -> ArgumentNullException e o boot MORRE (foi o que aconteceu).
@@ -406,9 +637,222 @@ static void mmx_nuke_integrity(void) {
         fprintf(stderr, "[NOINTEGRITY] IntegrityCheck.%s::MoveNext -> false (coroutine done na hora)\n", ncn);
         fsync(2); patched = 1;
       }
-      if (patched) { done = 1; return; }
+      if (patched) { g_mmx_nointegrity_done = 1; done = 1; return; }
     }
   }
+}
+
+/* MMX_FIXGAME: neutraliza pontos Android/IAP que quebram no so-loader depois que o
+   BootScene passa. Por padrão controlKey também é neutralizado para evitar abort em
+   RockmanX.Update; use MMX_KEEP_CONTROLKEY=1 para testar input real. */
+static void mmx_fix_game_methods(void) {
+  static int done = 0;
+  if (done || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done || !getenv("MMX_FIXGAME")) {
+    if (!getenv("MMX_FIXGAME")) done = 1;
+    return;
+  }
+  static int hello = 0;
+  if (!hello++) { fprintf(stderr, "[MMX_FIXGAME] ativo: procurando RockmanX/CStoreKit\n"); fsync(2); }
+  static int tries = 0; if (tries++ > 600) { done = 1; return; }
+  void *(*dom_get)(void) = mmx_i2sym("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) = mmx_i2sym("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) = mmx_i2sym("il2cpp_assembly_get_image");
+  void *(*cls_method)(void *, const char *, int) = mmx_i2sym("il2cpp_class_get_method_from_name");
+  size_t (*img_ccount)(void *) = mmx_i2sym("il2cpp_image_get_class_count");
+  void *(*img_class)(void *, size_t) = mmx_i2sym("il2cpp_image_get_class");
+  const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
+  const char *(*cls_ns)(void *) = mmx_i2sym("il2cpp_class_get_namespace");
+  unsigned int (*meth_flags)(void *, unsigned int *) = mmx_i2sym("il2cpp_method_get_flags");
+  int (*meth_is_instance)(void *) = mmx_i2sym("il2cpp_method_is_instance");
+  unsigned int (*meth_param_count)(void *) = mmx_i2sym("il2cpp_method_get_param_count");
+  void *(*meth_param)(void *, unsigned int) = mmx_i2sym("il2cpp_method_get_param");
+  const char *(*meth_param_name)(void *, unsigned int) = mmx_i2sym("il2cpp_method_get_param_name");
+  void *(*meth_ret)(void *) = mmx_i2sym("il2cpp_method_get_return_type");
+  const char *(*type_name)(void *) = mmx_i2sym("il2cpp_type_get_name");
+  if (!dom_get || !dom_asms || !asm_img || !cls_method || !img_ccount || !img_class || !cls_name) return;
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  enum {
+    MMX_PATCH_RET = 0,
+    MMX_PATCH_FALSE = 1,
+    MMX_PATCH_W1 = 2,
+    MMX_PATCH_X1 = 3,
+    MMX_PATCH_W2 = 4,
+    MMX_PATCH_X2 = 5,
+    MMX_PATCH_TRUE = 6
+  };
+  struct target { const char *cn, *mn; int argc; int kind; };
+  static const struct target targets[] = {
+    { "RockmanX", "controlKey", 0, MMX_PATCH_RET },
+    { "RockmanX", "IsInAppPayment", 2, MMX_PATCH_FALSE },
+    { "CStoreKit", "getProductUse", 1, MMX_PATCH_FALSE },
+    { "CStoreKit", "getProduct", 2, MMX_PATCH_RET },
+    { "EncryptedPlayerPrefs", "GetInt", 2, MMX_PATCH_W1 },
+    { "EncryptedPlayerPrefs", "GetBool", 2, MMX_PATCH_W1 },
+    { "EncryptedPlayerPrefs", "GetString", 2, MMX_PATCH_X1 },
+  };
+  static unsigned patched_mask;
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    size_t nc = img_ccount(img);
+    for (size_t ci = 0; ci < nc; ci++) {
+      void *cls = img_class(img, ci); if (!cls) continue;
+      const char *cn = cls_name(cls); if (!cn) continue;
+      for (unsigned t = 0; t < sizeof targets / sizeof targets[0]; t++) {
+        if (t == 0 && getenv("MMX_KEEP_CONTROLKEY")) { patched_mask |= (1u << t); continue; }
+        if ((patched_mask & (1u << t)) || strcmp(cn, targets[t].cn)) continue;
+        void *m = cls_method(cls, targets[t].mn, targets[t].argc); if (!m) continue;
+        uint32_t *mp = *(uint32_t **)m; if (!mp) continue;
+        unsigned int iflags = 0, flags = meth_flags ? meth_flags(m, &iflags) : 0;
+        int is_inst = meth_is_instance ? meth_is_instance(m) : -1;
+        if (is_inst < 0 && meth_flags) is_inst = (flags & 0x0010u) ? 0 : 1; /* MethodAttributes.Static */
+        int kind = targets[t].kind;
+        if (getenv("MMX_FULLVER") &&
+            !strcmp(targets[t].cn, "CStoreKit") &&
+            !strcmp(targets[t].mn, "getProductUse")) {
+          kind = MMX_PATCH_TRUE;
+        }
+        if (is_inst > 0) {
+          if (kind == MMX_PATCH_W1) kind = MMX_PATCH_W2;
+          else if (kind == MMX_PATCH_X1) kind = MMX_PATCH_X2;
+        }
+        if (getenv("MMX_FIXDUMP")) {
+          unsigned int pc = meth_param_count ? meth_param_count(m) : 0;
+          const char *ret = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
+          fprintf(stderr, "[FIXDUMP] %s%s%s.%s/%d flags=0x%x iflags=0x%x instance=%d params=%u ret=%s\n",
+                  cls_ns && cls_ns(cls) && cls_ns(cls)[0] ? cls_ns(cls) : "",
+                  cls_ns && cls_ns(cls) && cls_ns(cls)[0] ? "." : "",
+                  targets[t].cn, targets[t].mn, targets[t].argc,
+                  flags, iflags, is_inst, pc, ret ? ret : "?");
+          for (unsigned int pi = 0; pi < pc && pi < 8; pi++) {
+            const char *pn = meth_param_name ? meth_param_name(m, pi) : "?";
+            const char *pt = (meth_param && type_name) ? type_name(meth_param(m, pi)) : "?";
+            fprintf(stderr, "[FIXDUMP]   arg%u %s : %s\n", pi, pn ? pn : "?", pt ? pt : "?");
+          }
+          fsync(2);
+        }
+        long pg = sysconf(_SC_PAGESIZE);
+        void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pg - 1));
+        mprotect(pa, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+        if (kind == MMX_PATCH_FALSE) {
+          mp[0] = 0x52800000u;  /* mov w0,#0 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else if (kind == MMX_PATCH_TRUE) {
+          mp[0] = 0x52800020u;  /* mov w0,#1 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else if (kind == MMX_PATCH_W1) {
+          mp[0] = 0x2A0103E0u;  /* mov w0,w1 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else if (kind == MMX_PATCH_X1) {
+          mp[0] = 0xAA0103E0u;  /* mov x0,x1 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else if (kind == MMX_PATCH_W2) {
+          mp[0] = 0x2A0203E0u;  /* mov w0,w2 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else if (kind == MMX_PATCH_X2) {
+          mp[0] = 0xAA0203E0u;  /* mov x0,x2 */
+          mp[1] = 0xD65F03C0u;  /* ret */
+        } else {
+          mp[0] = 0xD65F03C0u;  /* ret */
+        }
+        mprotect(pa, pg * 2, PROT_READ | PROT_EXEC);
+        __builtin___clear_cache((char *)pa, (char *)pa + pg * 2);
+        patched_mask |= (1u << t);
+        fprintf(stderr, "[MMX_FIXGAME] %s%s%s.%s/%d -> %s @%p\n",
+                cls_ns && cls_ns(cls) && cls_ns(cls)[0] ? cls_ns(cls) : "",
+                cls_ns && cls_ns(cls) && cls_ns(cls)[0] ? "." : "",
+                targets[t].cn, targets[t].mn, targets[t].argc,
+                kind == MMX_PATCH_FALSE ? "false" :
+                kind == MMX_PATCH_TRUE ? "true" :
+                kind == MMX_PATCH_W1 ? "default(w1)" :
+                kind == MMX_PATCH_X1 ? "default(x1)" :
+                kind == MMX_PATCH_W2 ? "default(w2)" :
+                kind == MMX_PATCH_X2 ? "default(x2)" : "ret", mp);
+        fsync(2);
+      }
+    }
+  }
+  if (patched_mask == ((1u << (sizeof targets / sizeof targets[0])) - 1)) done = 1;
+}
+
+static int mmx_life_name_interesting(const char *s) {
+  if (!s || !*s) return 0;
+  const char *keys[] = {
+    "Boot", "Scene", "Title", "Rockman", "Main", "Menu", "Save",
+    "Terms", "Parent", "Logo", "Tap", "Option", "Game", "Store", NULL
+  };
+  for (int i = 0; keys[i]; i++) if (strstr(s, keys[i])) return 1;
+  return 0;
+}
+static int mmx_life_ns_skip(const char *ns) {
+  if (!ns || !*ns) return 0;
+  return !strncmp(ns, "UnityEngine", 11) ||
+         !strncmp(ns, "UnityEditor", 11) ||
+         !strncmp(ns, "System", 6) ||
+         !strncmp(ns, "TMPro", 5) ||
+         !strncmp(ns, "Cysharp", 7) ||
+         !strncmp(ns, "Newtonsoft", 10);
+}
+static void mmx_lifedump(void) {
+  static int done = 0, tries = 0;
+  if (done || !getenv("MMX_LIFEDUMP") || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done) return;
+  if (tries++ > 600) { done = 1; return; }
+  void *(*dom_get)(void) = mmx_i2sym("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) = mmx_i2sym("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) = mmx_i2sym("il2cpp_assembly_get_image");
+  const char *(*img_name)(void *) = mmx_i2sym("il2cpp_image_get_name");
+  size_t (*img_ccount)(void *) = mmx_i2sym("il2cpp_image_get_class_count");
+  void *(*img_class)(void *, size_t) = mmx_i2sym("il2cpp_image_get_class");
+  const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
+  const char *(*cls_ns)(void *) = mmx_i2sym("il2cpp_class_get_namespace");
+  void *(*cls_methods)(void *, void **) = mmx_i2sym("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) = mmx_i2sym("il2cpp_method_get_name");
+  unsigned int (*meth_flags)(void *, unsigned int *) = mmx_i2sym("il2cpp_method_get_flags");
+  unsigned int (*meth_param_count)(void *) = mmx_i2sym("il2cpp_method_get_param_count");
+  void *(*cls_nested)(void *, void **) = mmx_i2sym("il2cpp_class_get_nested_types");
+  if (!dom_get || !dom_asms || !asm_img || !img_ccount || !img_class || !cls_name || !cls_methods || !meth_name) return;
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  fprintf(stderr, "[LIFEDUMP] scanning %zu assemblies\n", na); fsync(2);
+  for (size_t ai = 0; ai < na; ai++) {
+    void *img = asm_img(asms[ai]); if (!img) continue;
+    const char *in = img_name ? img_name(img) : "?";
+    size_t nc = img_ccount(img);
+    for (size_t ci = 0; ci < nc; ci++) {
+      void *cl = img_class(img, ci); if (!cl) continue;
+      const char *cn = cls_name(cl); if (!cn) continue;
+      const char *ns = cls_ns ? cls_ns(cl) : "";
+      if (mmx_life_ns_skip(ns) || !mmx_life_name_interesting(cn)) continue;
+      fprintf(stderr, "[LIFEDUMP] class %s%s%s img=%s\n",
+              ns && ns[0] ? ns : "", ns && ns[0] ? "." : "", cn, in ? in : "?");
+      void *it = NULL, *m;
+      while ((m = cls_methods(cl, &it))) {
+        const char *mn = meth_name(m); if (!mn) mn = "?";
+        unsigned int iflags = 0, flags = meth_flags ? meth_flags(m, &iflags) : 0;
+        unsigned int pc = meth_param_count ? meth_param_count(m) : 0;
+        uintptr_t mp = (uintptr_t)(*(void **)m);
+        fprintf(stderr, "[LIFEDUMP]   %s/%u flags=0x%x off=0x%lx\n",
+                mn, pc, flags, mp ? (unsigned long)(mp - g_il2cpp_base) : 0);
+      }
+      if (cls_nested) {
+        void *nit = NULL, *nc2;
+        while ((nc2 = cls_nested(cl, &nit))) {
+          const char *nn = cls_name(nc2); if (!nn) continue;
+          fprintf(stderr, "[LIFEDUMP]   nested %s\n", nn);
+          void *it2 = NULL, *m2;
+          while ((m2 = cls_methods(nc2, &it2))) {
+            const char *mn2 = meth_name(m2); if (!mn2) mn2 = "?";
+            uintptr_t mp2 = (uintptr_t)(*(void **)m2);
+            fprintf(stderr, "[LIFEDUMP]     %s off=0x%lx\n",
+                    mn2, mp2 ? (unsigned long)(mp2 - g_il2cpp_base) : 0);
+          }
+        }
+      }
+      fsync(2);
+    }
+  }
+  fprintf(stderr, "[LIFEDUMP] done\n"); fsync(2);
+  done = 1;
 }
 
 /* 🖤 TER_FIXSP: tela preta ao clicar Single Player. SelectSinglePlayer→Main.LoadPlayers→
@@ -801,6 +1245,20 @@ static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long o
 }
 /* /proc/cpuinfo + /sys/.../cpu: Unity conta cores p/ dimensionar job workers. */
 static int g_dllog;
+static int mmx_file_interesting(const char *p) {
+  if (!p) return 0;
+  return strstr(p, "data.unity3d") || strstr(p, "globalgamemanagers") ||
+         strstr(p, "resources.assets") || strstr(p, "sharedassets") ||
+         strstr(p, "unity default resources") || strstr(p, "unity_builtin_extra") ||
+         strstr(p, "Library/") || strstr(p, "Resources/");
+}
+static void mmx_filelog(const char *op, const char *p, const char *r, long rc) {
+  if (!getenv("MMX_FILELOG")) return;
+  if (!mmx_file_interesting(p) && !mmx_file_interesting(r)) return;
+  fprintf(stderr, "[FILE] %s rc=%ld %s%s%s\n", op, rc, p ? p : "(null)",
+          r ? " -> " : "", r ? r : "");
+  fsync(2);
+}
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
 static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
@@ -812,9 +1270,13 @@ static FILE *my_fopen(const char *p, const char *m) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r) {
     if (g_dllog) fprintf(stderr, "[fopen-redir] %s -> %s\n", p, r);
-    return fopen(r, m);
+    FILE *fp = fopen(r, m);
+    mmx_filelog("fopen-redir", p, r, fp ? 0 : -1);
+    return fp;
   }
-  return fopen(p, m);
+  FILE *fp = fopen(p, m);
+  mmx_filelog("fopen", p, NULL, fp ? 0 : -1);
+  return fp;
 }
 #define ASSET_BASE_M "/storage/roms/megamanx/"
 /* redirect genérico de assets: o engine monta paths de dados com bases erradas
@@ -932,6 +1394,7 @@ static int my_open(const char *p, int fl, ...) {
     if (fl & O_CREAT) { va_list ap; va_start(ap, fl); rmode = va_arg(ap, int); va_end(ap); }
     int fd = open(r, fl, rmode);
     if (g_dllog) fprintf(stderr, "[open-redir%s] %s -> %s\n", fd < 0 ? "-MISS" : "", p, r);
+    mmx_filelog("open-redir", p, r, fd);
     if (g_guidlog && p && strstr(p, "unity_app_guid")) {
       g_guid_fd = fd;
       struct stat sb; int sr = fstat(fd, &sb);
@@ -944,6 +1407,7 @@ static int my_open(const char *p, int fl, ...) {
   va_list ap; va_start(ap, fl); int mo = va_arg(ap, int); va_end(ap);
   int fd = open(p, fl, mo);
   if (g_dllog && p) fprintf(stderr, "[open%s] %s\n", fd < 0 ? "-MISS" : "", p);
+  mmx_filelog("open", p, NULL, fd);
   if (g_guidlog && p && strstr(p, "unity_app_guid")) {
     g_guid_fd = fd;
     fprintf(stderr, "[GUID] open(noredir) '%s' fl=0x%x -> fd=%d\n", p, fl, fd);
@@ -999,6 +1463,7 @@ static int my_stat(const char *p, void *st) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat-redir] %s -> %s\n", p, r);
   int rc = stat(r ? r : p, (struct stat *)st);
+  mmx_filelog(r ? "stat-redir" : "stat", p, r, rc);
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat-MISS] %s\n", p);
   return rc;
 }
@@ -1015,6 +1480,7 @@ static int my_stat64(const char *p, void *st) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[stat64-redir] %s -> %s\n", p, r);
   int rc = stat64(r ? r : p, (struct stat64 *)st);
+  mmx_filelog(r ? "stat64-redir" : "stat64", p, r, rc);
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat64-MISS] %s\n", p);
   return rc;
 }
@@ -1063,7 +1529,9 @@ static void *my_enl_alloc(unsigned long size, unsigned long align, void *a2, int
 static int my_access(const char *p, int m) {
   char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
   if (r && g_dllog) fprintf(stderr, "[access-redir] %s -> %s\n", p, r);
-  return access(r ? r : p, m);
+  int rc = access(r ? r : p, m);
+  mmx_filelog(r ? "access-redir" : "access", p, r, rc);
+  return rc;
 }
 /* statfs64: Unity checa espaço livre via statfs64(path) p/ "instalar resources".
    O path que ele passa pode ser Android (/data/...) inexistente -> erro -> 0 livre ->
@@ -1480,8 +1948,96 @@ static int strstr2_any(const char **string, int count, const char *tok) {
   return 0;
 }
 static void (*r_glShaderSource)(unsigned, int, const char **, const int *);
+static char *g_shader_src_cache[4096];
+static unsigned g_prog_shaders[4096][8];
+static unsigned char g_prog_shader_n[4096];
+static void shader_cache_source(unsigned sh, int count, const char **string, const int *length) {
+  if (sh >= 4096 || !string) return;
+  size_t total = 0;
+  for (int i = 0; i < count && string[i]; i++)
+    total += (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+  if (!total || total > 65536) return;
+  char *buf = malloc(total + 1); if (!buf) return;
+  size_t o = 0;
+  for (int i = 0; i < count && string[i]; i++) {
+    size_t len = (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+    memcpy(buf + o, string[i], len); o += len;
+  }
+  buf[o] = 0;
+  free(g_shader_src_cache[sh]);
+  g_shader_src_cache[sh] = buf;
+}
+static char *shader_join_source(int count, const char **string, const int *length, size_t *out_len) {
+  if (out_len) *out_len = 0;
+  if (!string) return NULL;
+  size_t total = 0;
+  for (int i = 0; i < count && string[i]; i++)
+    total += (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+  if (!total || total > 65536) return NULL;
+  char *buf = malloc(total + 1); if (!buf) return NULL;
+  size_t o = 0;
+  for (int i = 0; i < count && string[i]; i++) {
+    size_t len = (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
+    memcpy(buf + o, string[i], len); o += len;
+  }
+  buf[o] = 0;
+  if (out_len) *out_len = o;
+  return buf;
+}
+static char *mmx_fix_uniform_precision(const char *src, size_t len, int *changed) {
+  if (changed) *changed = 0;
+  if (!src || !memmem(src, len, "_ScaleRatio", 11)) return NULL;
+  char *out = malloc(len + 256); if (!out) return NULL;
+  size_t w = 0;
+  const char *p = src;
+  while (*p) {
+    const char *nl = strchr(p, '\n');
+    size_t ll = nl ? (size_t)(nl - p + 1) : strlen(p);
+    if (memmem(p, ll, "uniform", 7) && memmem(p, ll, "_ScaleRatio", 11)) {
+      char line[1024];
+      size_t n = ll < sizeof(line) - 1 ? ll : sizeof(line) - 1;
+      memcpy(line, p, n); line[n] = 0;
+      char *q;
+      while ((q = strstr(line, " mediump "))) memmove(q, q + 8, strlen(q + 8) + 1);
+      while ((q = strstr(line, " lowp "))) memmove(q, q + 5, strlen(q + 5) + 1);
+      if (!strstr(line, " highp ")) {
+        q = strstr(line, "uniform ");
+        if (q) {
+          q += 8;
+          memmove(q + 6, q, strlen(q) + 1);
+          memcpy(q, "highp ", 6);
+        }
+      }
+      size_t nl2 = strlen(line);
+      memcpy(out + w, line, nl2); w += nl2;
+      if (changed) *changed = 1;
+    } else {
+      memcpy(out + w, p, ll); w += ll;
+    }
+    p += ll;
+  }
+  out[w] = 0;
+  return out;
+}
 static void my_glShaderSource(unsigned sh, int count, const char **string, const int *length) {
   if (!r_glShaderSource) r_glShaderSource = dlsym(RTLD_DEFAULT, "glShaderSource");
+  if (getenv("MMX_FIX_PRECISION") && string && strstr2_any(string, count, "_ScaleRatio")) {
+    size_t src_len = 0;
+    char *buf = shader_join_source(count, string, length, &src_len);
+    int changed = 0;
+    char *out = mmx_fix_uniform_precision(buf, src_len, &changed);
+    if (out && changed) {
+      fprintf(stderr, "[MMX_PRECISION] shader=%u: _ScaleRatio uniforms -> highp\n", sh);
+      fsync(2);
+      const char *outs = out;
+      shader_cache_source(sh, 1, &outs, NULL);
+      r_glShaderSource(sh, 1, (const char **)&out, NULL);
+      free(out); free(buf);
+      return;
+    }
+    free(out); free(buf);
+  }
+  shader_cache_source(sh, count, string, length);
   if (getenv("CUP_SHADERDUMP") && string) {
     fprintf(stderr, "[SHSRC] shader=%u count=%d f=%d:\n", sh, count, g_render_frame);
     size_t tot = 0;
@@ -1551,6 +2107,8 @@ static void my_glShaderSource(unsigned sh, int count, const char **string, const
         out[w] = 0;
         fprintf(stderr, "[ALPHAFIX] shader=%u: ExternalAlpha->0 + _Color/_RendererColor->vec4(1)\n", sh);
         fsync(2);
+        const char *outs = out;
+        shader_cache_source(sh, 1, &outs, NULL);
         r_glShaderSource(sh, 1, (const char **)&out, NULL);
         free(out); free(buf);
         return;
@@ -1560,10 +2118,157 @@ static void my_glShaderSource(unsigned sh, int count, const char **string, const
   }
   r_glShaderSource(sh, count, string, length);
 }
+static void (*r_glAttachShader)(unsigned, unsigned);
+static void my_glAttachShader(unsigned pr, unsigned sh) {
+  if (!r_glAttachShader) r_glAttachShader = dlsym(RTLD_DEFAULT, "glAttachShader");
+  if (pr < 4096) {
+    unsigned char n = g_prog_shader_n[pr];
+    if (n < 8) { g_prog_shaders[pr][n] = sh; g_prog_shader_n[pr] = n + 1; }
+    if (getenv("CUP_SHADERDUMP"))
+      fprintf(stderr, "[SHATTACH] prog=%u shader=%u n=%u\n", pr, sh, g_prog_shader_n[pr]);
+  }
+  r_glAttachShader(pr, sh);
+}
+static int mmx_shader_is_internal_error(const char *src) {
+  return src && strstr(src, "vec4(1.0, 0.0, 1.0, 1.0)");
+}
+static int mmx_shader_is_vertex(const char *src) {
+  return src && strstr(src, "gl_Position");
+}
+static unsigned char g_mmx_errorsprite_prog[4096];
+static void mmx_patch_error_sprite_program(unsigned pr) {
+  static const char *vs =
+    "#version 100\n"
+    "uniform vec4 hlslcc_mtx4x4unity_ObjectToWorld[4];\n"
+    "uniform vec4 hlslcc_mtx4x4unity_MatrixVP[4];\n"
+    "attribute highp vec4 in_POSITION0;\n"
+    "attribute highp vec2 in_TEXCOORD0;\n"
+    "varying highp vec2 vs_TEXCOORD0;\n"
+    "void main(){\n"
+    "  vec4 p;\n"
+    "  p = in_POSITION0.yyyy * hlslcc_mtx4x4unity_ObjectToWorld[1];\n"
+    "  p = hlslcc_mtx4x4unity_ObjectToWorld[0] * in_POSITION0.xxxx + p;\n"
+    "  p = hlslcc_mtx4x4unity_ObjectToWorld[2] * in_POSITION0.zzzz + p;\n"
+    "  p = p + hlslcc_mtx4x4unity_ObjectToWorld[3];\n"
+    "  vec4 q = p.yyyy * hlslcc_mtx4x4unity_MatrixVP[1];\n"
+    "  q = hlslcc_mtx4x4unity_MatrixVP[0] * p.xxxx + q;\n"
+    "  q = hlslcc_mtx4x4unity_MatrixVP[2] * p.zzzz + q;\n"
+    "  gl_Position = hlslcc_mtx4x4unity_MatrixVP[3] * p.wwww + q;\n"
+    "  vs_TEXCOORD0 = in_TEXCOORD0;\n"
+    "}\n";
+  static const char *fs_tex =
+    "#version 100\n"
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "uniform lowp sampler2D _MainTex;\n"
+    "varying highp vec2 vs_TEXCOORD0;\n"
+    "void main(){\n"
+    "  lowp vec4 c = texture2D(_MainTex, vs_TEXCOORD0);\n"
+    "  if (c.a < 0.01) discard;\n"
+    "  gl_FragColor = c;\n"
+    "}\n";
+  static const char *fs_nodiscard =
+    "#version 100\n"
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "uniform lowp sampler2D _MainTex;\n"
+    "varying highp vec2 vs_TEXCOORD0;\n"
+    "void main(){\n"
+    "  lowp vec4 c = texture2D(_MainTex, vs_TEXCOORD0);\n"
+    "  gl_FragColor = vec4(c.rgb, 1.0);\n"
+    "}\n";
+  static const char *fs_uvdebug =
+    "#version 100\n"
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "varying highp vec2 vs_TEXCOORD0;\n"
+    "void main(){\n"
+    "  gl_FragColor = vec4(fract(vs_TEXCOORD0.x), fract(vs_TEXCOORD0.y), 0.0, 1.0);\n"
+    "}\n";
+  static const char *fs_solid =
+    "#version 100\n"
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "precision highp float;\n"
+    "#else\n"
+    "precision mediump float;\n"
+    "#endif\n"
+    "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+  if (!getenv("MMX_FIX_ERRORSPRITE") || pr >= 4096) return;
+  int from_frame = getenv("MMX_FIX_ERRORSPRITE_FROM") ? atoi(getenv("MMX_FIX_ERRORSPRITE_FROM")) : 400;
+  if (g_render_frame < from_frame) return;
+  int has_error = 0;
+  for (int i = 0; i < g_prog_shader_n[pr]; i++) {
+    unsigned sh = g_prog_shaders[pr][i];
+    if (sh < 4096 && mmx_shader_is_internal_error(g_shader_src_cache[sh])) {
+      has_error = 1;
+      break;
+    }
+  }
+  if (!has_error) return;
+  if (!r_glShaderSource) r_glShaderSource = dlsym(RTLD_DEFAULT, "glShaderSource");
+  if (!r_glCompileShader) r_glCompileShader = dlsym(RTLD_DEFAULT, "glCompileShader");
+  if (!r_glShaderSource || !r_glCompileShader) return;
+  void (*bind_attrib)(unsigned, unsigned, const char *) = dlsym(RTLD_DEFAULT, "glBindAttribLocation");
+  int uvloc = getenv("MMX_ERRORSPRITE_UVLOC") ? atoi(getenv("MMX_ERRORSPRITE_UVLOC")) : 2;
+  if (bind_attrib) {
+    bind_attrib(pr, 0, "in_POSITION0");
+    bind_attrib(pr, 3, "in_COLOR0");
+    bind_attrib(pr, (unsigned)uvloc, "in_TEXCOORD0");
+  }
+  const char *fs = fs_tex;
+  const char *mode = "texture-cutout";
+  if (getenv("MMX_ERRORSPRITE_SOLID")) { fs = fs_solid; mode = "solid-green"; }
+  else if (getenv("MMX_ERRORSPRITE_UVDEBUG")) { fs = fs_uvdebug; mode = "uv-debug"; }
+  else if (getenv("MMX_ERRORSPRITE_NODISCARD")) { fs = fs_nodiscard; mode = "texture-no-discard"; }
+  for (int i = 0; i < g_prog_shader_n[pr]; i++) {
+    unsigned sh = g_prog_shaders[pr][i];
+    if (sh >= 4096) continue;
+    const char *src = g_shader_src_cache[sh];
+    const char *rep = mmx_shader_is_vertex(src) ? vs : (mmx_shader_is_internal_error(src) ? fs : NULL);
+    if (!rep) continue;
+    r_glShaderSource(sh, 1, &rep, NULL);
+    shader_cache_source(sh, 1, &rep, NULL);
+    r_glCompileShader(sh);
+  }
+  g_mmx_errorsprite_prog[pr] = 1;
+  fprintf(stderr, "[MMX_ERRORSPRITE] prog=%u internal-error shader -> %s fallback uvloc=%d\n",
+          pr, mode, uvloc);
+  fsync(2);
+}
 static void my_glLinkProgram(unsigned pr) {
   if (!r_glLinkProgram) r_glLinkProgram = dlsym(RTLD_DEFAULT, "glLinkProgram");
   if (!r_glGetProgramiv) r_glGetProgramiv = dlsym(RTLD_DEFAULT, "glGetProgramiv");
+  mmx_patch_error_sprite_program(pr);
   r_glLinkProgram(pr);
+  if (pr < 4096 && g_mmx_errorsprite_prog[pr]) {
+    int (*gul)(unsigned, const char *) = dlsym(RTLD_DEFAULT, "glGetUniformLocation");
+    int (*gal)(unsigned, const char *) = dlsym(RTLD_DEFAULT, "glGetAttribLocation");
+    void (*uni1i)(int, int) = dlsym(RTLD_DEFAULT, "glUniform1i");
+    void (*usep)(unsigned) = dlsym(RTLD_DEFAULT, "glUseProgram");
+    void (*getiv)(unsigned, int *) = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    int oldprog = 0;
+    if (getiv) getiv(0x8B8D, &oldprog);  /* GL_CURRENT_PROGRAM */
+    int maintex = gul ? gul(pr, "_MainTex") : -2;
+    if (usep && uni1i && maintex >= 0) {
+      usep(pr);
+      uni1i(maintex, 0);
+      if (oldprog >= 0) usep((unsigned)oldprog);
+    }
+    fprintf(stderr, "[MMX_ERRORSPRITE] link prog=%u loc{pos=%d uv=%d maintex=%d} setMainTex0=%d\n",
+            pr, gal ? gal(pr, "in_POSITION0") : -2,
+            gal ? gal(pr, "in_TEXCOORD0") : -2,
+            maintex, (usep && uni1i && maintex >= 0) ? 1 : 0);
+    fsync(2);
+  }
   {
     int (*gul)(unsigned, const char *) = dlsym(RTLD_DEFAULT, "glGetUniformLocation");
     if (gul && pr < 4096 && gul(pr, "_AlphaTex") >= 0) {
@@ -1670,6 +2375,27 @@ static void ds_probe_state(ds_rec *r) {
           dtest, dmask, dfunc, datt, blend, cm[0], cm[1], cm[2], cm[3],
           stest, sfunc, sref, svmask, swmask,
           sciss, sbox[0], sbox[1], sbox[2], sbox[3], vp[0], vp[1], vp[2], vp[3]);
+  if (r->prog == 9 || getenv("MMX_ATTRSPY")) {
+    static void (*gvaiv)(unsigned, unsigned, int *);
+    static void (*gvapv)(unsigned, unsigned, void **);
+    if (!gvaiv) gvaiv = dlsym(RTLD_DEFAULT, "glGetVertexAttribiv");
+    if (!gvapv) gvapv = dlsym(RTLD_DEFAULT, "glGetVertexAttribPointerv");
+    if (gvaiv) {
+      for (unsigned i = 0; i < 8; i++) {
+        int en = 0, sz = 0, stride = 0, ty = 0, norm = 0, buf = 0;
+        void *ptr = NULL;
+        gvaiv(i, 0x8622, &en);     /* GL_VERTEX_ATTRIB_ARRAY_ENABLED */
+        gvaiv(i, 0x8623, &sz);     /* GL_VERTEX_ATTRIB_ARRAY_SIZE */
+        gvaiv(i, 0x8624, &stride); /* GL_VERTEX_ATTRIB_ARRAY_STRIDE */
+        gvaiv(i, 0x8625, &ty);     /* GL_VERTEX_ATTRIB_ARRAY_TYPE */
+        gvaiv(i, 0x886A, &norm);   /* GL_VERTEX_ATTRIB_ARRAY_NORMALIZED */
+        gvaiv(i, 0x889F, &buf);    /* GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING */
+        if (gvapv) gvapv(i, 0x8645, &ptr);  /* GL_VERTEX_ATTRIB_ARRAY_POINTER */
+        fprintf(stderr, "[ATTR] prog=%d a%u en=%d size=%d type=0x%X norm=%d stride=%d buf=%d ptr=%p\n",
+                r->prog, i, en, sz, ty, norm, stride, buf, ptr);
+      }
+    }
+  }
   fsync(2);
 }
 /* programas com _AlphaTex (variant sprite ext-alpha) marcados no link */
@@ -1717,9 +2443,17 @@ static void ds_progspy(int prog) {
   }
   unsigned shs[4] = {0}; int ns = 0;
   gas(prog, 4, &ns, shs);
+  if (ns <= 0 && prog > 0 && prog < 4096 && g_prog_shader_n[prog] > 0) {
+    ns = g_prog_shader_n[prog] > 4 ? 4 : g_prog_shader_n[prog];
+    for (int i = 0; i < ns; i++) shs[i] = g_prog_shaders[prog][i];
+  }
   for (int i = 0; i < ns; i++) {
     static char src[4096]; int len = 0; src[0] = 0;
     gss(shs[i], sizeof src - 1, &len, src);
+    if (len <= 0 && shs[i] < 4096 && g_shader_src_cache[shs[i]]) {
+      snprintf(src, sizeof src, "%s", g_shader_src_cache[shs[i]]);
+      len = (int)strlen(src);
+    }
     fprintf(stderr, "[PROGSPY] prog=%d shader[%d] len=%d SRC:\n%.2400s\n[PROGSPY] ---fim---\n", prog, i, len, src);
   }
   fsync(2);
@@ -1741,6 +2475,36 @@ static void ds_draw_noscissor(void (*draw)(unsigned, int, unsigned, const void *
   draw(mode, count, type, idx);
   if (was && ena) ena(0x0C11);
 }
+static int mmx_errorsprite_uvloc(void) {
+  return getenv("MMX_ERRORSPRITE_UVLOC") ? atoi(getenv("MMX_ERRORSPRITE_UVLOC")) : 2;
+}
+static int mmx_errorsprite_forceattr(void) {
+  return getenv("MMX_ERRORSPRITE_FORCEATTR") ? 1 : 0;
+}
+static void ds_draw_errorsprite_attrs(void (*draw)(unsigned, int, unsigned, const void *),
+                                      unsigned mode, int count, unsigned type, const void *idx) {
+  int uvloc = mmx_errorsprite_uvloc();
+  if (!mmx_errorsprite_forceattr() || g_cur_prog <= 0 || g_cur_prog >= 4096 ||
+      !g_mmx_errorsprite_prog[g_cur_prog] || uvloc < 0 || uvloc >= 16) {
+    draw(mode, count, type, idx);
+    return;
+  }
+  static void (*ena_va)(unsigned), (*dis_va)(unsigned), (*gvaiv)(unsigned, unsigned, int *);
+  if (!ena_va) ena_va = dlsym(RTLD_DEFAULT, "glEnableVertexAttribArray");
+  if (!dis_va) dis_va = dlsym(RTLD_DEFAULT, "glDisableVertexAttribArray");
+  if (!gvaiv) gvaiv = dlsym(RTLD_DEFAULT, "glGetVertexAttribiv");
+  int was = 1;
+  if (gvaiv) gvaiv((unsigned)uvloc, 0x8622, &was);  /* GL_VERTEX_ATTRIB_ARRAY_ENABLED */
+  if (ena_va && !was) ena_va((unsigned)uvloc);
+  static int logn = 0;
+  if (logn++ < 8) {
+    fprintf(stderr, "[MMX_ERRORSPRITE] force attrib uvloc=%d prog=%d was=%d f=%d\n",
+            uvloc, g_cur_prog, was, g_render_frame);
+    fsync(2);
+  }
+  draw(mode, count, type, idx);
+  if (dis_va && !was) dis_va((unsigned)uvloc);
+}
 static int g_noscissor = -1;
 static void my_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
   g_frame_draws++; g_frame_verts += (unsigned)count;
@@ -1751,11 +2515,14 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type, const voi
       ds_draw_noscissor(ds_r_DrawElements, mode, count, type, idx);
       return;
     }
-    ds_r_DrawElements(mode, count, type, idx);
+    ds_draw_errorsprite_attrs(ds_r_DrawElements, mode, count, type, idx);
     return;
   }
   ds_rec *r = ds_enter(0, mode, count, type);
   ds_progspy(r->prog);
+  static int attrspy_hits = 0;
+  if (getenv("MMX_ATTRSPY") && r->prog == 9 && attrspy_hits++ < 8)
+    ds_probe_state(r);
   if (g_probe_arm > 0) { g_probe_arm--; ds_probe_state(r); }
   if (r->seq < 8) fprintf(stderr, "[DS] draw#%u f=%d ELM cnt=%d prog=%d fbo=%d tex=%d(%dx%d)\n",
                           r->seq, r->frame, count, r->prog, r->fbo, r->tex, r->texw, r->texh);
@@ -1766,7 +2533,7 @@ static void my_glDrawElements(unsigned mode, int count, unsigned type, const voi
     r->in_progress = 0;
     return;
   }
-  ds_r_DrawElements(mode, count, type, idx);
+  ds_draw_errorsprite_attrs(ds_r_DrawElements, mode, count, type, idx);
   r->in_progress = 0;
 }
 /* CUP_DRAWCOUNT: conta glClear + loga a clear-color (diag de "Draw roda mas 0 draws") */
@@ -1988,10 +2755,43 @@ static void ter_screenshot_maybe(void) {
             w,h,n, nb, w*h, g_frame_draws, g_frame_verts, g_clear_count); }
   free(buf);
 }
+static void ter_testpattern_maybe(void) {
+  if (!getenv("TER_TESTPATTERN")) return;
+  static void (*p_bf)(unsigned, unsigned), (*p_vp)(int, int, int, int);
+  static void (*p_en)(unsigned), (*p_dis)(unsigned), (*p_sc)(int, int, int, int);
+  static void (*p_cc)(float, float, float, float), (*p_cl)(unsigned);
+  static void (*p_gi)(unsigned, int *);
+  if (!p_bf) {
+    p_bf = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+    p_vp = dlsym(RTLD_DEFAULT, "glViewport");
+    p_en = dlsym(RTLD_DEFAULT, "glEnable");
+    p_dis = dlsym(RTLD_DEFAULT, "glDisable");
+    p_sc = dlsym(RTLD_DEFAULT, "glScissor");
+    p_cc = dlsym(RTLD_DEFAULT, "glClearColor");
+    p_cl = dlsym(RTLD_DEFAULT, "glClear");
+    p_gi = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+  }
+  if (!p_bf || !p_vp || !p_en || !p_sc || !p_cc || !p_cl) return;
+  int vp[4] = {0, 0, 0, 0};
+  if (p_gi) p_gi(0x0BA2, vp); /* GL_VIEWPORT */
+  int w = vp[2] > 0 ? vp[2] : g_fbdev_win.w;
+  int h = vp[3] > 0 ? vp[3] : g_fbdev_win.h;
+  if (w <= 0 || h <= 0) return;
+  static int logged;
+  if (!logged++) { fprintf(stderr, "[TESTPAT] RGB bars on FBO0 %dx%d before swap\n", w, h); fsync(2); }
+  p_bf(0x8D40, 0); /* GL_FRAMEBUFFER */
+  p_vp(0, 0, w, h);
+  if (p_dis) { p_dis(0x0B71); p_dis(0x0B90); p_dis(0x0BE2); } /* depth/stencil/blend */
+  p_en(0x0C11); /* GL_SCISSOR_TEST */
+  int tw = w / 3;
+  p_sc(0, 0, tw, h); p_cc(1.0f, 0.0f, 0.0f, 1.0f); p_cl(0x00004000);
+  p_sc(tw, 0, tw, h); p_cc(0.0f, 1.0f, 0.0f, 1.0f); p_cl(0x00004000);
+  p_sc(tw * 2, 0, w - tw * 2, h); p_cc(0.0f, 0.0f, 1.0f, 1.0f); p_cl(0x00004000);
+}
 static void ter_nuke_methods(void);
 static void ter_jobworkers0(void);
 /* chamado por egl_shim_SwapBuffers na thread DONA da window (captura o buffer apresentado) */
-void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_screenshot_maybe(); }
+void ter_shot_hook(void) { ter_nuke_methods(); ter_jobworkers0(); ter_testpattern_maybe(); ter_screenshot_maybe(); }
 
 /* native_pad.c: estado do pad (0=A 1=B 2=X 3=Y 4=LB 5=RB 6=Back 7=Start 8=L3 9=R3 10..13=dpad U D L R) */
 extern int np_btn(int b), np_btn_down(int b);
@@ -2827,6 +3627,8 @@ static void ter_name_pump(void) {
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   mmx_nuke_integrity();  /* MMX_NOINTEGRITY: pula o Play Integrity DRM do boot */
+  mmx_fix_game_methods(); /* MMX_FIXGAME: neutraliza input/IAP Android quebrados no MMX */
+  mmx_lifedump();       /* MMX_LIFEDUMP: enumera classes/metodos de cena do MMX */
   ter_fix_singleplayer(); /* TER_FIXSP: neutraliza OldSaveSynchronise.CopyOldSaves (tela preta SP) */
   ter_jobworkers0();    /* TER_JOBWORKERS0: JobWorkerCount=0 -> jobs inline */
   ter_name_hooks_install(); /* TER_OSK: captura telas de nome p/ gravar texto real */
@@ -2836,6 +3638,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   { extern void np_frame(void); np_frame(); }  /* 🎮 NATPAD: controle NATIVO via InControl attach */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_vkbd_draw();
+  ter_testpattern_maybe();
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
   return r_eglSwapBuffers ? r_eglSwapBuffers(dpy, surf) : 1;
@@ -2854,7 +3657,7 @@ static void *ds_route(const char *nm, void *real) {
    * — era a SANGRIA de performance (ds_enter fazia 4 glGetIntegerv/draw = sync GPU).
    * O fast-path de my_glDrawElements (g_drawdiag=0) só conta; mesmo assim, sem DRAWCOUNT
    * nem envolvemos. */
-  if (g_drawdiag || getenv("CUP_DRAWCOUNT")) {
+  if (g_drawdiag || getenv("CUP_DRAWCOUNT") || getenv("MMX_ERRORSPRITE_FORCEATTR")) {
     if (!strcmp(nm, "glDrawElements")) { ds_r_DrawElements = real; return (void *)my_glDrawElements; }
     if (!strcmp(nm, "glDrawArrays"))   { ds_r_DrawArrays = real;   return (void *)my_glDrawArrays; }
     if (!strcmp(nm, "glClear"))        { ds_r_Clear = real;        return (void *)my_glClear; }
@@ -2867,6 +3670,7 @@ static void *ds_route(const char *nm, void *real) {
   else if (!strcmp(nm, "glCompileShader")) { r_glCompileShader = real; w = (void *)my_glCompileShader; }
   else if (!strcmp(nm, "glLinkProgram"))   { r_glLinkProgram = real;   w = (void *)my_glLinkProgram; }
   else if (!strcmp(nm, "glShaderSource"))  { r_glShaderSource = real;  w = (void *)my_glShaderSource; }
+  else if (!strcmp(nm, "glAttachShader"))  { r_glAttachShader = real;  w = (void *)my_glAttachShader; }
   else if (!strcmp(nm, "glRenderbufferStorage")) { r_glRenderbufferStorage = real; w = (void *)my_glRenderbufferStorage; }
   else if (!strcmp(nm, "glCheckFramebufferStatus")) { r_glCheckFBStatus = real; w = (void *)my_glCheckFramebufferStatus; }
   else if (!strcmp(nm, "glFramebufferTexture2D")) { r_glFBTex2D = real; w = (void *)my_glFramebufferTexture2D; }
@@ -2879,8 +3683,11 @@ static void *ds_route(const char *nm, void *real) {
 static void ds_init(void) {
   rs_init();   /* CUP_RENDERSCALE: parseia env (o FBO lo-res cria-se lazy no 1º bind) */
   if (getenv("CUP_TEXHALF")) { g_texhalf = atoi(getenv("CUP_TEXHALF")); if (g_texhalf < 2) g_texhalf = 1024; }
-  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled()) return;
-  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY e/ou TEXHALF precisam de glTexImage2D) */
+  if (!getenv("CUP_DRAWSPY") && !g_texhalf && !rs_enabled() &&
+      !getenv("CUP_DRAWCOUNT") && !getenv("CUP_TEXSTAT") &&
+      !getenv("MMX_ERRORSPRITE_FORCEATTR"))
+    return;
+  g_drawspy = 1;  /* liga roteamento de gl* (DRAWSPY/TEXHALF/DRAWCOUNT/TEXSTAT) */
   g_drawdiag = getenv("CUP_DRAWSPY") ? 1 : 0;  /* ⚠️ ring + glGetIntegerv/draw — só em diag */
   g_skipfbo = getenv("CUP_SKIPFBO") ? 1 : 0;
   const char *sp = getenv("CUP_SKIPPROG");
@@ -2889,7 +3696,7 @@ static void ds_init(void) {
     for (char *t = strtok(buf, ","); t && g_nskipprog < 8; t = strtok(NULL, ","))
       g_skipprog[g_nskipprog++] = atoi(t);
   }
-  if (g_drawdiag || getenv("CUP_DRAWCOUNT")) { pthread_t th; pthread_create(&th, NULL, ds_watchdog, NULL); }
+  if (g_drawdiag || getenv("CUP_DRAWCOUNT") || getenv("MMX_ERRORSPRITE_FORCEATTR")) { pthread_t th; pthread_create(&th, NULL, ds_watchdog, NULL); }
   fprintf(stderr, "[DS] roteamento ON (texhalf=%d drawdiag=%d skipfbo=%d)\n",
           g_texhalf, g_drawdiag, g_skipfbo);
 }
@@ -3675,6 +4482,7 @@ static void *my_dlsym(void *h, const char *nm) {
     if (!strcmp(nm, "glShaderSource")) { if (!r_glShaderSource) r_glShaderSource = (void(*)(unsigned,int,const char**,const int*))dlsym(RTLD_DEFAULT, nm); return (void *)my_glShaderSource; }
     if (!strcmp(nm, "glCompileShader")) { r_glCompileShader = (void(*)(unsigned))dlsym(RTLD_DEFAULT, nm); return (void *)my_glCompileShader; }
     if (!strcmp(nm, "glLinkProgram")) { r_glLinkProgram = (void(*)(unsigned))dlsym(RTLD_DEFAULT, nm); return (void *)my_glLinkProgram; }
+    if (!strcmp(nm, "glAttachShader")) { r_glAttachShader = (void(*)(unsigned,unsigned))dlsym(RTLD_DEFAULT, nm); return (void *)my_glAttachShader; }
   }
   if (g_drawspy && nm[0] == 'g' && nm[1] == 'l') {   /* cobre resolução de gl* via dlsym tb */
     void *p = dlsym(RTLD_DEFAULT, nm);
@@ -4938,8 +5746,110 @@ int main(int argc, char **argv) {
       hook_arm64(g_il2cpp_base + 0x9A619C, (uintptr_t)my_inputwait_cr);
       fprintf(stderr, "[CRSPY] hooks start_cr(0x9A58D0 $PC+0xBC) + inputwait(0x9A619C $PC+0x1C)\n");
     }
+    if (getenv("MMX_BOOTST")) {
+      void *tr = mk_tramp(g_il2cpp_base + 0xe3b438, "MMX_BOOTST");
+      if (tr) {
+        g_bootmn_orig = (long (*)(long, long, long, long, long, long, long, long))tr;
+        hook_arm64(g_il2cpp_base + 0xe3b438, (uintptr_t)mmx_bootmn);
+        fprintf(stderr, "[BOOTST] inline hook BootScene.<Start>d__5::MoveNext @ il2cpp+0xe3b438\n");
+      } else {
+        fprintf(stderr, "[BOOTST] mk_tramp falhou; hook OFF\n");
+      }
+    }
+    if (getenv("MMX_ISTOUCHSPY")) {
+      void *tr = mk_tramp(g_il2cpp_base + 0xe42fec, "MMX_ISTOUCHSPY");
+      if (tr) {
+        g_mmx_istouchs_orig = (mmx_istouchs_fn)tr;
+        hook_arm64(g_il2cpp_base + 0xe42fec, (uintptr_t)mmx_istouchs_spy);
+        fprintf(stderr, "[ISTOUCHSPY] hook InputMan.IsTouchs @ il2cpp+0xe42fec\n");
+      } else {
+        fprintf(stderr, "[ISTOUCHSPY] mk_tramp falhou; hook OFF\n");
+      }
+    }
+    if (getenv("MMX_RXSPY")) {
+      const char *rx = getenv("MMX_RXSPY");
+      int all = !strcmp(rx, "1") || strstr(rx, "all");
+      int want_init = all || strstr(rx, "init");
+      int want_core = all || strstr(rx, "core");
+      int want_scene = all || strstr(rx, "scene");
+      struct rx_target { unsigned long rva; const char *name; mmx_rx_fn *orig; void *hook; int group; } T[] = {
+        {0xdd5398, "RockmanX.Start", &g_mmx_rx_start_orig, (void *)mmx_rx_start, 1},
+        {0xdd5420, "RockmanX.Initialize", &g_mmx_rx_initialize_orig, (void *)mmx_rx_initialize, 1},
+        {0xdd5864, "RockmanX.initGame", &g_mmx_rx_initgame_orig, (void *)mmx_rx_initgame, 1},
+        {0xdd6c74, "RockmanX.GameUpdate", &g_mmx_rx_gameupdate_orig, (void *)mmx_rx_gameupdate, 2},
+        {0xdd5fd0, "RockmanX.GameRender", &g_mmx_rx_gamerender_orig, (void *)mmx_rx_gamerender, 2},
+        {0xdd7a5c, "RockmanX.scn_run", &g_mmx_rx_scn_run_orig, (void *)mmx_rx_scn_run, 2},
+        {0xdd6340, "RockmanX.scn_draw", &g_mmx_rx_scn_draw_orig, (void *)mmx_rx_scn_draw, 2},
+        {0xdf4ae8, "scn_START_APP_run", &g_mmx_rx_startapp_run_orig, (void *)mmx_rx_startapp_run, 3},
+        {0xe04aa4, "scn_START_APP_draw", &g_mmx_rx_startapp_draw_orig, (void *)mmx_rx_startapp_draw, 3},
+        {0xdf4df8, "scn_LOAD_DATA_run", &g_mmx_rx_loaddata_run_orig, (void *)mmx_rx_loaddata_run, 3},
+        {0xe04acc, "scn_LOAD_DATA_draw", &g_mmx_rx_loaddata_draw_orig, (void *)mmx_rx_loaddata_draw, 3},
+        {0xdf511c, "scn_LOGO_run", &g_mmx_rx_logo_run_orig, (void *)mmx_rx_logo_run, 3},
+        {0xe04d34, "scn_LOGO_draw", &g_mmx_rx_logo_draw_orig, (void *)mmx_rx_logo_draw, 3},
+        {0xdf51c4, "scn_TITLE_run", &g_mmx_rx_title_run_orig, (void *)mmx_rx_title_run, 3},
+        {0xe04edc, "scn_TITLE_draw", &g_mmx_rx_title_draw_orig, (void *)mmx_rx_title_draw, 3},
+        {0xdf54f8, "scn_TITLEMENU_run", &g_mmx_rx_titlemenu_run_orig, (void *)mmx_rx_titlemenu_run, 3},
+        {0xe050f0, "scn_TITLEMENU_draw", &g_mmx_rx_titlemenu_draw_orig, (void *)mmx_rx_titlemenu_draw, 3},
+        {0xe02b8c, "scn_CUSTOMIZE_run", &g_mmx_rx_customize_run_orig, (void *)mmx_rx_customize_run, 3},
+        {0xe0acb4, "scn_CUSTOMIZE_draw", &g_mmx_rx_customize_draw_orig, (void *)mmx_rx_customize_draw, 3},
+        {0xdfa3a0, "scn_STAGESEL_run", &g_mmx_rx_stagesel_run_orig, (void *)mmx_rx_stagesel_run, 3},
+        {0xe066e0, "scn_STAGESEL_draw", &g_mmx_rx_stagesel_draw_orig, (void *)mmx_rx_stagesel_draw, 3},
+        {0xdff648, "scn_PROLOGUE_run", &g_mmx_rx_prologue_run_orig, (void *)mmx_rx_prologue_run, 3},
+        {0xe09084, "scn_PROLOGUE_draw", &g_mmx_rx_prologue_draw_orig, (void *)mmx_rx_prologue_draw, 3},
+        {0xdfaba0, "scn_BOSSINTRO_run", &g_mmx_rx_bossintro_run_orig, (void *)mmx_rx_bossintro_run, 3},
+        {0xe06f10, "scn_BOSSINTRO_draw", &g_mmx_rx_bossintro_draw_orig, (void *)mmx_rx_bossintro_draw, 3},
+        {0xdfc32c, "scn_STAGE_run", &g_mmx_rx_stage_run_orig, (void *)mmx_rx_stage_run, 3},
+        {0xe07494, "scn_STAGE_draw", &g_mmx_rx_stage_draw_orig, (void *)mmx_rx_stage_draw, 3},
+        {0xdfafc0, "scn_NEXTMAP_run", &g_mmx_rx_nextmap_run_orig, (void *)mmx_rx_nextmap_run, 3},
+        {0xe0707c, "scn_NEXTMAP_draw", &g_mmx_rx_nextmap_draw_orig, (void *)mmx_rx_nextmap_draw, 3},
+        {0xdfdc30, "scn_WEPONSEL_run", &g_mmx_rx_weaponsel_run_orig, (void *)mmx_rx_weaponsel_run, 3},
+        {0xe08284, "scn_WEPONSEL_draw", &g_mmx_rx_weaponsel_draw_orig, (void *)mmx_rx_weaponsel_draw, 3},
+        {0xdf7b9c, "scn_OPTION_run", &g_mmx_rx_option_run_orig, (void *)mmx_rx_option_run, 3},
+        {0xe05b60, "scn_OPTION_draw", &g_mmx_rx_option_draw_orig, (void *)mmx_rx_option_draw, 3},
+        {0xdfeb94, "scn_GAMEOVER_run", &g_mmx_rx_gameover_run_orig, (void *)mmx_rx_gameover_run, 3},
+        {0xe08a30, "scn_GAMEOVER_draw", &g_mmx_rx_gameover_draw_orig, (void *)mmx_rx_gameover_draw, 3},
+        {0xdfee88, "scn_STAGECLEAR_run", &g_mmx_rx_stageclear_run_orig, (void *)mmx_rx_stageclear_run, 3},
+        {0xe08bec, "scn_STAGECLEAR_draw", &g_mmx_rx_stageclear_draw_orig, (void *)mmx_rx_stageclear_draw, 3},
+        {0xe03cbc, "scn_RANK_RESULT_run", &g_mmx_rx_rank_result_run_orig, (void *)mmx_rx_rank_result_run, 3},
+        {0xe0b00c, "scn_RANK_RESULT_draw", &g_mmx_rx_rank_result_draw_orig, (void *)mmx_rx_rank_result_draw, 3},
+        {0xe04660, "scn_POST_MESSAGE_run", &g_mmx_rx_post_message_run_orig, (void *)mmx_rx_post_message_run, 3},
+        {0xe0ba78, "scn_POST_MESSAGE_draw", &g_mmx_rx_post_message_draw_orig, (void *)mmx_rx_post_message_draw, 3},
+        {0xe02664, "scn_TRIAL_DEMO_run", &g_mmx_rx_trial_demo_run_orig, (void *)mmx_rx_trial_demo_run, 3},
+        {0xe0176c, "scn_OPCL_CLEAR_run", &g_mmx_rx_opcl_clear_run_orig, (void *)mmx_rx_opcl_clear_run, 3},
+        {0xe0a9e0, "scn_OPCL_CLEAR_draw", &g_mmx_rx_opcl_clear_draw_orig, (void *)mmx_rx_opcl_clear_draw, 3},
+        {0xe0126c, "scn_OPCHALLENGE_run", &g_mmx_rx_opchallenge_run_orig, (void *)mmx_rx_opchallenge_run, 3},
+        {0xe0a1d0, "scn_OPCHALLENGE_draw", &g_mmx_rx_opchallenge_draw_orig, (void *)mmx_rx_opchallenge_draw, 3},
+        {0xdffc80, "scn_ENDING_run", &g_mmx_rx_ending_run_orig, (void *)mmx_rx_ending_run, 3},
+        {0xe09250, "scn_ENDING_draw", &g_mmx_rx_ending_draw_orig, (void *)mmx_rx_ending_draw, 3},
+      };
+      for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+        if ((T[i].group == 1 && !want_init) || (T[i].group == 2 && !want_core) ||
+            (T[i].group == 3 && !want_scene)) continue;
+        if (*T[i].orig) continue;
+        void *tr = mk_tramp(g_il2cpp_base + T[i].rva, T[i].name);
+        if (!tr) { fprintf(stderr, "[RXSPY] mk_tramp falhou %s\n", T[i].name); continue; }
+        *T[i].orig = (mmx_rx_fn)tr;
+        hook_arm64(g_il2cpp_base + T[i].rva, (uintptr_t)T[i].hook);
+        fprintf(stderr, "[RXSPY] hook %s @ il2cpp+0x%lx\n", T[i].name, T[i].rva);
+      }
+      fsync(2);
+    }
     if (getenv("CUP_BOOTSPY")) bootspy_install(g_il2cpp_base);
     if (getenv("CUP_MENUSPY")) menuspy_install(g_il2cpp_base);
+    /* MMX_FORCE_TITLESTART: scn_TITLE_run chama uma checagem de input em
+       il2cpp+0xe42fec e em seguida faz `cbz x0, wait`. NOP no cbz força o caminho
+       "TOUCH TO START" aceito, útil para chegar em menu/gameplay e mapear controle. */
+    if (getenv("MMX_FORCE_TITLESTART")) {
+      uintptr_t a = g_il2cpp_base + 0xdf53d0;
+      long pgsz = sysconf(_SC_PAGESIZE);
+      void *pa = (void *)(a & ~((uintptr_t)pgsz - 1));
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      uint32_t old = *(uint32_t *)a;
+      *(uint32_t *)a = 0xd503201fu;  /* cbz x0, ... -> nop */
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+      fprintf(stderr, "[MMX_FORCE_TITLESTART] scn_TITLE_run+0x20c 0x%08x -> NOP\n", old);
+    }
     /* CUP_FORCESTARTCR: CupheadStartScene.Start (0x9A55CC) faz 3 checks
      * op_Inequality em Application.version/productName/identifier e DÁ EARLY-RETURN
      * (0x9A56F8) antes de StartCoroutine(start_cr) se algum não bate. No so-loader
@@ -5135,9 +6045,24 @@ int main(int argc, char **argv) {
   extern struct hk_inject_s { int action, keycode, source, deviceId, metaState, repeat,
                               scancode, flags, unicode; long eventTime, downTime; } g_hk_inject;
   extern void *hk_keyevent_object(void);
+  extern struct hk_motion_s { int action, source, deviceId, metaState, buttonState,
+                              flags, pointerId, pointerCount, actionIndex, toolType;
+                              float x, y, rawX, rawY, pressure, size; long eventTime, downTime; } g_hk_motion;
+  extern void *hk_motionevent_object(void);
   void *inject = jni_find_native("nativeInjectEvent");
   int tapkey = getenv("CUP_AUTOTAP") ? atoi(getenv("CUP_AUTOTAP")) : 0;
   if (tapkey && inject) fprintf(stderr, "[AUTOTAP] keycode=%d via nativeInjectEvent=%p\n", tapkey, inject);
+  int autotouch = getenv("MMX_AUTOTOUCH") ? atoi(getenv("MMX_AUTOTOUCH")) : 0;
+  int autotouch_once = getenv("MMX_AUTOTOUCH_ONCE") ? atoi(getenv("MMX_AUTOTOUCH_ONCE")) : 0;
+  int autotouch_done = 0;
+  int autotouch_start = getenv("MMX_AUTOTOUCH_START") ? atoi(getenv("MMX_AUTOTOUCH_START")) : 180;
+  int autotouch_period = getenv("MMX_AUTOTOUCH_PERIOD") ? atoi(getenv("MMX_AUTOTOUCH_PERIOD")) : 90;
+  if (autotouch_period < 12) autotouch_period = 12;
+  float autotouch_x = getenv("MMX_TOUCHX") ? (float)atof(getenv("MMX_TOUCHX")) : 640.0f;
+  float autotouch_y = getenv("MMX_TOUCHY") ? (float)atof(getenv("MMX_TOUCHY")) : 520.0f;
+  if (autotouch && inject)
+    fprintf(stderr, "[AUTOTOUCH] x=%.1f y=%.1f start=%d period=%d once=%d via nativeInjectEvent=%p\n",
+            autotouch_x, autotouch_y, autotouch_start, autotouch_period, autotouch_once, inject);
   /* CUP_DRAINPRELOAD=N: os ops de preload do título completam o background (jobmgr=0)
    * mas ficam presos na fila de INTEGRAÇÃO (integQ) pq a integração per-frame não roda
    * fora do WaitForAll. Dirigimos nós: N× UpdatePreloadingSingleStep(mgr,2,0x10) por frame
@@ -5314,6 +6239,8 @@ int main(int argc, char **argv) {
   int jobspy = getenv("TER_JOBSPY") ? 1 : 0;
   int gamepad_on = getenv("CUP_GAMEPAD") ? 1 : 0;
   extern void gp_poll(void); extern void gp_frame_end(void);
+  int mmx_gamepad_on = (getenv("MMX_GAMEPAD") || getenv("TER_GAMEPAD")) ? 1 : 0;
+  extern void mmx_gamepad_frame(void *env, void *thiz, void *inject);
   /* CUP_LOADYIELD=us: durante o boot/load, cede CPU aos WORKER threads (sched_yield+usleep)
      ANTES de cada frame integrar, p/ os jobs async COMPLETAREM antes da integração forçada
      (o check jobs-pending 0x6cdad0 é não-confiável aqui -> race -> objeto malformado ->
@@ -5407,6 +6334,7 @@ int main(int argc, char **argv) {
     }
     if (loadyield && f < loadyield_f) { for (int y = 0; y < 4; y++) sched_yield(); usleep(loadyield); }
     if (gamepad_on) gp_poll();   /* drena eventos do js0 ANTES do frame ler input */
+    if (mmx_gamepad_on) mmx_gamepad_frame(env, &thiz, inject);
     if (drivecr && f >= drivecr_from && g_startcr_it) cr1_tramp(g_startcr_it);
     if (drainN && g_preload_mgr) {
       for (int k = 0; k < drainN; k++) preload_step(g_preload_mgr, 2, 0x10);
@@ -5418,6 +6346,8 @@ int main(int argc, char **argv) {
       wait_all(g_preload_mgr);
     }
     mmx_nuke_integrity();  /* pula Play Integrity ANTES do render */
+    mmx_fix_game_methods(); /* MMX_FIXGAME: input/IAP quebrados no caminho sem eglSwapBuffers */
+    mmx_lifedump();       /* MMX_LIFEDUMP: enumera classes/metodos de cena do MMX */
     if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */
@@ -5447,6 +6377,40 @@ int main(int argc, char **argv) {
         g_hk_inject.metaState = 0; g_hk_inject.scancode = 0; g_hk_inject.unicode = 0;
         int ir = ((int (*)(void *, void *, void *))inject)(env, &thiz, hk_keyevent_object());
         if (f < 600) fprintf(stderr, "[AUTOTAP] %s key=%d (f=%d) ret=%d\n", phase ? "UP" : "DOWN", tapkey, f, ir);
+      }
+    }
+    /* MMX_AUTOTOUCH: injeta um toque Android real (MotionEvent) no Unity.
+       Necessário no Mega Man X: a tela inicial aceita "TOUCH TO START", mas ignora
+       KeyEvent/BUTTON_A simples. */
+    if (autotouch && inject && f >= autotouch_start && !(autotouch_once && autotouch_done)) {
+      int phase = (f - autotouch_start) % autotouch_period;
+      if (phase == 0 || phase == 6) {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        long now_ms = ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+        static long touch_down_ms;
+        int down = (phase == 0);
+        if (down || touch_down_ms == 0) touch_down_ms = now_ms;
+        g_hk_motion.action = down ? 0 : 1;            /* ACTION_DOWN / ACTION_UP */
+        g_hk_motion.source = 0x1002;                  /* SOURCE_TOUCHSCREEN */
+        g_hk_motion.deviceId = 0;
+        g_hk_motion.metaState = 0;
+        g_hk_motion.buttonState = 0;
+        g_hk_motion.flags = 0;
+        g_hk_motion.pointerId = 0;
+        g_hk_motion.pointerCount = 1;
+        g_hk_motion.actionIndex = 0;
+        g_hk_motion.toolType = 1;                     /* TOOL_TYPE_FINGER */
+        g_hk_motion.x = g_hk_motion.rawX = autotouch_x;
+        g_hk_motion.y = g_hk_motion.rawY = autotouch_y;
+        g_hk_motion.pressure = down ? 1.0f : 0.0f;
+        g_hk_motion.size = 0.1f;
+        g_hk_motion.eventTime = now_ms;
+        g_hk_motion.downTime = touch_down_ms;
+        int ir = ((int (*)(void *, void *, void *))inject)(env, &thiz, hk_motionevent_object());
+        if (!down) autotouch_done = 1;
+        if (f < 900)
+          fprintf(stderr, "[AUTOTOUCH] %s x=%.1f y=%.1f (f=%d) ret=%d\n",
+                  down ? "DOWN" : "UP", autotouch_x, autotouch_y, f, ir);
       }
     }
     if (gamepad_on) gp_frame_end();  /* snapshot p/ edge-detect do GetButtonDown/Up */
