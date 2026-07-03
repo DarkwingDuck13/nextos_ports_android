@@ -30,6 +30,12 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 
 - **Sonic the Hedgehog 4: Episode II** (Sega NN/"fox") — so-loader do `libfox.so`, **validado multi-device** (Mali-450, X5M, R36S, muOS, ROCKNIX/Panfrost): vídeo, áudio, controle, bonus stages e resolução nativa; release arm64 via Docker buster (piso GLIBC 2.30). Veja [`ports/sonic4`](ports/sonic4/).
 
+- **Mega Man Mobile 1–6** (Capcom, Cocos2d-x 3.9 + Cricket, armhf) — a série clássica inteira **rodando lisa** no Mali-450: vídeo, **controle dpad-touch** (diagonais reais no d-pad), áudio (Cricket→SDL com o áudio como clock mestre, corrige aceleração), save e **Select+Start pra sair**. Receita reusável (`cp -r megamanN megamanM`; `MAX_JARRAYS=8192`, ~15fps). Veja [`ports/megaman1`](ports/megaman1/) … [`ports/megaman6`](ports/megaman6/).
+
+- **Secret of Mana** (remake 2018, plandroid/MCF, **GLES1 puro**) — so-loader no Mali-450, **jogável completo**: inglês, controle Xbox, fontes, save, BGM + SFX. Destraves: reconstruir o *fontcache* ao trocar de rasterizador, e drenar o ring do OpenSL ES pros SFX. Veja [`ports/secretofmana`](ports/secretofmana/).
+
+- **Call of Duty: Black Ops Zombies** (Marmalade *s3e*) — so-loader no Mali-450: boot, New Game, gameplay, **fullscreen** (free_scale do OSD Amlogic), áudio e controle. Adaptação NextOS do loader de **[Producdevity](https://github.com/Producdevity/cod-boz-port)** (MIT — todo o crédito da arquitetura s3e é dele): **d-pad = movimento**, correções de áudio (callback `END_SAMPLE` da engine → tiros/SFX voltam), SDL do sistema e Select+Start. Veja [`ports/codboz`](ports/codboz/).
+
 E mais jogáveis no Mali-450: **Hotline Miami 2** (GameMaker/YYC, música + gameplay), **DuckTales Remastered** (WayForward), **Minecraft Bedrock/MCPE** (fullscreen via mcpelauncher + SDL3), **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
 
 ## Jogos portados
@@ -55,6 +61,12 @@ E mais jogáveis no Mali-450: **Hotline Miami 2** (GameMaker/YYC, música + game
 | **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | **Jogável** (Mali-450) — render, controle físico (padrão Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
 | **Shantae and the Pirate's Curse** (WayForward "Black") | so-loader (NativeActivity **armv7**, ES2 nativo + OpenSL ES) | **Jogável** (Mali-450) — render + áudio + 60fps + inglês, **controles completos** (dpad/analógico navegam menu e andam, botões Xbox, SELECT+START sai) | [`ports/shantae`](ports/shantae/) |
 | **Crazy Taxi Classic** | so-loader (loader de **initdream** sobre o framework) | **Jogável** (Mali-450) — render + áudio + gptokeyb | [`ports/crazytaxi`](ports/crazytaxi/) |
+| **Mega Man Mobile 1–6** (Capcom, Cocos2d-x 3.9 + Cricket) | so-loader (armhf) | **Jogável** (Mali-450) — vídeo, controle dpad-touch (diagonais reais), áudio, save, Select+Start | [`ports/megaman1`](ports/megaman1/) … [`megaman6`](ports/megaman6/) |
+| **Secret of Mana** (remake 2018, MCF) | so-loader (**GLES1 puro**) | **Jogável completo** (Mali-450) — inglês, controle, fontes, save, BGM+SFX | [`ports/secretofmana`](ports/secretofmana/) |
+| **Call of Duty: Black Ops Zombies** (Marmalade s3e) | so-loader (adaptação do loader de **Producdevity**, MIT) | **Jogável** (Mali-450) — New Game, gameplay, fullscreen, áudio, controle (d-pad) | [`ports/codboz`](ports/codboz/) |
+| **PES 2012** (Marmalade s3e) | so-loader | **WIP** — FSM de download mapeado, gate de 180MB bypassado | [`ports/pes2012`](ports/pes2012/) |
+| **Mega Man X** (Unity IL2CPP) | so-loader | **WIP** — boot + render loop; muro no Choreographer/job-system | [`ports/megamanx`](ports/megamanx/) |
+| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | **WIP** — investigação de render | [`ports/elderand`](ports/elderand/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | **Parcial** — gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity) | so-loader | **Demo** — menu + entrada Cap.1 OK; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | **Em progresso** — cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
@@ -118,3 +130,5 @@ Este repo é **só a ferramenta/loader** (como o PortMaster). Ele **não** distr
 Núcleo derivado dos ports **[syberia_arm64](https://github.com/mtojek/syberia_arm64)** e **[lswtcs_arm64](https://github.com/mtojek/lswtcs_arm64)** de **mtojek** (licença **Apache-2.0**). Este framework generaliza aquele approach. Veja `NOTICE` para atribuição.
 
 O port **Crazy Taxi Classic** usa o loader **[crazytaxi-aarch64](https://github.com/initdream/crazytaxi-aarch64)** de **[initdream](https://github.com/initdream)**, que o construiu **em cima deste framework**. Nós o **adaptamos para o Mali-450 (Utgard)**: recompilação no toolchain NextOS, mapeamento teclado→keycode Android para **gptokeyb**, e ajustes de áudio (PulseAudio). Versionamos **só o código/loader** — nenhum dado de jogo (copyright Sega) vai pro repo.
+
+O port **Call of Duty: Black Ops Zombies** usa o loader Marmalade *s3e* **[cod-boz-port](https://github.com/Producdevity/cod-boz-port)** de **[Producdevity](https://github.com/Producdevity)** (licença **MIT** — toda a arquitetura do so-loader s3e é dele). Nós o **adaptamos para o Mali-450 (Utgard)**: SDL2 do sistema, **fullscreen por free_scale do OSD Amlogic**, **d-pad como movimento** para handhelds dpad-only, um conjunto de **correções de áudio** (assinatura real do `s3eSoundChannelRegister` + despacho do callback `END_SAMPLE` da engine, que traz de volta os SFX/tiros) e o hotkey Select+Start. Créditos e detalhes em [`ports/codboz`](ports/codboz/). Só o código/loader vai pro repo — dados do jogo (copyright Activision) são BYO.
