@@ -460,14 +460,21 @@ extern unsigned char *jni_shim_get_array(void *handle, int *outlen);
 static unsigned char g_aring[ARING];
 static volatile int g_ahead=0, g_atail=0;
 static SDL_AudioDeviceID g_adev=0;
+static volatile long g_wr_calls=0, g_wr_bytes=0, g_cb_calls=0;
+static volatile long long g_frames_played=0;   /* frames que o SDL já tocou (posição do "AudioTrack") */
 static int aring_used(void){ int u=g_ahead-g_atail; if(u<0)u+=ARING; return u; }
 static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len){
-  (void)ud;
+  (void)ud; g_cb_calls++;
   for(int i=0;i<len;i++){
     if(g_atail!=g_ahead){ stream[i]=g_aring[g_atail]; g_atail=(g_atail+1)&(ARING-1); }
     else stream[i]=0;
   }
+  g_frames_played += len/4;   /* 4 bytes/frame (stereo 16-bit) */
 }
+/* hook de AudioTrackProxy::getPlaybackHeadPosition() -> frames tocados pelo SDL.
+   Sem isto o head fica 0 e o updateLoop do Cricket nunca renderiza (buffer "cheio"). */
+__attribute__((target("thumb")))
+static int my_getPlaybackHeadPosition(void *self){ (void)self; return (int)g_frames_played; }
 static void aring_write(const unsigned char *d, int n){
   int off=0;
   while(off<n){
@@ -485,7 +492,8 @@ __attribute__((target("thumb")))
 static int my_audiotrack_write(void *self, void *jarr, int count){
   (void)self;
   int len=0; unsigned char *d = jni_shim_get_array(jarr, &len);
-  int bytes=count*2; if(d && len>0){ if(bytes>len)bytes=len; if(bytes>0) aring_write(d, bytes); }
+  int bytes=count*2; g_wr_calls++; g_wr_bytes+=bytes;
+  if(d && len>0){ if(bytes>len)bytes=len; if(bytes>0) aring_write(d, bytes); }
   return count;
 }
 
@@ -599,9 +607,10 @@ int main(int argc, char *argv[]) {
      OpenSL/SDL. MM_KEEPCKOUT=1 mantém (diagnóstico). */
   /* ÁUDIO: NÃO stubar renderBuffer (deixa renderizar o PCM). Em vez disso,
      redirecionar AudioTrackProxy::write -> nosso handler (PCM -> SDL ring). */
-  if (!getenv("MM_NOAUDIO"))
+  if (!getenv("MM_NOAUDIO")) {
     patch_thumb_jump("_ZN3Cki15AudioTrackProxy5writeEP12_jshortArrayi", (void*)my_audiotrack_write);
-  else
+    patch_thumb_jump("_ZN3Cki15AudioTrackProxy23getPlaybackHeadPositionEv", (void*)my_getPlaybackHeadPosition);
+  } else
     patch_thumb_ret("_ZN3Cki22GraphOutputJavaAndroid12renderBufferEv");
   /* (playSe/se_play NÃO stubados: com o file handler os banks carregam do
      filesystem -> Sound::newBankSound recebe bank válido, sem crash. MM_STUBSE=1
@@ -755,6 +764,16 @@ int main(int argc, char *argv[]) {
       long long d = next - now;
       if (d > 0 && d < per*3) { struct timespec s = { d/1000000, (d%1000000)*1000 }; nanosleep(&s, NULL); }
       else next = now;   /* atrasou -> resincroniza */
+    }
+    if (getenv("MM_ADIAG")) {
+      static long fcnt=0; static long long t0=0;
+      fcnt++;
+      struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
+      long long ms=ts.tv_sec*1000LL+ts.tv_nsec/1000000;
+      if(!t0)t0=ms;
+      if(ms-t0>=1000){ fprintf(stderr,"[adiag] fps=%ld wr=%ld wrB=%ld cb=%ld ring=%d\n",
+                       fcnt,g_wr_calls,g_wr_bytes,g_cb_calls,aring_used());
+                       fcnt=0; g_wr_calls=0; g_wr_bytes=0; g_cb_calls=0; t0=ms; }
     }
   }
 
