@@ -61,7 +61,18 @@ int bully_init_gl(void) {
    * driver recusar, re-tenta sem (Mali-450/fbdev nunca pede). */
   int msaa = 0;
   { const char *e = getenv("BULLY_MSAA"); if (e) msaa = atoi(e); }
-  static const int alpha_try[] = {8, 0};
+  /* 🎯 PREFERIR SURFACE SEM ALPHA (2026-07-03): com alpha=8, o compositor Amlogic
+   * mistura o plano GL com o fundo preto pelo alpha do framebuffer -> "manchas/
+   * diamante" no chao; o workaround (clear do alpha TODO frame) causava FLICKER de
+   * tiles (matriz preta piscando na camera da morte — A/B validado ao vivo). Surface
+   * SEM alpha mata a causa: nada a vazar, nada a limpar. Fallback alpha=8 se o driver
+   * recusar (ai o clear-fix religa via g_surface_has_alpha). LCS_SURFACE_ALPHA=8 forca
+   * o comportamento antigo. */
+  int g_alpha_pref = 0;
+  { const char *e = getenv("LCS_SURFACE_ALPHA"); if (e && *e) g_alpha_pref = atoi(e); }
+  int alpha_try[2] = {8, 0};   /* default validado (alpha=8); o ALPHA-MASK cuida do vazamento.
+                                * LCS_SURFACE_ALPHA=0 re-testa surface sem alpha (config mentiu no fbdev). */
+  if (g_alpha_pref == 0 && getenv("LCS_SURFACE_ALPHA")) { alpha_try[0] = 0; alpha_try[1] = 8; }
   int msaa_try[2] = {0, 0}, nmsaa = 1;
   if (msaa > 0) { msaa_try[0] = msaa; msaa_try[1] = 0; nmsaa = 2; }
   int got_msaa = 0;
@@ -88,7 +99,10 @@ int bully_init_gl(void) {
               alpha_try[i], msaa_try[j], SDL_GetError());
     else {
       got_msaa = msaa_try[j];
-      if (i) fprintf(stderr, "[sdl] CreateWindow OK com alpha=0 (KMSDRM/XRGB)\n");
+      extern int g_surface_has_alpha;
+      g_surface_has_alpha = (alpha_try[i] != 0);
+      fprintf(stderr, "[sdl] CreateWindow OK alpha=%d (clear-fix %s)\n",
+              alpha_try[i], g_surface_has_alpha ? "LIGADO" : "desnecessario");
     }
   }
   if (!g_win) return 0;

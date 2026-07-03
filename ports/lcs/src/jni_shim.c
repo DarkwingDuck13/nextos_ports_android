@@ -32,6 +32,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <sched.h>
 #include <time.h>
 #include <unistd.h>
@@ -4920,6 +4921,18 @@ static void install_hooks(void) {
       fprintf(stderr, "[fix] GenerateEnvironmentMap NAO ACHADO\n");
     }
   }
+  /* 🧪 TESTE MODO-DIREÇÃO (2026-07-03): TODO enter-car engasga 2.1-2.6s (6/6 no log,
+   * tex+0 io+0 = leitura do stream de RADIO dentro do data_music.wad de 480MB no SD,
+   * handle ja aberto -> nossos contadores nao veem). NO-OP em cMusicManager::
+   * PlayerInCar = SEM radio no carro; se o tranco sumir, radio confirmada e o fix
+   * definitivo vira async/preload. LCS_NO_RADIO=0 religa a radio. */
+  if (lcs_env_int("LCS_NO_RADIO", 0)) {  /* teste inconclusivo (radio tocava mesmo assim); opt-in */
+    uintptr_t pr = so_find_addr_safe("_ZN13cMusicManager11PlayerInCarEv");
+    if (pr) {
+      hook_x64(pr, (uintptr_t)my_pvs_noop);
+      fprintf(stderr, "[teste] cMusicManager::PlayerInCar NO-OP (radio OFF p/ diagnostico)\n");
+    }
+  }
   /* 🎯 MUDANÇA #2 (complemento da #1): com o passe do envmap morto, os MATERIAIS de
    * veiculo/vidro ainda tem o efeito matfx-envmap INSTALADO e amostram o mapa
    * semi-morto (lataria/vidro piscando/qualidade estranha). NO-OP no SETUP do efeito
@@ -5671,7 +5684,75 @@ static int lcs_play_intro(void) {
   return 1;
 }
 
+/* 🎯 MUSIC-PREWARM (fix do tranco da RADIO, 2026-07-03 — usuario PROVOU: radio OFF =
+ * zero flicker ao entrar no veiculo): o tranco de 2s e o SEEK dentro do
+ * data_music.wad (480MB) no SD FAT — o kernel percorre a cadeia de clusters ate o
+ * offset da estacao. PREWARM: thread em background le 4KB a cada 16MB do arquivo no
+ * boot -> o kernel monta/cacheia a cadeia INTEIRA 1x -> seeks futuros (entrar no
+ * carro, trocar estacao) ficam instantaneos. Custo: ~30 leituras de 4KB em
+ * background, RAM ~zero. LCS_MUSIC_PREWARM=0 desliga. */
+static void *lcs_music_prewarm(void *arg) {
+  (void)arg;
+  const char *dir = getenv("LCS_DATA_DIR"); if (!dir) dir = "gamedata";
+  char path[512]; snprintf(path, sizeof path, "%s/data_music.wad", dir);
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) { fprintf(stderr, "[prewarm] %s: nao abriu\n", path); return NULL; }
+  off_t sz = lseek(fd, 0, SEEK_END);
+  char buf[4096]; long n = 0;
+  for (off_t off = 0; off < sz; off += 16 * 1024 * 1024) {
+    if (pread(fd, buf, sizeof buf, off) > 0) n++;
+    usleep(30000);
+  }
+  posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+  close(fd);
+  fprintf(stderr, "[prewarm] data_music.wad: %ld pontos aquecidos (%lldMB)\n",
+          n, (long long)(sz >> 20));
+  return NULL;
+}
+
+/* STALL-SAMPLER (2026-07-03): quando o frame trava >400ms (o tranco do modo direcao),
+ * despeja a pilha do KERNEL do main thread (/proc/self/task/TID/stack) -> mostra ONDE
+ * esta preso (fat/mmc read? mali ioctl? page fault?). 1 dump por travada. */
+volatile unsigned long g_frame_beat = 0;
+static int g_main_tid = 0;
+static void *lcs_stall_sampler(void *arg) {
+  (void)arg;
+  unsigned long last = 0; int stuck = 0, dumped = 0;
+  char path[64];
+  snprintf(path, sizeof path, "/proc/self/task/%d/stack", g_main_tid);
+  for (;;) {
+    usleep(100000);
+    unsigned long b = g_frame_beat;
+    if (b == last) {
+      if (++stuck >= 4 && !dumped) {
+        FILE *f = fopen(path, "r");
+        if (f) {
+          char ln[256];
+          fprintf(stderr, "[stall] frame preso ~%dms; kernel stack do main:\n", stuck * 100);
+          int n = 0;
+          while (fgets(ln, sizeof ln, f) && n++ < 12) fprintf(stderr, "[stall]   %s", ln);
+          fclose(f);
+        }
+        dumped = 1;
+      }
+    } else { last = b; stuck = 0; dumped = 0; }
+  }
+  return NULL;
+}
+
 void jni_load(void) {
+  /* STALL-SAMPLER: radiografa travadas de frame (>400ms) via kernel stack. */
+  {
+    g_main_tid = (int)syscall(SYS_gettid);
+    pthread_t st;
+    if (pthread_create(&st, NULL, lcs_stall_sampler, NULL) == 0)
+      fprintf(stderr, "[stall] sampler ativo (main tid=%d)\n", g_main_tid);
+    if (lcs_env_int("LCS_MUSIC_PREWARM", 1)) {
+      pthread_t pw;
+      if (pthread_create(&pw, NULL, lcs_music_prewarm, NULL) == 0)
+        fprintf(stderr, "[prewarm] thread iniciada\n");
+    }
+  }
   /* PERF: threads do ENGINE confinadas em 0/1/3 (my_pthread_create_pin, imports.c);
    * main/render fica LIVRE — o scheduler naturalmente usa o core 2 vago. ⚠️ NAO pinar
    * o main: as worker-threads do driver Mali nascem dele e HERDAM a afinidade -> com
@@ -5813,6 +5894,7 @@ void jni_load(void) {
   time_t t0 = time(NULL); int shot_done = 0;
   for (int f = 0; viewOnDrawFrame; f++) {
     { extern unsigned long g_frame_no; g_frame_no = (unsigned long)f; }
+    { extern volatile unsigned long g_frame_beat; g_frame_beat = (unsigned long)f + 1; }
     /* INTRO: por default a engine drive via OS_MoviePlay hook (estado 3). Fallback antigo
      * (tocar no f==0) so com LCS_INTRO_AT_FRAME0=1. */
     if (f == 0 && lcs_env_int("LCS_INTRO_AT_FRAME0", 0)) { lcs_play_intro(); t0 = time(NULL); }
@@ -6028,6 +6110,21 @@ void jni_load(void) {
           lcs_write_dv_s32("dvStreamerDestroyNumTexturesPerFrame", dt, "destroy-throttle");
           lcs_write_dv_s32("dvStreamerDestroyNumBuffersPerFrame", dt, "destroy-throttle");
           applied = 1;
+        }
+      }
+      /* 🎯 MUDANÇA #5 ("o jogo PARA um instante" ao pegar veiculo/curvas): o corte/giro
+       * de camera dispara RAJADA sincrona de uploads num frame -> hitch de 100-300ms.
+       * Teto GENEROSO de creates (8/frame = 240/s, MUITO acima do uso normal — nada a
+       * ver com o tex=1 que apagou peds) espalha a rajada em ~meia duzia de frames.
+       * LCS_CREATE_THROTTLE=0 desliga. */
+      int ct = lcs_env_int("LCS_CREATE_THROTTLE", 8);
+      if (ct > 0) {
+        static int capplied = 0;
+        if (!capplied) {
+          lcs_write_dv_s32("dvStreamerCreateNumTexturesPerFrame", ct, "create-throttle");
+          lcs_write_dv_s32("dvStreamerCreateNumBuffersPerFrame", ct, "create-throttle");
+          lcs_write_sym_i32("gNumTexturesToLoadPerFrame", ct, "create-throttle");
+          capplied = 1;
         }
       }
     }
@@ -6315,7 +6412,33 @@ void jni_load(void) {
       void *st = *(void **)((uintptr_t)text_base + 0x7fd000 + 2232);
       hb("f=%d state=%d PRE-draw texMB=%lld texN=%ld\n", f, st ? *(int *)st : -1,
          g_texbytes_live/(1024*1024), g_tex_live); }
+    /* VEH-MARKER (estudo modo-direcao): loga o frame em que o player ENTRA/SAI de
+     * veiculo p/ casar com os [spike] e apontar o ladrao do tranco do "modo direcao"
+     * (radio abrindo stream no WAD de 480MB? streaming? camera?). */
+    {
+      static void *(*fpv)(void) = NULL; static int fr = 0; static void *lastveh = NULL;
+      if (!fr) { fpv = (void *(*)(void))so_find_addr_safe("_Z17FindPlayerVehiclev"); fr = 1; }
+      void *veh = fpv ? fpv() : NULL;
+      if (veh != lastveh) {
+        fprintf(stderr, "[veh] %s f=%d veh=%p\n", veh ? "ENTROU" : "SAIU", f, veh);
+        lastveh = veh;
+      }
+    }
+    /* SPIKE-DIAG (engasgo ao pegar veiculo): mede a duracao do frame; se >80ms, loga
+     * o que aconteceu nele (novas texturas, buffers, opens de arquivo) p/ apontar o
+     * ladrao do tempo. Sempre-on, custo ~zero. */
+    struct timespec _sp0; clock_gettime(CLOCK_MONOTONIC, &_sp0);
+    long _tex0, _io0; { extern long g_tex_live, g_io_opens; _tex0 = g_tex_live; _io0 = g_io_opens; }
     viewOnDrawFrame(fake_env, FAKE_OBJ);
+    {
+      struct timespec _sp1; clock_gettime(CLOCK_MONOTONIC, &_sp1);
+      long ms = (_sp1.tv_sec - _sp0.tv_sec) * 1000 + (_sp1.tv_nsec - _sp0.tv_nsec) / 1000000;
+      if (ms > lcs_env_int("LCS_SPIKE_MS", 80)) {
+        extern long g_tex_live, g_io_opens;
+        fprintf(stderr, "[spike] f=%d dur=%ldms tex+%ld io+%ld state=%d\n",
+                f, ms, g_tex_live - _tex0, g_io_opens - _io0, g_app_state);
+      }
+    }
     { extern void *text_base; void *st = *(void **)((uintptr_t)text_base + 0x7fd000 + 2232);
       hb("f=%d state=%d post-draw\n", f, st ? *(int *)st : -1); }
     lcs_cutscene_tick_after_draw(f);
@@ -6343,10 +6466,12 @@ void jni_load(void) {
         if (!br0) { bfp = (void *(*)(void))so_find_addr_safe("_Z13FindPlayerPedv"); br0 = 1; }
         void *ped = bfp ? bfp() : NULL;
         int cutting = lcs_cutscene_active();
-        /* 15/18 tambem armam: a cena das escadas roda em 15 e o gap entre cutscenes
-         * passa por 4 (consome o arm) — so 17 nao cobria (run J). O disparo exige ped
-         * imovel 3s, entao nao atropela a cena em andamento (Toni anda nela). */
-        if (cutting || cmode == 17 || cmode == 15 || cmode == 18) armed = 1;
+        /* ⚠️ ARMAR SO COM CUTSCENE REAL (bug 2026-07-03): armar por cmode 15/18 fazia a
+         * rede disparar EM GAMEPLAY a cada 3s de ped parado (cmode 18 e modo normal!)
+         * — era O "flicker + camera vai pra tras" ao pegar veiculo/parar (46 disparos
+         * no log do usuario). cutting=1 (cutscene de verdade) arma; o disparo (15/18 +
+         * imovel 3s) consome; re-arma SO com nova cutscene. */
+        if (cutting || cmode == 17) armed = 1;
         /* pos-cena a camera fica PRESA em 15/18 com o ped PARADO ate o 1o input
          * (engine so restaura no movimento). Detecta: armado + sem cutscene + modo
          * 15/18 + ped imovel por ~3s -> restore completo (finish+jumpcut+behind). */
@@ -6363,7 +6488,11 @@ void jni_load(void) {
             fprintf(stderr, "[camfix] restore pos-cena f=%d cmode=%d\n", f, cmode);
           }
         } else if (armed && !cutting && cmode == 4) {
-          armed = 0;   /* engine ja restaurou sozinha */
+          /* so consome com follow-cam ESTAVEL (5s): o gap cut2->escadas passa por 4
+           * rapidinho e consumir na hora deixava o fim das escadas sem protecao. */
+          static int stable4 = 0;
+          if (++stable4 >= 150) { armed = 0; stable4 = 0; }
+          still = 0;
         } else {
           still = 0;
         }

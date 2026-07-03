@@ -595,7 +595,21 @@ static void scm_backtrace(const char *path) {
   }
   fprintf(stderr, "\n");
 }
+int g_surface_has_alpha = 1;   /* setado pelo egl_shim; 0 = surface sem alpha (clear-fix desnecessario) */
+/* ALPHA-MASK fix (2026-07-03, substitui o clear-por-frame que dava flicker): o jogo
+ * NUNCA escreve no canal alpha do framebuffer (mask forcado); os 3 primeiros swaps
+ * limpam alpha=1 nos dois backbuffers -> compositor Amlogic sempre ve plano opaco.
+ * LCS_ALPHA_MASK=0 desliga (volta o clear por frame). */
+static int lcs_alpha_mask_on(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("LCS_ALPHA_MASK"); v = (e && *e) ? atoi(e) : 0; }  /* default OFF: mask quebra a composicao da UI (tela preta com som) */
+  return v;
+}
+int lcs_alpha_mask_on_ext(void) { return lcs_alpha_mask_on(); }
+
+long g_io_opens = 0;            /* opens (aa+fopen) p/ o spike-diag */
 static void *aa_open(void *mgr, const char *path, int mode) {
+  g_io_opens++;
   (void)mgr; (void)mode;
   if (!path) return NULL;
   static int log = 0;
@@ -674,6 +688,7 @@ static void aa_close(void *h) { AAsset *a = h; if (a) { if (a->mem) free(a->mem)
 
 /* ---- fopen: disco; se falhar (leitura), serve de DENTRO dos data_*.zip ---- */
 static FILE *w_fopen(const char *path, const char *mode) {
+  { extern long g_io_opens; g_io_opens++; }
   static FILE *(*real)(const char *, const char *) = NULL;
   if (!real) real = dlsym(RTLD_DEFAULT, "fopen");
   FILE *f = real ? real(path, mode) : NULL;
@@ -951,6 +966,7 @@ static void (*real_glColorMask)(unsigned char, unsigned char, unsigned char, uns
 static void my_glColorMask(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
   g_color_mask[0] = r ? 1 : 0; g_color_mask[1] = g ? 1 : 0;
   g_color_mask[2] = b ? 1 : 0; g_color_mask[3] = a ? 1 : 0;
+  if (lcs_alpha_mask_on()) a = 0;   /* ALPHA-MASK fix: jogo nunca escreve alpha no fb */
   if (!real_glColorMask) real_glColorMask = dlsym(RTLD_DEFAULT, "glColorMask");
   if (real_glColorMask) real_glColorMask(r,g,b,a);
 }
@@ -1541,7 +1557,14 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
    * não vê. Luz aditiva (farol/sol) escreve opaco -> tampa local. LightsMult (RGB)
    * não corrige (é alpha). FIX: forçar alpha=1 no buffer inteiro antes do swap =
    * plano opaco, sem vazamento. Default ON; LCS_NO_ALPHA_FIX desliga. */
-  if (!getenv("LCS_NO_ALPHA_FIX")) {
+  { extern int g_surface_has_alpha;
+    /* com ALPHA-MASK ligado, o clear de alpha so precisa rodar nos primeiros swaps
+     * (deixa alpha=1 nos dois backbuffers; o mask impede o jogo de sujar depois) ->
+     * ZERO custo por frame e SEM o flicker do clear continuo. */
+    static long g_alpha_swaps = 0; g_alpha_swaps++;
+    extern int lcs_alpha_mask_on_ext(void);
+    int need_clear = !lcs_alpha_mask_on_ext() || g_alpha_swaps <= 3;
+    if (g_surface_has_alpha && need_clear && !getenv("LCS_NO_ALPHA_FIX")) {
     static void (*p_cmask)(unsigned char,unsigned char,unsigned char,unsigned char);
     static void (*p_ccol)(float,float,float,float);
     static void (*p_clear)(unsigned); static void (*p_dis)(unsigned); static int r=0;
@@ -1551,7 +1574,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
       if (p_dis) { p_dis(0x0C11 /*SCISSOR_TEST*/); p_dis(0x0BD0 /*DITHER*/); }
       p_cmask(0,0,0,1); p_ccol(0,0,0,1); p_clear(0x00004000 /*COLOR_BUFFER_BIT*/); p_cmask(1,1,1,1);
     }
-  }
+  } }
   if (bully_is_kmsdrm()) {
     bully_swap_buffers();
     drawhb("LEAVE eglSwapBuffers kms f=%lu screen=%ld fbod=%ld texN=%ld texMB=%lld\n",
