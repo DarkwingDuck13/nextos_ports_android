@@ -143,3 +143,52 @@ view-space (gfx_patch.c:899-913/1051-1061 como referência).
 5. Retomar a lista numerada (RAM/1GB): #6 low-memory nativo, #7 MEMLOW longa, #11 budget.
 6. Becos do dia (NÃO repetir): alpha-mask total (UI preta), matfx-setup no-op (crash),
    PlayerInCar no-op (inócuo), prewarm sozinho (insuficiente).
+
+---
+# 📋 SESSÃO 2026-07-03 (madrugada) — CAUSA-RAIZ PROVADA NO KERNEL + comparação GTASA fechada
+
+## Comparação GTASA×LCS (fechada, código conferido)
+- **GTASA Vita** (`gtavc-build/refs/gtasa_vita`, TheOfficialFloW): áudio é só camada de
+  REDIRECIONAMENTO (openal_patch.c ~150 símbolos, mpg123_patch.c ~90). A libGTASA.so roda o
+  rádio numa THREAD DE ÁUDIO desacoplada (buffer-queue OpenAL `alSourceQueueBuffers` +
+  `mpg123_open_feed/feed`). Render nunca bloqueia → sem flicker.
+- **Nosso LCS** (Leeds "lgl" engine): `libGame.so` importa os MESMÍSSIMOS símbolos
+  (`alSourceQueueBuffers`, `mpg123_open_feed/feed`) e precisa (NEEDED) de libopenal.so +
+  libVendor_mpg123.so — MESMA arquitetura. E já usamos áudio DO SISTEMA: `main.c:142-146`
+  dlopen GLOBAL de `libopenal.so.1`/`libmpg123.so.0`/SDL2/GLES — o "modo leve tipo GTASA" já
+  está aplicado (as libs Android em lcs-src/lib NÃO vão pro runtime). Então "criar lib pra
+  ficar leve" = JÁ FEITO; não é aí que mora o flicker.
+
+## Prova de kernel (device .79, binário 3f58eed1, sampler de todas as threads ao vivo)
+Ferramentas confirmadas instaladas no run: `[fix] flushCommandsAndResources BOUNDED (120ms)`,
+`[diag] lglSleep hookado (mainsleep)`, `[stall] sampler ativo`, prewarm 458MB.
+- Flush-bounded FUNCIONA: `[flush] bounded: cortado em 154ms (pend=2575/3044)` — o flush que
+  travava 2–2.6s agora é capado em ~155ms. MAS só dispara ~1×/sessão → NÃO é mais a fonte
+  principal do flicker do carro.
+- Assinatura do tranco do carro MUDOU: main preso em **`futex_wait`** (sc=98), NÃO no
+  nanosleep do flush. Sampler de threads: durante o freeze há threads em estado **D** em
+  `sleep_on_page_killable` / `sleep_on_buffer` / `loop_make_request` (I/O de página do
+  armazenamento), e o **próprio main entra em D** (lê o WAD) além de esperar futex.
+- Storage: `data_music.wad` = **480MB no cartão SD vfat** (`/dev/mmcblk1p3`). Swap de 2GB
+  (`swap2g.img`) **no MESMO SD**, 361MB em uso. RAM 654/832MB.
+- **CAUSA-RAIZ**: entrar no carro / trocar estação → leitura SÍNCRONA do offset da estação no
+  WAD de 480MB no SD lento, sob lock, com RAM estourada (page-fault + swap no mesmo SD) →
+  main bloqueia no futex ~400ms–2.7s = flicker. Rádio OFF = sem leitura = sem flicker (prova
+  de ouro confirmada no nível de I/O). É EXATAMENTE o que o GTASA evita com a thread de áudio.
+
+## Respawn "geometria tremendo / coisas aparecendo" (relato novo, mesma doença)
+Spikes medidos: `dur=5603ms tex+7 io+6`, `4095ms`, `2778ms` — reload do mundo puxando
+geometria/textura do SD por 4–5s sob pressão de RAM. Envmap RTT JÁ está OFF
+(`GenerateEnvironmentMap NO-OP` ativo) → NÃO é o envmap. É o streaming lento do SD.
+LCS_STREAMER_MAX=80→3000 (commit 129a18a) resolveu a geometria-lixo EM MOVIMENTO (streamer
+termina, `finished=1`), mas o RELOAD de respawn ainda estoura em segundos.
+
+## 🎯 FIX DE VERDADE (precisa rebuild — a leitura do WAD passa pelo NOSSO wadfs/asset_archive.c)
+1. **Rádio ASSÍNCRONO estilo GTASA**: a leitura do `data_music.wad` é servida pelo nosso
+   código (imports.c wadfs / asset_archive.c). Fazer o read pesado da estação numa thread de
+   fundo + read-ahead → o main (e o lock) não esperam o SD. Alvo nº1 do flicker do carro.
+2. Suavizar reload de respawn: mesmo mecanismo (prefetch/async do stream de mundo) OU
+   throttle mais alto de resource-drain só na janela de respawn.
+3. Pressão de RAM é o multiplicador de tudo (swap no SD) — perfil MEMLOW longo pendente.
+- ⚠️ Não é lib de áudio (já usamos a do sistema); não é envmap (já OFF); não é o flush
+  (já capado). O que falta é tirar o SD do caminho síncrono do main.
