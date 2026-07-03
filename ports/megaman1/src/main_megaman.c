@@ -427,6 +427,19 @@ static void *hook_thumb_call(const char *sym, void *repl){
 static void patch_thumb_ret(const char *sym) {
   uint16_t hw[] = {0x4770}; patch_thumb(sym, hw, 1);
 }
+/* patch entry -> salta p/ target (ldr.w pc,[pc]; addr). NÃO chama original. */
+static void patch_thumb_jump(const char *sym, void *target) {
+  uintptr_t a = so_find_addr_safe(sym);
+  if (!a) { fprintf(stderr, "jump: %s nao achado\n", sym); return; }
+  a &= ~1u;
+  uintptr_t pg = a & ~0xFFFUL;
+  mprotect((void *)pg, 0x2000, PROT_READ|PROT_WRITE|PROT_EXEC);
+  uint16_t *o = (uint16_t *)a;
+  o[0]=0xF8DF; o[1]=0xF000; *(uint32_t *)&o[2]=(uint32_t)target;
+  mprotect((void *)pg, 0x2000, PROT_READ|PROT_EXEC);
+  __builtin___clear_cache((char *)a, (char *)a + 8);
+  fprintf(stderr, "jump %s @0x%lx -> %p\n", sym, (unsigned long)a, target);
+}
 
 static DynLibFunction *g_base; static int g_base_n;
 static void build_base_table(void) {
@@ -435,6 +448,45 @@ static void build_base_table(void) {
   memcpy(g_base, shantae_overrides, sizeof(DynLibFunction) * shantae_overrides_count);
   memcpy(g_base + shantae_overrides_count, revc_pthread_table,
          sizeof(DynLibFunction) * revc_pthread_count);
+}
+
+/* ================= ÁUDIO: Cricket AudioTrack -> SDL ==================
+   Cricket renderiza PCM 16-bit stereo @44100 e escreve via AudioTrackProxy::write
+   (Java AudioTrack, não temos). Hookamos write -> lê o short[] e produz num ring
+   buffer; o callback SDL drena. O produtor BLOQUEIA se o ring encher -> paceia a
+   thread de áudio do Cricket (= paceia a lógica do jogo -> conserta a velocidade). */
+extern unsigned char *jni_shim_get_array(void *handle, int *outlen);
+#define ARING (1<<18)               /* 256KB, potência de 2 */
+static unsigned char g_aring[ARING];
+static volatile int g_ahead=0, g_atail=0;
+static SDL_AudioDeviceID g_adev=0;
+static int aring_used(void){ int u=g_ahead-g_atail; if(u<0)u+=ARING; return u; }
+static void SDLCALL audio_cb(void *ud, Uint8 *stream, int len){
+  (void)ud;
+  for(int i=0;i<len;i++){
+    if(g_atail!=g_ahead){ stream[i]=g_aring[g_atail]; g_atail=(g_atail+1)&(ARING-1); }
+    else stream[i]=0;
+  }
+}
+static void aring_write(const unsigned char *d, int n){
+  int off=0;
+  while(off<n){
+    int guard=0;
+    while((ARING-1-aring_used())<=0){ usleep(1000); if(++guard>2000) return; } /* bloqueia (paceia) */
+    int fr=ARING-1-aring_used(); int c=n-off; if(c>fr)c=fr;
+    for(int i=0;i<c;i++){ g_aring[g_ahead]=d[off+i]; g_ahead=(g_ahead+1)&(ARING-1); }
+    off+=c;
+  }
+}
+/* hook de AudioTrackProxy::write(this, jshortArray, count) -> PCM p/ SDL.
+   count = nº de SHORTS (=frames*2 stereo); PCM = count*2 bytes. retorna count
+   (o assert de renderBuffer exige write_return == count). */
+__attribute__((target("thumb")))
+static int my_audiotrack_write(void *self, void *jarr, int count){
+  (void)self;
+  int len=0; unsigned char *d = jni_shim_get_array(jarr, &len);
+  int bytes=count*2; if(d && len>0){ if(bytes>len)bytes=len; if(bytes>0) aring_write(d, bytes); }
+  return count;
 }
 
 /* screenshot via glReadPixels (fb0 falha durante render Mali). bottom-up. */
@@ -481,6 +533,16 @@ int main(int argc, char *argv[]) {
   int w, h; SDL_GL_GetDrawableSize(window, &w, &h);
   fprintf(stderr, "Window %dx%d\n", w, h);
   open_gamepad();
+
+  /* saída de áudio SDL: Cricket escreve PCM -> ring -> callback drena. */
+  if (!getenv("MM_NOAUDIO")) {
+    SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
+    want.freq = 44100; want.format = AUDIO_S16LSB; want.channels = 2;
+    want.samples = 1024; want.callback = audio_cb;
+    g_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (g_adev) { SDL_PauseAudioDevice(g_adev, 0); fprintf(stderr, "SDL audio: %dHz %dch\n", have.freq, have.channels); }
+    else fprintf(stderr, "SDL_OpenAudioDevice falhou: %s\n", SDL_GetError());
+  }
 
   preload_device_libs();
   build_base_table();
@@ -535,7 +597,11 @@ int main(int argc, char *argv[]) {
      retorna 0 != esperado -> assert (udf). Neutralizar renderBuffer (silencioso)
      p/ o thread de áudio não abortar -> imagem renderiza. TODO: rotear áudio p/
      OpenSL/SDL. MM_KEEPCKOUT=1 mantém (diagnóstico). */
-  if (!getenv("MM_KEEPCKOUT"))
+  /* ÁUDIO: NÃO stubar renderBuffer (deixa renderizar o PCM). Em vez disso,
+     redirecionar AudioTrackProxy::write -> nosso handler (PCM -> SDL ring). */
+  if (!getenv("MM_NOAUDIO"))
+    patch_thumb_jump("_ZN3Cki15AudioTrackProxy5writeEP12_jshortArrayi", (void*)my_audiotrack_write);
+  else
     patch_thumb_ret("_ZN3Cki22GraphOutputJavaAndroid12renderBufferEv");
   /* (playSe/se_play NÃO stubados: com o file handler os banks carregam do
      filesystem -> Sound::newBankSound recebe bank válido, sem crash. MM_STUBSE=1
