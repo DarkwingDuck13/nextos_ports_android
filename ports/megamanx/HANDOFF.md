@@ -1,5 +1,51 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-04 s7 — 🏆🏆 DESBLOQUEADO + JOGÁVEL: BUY VERSION fora, X anda na fase pelo pad
+
+**Sequência de vitórias (commits `921fa65`, `83e5016`, `8a787fe`):**
+
+1. **VERSÃO COMPLETA DESBLOQUEADA** (`921fa65`). O gate do trial é **`RockmanX.IsInAppPayment(this,a,b)`**
+   (il2cpp+0xdd82c4). Em `TITLEMENU_run` (df6318): `bl IsInAppPayment; tbz w0,#0, buyPath` — TRUE=segue
+   (`scn_goLoadScene`), FALSE=fica no menu/buy. `STAGE_init` gateia 5× igual. O FIXGAME forçava **FALSE**
+   (=trial). Agora sob `MMX_FULLVER` força **TRUE** → **"BUY FULL VERSION" some do menu**, aparecem
+   **STORY MODE + RANKING MODE** (menu completo). Não era a ProductInfo.isUnlock/isUse (essas já eram
+   forçadas true e não bastavam) — era o IsInAppPayment.
+2. **GAMEPLAY JOGÁVEL** (`83e5016`). `MMX_GOSTAGE=N` chama **`RockmanX.setGoStage(this,N)`** (il2cpp+0xe0fa74),
+   que **monta os dados da fase** e roteia PROLOGUE→STAGE (cena 12). O bounce do PROFORCE era pular pra
+   cena 12 crua SEM dados (fase vazia termina→título); `setGoStage` monta tudo = "New Game". **PROVA:
+   `runs/2026-07-03-codex-ctrl-fixed-forceidx/GAMEPLAY_x_dash_right.png` = o X DASHANDO na fase intro
+   (rodovia/oceano), HUD completo, `scn_STAGE_run` 42× persistente.** Subagente confirmou por disasm:
+   `scn_STAGE_run` lê input INCONDICIONALMENTE (sem gate de demo); TRIAL_DEMO(cena 20) é só o attract do
+   título, NUNCA alcançado via Story. Cenas: TITLEMENU=6 STAGESEL=9 STAGE=12 PROLOGUE=16 TRIAL_DEMO=20.
+3. **PAD FÍSICO FUNCIONA** (`8a787fe`). Faltava **`MMX_GAMEPAD=1`** — ele liga `mmx_gamepad_frame` (poll do
+   pad SDL → `g_btn`). Sem ele `mmx_gp_button` sempre retorna 0 e só o `MMX_CTRL_FORCE_IDX` de debug andava.
+   **PROVA: com `MMX_GAMEPAD=1` + input `right` (via g_btn, NÃO force) o CTRLHOOK mostra `gp=0x2000`
+   (RIGHT) → `key` bit setado → X dasha na fase (`pt_14.png`).** run.sh liga tudo + **auto-start**
+   (`MMX_GOSTAGE=0`) já que o menu principal é touch-only → o jogador cai direto na fase controlando o X.
+
+**Receita jogável (run.sh):** `MMX_INLINETASK=1 MMX_PATCH=0x34eafc=0x14000005 MMX_NOINTEGRITY=1
+MMX_PREFSTRUE=1 MMX_FIXGAME=1 MMX_FULLVER=1 MMX_XLATE=1 MMX_BOOTST=1 MMX_GAMEPAD=1 MMX_CTRLHOOK=1
+MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1 MMX_GOSTAGE=0 MMX_GOSTAGE_F=280`.
+
+**Ferramentas novas:** `MMX_GOSTAGE=N`(New Game/fase N via setGoStage), `MMX_ILPATCH=0xOFF=0xWORD`(patch cru
+no .text do libil2cpp). Mapa de controle: dpad/analógico=mover, A=pulo, X=tiro, Y/RB=dash, LB=arma, START.
+
+**MUROS ABERTOS (o resto da missão):**
+1. **ÁUDIO** — FMOD do Unity (dentro do libunity) NÃO inicia: 972× `Cannot create FMOD::Sound instance`.
+   O shim OpenSL (`opensles_shim.c`, ring→SDL) está pronto e `slCreateEngine` retorna SUCCESS, MAS o FMOD
+   do Unity **nunca chama slCreateEngine** (log `[SL] slCreateEngine` não aparece) — a init do subsistema
+   de áudio falha ANTES de escolher output. Investigando (subagente): provável NOSOUND por JNI
+   getProperty/FMODAudioDevice retornando valor que faz o FMOD desistir, ou uma init call abortando.
+2. **NAVEGAÇÃO DE SUBMENUS POR CONTROLE** — o menu principal é contornado pelo auto-start, mas submenus
+   in-game (pause, stage-select pós-intro, game-over, customize) são touch e precisam de pad→touch. O menu
+   NÃO responde a tecla (`isKeyTrg(game_key[2])` existe em fases posteriores do TITLEMENU, mas o grid
+   principal é touch puro — testado: decide via pad não moveu). Toque injetado FUNCIONA
+   (`MMX_AUTOTOUCH=1 MMX_TOUCHX/Y`, coords 1280×720 — tap em Story (290,385) entra no fluxo). Falta um
+   cursor/seta pad→touch (o jogo renderiza via EGL, não fb0 direto → desenhar cursor exige quad GL no
+   my_eglSwapBuffers). Alternativa: mapear botões do pad a toques nas posições fixas de cada menu.
+
+---
+
 ## 2026-07-03 s6 — 🏆 CONTROLE RESOLVIDO NA RAIZ: era BUG DE LEITURA (maps cache velho), NÃO keymap vazio
 
 **A causa-raiz do "controle não funciona" de TODAS as sessões anteriores foi encontrada e corrigida.**
