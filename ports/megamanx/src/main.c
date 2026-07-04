@@ -287,12 +287,15 @@ long mmx_istouchs_spy(int group, long arg) {
   long r = g_mmx_istouchs_orig ? g_mmx_istouchs_orig(group, arg) : 0;
   if (getenv("MMX_ISTOUCHSPY") && (group == 2 || group == 3)) {
     static int n;
-    if (n++ < 180 || (r && (n % 60) == 0)) {
+    int from = getenv("MMX_ISTOUCHSPY_F") ? atoi(getenv("MMX_ISTOUCHSPY_F")) : 0;
+    int until = getenv("MMX_ISTOUCHSPY_TO") ? atoi(getenv("MMX_ISTOUCHSPY_TO")) : 0;
+    int in_window = (!from || g_render_frame >= from) && (!until || g_render_frame <= until);
+    if (n++ < 180 || in_window || (r && (n % 60) == 0)) {
       int decided = r ? *(unsigned char *)((char *)r + 28) : -1;
       int code = r ? *(int *)((char *)r + 32) : -1;
       int touch = r ? *(unsigned char *)((char *)r + 36) : -1;
-      fprintf(stderr, "[ISTOUCHSPY] n=%d f=%d group=%d ret=%p decided=%d code=%d touch=%d\n",
-              n, g_render_frame, group, (void *)r, decided, code, touch);
+      fprintf(stderr, "[ISTOUCHSPY] n=%d f=%d group=%d arg=%p ret=%p decided=%d code=%d touch=%d\n",
+              n, g_render_frame, group, (void *)arg, (void *)r, decided, code, touch);
       fsync(2);
     }
   }
@@ -474,6 +477,8 @@ static void *mmx_i2sym(const char *n) {
   so_module *c = so_save(); so_use(g_m_il2cpp);
   void *p = (void *)so_find_addr_safe(n); so_use(c); free(c); return p;
 }
+static void *mk_tramp(uintptr_t target, const char *name);
+int ter_install_hook4(unsigned long off, void* fn, void** orig_out);
 static void mmx_nuke_integrity(void) {
   static int done = 0; if (done || !g_il2cpp_base || !getenv("MMX_NOINTEGRITY")) { if (!getenv("MMX_NOINTEGRITY")) done = 1; return; }
   static int warmup = 0; if (warmup++ < 1) return;  /* deixa o il2cpp/dominio inicializar (frame 0) antes de mexer */
@@ -642,6 +647,409 @@ static void mmx_nuke_integrity(void) {
   }
 }
 
+typedef long (*mmx_fn8)(long, long, long, long, long, long, long, long);
+static mmx_fn8 g_mmx_get_productinfo_orig;
+static mmx_fn8 g_mmx_productinfo_ctor_orig;
+static mmx_fn8 g_mmx_makeproductdata_orig;
+static unsigned char g_mmx_productinfo_hooked_get, g_mmx_productinfo_hooked_ctor, g_mmx_productinfo_hooked_make;
+static size_t g_mmx_productinfo_bool_off[16];
+static int g_mmx_productinfo_bool_n;
+
+static int mmx_productinfo_off_seen(size_t off) {
+  for (int i = 0; i < g_mmx_productinfo_bool_n; i++)
+    if (g_mmx_productinfo_bool_off[i] == off) return 1;
+  return 0;
+}
+static void mmx_productinfo_add_bool_field(size_t off, const char *fn, const char *tn) {
+  if (!off || mmx_productinfo_off_seen(off) || g_mmx_productinfo_bool_n >= 16) return;
+  g_mmx_productinfo_bool_off[g_mmx_productinfo_bool_n++] = off;
+  fprintf(stderr, "[PRODUCTINFO] bool field +0x%zx %s : %s -> will force true\n",
+          off, fn ? fn : "?", tn ? tn : "?");
+  fsync(2);
+}
+static void mmx_productinfo_patch_obj(void *obj, const char *why) {
+  if (!obj || g_mmx_productinfo_bool_n <= 0) return;
+  for (int i = 0; i < g_mmx_productinfo_bool_n; i++)
+    *(uint8_t *)((char *)obj + g_mmx_productinfo_bool_off[i]) = 1;
+  static int nlog = 0;
+  if (nlog++ < 32) {
+    fprintf(stderr, "[FULLVEROBJ] %s ProductInfo=%p bool_fields=%d -> true\n",
+            why ? why : "?", obj, g_mmx_productinfo_bool_n);
+    fsync(2);
+  }
+}
+static long mmx_get_productinfo_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_get_productinfo_orig ? g_mmx_get_productinfo_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  mmx_productinfo_patch_obj((void *)r, "getProductInfo");
+  return r;
+}
+static long mmx_productinfo_ctor_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_productinfo_ctor_orig ? g_mmx_productinfo_ctor_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  mmx_productinfo_patch_obj((void *)a0, "ProductInfo..ctor");
+  return r;
+}
+static long mmx_makeproductdata_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_makeproductdata_orig ? g_mmx_makeproductdata_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  static int nlog = 0;
+  if (nlog++ < 16) { fprintf(stderr, "[FULLVEROBJ] MakeProductData called -> cache built/patched via ctor/getProductInfo\n"); fsync(2); }
+  return r;
+}
+
+extern int mmx_gp_button(int button);
+extern float mmx_gp_axis(int axis);
+extern unsigned mmx_gp_buttons_mask(void);
+static mmx_fn8 g_mmx_controlkey_orig;
+static unsigned char g_mmx_controlkey_hooked;
+
+static int mmx_env_i(const char *name, int defv) {
+  const char *s = getenv(name);
+  return s && *s ? atoi(s) : defv;
+}
+static int mmx_managed_array_len(void *arr) {
+  if (!arr || !addr_readable((uintptr_t)arr + 0x18)) return 0;
+  int n = *(int *)((char *)arr + 0x18);
+  return (n > 0 && n < 1024) ? n : 0;
+}
+static void *mmx_ref_array_get(void *arr, int idx) {
+  int n = mmx_managed_array_len(arr);
+  if (idx < 0 || idx >= n || !addr_readable((uintptr_t)arr + 0x20 + (uintptr_t)idx * 8)) return NULL;
+  return *(void **)((char *)arr + 0x20 + (uintptr_t)idx * 8);
+}
+static uint32_t *mmx_u32_array_data(void *arr, int *len_out) {
+  int n = mmx_managed_array_len(arr);
+  if (!n || !addr_readable((uintptr_t)arr + 0x20)) return NULL;
+  if (len_out) *len_out = n;
+  return (uint32_t *)((char *)arr + 0x20);
+}
+static void mmx_ctrl_or_idx(void *game_key, int idx, uint32_t *held, uint32_t *real, int real_on, int maxn) {
+  void *src_arr = mmx_ref_array_get(game_key, idx);
+  int sn = 0;
+  uint32_t *src = mmx_u32_array_data(src_arr, &sn);
+  if (!src) return;
+  if (sn > maxn) sn = maxn;
+  for (int i = 0; i < sn; i++) {
+    held[i] |= src[i];
+    if (real_on) real[i] |= src[i];
+  }
+}
+static int mmx_ctrl_act_bits_now(void) {
+  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
+  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
+  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
+  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
+  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
+  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
+  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
+  int weap  = mmx_gp_button(4);
+  int start = mmx_gp_button(7);
+  return (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
+         (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
+         (weap ? 128 : 0) | (start ? 256 : 0);
+}
+static void mmx_ctrl_apply(long self) {
+  if (!self || !getenv("MMX_CTRLHOOK")) return;
+  void *keyflag_arr = *(void **)((char *)self + 0x2c0);
+  void *keyreal_arr = *(void **)((char *)self + 0x2c8);
+  void *game_key = *(void **)((char *)self + 0x2e0);
+  int kn = 0, rn = 0;
+  uint32_t *keyflag = mmx_u32_array_data(keyflag_arr, &kn);
+  uint32_t *keyreal = mmx_u32_array_data(keyreal_arr, &rn);
+  if (!keyflag || !keyreal || !game_key) {
+    if (getenv("MMX_CTRLSPY")) {
+      static int nmiss;
+      if (nmiss++ < 80) {
+        fprintf(stderr, "[CTRLHOOK] miss f=%d self=%p keyflag=%p len=%d keyreal=%p len=%d game_key=%p\n",
+                g_render_frame, (void *)self, keyflag_arr, kn, keyreal_arr, rn, game_key);
+        fsync(2);
+      }
+    }
+    return;
+  }
+  int maxn = kn < rn ? kn : rn;
+  if (maxn > 8) maxn = 8;
+
+  static uint32_t prev_held[8];
+  for (int i = 0; i < maxn; i++)
+    keyflag[i] &= ~prev_held[i];
+
+  uint32_t held[8] = {0}, real[8] = {0};
+  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
+  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
+  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
+  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
+  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
+  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
+  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
+  int weap  = mmx_gp_button(4);
+  int start = mmx_gp_button(7);
+  int act_bits = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
+                 (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
+                 (weap ? 128 : 0) | (start ? 256 : 0);
+  static int prev_act_bits;
+  int edge_bits = act_bits & ~prev_act_bits;
+  prev_act_bits = act_bits;
+  int real_held = getenv("MMX_CTRL_REAL_HELD") ? mmx_env_i("MMX_CTRL_REAL_HELD", 1) : 0;
+
+  struct ctrl_map { const char *env; int defidx; int active; int edgebit; } maps[] = {
+    {"MMX_CTRL_IDX_UP",    0, up,    1},
+    {"MMX_CTRL_IDX_DOWN",  1, down,  2},
+    {"MMX_CTRL_IDX_LEFT",  4, left,  4},
+    {"MMX_CTRL_IDX_RIGHT", 5, right, 8},
+    {"MMX_CTRL_IDX_JUMP",  2, jump,  16},
+    {"MMX_CTRL_IDX_SHOT",  3, shot,  32},
+    {"MMX_CTRL_IDX_DASH", -1, dash,  64},
+    {"MMX_CTRL_IDX_WEAPON",-1, weap, 128},
+    {"MMX_CTRL_IDX_START",-1, start, 256},
+  };
+  int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
+  if (force >= 0) {
+    mmx_ctrl_or_idx(game_key, force, held, real, 1, maxn);
+  } else {
+    for (unsigned i = 0; i < sizeof maps / sizeof maps[0]; i++) {
+      int idx = mmx_env_i(maps[i].env, maps[i].defidx);
+      if (idx < 0 || !maps[i].active) continue;
+      int real_on = real_held || (edge_bits & maps[i].edgebit);
+      mmx_ctrl_or_idx(game_key, idx, held, real, real_on, maxn);
+    }
+  }
+
+  for (int i = 0; i < maxn; i++) {
+    keyflag[i] |= held[i];
+    keyreal[i] |= real[i];
+    prev_held[i] = held[i];
+  }
+  if (getenv("MMX_CTRLSPY")) {
+    static int nlog;
+    if (nlog++ < 240 || act_bits || force >= 0) {
+      fprintf(stderr, "[CTRLHOOK] f=%d self=%p gp=0x%x act=0x%x edge=0x%x force=%d held=%08x/%08x/%08x real=%08x/%08x/%08x key=%08x/%08x/%08x\n",
+              g_render_frame, (void *)self, mmx_gp_buttons_mask(), act_bits, edge_bits, force,
+              held[0], held[1], held[2], real[0], real[1], real[2],
+              keyflag[0], maxn > 1 ? keyflag[1] : 0, maxn > 2 ? keyflag[2] : 0);
+      fsync(2);
+    }
+  }
+}
+static void mmx_ctrl_build_masks(void *game_key, uint32_t *held, uint32_t *real,
+                                 int maxn, int *act_out, int *edge_out, int *force_out) {
+  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
+  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
+  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
+  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
+  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
+  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
+  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
+  int weap  = mmx_gp_button(4);
+  int start = mmx_gp_button(7);
+  int act_bits = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
+                 (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
+                 (weap ? 128 : 0) | (start ? 256 : 0);
+  static int prev_act_bits2;
+  int edge_bits = act_bits & ~prev_act_bits2;
+  prev_act_bits2 = act_bits;
+  int real_held = getenv("MMX_CTRL_REAL_HELD") ? mmx_env_i("MMX_CTRL_REAL_HELD", 1) : 0;
+  struct ctrl_map { const char *env; int defidx; int active; int edgebit; } maps[] = {
+    {"MMX_CTRL_IDX_UP",     0, up,    1},
+    {"MMX_CTRL_IDX_DOWN",   1, down,  2},
+    {"MMX_CTRL_IDX_LEFT",   4, left,  4},
+    {"MMX_CTRL_IDX_RIGHT",  5, right, 8},
+    {"MMX_CTRL_IDX_JUMP",   2, jump,  16},
+    {"MMX_CTRL_IDX_SHOT",   3, shot,  32},
+    {"MMX_CTRL_IDX_DASH",  -1, dash,  64},
+    {"MMX_CTRL_IDX_WEAPON",-1, weap, 128},
+    {"MMX_CTRL_IDX_START", -1, start, 256},
+  };
+  int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
+  if (force >= 0) {
+    mmx_ctrl_or_idx(game_key, force, held, real, 1, maxn);
+  } else {
+    for (unsigned i = 0; i < sizeof maps / sizeof maps[0]; i++) {
+      int idx = mmx_env_i(maps[i].env, maps[i].defidx);
+      if (idx < 0 || !maps[i].active) continue;
+      int real_on = real_held || (edge_bits & maps[i].edgebit);
+      mmx_ctrl_or_idx(game_key, idx, held, real, real_on, maxn);
+    }
+  }
+  if (act_out) *act_out = act_bits;
+  if (edge_out) *edge_out = edge_bits;
+  if (force_out) *force_out = force;
+}
+static void mmx_ctrl_apply_keydata(long self) {
+  if (!self || !getenv("MMX_CTRLHOOK")) return;
+  void *key_data = *(void **)((char *)self + 0x2d0);
+  void *game_key = *(void **)((char *)self + 0x2e0);
+  int kd_len = mmx_managed_array_len(key_data);
+  void *kd0_arr = mmx_ref_array_get(key_data, mmx_env_i("MMX_CTRL_KD_HELD", 0));
+  void *kd1_arr = mmx_ref_array_get(key_data, mmx_env_i("MMX_CTRL_KD_REAL", 1));
+  int n0 = 0, n1 = 0;
+  uint32_t *kd0 = mmx_u32_array_data(kd0_arr, &n0);
+  uint32_t *kd1 = mmx_u32_array_data(kd1_arr, &n1);
+  if (!game_key || !kd0 || !kd1) {
+    if (getenv("MMX_CTRLSPY")) {
+      static int nmiss;
+      int missn = nmiss++;
+      int act_now = mmx_ctrl_act_bits_now();
+      if (missn < 160 || act_now || getenv("MMX_CTRL_MISSLOG_ALWAYS")) {
+        fprintf(stderr, "[CTRLHOOKKD] miss f=%d self=%p gp=0x%x act=0x%x key_data=%p len=%d kd0=%p len=%d kd1=%p len=%d game_key=%p glen=%d\n",
+                g_render_frame, (void *)self, mmx_gp_buttons_mask(), act_now,
+                key_data, kd_len, kd0_arr, n0, kd1_arr, n1,
+                game_key, mmx_managed_array_len(game_key));
+        fsync(2);
+      }
+    }
+    return;
+  }
+  int maxn = n0 < n1 ? n0 : n1;
+  if (maxn > 8) maxn = 8;
+  uint32_t held[8] = {0}, real[8] = {0};
+  int act_bits = 0, edge_bits = 0, force = -1;
+  mmx_ctrl_build_masks(game_key, held, real, maxn, &act_bits, &edge_bits, &force);
+  static uint32_t prev_kd_held[8];
+  for (int i = 0; i < maxn; i++) {
+    kd0[i] = (kd0[i] & ~prev_kd_held[i]) | held[i];
+    kd1[i] |= real[i];
+    prev_kd_held[i] = held[i];
+  }
+  if (getenv("MMX_CTRLSPY")) {
+    static int nlog;
+    if (nlog++ < 180 || act_bits || force >= 0) {
+      fprintf(stderr, "[CTRLHOOKKD] f=%d self=%p gp=0x%x act=0x%x edge=0x%x force=%d kdlen=%d held=%08x/%08x/%08x real=%08x/%08x/%08x kd0=%08x/%08x/%08x kd1=%08x/%08x/%08x\n",
+              g_render_frame, (void *)self, mmx_gp_buttons_mask(), act_bits, edge_bits, force, kd_len,
+              held[0], held[1], held[2], real[0], real[1], real[2],
+              kd0[0], maxn > 1 ? kd0[1] : 0, maxn > 2 ? kd0[2] : 0,
+              kd1[0], maxn > 1 ? kd1[1] : 0, maxn > 2 ? kd1[2] : 0);
+      fsync(2);
+    }
+  }
+}
+static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  if (getenv("MMX_CTRLSPY")) {
+    static int nentry;
+    int act_now = mmx_ctrl_act_bits_now();
+    if (nentry++ < 80 || act_now) {
+      fprintf(stderr, "[CTRLHOOK] enter f=%d self=%p gp=0x%x act=0x%x\n",
+              g_render_frame, (void *)a0, mmx_gp_buttons_mask(), act_now);
+      fsync(2);
+    }
+  }
+  if (getenv("MMX_CTRL_KEYFLAG_PRE")) mmx_ctrl_apply(a0);
+  long r = g_mmx_controlkey_orig ? g_mmx_controlkey_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  mmx_ctrl_apply_keydata(a0);
+  return r;
+}
+static void mmx_ctrlhook_install(void) {
+  static int tries;
+  if (!getenv("MMX_CTRLHOOK") || g_mmx_controlkey_hooked ||
+      !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done) return;
+  if (tries++ > 180) return;
+  void *tr = NULL;
+  uint32_t *p = (uint32_t *)(g_il2cpp_base + 0xdd6d60);
+  uint32_t old0 = p[0], old1 = p[1], old2 = p[2], old3 = p[3];
+  if (ter_install_hook4(0xdd6d60, (void *)mmx_controlkey_hook, &tr)) {
+    g_mmx_controlkey_orig = (mmx_fn8)tr;
+    g_mmx_controlkey_hooked = 1;
+    fprintf(stderr, "[CTRLHOOK] late hook RockmanX.controlKey @ il2cpp+0xdd6d60 old=%08x/%08x/%08x/%08x new=%08x/%08x/%08x/%08x\n",
+            old0, old1, old2, old3, p[0], p[1], p[2], p[3]);
+  } else {
+    fprintf(stderr, "[CTRLHOOK] late hook RockmanX.controlKey falhou\n");
+  }
+  fsync(2);
+}
+
+static mmx_fn8 g_mmx_createtouch_orig, g_mmx_createpanel_orig, g_mmx_createpanelsel_orig;
+static mmx_fn8 g_mmx_createtouchrel_orig, g_mmx_creategrid_orig, g_mmx_settouch_orig, g_mmx_settouchs_orig;
+static unsigned char g_mmx_touchmap_hooked;
+
+static int mmx_touchmap_log_ok(void) {
+  static int n;
+  return n++ < mmx_env_i("MMX_TOUCHMAP_LOG", 260);
+}
+static long mmx_createtouch_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_createtouch_orig ? g_mmx_createtouch_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] CreateTouch touchId=%ld group=%ld x=%ld y=%ld w=%ld h=%ld value=%ld\n",
+            a0,a1,a2,a3,a4,a5,a6);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_createtouchrel_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_createtouchrel_orig ? g_mmx_createtouchrel_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] CreateTouchRel inputId=%ld group=%ld x=%ld y=%ld w=%ld h=%ld value=%ld\n",
+            a0,a1,a2,a3,a4,a5,a6);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_creategrid_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_creategrid_orig ? g_mmx_creategrid_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] CreateGrid inputId=%ld group=%ld x=%ld y=%ld w=%ld h=%ld value=%ld ret=%p\n",
+            a0,a1,a2,a3,a4,a5,a6,(void *)r);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_createpanel_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_createpanel_orig ? g_mmx_createpanel_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] CreatePanel inputId=%ld group=%ld x=%ld y=%ld value=%ld ret=%p\n",
+            a0,a1,a2,a3,a4,(void *)r);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_createpanelsel_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_createpanelsel_orig ? g_mmx_createpanelsel_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] CreatePanelSel inputId=%ld group=%ld x=%ld y=%ld value=%ld ret=%p\n",
+            a0,a1,a2,a3,a4,(void *)r);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_settouch_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_settouch_orig ? g_mmx_settouch_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (getenv("MMX_TOUCHMAP_SET") && mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] SetTouch group=%ld touchId=%ld\n", a0, a1);
+    fsync(2);
+  }
+  return r;
+}
+static long mmx_settouchs_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  long r = g_mmx_settouchs_orig ? g_mmx_settouchs_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 0;
+  if (getenv("MMX_TOUCHMAP_SET") && mmx_touchmap_log_ok()) {
+    fprintf(stderr, "[TOUCHMAP] SetTouchs group=%ld touch=%ld\n", a0, a1);
+    fsync(2);
+  }
+  return r;
+}
+static void mmx_touchmap_install(void) {
+  if (!getenv("MMX_TOUCHMAP") || g_mmx_touchmap_hooked || !g_il2cpp_base || !g_mmx_nointegrity_done) return;
+  struct touch_target { unsigned long off; void *hook; mmx_fn8 *orig; const char *name; } T[] = {
+    {0xe437e4, (void *)mmx_createtouch_hook,    &g_mmx_createtouch_orig,    "CreateTouch"},
+    {0xe43934, (void *)mmx_createpanel_hook,    &g_mmx_createpanel_orig,    "CreatePanel"},
+    {0xe43b18, (void *)mmx_createpanelsel_hook, &g_mmx_createpanelsel_orig, "CreatePanelSel"},
+    {0xe43ccc, (void *)mmx_createtouchrel_hook, &g_mmx_createtouchrel_orig, "CreateTouchRel"},
+    {0xe43e20, (void *)mmx_creategrid_hook,     &g_mmx_creategrid_orig,     "CreateGrid"},
+    {0xe43f54, (void *)mmx_settouchs_hook,      &g_mmx_settouchs_orig,      "SetTouchs"},
+    {0xe44ef0, (void *)mmx_settouch_hook,       &g_mmx_settouch_orig,       "SetTouch"},
+  };
+  int ok = 0;
+  for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+    void *tr = NULL;
+    if (ter_install_hook4(T[i].off, T[i].hook, &tr)) {
+      *T[i].orig = (mmx_fn8)tr;
+      ok++;
+      fprintf(stderr, "[TOUCHMAP] hook InputMan.%s @ il2cpp+0x%lx\n", T[i].name, T[i].off);
+    } else {
+      fprintf(stderr, "[TOUCHMAP] hook InputMan.%s falhou\n", T[i].name);
+    }
+  }
+  g_mmx_touchmap_hooked = ok ? 1 : 0;
+  fsync(2);
+}
+
 /* MMX_FULLVER: destrava a versão completa (o APK é trial — mostra "BUY FULL VERSION" e a
  * fase é demo que volta ao menu). Varre TODOS os métodos e força as checagens booleanas de
  * compra/unlock a retornar TRUE (independente do productId), p/ o Story Mode real abrir.
@@ -657,9 +1065,13 @@ static void mmx_fullver_unlock(void) {
   void *(*img_class)(void *, size_t) = mmx_i2sym("il2cpp_image_get_class");
   const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
   void *(*cls_methods)(void *, void **) = mmx_i2sym("il2cpp_class_get_methods");
+  void *(*cls_fields)(void *, void **) = mmx_i2sym("il2cpp_class_get_fields");
   const char *(*meth_name)(void *) = mmx_i2sym("il2cpp_method_get_name");
   unsigned int (*meth_pcount)(void *) = mmx_i2sym("il2cpp_method_get_param_count");
   void *(*meth_ret)(void *) = mmx_i2sym("il2cpp_method_get_return_type");
+  const char *(*field_name)(void *) = mmx_i2sym("il2cpp_field_get_name");
+  void *(*field_type)(void *) = mmx_i2sym("il2cpp_field_get_type");
+  size_t (*field_off)(void *) = mmx_i2sym("il2cpp_field_get_offset");
   const char *(*type_name)(void *) = mmx_i2sym("il2cpp_type_get_name");
   if (!dom_get || !dom_asms || !asm_img || !img_ccount || !img_class || !cls_methods || !meth_name || !meth_ret) return;
   /* nomes de métodos booleanos de "comprado/versão-completa/desbloqueado" -> TRUE */
@@ -678,6 +1090,22 @@ static void mmx_fullver_unlock(void) {
     for (size_t ci = 0; ci < nc; ci++) {
       void *cls = img_class(img, ci); if (!cls) continue;
       const char *ccn = cls_name ? cls_name(cls) : NULL;
+      int is_productinfo = ccn && strstr(ccn, "ProductInfo");
+      if (is_productinfo && cls_fields && field_name && field_type && field_off && type_name) {
+        void *fit = NULL, *f;
+        while ((f = cls_fields(cls, &fit))) {
+          const char *fn = field_name(f);
+          const char *tn = type_name(field_type(f));
+          size_t off = field_off(f);
+          int is_bool_field = tn && (strstr(tn, "Boolean") || strstr(tn, "bool"));
+          if (getenv("MMX_STOREDUMP") || getenv("MMX_STOREDUMP2")) {
+            fprintf(stderr, "[PRODUCTINFO] field +0x%zx %s : %s\n",
+                    off, fn ? fn : "?", tn ? tn : "?");
+            fsync(2);
+          }
+          if (is_bool_field) mmx_productinfo_add_bool_field(off, fn, tn);
+        }
+      }
       int dump_all = getenv("MMX_STOREDUMP2") && ccn &&
                      (strstr(ccn, "Store") || strstr(ccn, "Pay") || strstr(ccn, "Demo") ||
                       strstr(ccn, "Kit") || strstr(ccn, "TitleMenu") || strstr(ccn, "Product") ||
@@ -685,19 +1113,61 @@ static void mmx_fullver_unlock(void) {
       void *iter = NULL, *m;
       while ((m = cls_methods(cls, &iter))) {
         const char *mn = meth_name(m); if (!mn) continue;
+        unsigned int pc = meth_pcount ? meth_pcount(m) : 0;
         if (dump_all) {
           const char *r2 = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
-          fprintf(stderr, "[STORE2] %s.%s/%u -> %s\n", ccn, mn, meth_pcount ? meth_pcount(m) : 0, r2 ? r2 : "?");
+          fprintf(stderr, "[STORE2] %s.%s/%u -> %s\n", ccn, mn, pc, r2 ? r2 : "?");
           fsync(2);
+        }
+        void *mptr = *(void **)m;
+        if (ccn && !strcmp(ccn, "CStoreKit") && mptr) {
+          if (!g_mmx_productinfo_hooked_get && !strcmp(mn, "getProductInfo")) {
+            void *tr = NULL;
+            unsigned long off = (unsigned long)((uintptr_t)mptr - g_il2cpp_base);
+            if (ter_install_hook4(off, (void *)mmx_get_productinfo_hook, &tr)) {
+              g_mmx_get_productinfo_orig = (mmx_fn8)tr;
+              g_mmx_productinfo_hooked_get = 1;
+              fprintf(stderr, "[MMX_FULLVER] hook CStoreKit.getProductInfo @ il2cpp+0x%lx\n", off);
+              fsync(2);
+            } else {
+              fprintf(stderr, "[MMX_FULLVER] hook CStoreKit.getProductInfo falhou\n"); fsync(2);
+            }
+          }
+          if (!g_mmx_productinfo_hooked_make && !strcmp(mn, "MakeProductData")) {
+            void *tr = NULL;
+            unsigned long off = (unsigned long)((uintptr_t)mptr - g_il2cpp_base);
+            if (ter_install_hook4(off, (void *)mmx_makeproductdata_hook, &tr)) {
+              g_mmx_makeproductdata_orig = (mmx_fn8)tr;
+              g_mmx_productinfo_hooked_make = 1;
+              fprintf(stderr, "[MMX_FULLVER] hook CStoreKit.MakeProductData @ il2cpp+0x%lx\n", off);
+              fsync(2);
+            } else {
+              fprintf(stderr, "[MMX_FULLVER] hook CStoreKit.MakeProductData falhou\n"); fsync(2);
+            }
+          }
+        }
+        if (getenv("MMX_FULLVER_CTORHOOK") && is_productinfo && mptr &&
+            !g_mmx_productinfo_hooked_ctor && !strcmp(mn, ".ctor")) {
+          void *tr = NULL;
+          unsigned long off = (unsigned long)((uintptr_t)mptr - g_il2cpp_base);
+          if (ter_install_hook4(off, (void *)mmx_productinfo_ctor_hook, &tr)) {
+            g_mmx_productinfo_ctor_orig = (mmx_fn8)tr;
+            g_mmx_productinfo_hooked_ctor = 1;
+            fprintf(stderr, "[MMX_FULLVER] hook ProductInfo..ctor @ il2cpp+0x%lx\n", off);
+            fsync(2);
+          } else {
+            fprintf(stderr, "[MMX_FULLVER] hook ProductInfo..ctor falhou\n"); fsync(2);
+          }
         }
         int match = 0;
         for (int k = 0; want[k]; k++) if (!strcmp(mn, want[k])) { match = 1; break; }
-        if (!match) continue;
         const char *rt = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
         int is_bool = rt && (strstr(rt, "Boolean") || strstr(rt, "bool"));
+        if (!match && is_productinfo && is_bool && pc == 0) match = 1;
+        if (!match) continue;
         if (getenv("MMX_STOREDUMP"))
           fprintf(stderr, "[STOREDUMP] %s.%s/%u -> %s\n",
-                  cls_name ? cls_name(cls) : "?", mn, meth_pcount ? meth_pcount(m) : 0, rt ? rt : "?");
+                  cls_name ? cls_name(cls) : "?", mn, pc, rt ? rt : "?");
         if (!is_bool) continue;              /* só booleanos: TRUE seguro */
         uint32_t *mp = *(uint32_t **)m; if (!mp) continue;
         void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pg - 1));
@@ -722,6 +1192,8 @@ static void mmx_fullver_unlock(void) {
    RockmanX.Update; use MMX_KEEP_CONTROLKEY=1 para testar input real. */
 static void mmx_fix_game_methods(void) {
   mmx_fullver_unlock();
+  mmx_ctrlhook_install();
+  mmx_touchmap_install();
   static int done = 0;
   if (done || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done || !getenv("MMX_FIXGAME")) {
     if (!getenv("MMX_FIXGAME")) done = 1;
@@ -775,7 +1247,7 @@ static void mmx_fix_game_methods(void) {
       void *cls = img_class(img, ci); if (!cls) continue;
       const char *cn = cls_name(cls); if (!cn) continue;
       for (unsigned t = 0; t < sizeof targets / sizeof targets[0]; t++) {
-        if (t == 0 && getenv("MMX_KEEP_CONTROLKEY")) { patched_mask |= (1u << t); continue; }
+        if (t == 0 && (getenv("MMX_KEEP_CONTROLKEY") || getenv("MMX_CTRLHOOK"))) { patched_mask |= (1u << t); continue; }
         if ((patched_mask & (1u << t)) || strcmp(cn, targets[t].cn)) continue;
         void *m = cls_method(cls, targets[t].mn, targets[t].argc); if (!m) continue;
         uint32_t *mp = *(uint32_t **)m; if (!mp) continue;
@@ -928,6 +1400,123 @@ static void mmx_lifedump(void) {
     }
   }
   fprintf(stderr, "[LIFEDUMP] done\n"); fsync(2);
+  done = 1;
+}
+
+static int mmx_fielddump_wants(const char *ns, const char *cn, const char *want) {
+  if (!cn || !*cn) return 0;
+  char full[256];
+  snprintf(full, sizeof full, "%s%s%s", ns && *ns ? ns : "", ns && *ns ? "." : "", cn);
+  if (!want || !*want || !strcmp(want, "1")) {
+    const char *keys[] = { "RockmanX", "InputMan", "KeyConfig", "Touch", "Control", "Pad", NULL };
+    for (int i = 0; keys[i]; i++) if (strstr(full, keys[i])) return 1;
+    return 0;
+  }
+  if (!strcmp(want, "all")) return !mmx_life_ns_skip(ns);
+  char buf[512];
+  snprintf(buf, sizeof buf, "%s", want);
+  char *p = buf;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    char tok[96];
+    int k = 0;
+    while (*p && *p != ',' && *p != ' ' && *p != '\t' && k < (int)sizeof(tok) - 1)
+      tok[k++] = *p++;
+    tok[k] = 0;
+    if (k && strstr(full, tok)) return 1;
+  }
+  return 0;
+}
+
+static void mmx_fielddump_class(void *cl, int nested) {
+  const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
+  const char *(*cls_ns)(void *) = mmx_i2sym("il2cpp_class_get_namespace");
+  void *(*cls_fields)(void *, void **) = mmx_i2sym("il2cpp_class_get_fields");
+  const char *(*field_name)(void *) = mmx_i2sym("il2cpp_field_get_name");
+  void *(*field_type)(void *) = mmx_i2sym("il2cpp_field_get_type");
+  size_t (*field_off)(void *) = mmx_i2sym("il2cpp_field_get_offset");
+  unsigned int (*field_flags)(void *) = mmx_i2sym("il2cpp_field_get_flags");
+  void *(*cls_methods)(void *, void **) = mmx_i2sym("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) = mmx_i2sym("il2cpp_method_get_name");
+  unsigned int (*meth_param_count)(void *) = mmx_i2sym("il2cpp_method_get_param_count");
+  void *(*meth_param)(void *, unsigned int) = mmx_i2sym("il2cpp_method_get_param");
+  const char *(*meth_param_name)(void *, unsigned int) = mmx_i2sym("il2cpp_method_get_param_name");
+  unsigned int (*meth_flags)(void *, unsigned int *) = mmx_i2sym("il2cpp_method_get_flags");
+  int (*meth_is_instance)(void *) = mmx_i2sym("il2cpp_method_is_instance");
+  void *(*meth_ret)(void *) = mmx_i2sym("il2cpp_method_get_return_type");
+  const char *(*type_name)(void *) = mmx_i2sym("il2cpp_type_get_name");
+  if (!cl || !cls_name || !cls_ns) return;
+  const char *cn = cls_name(cl), *ns = cls_ns(cl);
+  fprintf(stderr, "[FIELDDUMP] %sclass %s%s%s\n",
+          nested ? "nested " : "", ns && *ns ? ns : "", ns && *ns ? "." : "", cn ? cn : "?");
+  if (cls_fields && field_name && field_type && field_off && type_name) {
+    void *it = NULL, *f;
+    while ((f = cls_fields(cl, &it))) {
+      const char *fn = field_name(f);
+      const char *tn = type_name(field_type(f));
+      unsigned int fl = field_flags ? field_flags(f) : 0;
+      fprintf(stderr, "[FIELDDUMP]   +0x%zx flags=0x%x %s : %s\n",
+              field_off(f), fl, fn ? fn : "?", tn ? tn : "?");
+    }
+  }
+  if (cls_methods && meth_name) {
+    void *it = NULL, *m;
+    while ((m = cls_methods(cl, &it))) {
+      const char *mn = meth_name(m);
+      unsigned int pc = meth_param_count ? meth_param_count(m) : 0;
+      const char *rt = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
+      uintptr_t mp = (uintptr_t)(*(void **)m);
+      unsigned int iflags = 0, flags = meth_flags ? meth_flags(m, &iflags) : 0;
+      int is_inst = meth_is_instance ? meth_is_instance(m) : -1;
+      if (is_inst < 0 && meth_flags) is_inst = (flags & 0x0010u) ? 0 : 1;
+      fprintf(stderr, "[FIELDDUMP]   method %s/%u -> %s off=0x%lx flags=0x%x iflags=0x%x instance=%d\n",
+              mn ? mn : "?", pc, rt ? rt : "?", mp ? (unsigned long)(mp - g_il2cpp_base) : 0,
+              flags, iflags, is_inst);
+      for (unsigned int pi = 0; pi < pc && pi < 12; pi++) {
+        const char *pn = meth_param_name ? meth_param_name(m, pi) : "?";
+        const char *pt = (meth_param && type_name) ? type_name(meth_param(m, pi)) : "?";
+        fprintf(stderr, "[FIELDDUMP]     arg%u %s : %s\n",
+                pi, pn ? pn : "?", pt ? pt : "?");
+      }
+    }
+  }
+  fsync(2);
+}
+
+static void mmx_fielddump(void) {
+  static int done = 0, tries = 0;
+  const char *want = getenv("MMX_FIELDDUMP");
+  if (done || !want || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done) return;
+  if (tries++ > 600) { done = 1; return; }
+  void *(*dom_get)(void) = mmx_i2sym("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) = mmx_i2sym("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) = mmx_i2sym("il2cpp_assembly_get_image");
+  size_t (*img_ccount)(void *) = mmx_i2sym("il2cpp_image_get_class_count");
+  void *(*img_class)(void *, size_t) = mmx_i2sym("il2cpp_image_get_class");
+  const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
+  const char *(*cls_ns)(void *) = mmx_i2sym("il2cpp_class_get_namespace");
+  void *(*cls_nested)(void *, void **) = mmx_i2sym("il2cpp_class_get_nested_types");
+  if (!dom_get || !dom_asms || !asm_img || !img_ccount || !img_class || !cls_name || !cls_ns) return;
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  fprintf(stderr, "[FIELDDUMP] scanning %zu assemblies want=%s\n", na, want); fsync(2);
+  for (size_t ai = 0; ai < na; ai++) {
+    void *img = asm_img(asms[ai]); if (!img) continue;
+    size_t nc = img_ccount(img);
+    for (size_t ci = 0; ci < nc; ci++) {
+      void *cl = img_class(img, ci); if (!cl) continue;
+      const char *cn = cls_name(cl);
+      const char *ns = cls_ns(cl);
+      if (!mmx_fielddump_wants(ns, cn, want)) continue;
+      mmx_fielddump_class(cl, 0);
+      if (cls_nested) {
+        void *nit = NULL, *nc2;
+        while ((nc2 = cls_nested(cl, &nit)))
+          mmx_fielddump_class(nc2, 1);
+      }
+    }
+  }
+  fprintf(stderr, "[FIELDDUMP] done\n"); fsync(2);
   done = 1;
 }
 
@@ -5832,6 +6421,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[BOOTST] mk_tramp falhou; hook OFF\n");
       }
     }
+    if (getenv("MMX_CTRLHOOK_EARLY") && getenv("MMX_CTRLHOOK") && !getenv("MMX_RXSPY") && !g_mmx_controlkey_hooked) {
+      void *tr = NULL;
+      if (ter_install_hook4(0xdd6d60, (void *)mmx_controlkey_hook, &tr)) {
+        g_mmx_controlkey_orig = (mmx_fn8)tr;
+        g_mmx_controlkey_hooked = 1;
+        fprintf(stderr, "[CTRLHOOK] hook RockmanX.controlKey @ il2cpp+0xdd6d60\n");
+      } else {
+        fprintf(stderr, "[CTRLHOOK] hook RockmanX.controlKey falhou\n");
+      }
+      fsync(2);
+    }
     if (getenv("MMX_ISTOUCHSPY")) {
       void *tr = mk_tramp(g_il2cpp_base + 0xe42fec, "MMX_ISTOUCHSPY");
       if (tr) {
@@ -5907,6 +6507,17 @@ int main(int argc, char **argv) {
         *T[i].orig = (mmx_rx_fn)tr;
         hook_arm64(g_il2cpp_base + T[i].rva, (uintptr_t)T[i].hook);
         fprintf(stderr, "[RXSPY] hook %s @ il2cpp+0x%lx\n", T[i].name, T[i].rva);
+      }
+      fsync(2);
+    }
+    if (getenv("MMX_CTRLHOOK_EARLY") && getenv("MMX_CTRLHOOK") && !g_mmx_controlkey_hooked) {
+      void *tr = NULL;
+      if (ter_install_hook4(0xdd6d60, (void *)mmx_controlkey_hook, &tr)) {
+        g_mmx_controlkey_orig = (mmx_fn8)tr;
+        g_mmx_controlkey_hooked = 1;
+        fprintf(stderr, "[CTRLHOOK] hook RockmanX.controlKey @ il2cpp+0xdd6d60\n");
+      } else {
+        fprintf(stderr, "[CTRLHOOK] hook RockmanX.controlKey falhou\n");
       }
       fsync(2);
     }
@@ -6424,6 +7035,7 @@ int main(int argc, char **argv) {
     mmx_nuke_integrity();  /* pula Play Integrity ANTES do render */
     mmx_fix_game_methods(); /* MMX_FIXGAME: input/IAP quebrados no caminho sem eglSwapBuffers */
     mmx_lifedump();       /* MMX_LIFEDUMP: enumera classes/metodos de cena do MMX */
+    mmx_fielddump();      /* MMX_FIELDDUMP: enumera campos/metodos de input/RockmanX */
     if (f < 200) { fprintf(stderr, "[r%d>\n", f); dbg_sync(); }  /* ENTRA no render */
     if (g_skipbad) {
       /* arma o recovery: se nativeRender crashar nesta thread, volta aqui e pula o frame */

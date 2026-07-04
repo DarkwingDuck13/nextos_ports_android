@@ -237,6 +237,17 @@ float mmx_gp_axis(int axis) {
   }
 }
 
+int mmx_gp_button(int button) {
+  return (button >= 0 && button < GP_COUNT) ? g_btn[button] : 0;
+}
+
+unsigned mmx_gp_buttons_mask(void) {
+  unsigned m = 0;
+  for (int i = 0; i < GP_COUNT && i < 32; i++)
+    if (g_btn[i]) m |= 1u << i;
+  return m;
+}
+
 static int btn_keycode(int b) {
   static const int key[GP_COUNT] = {
     96, 97, 99, 100, 102, 103, 109, 108, 106, 107, 19, 20, 21, 22
@@ -244,12 +255,31 @@ static int btn_keycode(int b) {
   return (b >= 0 && b < GP_COUNT) ? key[b] : 0;
 }
 
+static int gp_android_button_state(void) {
+  int s = 0;
+  if (g_btn[GP_A])  s |= 1;     /* BUTTON_PRIMARY */
+  if (g_btn[GP_B])  s |= 2;     /* BUTTON_SECONDARY */
+  if (g_btn[GP_X])  s |= 4;     /* BUTTON_TERTIARY */
+  if (g_btn[GP_Y])  s |= 8;     /* BUTTON_BACK */
+  if (g_btn[GP_LB]) s |= 16;    /* BUTTON_FORWARD */
+  if (g_btn[GP_RB]) s |= 32;    /* BUTTON_STYLUS_PRIMARY, harmless extra bit */
+  return s;
+}
+
+static int gp_any_state(void) {
+  for (int i = 0; i < GP_COUNT; i++)
+    if (g_btn[i]) return 1;
+  for (int i = 0; i < AX_COUNT; i++)
+    if (fabsf(g_axis[i]) > 0.001f) return 1;
+  return 0;
+}
+
 static void inject_key(void *env, void *thiz, void *inject, int b, int down) {
   long t = now_ms();
   if (down || !g_down_ms[b]) g_down_ms[b] = t;
   g_hk_inject.action = down ? 0 : 1;       /* ACTION_DOWN / ACTION_UP */
   g_hk_inject.keycode = btn_keycode(b);
-  g_hk_inject.source = (b >= GP_UP && b <= GP_RIGHT) ? 0x201 : 0x401;
+  g_hk_inject.source = 0x1000611;          /* JOYSTICK | GAMEPAD | DPAD */
   g_hk_inject.deviceId = 1;
   g_hk_inject.metaState = 0;
   g_hk_inject.repeat = 0;
@@ -279,10 +309,10 @@ static void inject_motion(void *env, void *thiz, void *inject) {
   g_hk_motion.source = 0x1000611;          /* JOYSTICK | GAMEPAD | DPAD */
   g_hk_motion.deviceId = 1;
   g_hk_motion.metaState = 0;
-  g_hk_motion.buttonState = 0;
+  g_hk_motion.buttonState = gp_android_button_state();
   g_hk_motion.flags = 0;
   g_hk_motion.pointerId = 0;
-  g_hk_motion.pointerCount = 0;
+  g_hk_motion.pointerCount = 1;
   g_hk_motion.actionIndex = 0;
   g_hk_motion.toolType = 0;
   g_hk_motion.x = g_hk_motion.rawX = 0.0f;
@@ -339,11 +369,11 @@ static void touch_send(void *env, void *thiz, void *inject, int action, int acti
   g_hk_motion.size = 0.1f;
   g_hk_motion.eventTime = t;
   g_hk_motion.downTime = g_touch_down_ms ? g_touch_down_ms : t;
-  ((int (*)(void *, void *, void *))inject)(env, thiz, hk_motionevent_object());
+  int r = ((int (*)(void *, void *, void *))inject)(env, thiz, hk_motionevent_object());
   if (env_on("MMX_GPLOG")) {
     static int n; if (n++ < 200)
-      fprintf(stderr, "[GP_TOUCH] act=%d idx=%d cnt=%d p0=(%.0f,%.0f)\n",
-              action, actionIndex, g_hk_motion.pointerCount, g_hk_motion.x, g_hk_motion.y);
+      fprintf(stderr, "[GP_TOUCH] act=%d idx=%d cnt=%d p0=(%.0f,%.0f) ret=%d\n",
+              action, actionIndex, g_hk_motion.pointerCount, g_hk_motion.x, g_hk_motion.y, r);
   }
 }
 
@@ -412,5 +442,6 @@ void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
   for (int i = 0; i < GP_COUNT; i++) {
     if (g_btn[i] != g_prev_btn[i]) inject_key(env, thiz, inject, i, g_btn[i] ? 1 : 0);
   }
-  if (state_changed()) inject_motion(env, thiz, inject);
+  if (state_changed() || gp_any_state() || env_on("MMX_GPMOTION_ALWAYS"))
+    inject_motion(env, thiz, inject);
 }

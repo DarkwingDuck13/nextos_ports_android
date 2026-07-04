@@ -1,5 +1,51 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-03 s5 — pausa solicitada: Xbox nativo confirmado no Unity, controle ainda bloqueado por keymap vazio
+
+**Estado salvo antes da pausa:** não há processo `megamanx` rodando no device. Último binário foi buildado e enviado para `/storage/roms/megamanx/megamanx`. Runs/logs/screenshot salvos em `runs/`.
+
+**Vitórias confirmadas:**
+- **Render:** X e fase continuam limpos. Sem retorno do magenta/bloco amarelo.
+- **Full version:** `MMX_FULLVER=1` agora força `ProductInfo` via hooks de `CStoreKit.getProductInfo`/`MakeProductData`; nos runs forçados para fase não aparece mais o gate "BUY FULL VERSION".
+- **Xbox nativo existe e está parcialmente funcionando:** o jogo/Unity Input System reconhece o device virtual como `XboxOneGamepadAndroid`; `nativeInjectEvent` retorna `ret=1`; Unity consulta `MotionEvent.getAxisValue(...)` e aceita `KeyEvent`/`MotionEvent`.
+- **Regra crítica de teste:** para validar controle, usar `MMX_KEEP_CONTROLKEY=1` ou `MMX_CTRLHOOK=1`. Sem isso, `MMX_FIXGAME` neutraliza `RockmanX.controlKey` e o teste vira falso negativo.
+
+**Controle — achado final antes da pausa:**
+- `MMX_CTRLHOOK=1` hooka `RockmanX.controlKey` em `il2cpp+0xdd6d60`.
+- Field dump confirmou offsets reais:
+  - `KeyFlag +0x2c0`
+  - `KeyFlagReal +0x2c8`
+  - `key_data +0x2d0`
+  - `def_key +0x2d8`
+  - `game_key +0x2e0`
+  - `touchkey_tbl +0x2e8`
+  - `flg_touchKey +0x2f0`
+  - `flg_touchPress +0x300`
+  - `flg_touchRelease +0x308`
+- No run pausado, o auto-pad chega ao hook: `gp=0x2000 act=0x8` = direita ativa. Porém `key_data len=0` e `game_key glen=0` continuam zerados mesmo na fase forçada por `MMX_PROFORCE_SCENE=12`.
+- Conclusão prática: **não é mais problema de "o controle não chega". O estado do pad chega. O bloqueio atual é que o fluxo forçado entra na fase sem inicializar a tabela de keymap (`key_data/game_key`).**
+
+**Próximo passo recomendado ao retomar:**
+1. Tentar inicializar/forçar o keymap antes ou durante `scn_STAGE_run`:
+   - investigar `RockmanX.initGame`/rotas de menu real que preenchem `key_data/game_key`;
+   - ou copiar `def_key`/montar arrays para `game_key` se `def_key` estiver preenchido.
+2. Plano B mais direto: injetar nos arrays touch do próprio `RockmanX` (`flg_touchKey`, `flg_touchPress`, `flg_touchRelease`, `touchPress_x/y`) em vez de depender de `game_key`.
+3. Plano C: manter caminho Xbox nativo e instrumentar `UnityEngine.InputSystem` (`Gamepad`, `InputAction`, `AndroidGamepad`) para descobrir por que a lógica Capcom não consome o gamepad.
+4. Áudio segue pendente: FMOD ainda spamma `Cannot create FMOD::Sound instance for clip "0"`/`"114"`; no último run foram muitas linhas de erro. Só atacar depois de controles.
+
+**Runs novos importantes:**
+- `runs/2026-07-03-codex-native-xbox-keep-controlkey/`
+  - Xbox nativo com `MMX_KEEP_CONTROLKEY=1`.
+  - `nativeInjectEvent` aceitou eventos (`ret=1`) e a fase renderizou.
+- `runs/2026-07-03-codex-fielddump-rockmanx-input/`
+  - Dump confirmou os offsets de `RockmanX` listados acima.
+- `runs/2026-07-03-codex-ctrlhook-actlog-pause/`
+  - Último run antes da pausa.
+  - Prova chave: `CTRLHOOK enter ... gp=0x2000 act=0x8`, mas `key_data len=0` e `game_key glen=0`.
+  - `shot.png` salvo com X renderizando limpo na fase.
+
+---
+
 ## 2026-07-03 s4 — 🏆 X RENDERIZA NA FASE (shader CutOut resolvido) + infra de controle/fullver
 
 **GRANDE AVANÇO:** o X (que aparecia **magenta/bloco amarelo** na fase) agora **renderiza limpo**. Era o shader `Sprites/CutOut` (sprite do X + cenário) caindo no `Hidden/InternalErrorShader`. Commit `01cbfc7`.

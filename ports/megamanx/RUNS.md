@@ -1,5 +1,45 @@
 # Mega Man X port runs
 
+## 2026-07-03 pause checkpoint
+
+User asked to pause. No `megamanx` process left running on `192.168.31.79`.
+
+### Current state
+
+- Rendering is still good: X and highway stage draw cleanly.
+- `MMX_FULLVER=1` ProductInfo hooks are active; forced-stage runs no longer show the "BUY FULL VERSION" gate.
+- Native Xbox path is real: Unity/InputSystem sees `XboxOneGamepadAndroid`, accepts `nativeInjectEvent` with `ret=1`, and queries axes.
+- Direct `RockmanX.controlKey` hook is installed and sees gamepad state.
+- Current blocker: `key_data` and `game_key` arrays remain length 0 in the forced-stage flow, so direct keymap injection has no source masks to OR into.
+- Audio blocker unchanged: FMOD keeps logging `Cannot create FMOD::Sound instance...`.
+
+### New saved runs
+
+- `runs/2026-07-03-codex-native-xbox-keep-controlkey`
+  - Validated native Xbox path with `MMX_KEEP_CONTROLKEY=1`.
+  - Events accepted (`ret=1`); game reached stage.
+- `runs/2026-07-03-codex-ctrlhook-direct-stage`
+  - First direct `MMX_CTRLHOOK=1` test.
+  - `controlKey` hook installed, but early logs showed `key_data len=0` / `game_key glen=0`.
+- `runs/2026-07-03-codex-fielddump-rockmanx-input`
+  - Metadata dump confirmed `RockmanX` offsets:
+    `KeyFlag +0x2c0`, `KeyFlagReal +0x2c8`, `key_data +0x2d0`,
+    `def_key +0x2d8`, `game_key +0x2e0`, `touchkey_tbl +0x2e8`,
+    `flg_touchKey +0x2f0`, `flg_touchPress +0x300`, `flg_touchRelease +0x308`.
+- `runs/2026-07-03-codex-ctrlhook-actlog-pause`
+  - Last run before pause.
+  - Key proof in `debug.log`: `CTRLHOOK enter ... gp=0x2000 act=0x8`, then
+    `CTRLHOOKKD miss ... key_data len=0 ... game_key ... glen=0`.
+  - `shot.png` saved; stage still renders correctly.
+
+### Resume target
+
+Do not restart from shader/fullver. Resume at controls:
+
+1. Find where `key_data/game_key` are initialized in the real menu/start flow or call that initializer before `scn_STAGE`.
+2. If that is slow, inject into `flg_touchKey` / `flg_touchPress` / `flg_touchRelease` directly, using SDL pad state.
+3. Keep `MMX_KEEP_CONTROLKEY=1` or `MMX_CTRLHOOK=1` for every control test.
+
 ## 2026-07-03 Codex session
 
 Initial state from old `HANDOFF.md`: game booted on `.79`, Play Integrity was bypassed, shaders compiled, but the framebuffer stayed magenta / old diagnostics said `draws/f=0`.

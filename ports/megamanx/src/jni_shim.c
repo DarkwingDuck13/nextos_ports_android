@@ -1092,9 +1092,44 @@ static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const j
       if (!o) { o = 1; debugPrintf("[MMX_GAMEPAD] InputManager.getInputDeviceIdsA()->[1]\n"); }
       return iarr_new(one, 1);
     }
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "iterator") == 0) {
+      g_gamepad_range_iter = 0;
+      return &g_gamepad_range_iter;
+    }
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "get") == 0) {
+      int idx = args ? args[0].i : 0;
+      return (idx >= 0 && idx < gp_range_count()) ? (void *)&g_gamepad_range_objs[idx] : NULL;
+    }
+    if (obj == (void *)&g_gamepad_range_iter && strcmp(nm, "next") == 0) {
+      int idx = g_gamepad_range_iter++;
+      return (idx >= 0 && idx < gp_range_count()) ? (void *)&g_gamepad_range_objs[idx] : NULL;
+    }
+    if (obj == (void *)&g_obj_motionevent && strcmp(nm, "getDevice") == 0)
+      return g_hk_motion.deviceId == 1 ? (void *)&g_gamepad_device : (void *)&g_touch_device;
+    if (obj == (void *)&g_obj_keyevent && strcmp(nm, "getDevice") == 0)
+      return &g_gamepad_device;
+    if (obj == (void *)&g_touch_device) {
+      if (strcmp(nm, "getName") == 0)          return make_jstring("Virtual Touchscreen");
+      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("mmx-touchscreen-virtual");
+      if (strcmp(nm, "getMotionRanges") == 0)  return &g_empty_list;
+      if (strcmp(nm, "getMotionRange") == 0)   return NULL;
+      if (strcmp(nm, "getVibrator") == 0)      return NULL;
+    }
     if (strcmp(nm, "getInputDevice") == 0) {
       int id = args ? args[0].i : 1;
       return id == 1 ? (void *)&g_gamepad_device : NULL;
+    }
+    if (obj == (void *)&g_gamepad_device) {
+      if (strcmp(nm, "getName") == 0)          return make_jstring("XboxOneGamepadAndroid");
+      if (strcmp(nm, "getDescriptor") == 0)    return make_jstring("mmx-xbox-one-gamepad-android");
+      if (strcmp(nm, "getMotionRanges") == 0)  return &g_gamepad_ranges;
+      if (strcmp(nm, "getMotionRange") == 0) {
+        int axis = args ? args[0].i : 0;
+        return gp_range_for_axis(axis);
+      }
+      if (strcmp(nm, "getVibrator") == 0)      return obj;
+      if (strcmp(nm, "getKeyCharacterMap") == 0) return obj;
+      return obj;
     }
   }
   if (getenv("MMX_PREFDBG")) {
@@ -1121,6 +1156,25 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
     if (getenv("TER_REFLOG") && (strstr(nm,"isArray")||strstr(nm,"isPrimitive")||strstr(nm,"isAssign"))) {
       static int bn=0; if (bn++<40) debugPrintf("[REFLOG-bool] %s -> 0\n", nm);
     }
+    if (strcmp(nm, "isFromSource") == 0 &&
+        (obj == (void *)&g_obj_motionevent || obj == (void *)&g_obj_keyevent)) {
+      int want = va_arg(ap, int);
+      int have = (obj == (void *)&g_obj_motionevent) ? g_hk_motion.source : g_hk_inject.source;
+      return (unsigned char)((have & want) == want);
+    }
+    if (strcmp(nm, "supportsSource") == 0 && obj == (void *)&g_gamepad_device) {
+      int want = va_arg(ap, int);
+      return (unsigned char)(((0x1000611 & want) == want) || want == 0x401 || want == 0x201 || want == 0x1000010);
+    }
+    if (strcmp(nm, "supportsSource") == 0 && obj == (void *)&g_touch_device) {
+      int want = va_arg(ap, int);
+      return (unsigned char)((0x1002 & want) == want);
+    }
+    if (obj == (void *)&g_gamepad_device &&
+        (!strcmp(nm, "isExternal") || !strcmp(nm, "isEnabled")))
+      return 1;
+    if (obj == (void *)&g_gamepad_device && !strcmp(nm, "isVirtual"))
+      return 0;
     if (strcmp(nm, "isEmpty") == 0) return obj == &g_gamepad_ranges ? 0 : 1;
     if (strcmp(nm, "hasNext") == 0)
       return obj == &g_gamepad_range_iter ? (g_gamepad_range_iter < gp_range_count()) : 0;
@@ -1168,6 +1222,25 @@ static unsigned char jni_CallBooleanMethodA(void *env, void *obj, void *methodID
     if (strcmp(nm, "isEmpty") == 0) return obj == &g_gamepad_ranges ? 0 : 1;
     if (strcmp(nm, "hasNext") == 0)
       return obj == &g_gamepad_range_iter ? (g_gamepad_range_iter < gp_range_count()) : 0;
+    if (strcmp(nm, "isFromSource") == 0 &&
+        (obj == (void *)&g_obj_motionevent || obj == (void *)&g_obj_keyevent)) {
+      int want = args ? args[0].i : 0;
+      int have = (obj == (void *)&g_obj_motionevent) ? g_hk_motion.source : g_hk_inject.source;
+      return (unsigned char)((have & want) == want);
+    }
+    if (strcmp(nm, "supportsSource") == 0 && obj == (void *)&g_gamepad_device) {
+      int want = args ? args[0].i : 0;
+      return (unsigned char)(((0x1000611 & want) == want) || want == 0x401 || want == 0x201 || want == 0x1000010);
+    }
+    if (strcmp(nm, "supportsSource") == 0 && obj == (void *)&g_touch_device) {
+      int want = args ? args[0].i : 0;
+      return (unsigned char)((0x1002 & want) == want);
+    }
+    if (obj == (void *)&g_gamepad_device &&
+        (!strcmp(nm, "isExternal") || !strcmp(nm, "isEnabled")))
+      return 1;
+    if (obj == (void *)&g_gamepad_device && !strcmp(nm, "isVirtual"))
+      return 0;
     if (strcmp(nm, "post") == 0 || strcmp(nm, "postDelayed") == 0 ||
         strcmp(nm, "postAtTime") == 0 || strcmp(nm, "postAtFrontOfQueue") == 0) {
       void *r = args ? args[0].l : NULL;
@@ -1340,6 +1413,56 @@ static jint jni_CallIntMethodA(void *env, void *obj, void *methodID, const jvalu
     return g_message_what;
   if (obj == &g_fmod_device_obj) { debugPrintf("jni_shim: FMODAudioDevice.%sA -> 1\n", nm?nm:"?"); return 1; }
   if (nm) {
+    if (obj == (void *)&g_gamepad_ranges && strcmp(nm, "size") == 0)
+      return gp_range_count();
+    int ri = gp_range_index(obj);
+    if (ri >= 0) {
+      if (strcmp(nm, "getAxis") == 0) return g_gamepad_range_axes[ri];
+      if (strcmp(nm, "getSource") == 0) return 0x1000611;
+      if (strcmp(nm, "getId") == 0) return 1;
+    }
+    if (obj == (void *)&g_obj_motionevent) {
+      if (strcmp(nm, "getAction") == 0) return g_hk_motion.action;
+      if (strcmp(nm, "getActionMasked") == 0) return g_hk_motion.action & 0xff;
+      if (strcmp(nm, "getActionIndex") == 0) return g_hk_motion.actionIndex;
+      if (strcmp(nm, "getPointerCount") == 0) return g_mt_count > 0 ? g_mt_count : (g_hk_motion.pointerCount ? g_hk_motion.pointerCount : 1);
+      if (strcmp(nm, "getPointerId") == 0) {
+        int idx = args ? args[0].i : 0;
+        if (g_mt_count > 0 && idx >= 0 && idx < g_mt_count) return g_mt_id[idx];
+        return g_hk_motion.pointerId;
+      }
+      if (strcmp(nm, "findPointerIndex") == 0) {
+        int pid = args ? args[0].i : 0;
+        if (g_mt_count > 0) { for (int i = 0; i < g_mt_count; i++) if (g_mt_id[i] == pid) return i; return -1; }
+        return 0;
+      }
+      if (strcmp(nm, "getSource") == 0) return g_hk_motion.source;
+      if (strcmp(nm, "getDeviceId") == 0) return g_hk_motion.deviceId;
+      if (strcmp(nm, "getMetaState") == 0) return g_hk_motion.metaState;
+      if (strcmp(nm, "getButtonState") == 0) return g_hk_motion.buttonState;
+      if (strcmp(nm, "getFlags") == 0) return g_hk_motion.flags;
+      if (strcmp(nm, "getToolType") == 0) return g_hk_motion.toolType ? g_hk_motion.toolType : 1;
+      if (strcmp(nm, "getEdgeFlags") == 0) return 0;
+      if (strcmp(nm, "getHistorySize") == 0) return 0;
+    }
+    if (obj == (void *)&g_touch_device) {
+      if (strcmp(nm, "getVendorId") == 0)        return 0;
+      if (strcmp(nm, "getProductId") == 0)       return 0;
+      if (strcmp(nm, "getSources") == 0 || strcmp(nm, "getSource") == 0) return 0x1002;
+      if (strcmp(nm, "getId") == 0)              return 0;
+      if (strcmp(nm, "getControllerNumber") == 0) return 0;
+      if (strcmp(nm, "getKeyboardType") == 0)    return 0;
+      return 0;
+    }
+    if (obj == (void *)&g_gamepad_device) {
+      if (strcmp(nm, "getVendorId") == 0)        return 1118;
+      if (strcmp(nm, "getProductId") == 0)       return 654;
+      if (strcmp(nm, "getSources") == 0 || strcmp(nm, "getSource") == 0) return 0x1000611;
+      if (strcmp(nm, "getId") == 0)              return 1;
+      if (strcmp(nm, "getControllerNumber") == 0) return 1;
+      if (strcmp(nm, "getKeyboardType") == 0)    return 0;
+      return 0;
+    }
     if (g_internet_deny_arm &&
         (strcmp(nm, "checkCallingOrSelfPermission") == 0 ||
          strcmp(nm, "checkSelfPermission") == 0 ||
