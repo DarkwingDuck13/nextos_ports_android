@@ -1,5 +1,52 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-03 s6 — 🏆 CONTROLE RESOLVIDO NA RAIZ: era BUG DE LEITURA (maps cache velho), NÃO keymap vazio
+
+**A causa-raiz do "controle não funciona" de TODAS as sessões anteriores foi encontrada e corrigida.**
+O sintoma que travou o s4/s5 (`key_data len=0`, `game_key glen=0`) era **FALSO**. Os arrays de keymap
+SEMPRE estiveram alocados corretamente pelo `.ctor` do RockmanX (`KeyFlag=uint[3]`, `KeyFlagReal=uint[3]`,
+`key_data=uint[7][]`, `def_key=uint[47][]`, `game_key=uint[11][]`).
+
+- **O bug:** `mmx_managed_array_len()` (helper que lê o `Length` do array em `arr+0x18`) usava
+  `addr_readable()`, que valida o ponteiro contra um **snapshot ANTIGO de `/proc/self/maps`** (`g_maps_buf`).
+  Esse cache foi tirado ANTES do GC heap do il2cpp ser mapeado → os endereços `0x7e../0x7f..` do heap
+  gerenciado **não estão no cache** → `addr_readable` retorna falso → `mmx_managed_array_len` retorna **0**
+  pra arrays perfeitamente válidos. Todo o pipeline de injeção (`mmx_ctrl_apply`) lia máscara vazia e não
+  fazia nada. O dump RAW provou: `nGameKey len0x18=0xb` (=11), `KeyFlag len0x18=3`.
+- **O fix (commit desta seção):** `mmx_managed_array_len`/`mmx_ref_array_get`/`mmx_u32_array_data` leem
+  o array **direto** (os ponteiros vêm de campos managed já validados), com só uma guarda de ponteiro
+  (`mmx_ptr_sane`: não-nulo, alinhado a 8, faixa de heap). Sem `addr_readable`.
+- **PROVA ponta-a-ponta (logs no device):** com `MMX_CTRL_FORCE_IDX=5` (força RIGHT):
+  `[CTRLHOOK] force=5 ... key=00000000/00000001/00000000` (KeyFlag recebeu o bit de game_key[5]) e depois
+  do controlKey original: `[CTRLHOOKKD] kdlen=7 ... kd0=00000000/00000001/00000000` — **`key_data[0]`
+  (o plano que `isKeyOn`/`isKeyTrg` leem) recebeu o bit.** O `rock_keyMove` chama `isKeyOn(game_key[5])`
+  = `key_data[0] & game_key[5]` = **RIGHT pressionado**. Idem esquerda (idx 4), etc.
+- **Encoding decodificado (disasm):** `isKeyOn(mask)` → `key_data[0] & mask`; `isKeyNow(mask)` →
+  `KeyFlag & mask`; a `mask` é `game_key[acao]`. `controlKey()` ingere `KeyFlag`(0x2c0) nos planos de
+  `key_data`(0x2d0) e faz o shift de trigger. `game_key` mapeia ação→bits físicos: `rock_keyMove` lê
+  `game_key[4]`=LEFT, `game_key[5]`=RIGHT (offsets 64/72). Mapa em `mmx_ctrl_apply`: UP=0 DOWN=1 JUMP=2
+  SHOT=3 LEFT=4 RIGHT=5 (tunável por `MMX_CTRL_IDX_*`).
+- **run.sh atualizado** liga os controles por padrão: `MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1`
+  (+ boot + shaders + `MMX_FULLVER`). Pad físico SDL → input do jogo (mesmíssimo caminho do force-idx).
+- **`MMX_KEYINIT`** ficou como rede de segurança: realoca os arrays externos via `il2cpp_array_new` +
+  chama `initKey`/`initTouchKey`/`setGameKey` SE algum dia vierem realmente vazios (com o fix, não vêm).
+
+**MUROS AINDA ABERTOS (SEPARADOS do controle — não são bug de input):**
+1. **Menu é TOUCH.** Segurar tecla no MAIN MENU não confirma. `MMX_AUTOTOUCH=1 MMX_TOUCHX=290 MMX_TOUCHY=385`
+   (coords 1280×720, painel "STORY MODE") ENTRA no fluxo de story (log mostra `scn_LOAD_DATA/STAGESEL/STAGE`).
+   Falta: pad→touch nos menus (estilo MM5/6) pra navegar sem PC/mouse.
+2. **Trial/demo volta ao título.** Story mode roda um trial curto e retorna a `scn_TITLEMENU` (gate de
+   versão completa em nível de DADOS, não o getter que o `MMX_FULLVER` força). É o mesmo "trial-mode
+   blocking gameplay" que o memory já listava. Enquanto isso, `MMX_PROFORCE_SCENE=12` cai num demo que
+   também bounce em ~10s — não dá janela estável pra capturar o X andando por injeção.
+   ⇒ Próxima missão pra ver o X andando de fato: resolver o gate de trial (fullver no nível de save/dados)
+     OU navegar via pad→touch até uma fase real e persistente.
+
+**Runs desta seção:** `runs/2026-07-03-codex-ctrl-fixed-forceidx/` — `fb_menu.png` (MAIN MENU, Story
+destacado, fullver ok), sequência `seq_*/pl_*` (fluxo story→bounce), e os logs com a prova `kd0` acima.
+
+---
+
 ## 2026-07-03 s5 — pausa solicitada: Xbox nativo confirmado no Unity, controle ainda bloqueado por keymap vazio
 
 **Estado salvo antes da pausa:** não há processo `megamanx` rodando no device. Último binário foi buildado e enviado para `/storage/roms/megamanx/megamanx`. Runs/logs/screenshot salvos em `runs/`.

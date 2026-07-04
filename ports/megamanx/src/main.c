@@ -705,19 +705,28 @@ static int mmx_env_i(const char *name, int defv) {
   const char *s = getenv(name);
   return s && *s ? atoi(s) : defv;
 }
+/* ⚠️ NÃO usar addr_readable aqui: o cache de /proc/self/maps (g_maps_buf) é um snapshot
+   antigo e NÃO contém as páginas do GC heap do il2cpp (alocadas depois) — fazia
+   mmx_managed_array_len retornar 0 pra arrays VÁLIDOS (KeyFlag=3, game_key=11...),
+   dando o falso "keymap vazio" que travou o controle por sessões. Os ponteiros vêm de
+   campos managed já validados; leitura direta com guarda de ponteiro é segura. */
+static int mmx_ptr_sane(void *p) {
+  uintptr_t a = (uintptr_t)p;
+  return p && (a & 7) == 0 && a > 0x10000 && a < 0x8000000000ULL;
+}
 static int mmx_managed_array_len(void *arr) {
-  if (!arr || !addr_readable((uintptr_t)arr + 0x18)) return 0;
+  if (!mmx_ptr_sane(arr)) return 0;
   int n = *(int *)((char *)arr + 0x18);
   return (n > 0 && n < 1024) ? n : 0;
 }
 static void *mmx_ref_array_get(void *arr, int idx) {
   int n = mmx_managed_array_len(arr);
-  if (idx < 0 || idx >= n || !addr_readable((uintptr_t)arr + 0x20 + (uintptr_t)idx * 8)) return NULL;
+  if (idx < 0 || idx >= n) return NULL;
   return *(void **)((char *)arr + 0x20 + (uintptr_t)idx * 8);
 }
 static uint32_t *mmx_u32_array_data(void *arr, int *len_out) {
   int n = mmx_managed_array_len(arr);
-  if (!n || !addr_readable((uintptr_t)arr + 0x20)) return NULL;
+  if (!n) return NULL;
   if (len_out) *len_out = n;
   return (uint32_t *)((char *)arr + 0x20);
 }
@@ -921,7 +930,81 @@ static void mmx_ctrl_apply_keydata(long self) {
     }
   }
 }
+/* 🔑 KEYINIT — a receita PROFORCE pula direto pra fase e NUNCA roda o fluxo de menu
+   que aloca o keymap (initKey aloca key_data[0..6]/def_key[0..6]; setGameKey monta
+   game_key[acao]). Sem esses arrays, game_key/key_data ficam len=0 e a injeção de
+   controle não tem máscara pra ORar (era o muro do handoff). Aqui, se detectarmos os
+   arrays vazios, chamamos os PRÓPRIOS inicializadores do jogo (offsets fixos, ABI
+   instância 0-args: func(self, MethodInfo*)) pra alocar tudo. No fluxo real de menu os
+   arrays já vêm preenchidos → só marcamos como pronto e não tocamos. */
+static unsigned char g_mmx_keymap_inited;
+/* Aloca um Il2CppArray[count] de elemento `elem_class` via a API il2cpp exportada. */
+static void *mmx_new_arr(void *elem_class, int count) {
+  static void *(*arr_new)(void *, unsigned long);
+  if (!arr_new) arr_new = mmx_i2sym("il2cpp_array_new");
+  return (arr_new && elem_class) ? arr_new(elem_class, (unsigned long)count) : NULL;
+}
+static void mmx_ensure_keymap(long self) {
+  if (!self || g_mmx_keymap_inited || !getenv("MMX_KEYINIT") || !g_il2cpp_base) return;
+  int glen = mmx_managed_array_len(*(void **)((char *)self + 0x2e0));
+  int klen = mmx_managed_array_len(*(void **)((char *)self + 0x2d0));
+  if (glen > 0 && klen > 0) { g_mmx_keymap_inited = 1; return; }
+  static int tries;
+  if (tries++ > 30) { g_mmx_keymap_inited = 1; return; }
+
+  /* No so-loader deste port, o `.ctor` do RockmanX aloca KeyFlag/KeyFlagReal/key_data/
+     def_key/game_key mas eles saem com length 0 (array_new do .ctor não pega os tamanhos
+     — provável class-ref não resolvida). Sem esses arrays o PRÓPRIO jogo não lê input.
+     Realocamos os arrays externos com os tamanhos corretos (do .ctor: uint[3], uint[7][],
+     uint[47][], uint[11][]) e deixamos initKey/setGameKey preencherem os internos. */
+  void *(*obj_cls)(void *)       = mmx_i2sym("il2cpp_object_get_class");
+  void *(*cls_elem)(void *)      = mmx_i2sym("il2cpp_class_get_element_class");
+  if (!obj_cls || !cls_elem) { g_mmx_keymap_inited = 1; return; }
+
+  void *keyflag0 = *(void **)((char *)self + 0x2c0);   /* uint[]   (vazio) */
+  void *gamekey0 = *(void **)((char *)self + 0x2e0);   /* uint[][] (vazio) */
+  if (!keyflag0 || !gamekey0) return;                  /* ainda não construído; espera */
+  void *jag_cls  = obj_cls(gamekey0);                  /* System.UInt32[][] */
+  void *uarr_cls = cls_elem(jag_cls);                  /* System.UInt32[]  (elemento p/ jagged) */
+  void *uint_cls = obj_cls(keyflag0) ? cls_elem(obj_cls(keyflag0)) : NULL; /* System.UInt32 */
+  if (!uarr_cls || !uint_cls) { return; }
+
+  void *nKeyFlag  = mmx_new_arr(uint_cls, 3);
+  void *nKeyReal  = mmx_new_arr(uint_cls, 3);
+  void *nKeyData  = mmx_new_arr(uarr_cls, 7);
+  void *nDefKey   = mmx_new_arr(uarr_cls, 47);
+  void *nGameKey  = mmx_new_arr(uarr_cls, 11);
+  if (nKeyFlag && mmx_managed_array_len(nKeyFlag) == 3) *(void **)((char *)self + 0x2c0) = nKeyFlag;
+  if (nKeyReal && mmx_managed_array_len(nKeyReal) == 3) *(void **)((char *)self + 0x2c8) = nKeyReal;
+  if (nKeyData && mmx_managed_array_len(nKeyData) == 7) *(void **)((char *)self + 0x2d0) = nKeyData;
+  if (nDefKey  && mmx_managed_array_len(nDefKey)  == 47)*(void **)((char *)self + 0x2d8) = nDefKey;
+  if (nGameKey && mmx_managed_array_len(nGameKey) == 11)*(void **)((char *)self + 0x2e0) = nGameKey;
+
+  typedef void (*rx_void0)(void *self, void *method);
+  rx_void0 initKey      = (rx_void0)(g_il2cpp_base + 0xdd8b5c);
+  rx_void0 initTouchKey = (rx_void0)(g_il2cpp_base + 0xdd805c);
+  rx_void0 setGameKey   = (rx_void0)(g_il2cpp_base + 0xde80cc);
+  initKey(self, NULL);       /* preenche key_data[i]/def_key[i] com uint[3] + keymap default */
+  initTouchKey(self, NULL);
+  setGameKey(self, NULL);    /* monta game_key[acao] a partir de def_key */
+
+  int glen2 = mmx_managed_array_len(*(void **)((char *)self + 0x2e0));
+  int klen2 = mmx_managed_array_len(*(void **)((char *)self + 0x2d0));
+  int dlen2 = mmx_managed_array_len(*(void **)((char *)self + 0x2d8));
+  int flen2 = mmx_managed_array_len(*(void **)((char *)self + 0x2c0));
+  if (nGameKey) {
+    unsigned long *w = (unsigned long *)nGameKey;
+    fprintf(stderr, "[KEYINIT-RAW] nGameKey=%p klass=%lx w0x08=%lx bounds0x10=%lx len0x18=%lx vec0x20=%lx | keyflag0_len0x18=%lx\n",
+            nGameKey, w[0], w[1], w[2], w[3], w[4],
+            keyflag0 ? *(unsigned long *)((char *)keyflag0 + 0x18) : 0);
+  }
+  fprintf(stderr, "[KEYINIT] self=%p realloc KeyFlag=%d key_data=%d def_key=%d game_key %d->%d (arr_new gk=%p kd=%p) try=%d\n",
+          (void *)self, flen2, klen2, dlen2, glen, glen2, nGameKey, nKeyData, tries);
+  fsync(2);
+  if (glen2 > 0 && klen2 > 0) g_mmx_keymap_inited = 1;
+}
 static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
   if (getenv("MMX_CTRLSPY")) {
     static int nentry;
     int act_now = mmx_ctrl_act_bits_now();
