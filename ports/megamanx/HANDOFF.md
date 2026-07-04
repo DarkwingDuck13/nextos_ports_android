@@ -1,5 +1,33 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-03 s4 — 🏆 X RENDERIZA NA FASE (shader CutOut resolvido) + infra de controle/fullver
+
+**GRANDE AVANÇO:** o X (que aparecia **magenta/bloco amarelo** na fase) agora **renderiza limpo**. Era o shader `Sprites/CutOut` (sprite do X + cenário) caindo no `Hidden/InternalErrorShader`. Commit `01cbfc7`.
+
+- **Causa-raiz (3 bugs no `transpile_shaders.py`)** — o Unity rejeitava shaders PRÓPRIOS do jogo (os que NÃO existem no Terraria enxertado; Default/TMP funcionavam por serem enxerto do Terraria):
+  1. Bloco de macros `UNITY_SUPPORTS_UNIFORM_LOCATION` sem preâmbulo HLSLCC virava GLSL inválido (`#define  #define  #else`).
+  2. `precision highp float;` cru no fragment → Mali-450 (Utgard) **não tem highp no fragment** → agora emite o bloco guardado (`#ifdef GL_FRAGMENT_PRECISION_HIGH`).
+  3. 🔑 **O trailing de channel/binding (`m_ChannelCount`, ~13 bytes com `19000000`) DEPOIS do GLSL era DESCARTADO** no rebuild do subprograma → Unity: `Failed to load GpuProgram from binary shader data`. Agora preservado.
+- **Como reproduzir a fase com o X:** receita do §8 abaixo + `MMX_PROFORCE_SCENE=12 MMX_PROFORCE_HIT=80` (pula direto pra fase via `scn_goLoadScene`, il2cpp+0xdecf2c). Confirmado: intro (rodovia/carro/caminhão/READY) renderiza, 0 `Failed to load GpuProgram`.
+- **⚠️ data.unity3d NÃO é versionado.** O device tem o data com o CutOut já corrigido. Pra regerar limpo: `python3 transpile_shaders.py <data.unity3d>` (do APK pristino). O transpilador do repo já está corrigido e validado (guard + trailing).
+
+**Controles — infra pronta (commit `f2b00a0`), FALTA validar em gameplay:**
+- O pad físico É lido via SDL (`[MMX_GAMEPAD] SDL pad js0: USB Gamepad`). KeyEvent injetado é aceito (ret=1) MAS o jogo **ignora** (é port mobile: lê `RockmanX.controlKey` = TOUCH da tela, não gamepad Android).
+- Implementei **pad→touch (estilo MM5/6)**: `MMX_GP_TOUCH=1` converte o pad em toques nas coords dos controles virtuais (D-pad radial 1 dedo + botões dedos separados), multitouch real no `jni_shim` (`g_mt_*`, getX/getY/getPointerId por índice). Emissão verificada (D-pad (250,530), pulo (1170,610)). Coords tunáveis: `MMX_DP_CX/CY/OFF`, `MMX_JX/JY` (pulo), `MMX_SX/SY` (tiro), `MMX_DX/DY` (dash), `MMX_WX/WY` (arma).
+- ⛔ **MURO:** o touch injetado retorna **ret=0** (KeyEvent era ret=1) e o Unity só lê o touch em certos estados. E a fase do PROFORCE é uma **DEMO que volta ao menu** — não deu pra segurar gameplay controlável pra validar. **Próximo:** ou confirmar que o touch chega no `controlKey` em gameplay real, OU hookar `controlKey` pra injetar o bitmask direto.
+
+**Versão completa (fullver) — infra pronta (commit `3415699`), "BUY FULL VERSION" AINDA aparece:**
+- `MMX_FULLVER=1` agora **varre todos os métodos** e força a TRUE os getters bool de compra: `CStoreKit.getProductUnlock` (FALTAVA!), `getProductUse`, `HasNumberOfPurchases`, etc. (`MMX_STOREDUMP`/`STOREDUMP2` listam a API).
+- ⛔ **MURO:** "BUY FULL VERSION" persiste e a fase continua bounce. Determinante NÃO é o getter bool — o menu lê o **objeto `CStoreKit.ProductInfo` (campo `.use`/`.unlock`)** cacheado por `CStoreKit.MakeProductData()` no boot. **Próximo passo (estava começando):** hookar `getProductInfo(id)` ou `MakeProductData` (via `hook_arm64`, tramp `mk_tramp`) e forçar os campos bool do ProductInfo = 1. Ver API no `STORE2` dump (CStoreKit: `getProductInfo/1 -> ProductInfo`, `setProductUse/2`, `MakeProductData/0`).
+
+### 🎯 MISSÕES PRÓXIMA SEÇÃO (prioridade)
+1. **Liberar versão completa DE VERDADE** (destrava gameplay estável, que destrava o teste de controle): hookar `CStoreKit.getProductInfo`/`MakeProductData` e forçar `ProductInfo.use=unlock=true`. Objetivo: "BUY FULL VERSION" some + Story Mode entra em gameplay PERSISTENTE (não a demo que volta).
+2. **Controles:** com gameplay estável, validar `MMX_GP_TOUCH` (o X anda/pula?). Tunar coords se o D-pad/botões estiverem no lugar errado. Se o touch não chegar no `controlKey`, hookar `controlKey` e injetar o bitmask do pad direto (estilo MM5/6 dpad-bitmask).
+3. **Áudio:** FMOD spamma `Cannot create FMOD::Sound instance for clip "114"/"47"`. Investigar o caminho FMOD no so-loader.
+
+---
+
+
 > Estado em 2026-07-03 (s3). **Boota, renderiza a tela-titulo real do Mega Man X sem magenta, aceita force-start ate o menu/tela "Buy Full Version", e o touch Android ja entra no parser da Unity.** O muro antigo `draws=0` foi superado. O foco atual e contornar o gate de versao completa/menu para chegar em gameplay, depois fechar controles e audio.
 
 ## 2026-07-03 s3 — avanço critico salvo
