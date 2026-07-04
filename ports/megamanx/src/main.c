@@ -1343,6 +1343,14 @@ static void mmx_fix_game_methods(void) {
             !strcmp(targets[t].mn, "getProductUse")) {
           kind = MMX_PATCH_TRUE;
         }
+        /* 🔓 GATE DO TRIAL: RockmanX.IsInAppPayment(this,a,b) é O check de versão completa.
+           TITLEMENU_run: `bl IsInAppPayment; tbz w0,#0, buyPath` -> TRUE=segue (scn_goLoadScene),
+           FALSE=fica no menu/buy. STAGE_init gateia 5× igual. Forçar TRUE = jogo completo. */
+        if (getenv("MMX_FULLVER") &&
+            !strcmp(targets[t].cn, "RockmanX") &&
+            !strcmp(targets[t].mn, "IsInAppPayment")) {
+          kind = MMX_PATCH_TRUE;
+        }
         if (is_inst > 0) {
           if (kind == MMX_PATCH_W1) kind = MMX_PATCH_W2;
           else if (kind == MMX_PATCH_X1) kind = MMX_PATCH_X2;
@@ -4372,9 +4380,35 @@ static void ter_name_pump(void) {
     }
   }
 }
+/* MMX_ILPATCH="0xOFF=0xWORD,...": escreve words de 32 bits crus no .text do libil2cpp
+   (g_il2cpp_base + OFF). Pra neutralizar branches de trial/demo e forçar retornos. Aplica
+   uma vez, quando g_il2cpp_base já está resolvido. */
+static void mmx_ilpatch(void) {
+  static int done;
+  if (done || !getenv("MMX_ILPATCH") || !g_il2cpp_base) return;
+  done = 1;
+  const char *p = getenv("MMX_ILPATCH");
+  long pgsz = sysconf(_SC_PAGESIZE);
+  while (*p) {
+    unsigned long off = strtoul(p, (char **)&p, 0);
+    if (*p == '=') { p++;
+      unsigned long word = strtoul(p, (char **)&p, 0);
+      uintptr_t a = g_il2cpp_base + off;
+      void *pa = (void *)(a & ~((uintptr_t)pgsz - 1));
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+      *(uint32_t *)a = (uint32_t)word;
+      mprotect(pa, pgsz * 2, PROT_READ | PROT_EXEC);
+      __builtin___clear_cache((char *)pa, (char *)pa + pgsz * 2);
+      fprintf(stderr, "[MMX_ILPATCH] il2cpp+0x%lx = 0x%08lx\n", off, word);
+    }
+    while (*p && *p != ',') p++; if (*p == ',') p++;
+  }
+  fsync(2);
+}
 static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   ter_nuke_methods();   /* TER_NUKEKB: neutraliza KeyboardInput.Update (lazy, até achar) */
   mmx_nuke_integrity();  /* MMX_NOINTEGRITY: pula o Play Integrity DRM do boot */
+  mmx_ilpatch();        /* MMX_ILPATCH: patches crus no .text do libil2cpp (trial/demo gates) */
   mmx_fix_game_methods(); /* MMX_FIXGAME: neutraliza input/IAP Android quebrados no MMX */
   mmx_lifedump();       /* MMX_LIFEDUMP: enumera classes/metodos de cena do MMX */
   ter_fix_singleplayer(); /* TER_FIXSP: neutraliza OldSaveSynchronise.CopyOldSaves (tela preta SP) */
@@ -7116,6 +7150,7 @@ int main(int argc, char **argv) {
       wait_all(g_preload_mgr);
     }
     mmx_nuke_integrity();  /* pula Play Integrity ANTES do render */
+    mmx_ilpatch();        /* MMX_ILPATCH: patches crus no .text do libil2cpp (trial/demo gates) */
     mmx_fix_game_methods(); /* MMX_FIXGAME: input/IAP quebrados no caminho sem eglSwapBuffers */
     mmx_lifedump();       /* MMX_LIFEDUMP: enumera classes/metodos de cena do MMX */
     mmx_fielddump();      /* MMX_FIELDDUMP: enumera campos/metodos de input/RockmanX */
