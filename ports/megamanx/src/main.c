@@ -1003,8 +1003,28 @@ static void mmx_ensure_keymap(long self) {
   fsync(2);
   if (glen2 > 0 && klen2 > 0) g_mmx_keymap_inited = 1;
 }
+/* MMX_GOSTAGE=N: chama RockmanX.setGoStage(this, N) (il2cpp+0xe0fa74) uma vez, alguns frames
+   depois do jogo estabilizar no menu. setGoStage monta os dados da fase e roteia PROLOGUE->STAGE
+   (subagente confirmou: scn_STAGE_run lê input incondicionalmente, sem gate de demo). É o caminho
+   "New Game" programático — evita o bounce do PROFORCE (que pula pra cena 12 sem dados de fase). */
+void *volatile g_mmx_rockmanx_self;
+static void mmx_go_stage(long self) {
+  static int done, wait;
+  if (done || !self || !getenv("MMX_GOSTAGE") || !g_il2cpp_base) return;
+  int at = mmx_env_i("MMX_GOSTAGE_F", 240);
+  if (wait++ < at) return;
+  int n = mmx_env_i("MMX_GOSTAGE", 0);
+  typedef void (*rx_seti)(void *self, int n, void *method);
+  rx_seti setGoStage = (rx_seti)(g_il2cpp_base + 0xe0fa74);
+  fprintf(stderr, "[GOSTAGE] setGoStage(self=%p, %d) @ frame~%d\n", (void *)self, n, g_render_frame);
+  fsync(2);
+  setGoStage(self, n, NULL);
+  done = 1;
+}
 static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  g_mmx_rockmanx_self = (void *)a0;
   if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
+  if (getenv("MMX_GOSTAGE")) mmx_go_stage(a0);
   if (getenv("MMX_CTRLSPY")) {
     static int nentry;
     int act_now = mmx_ctrl_act_bits_now();
