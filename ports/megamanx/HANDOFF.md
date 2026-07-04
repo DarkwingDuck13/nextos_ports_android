@@ -1,5 +1,51 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-04 s9 — estudo dos botões A/Y/Start: sem regressão, estado restaurado, próximo passo é pulso curto
+
+**Estado salvo para retomar depois:** o device foi restaurado ao checkpoint estável do s8:
+
+- `/storage/roms/megamanx/megamanx` SHA256 `5ecffe70c84c34e8aa6f6a851997232626845eda96348d452f2319973c9317bc`
+- `/storage/roms/megamanx/run.sh` SHA256 `42dd1639693645ab39df778ec7a06c5863c677c8ed5b1a58653787d36fc645e3`
+- Nenhum processo `./megamanx` ficou rodando no device.
+- As tentativas ruins foram revertidas do código e do `run.sh`; não deixar `MMX_CTRL_REAL_HELD=1` no default.
+
+**O que foi testado e NÃO resolveu:**
+
+1. `MMX_CTRL_BTN_JUMP=0` explícito no `run.sh`. Sem efeito; isso já era o default do hook.
+2. Override de keycode do A para `SPACE` (`KEYCODE_SPACE=62`), porque o `InputManager` do Unity tem
+   `Jump=space/joystick button 0`. Sem efeito; revertido.
+3. Híbrido pad nativo + touch só para ações (`A` pulo, `Y` tiro, `START` pause) nas coords antigas
+   `MMX_JX/JY`, `MMX_SX/SY`, `MMX_STX/STY`. Sem efeito; revertido.
+4. `MMX_CTRL_REAL_HELD=1 MMX_CTRL_BTN_SHOT=3`. Provou que real/trigger sustentado é perigoso: gerou
+   **dash infinito**. Não usar globalmente.
+
+**O que foi comprovado:**
+
+- O pad físico chega ao jogo: logs mostram KeyEvents `A=96`, `B=97`, `X=99`, `Y=100`, `LB=102`, `RB=103`.
+- O `B` dá dash pelo caminho nativo Android/Unity e deve ser preservado. Não usar `MMX_SWAPAB`, não remapear
+  dash globalmente e manter `MMX_CTRL_IDX_DASH=-1` até haver motivo forte.
+- `A/Y/X/LB/RB` chegam como KeyEvent, mas a Unity/jogo não converte isso em pulo/tiro nessa fase.
+- A prova importante: `MMX_CTRL_FORCE_IDX=2 TER_SHOT=900 sh run.sh` faz o X ficar no ar/pular.
+  Screenshot: `runs/2026-07-04-codex-forceidx-study/force_idx_2.png`
+  SHA256 `46c70129621eb8e71e0040c55e9441a3b1136041861ff0de1d1a22f743aff3fa`.
+  Log: `runs/2026-07-04-codex-forceidx-study/force_idx_2.run.out`
+  SHA256 `ee547770f5c16bfa0e4f91681e87a4c1b1c39bc13511aa1b3041c09b3596de12`.
+- Conclusão: `game_key[2]` é de fato pulo e o caminho direto `RockmanX.controlKey` consegue acionar ação.
+  O problema do A físico não é SDL/keycode simples; é a duração/semântica do trigger.
+
+**Próximo passo recomendado para Claude/Codex:**
+
+Implementar um pulso curto por ação no hook direto, não um `REAL_HELD` global:
+
+- Ao detectar borda de `A`, injetar `game_key[2]` por 2-3 frames nos planos que `controlKey`/`rock_keyAction`
+  esperam (`KeyFlagReal`/`key_data` real), depois soltar.
+- Para tiro, primeiro fazer sweep com `MMX_CTRL_FORCE_IDX=N` (provável `3`, mas confirmar visualmente/log) e
+  então aplicar o mesmo pulso curto ao `Y`.
+- Não tocar no `B`: ele já dá dash nativo e qualquer trigger global pode causar dash infinito.
+- Se for instrumentar, usar `MMX_CTRLSPY=1` com cuidado e salvar runs separados; os logs verbosos atrasam o jogo.
+
+---
+
 ## 2026-07-04 s8 — 🔊 ÁUDIO DESBLOQUEADO: OpenSL/SDL + fallback de streams, sem regressão de gameplay
 
 **Estado atual:** `run.sh` agora sobe **full version + gameplay + pad físico + áudio**. O único muro grande

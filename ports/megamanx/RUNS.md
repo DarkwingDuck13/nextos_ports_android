@@ -1,5 +1,45 @@
 # Mega Man X port runs
 
+## 2026-07-04 button action study: A/Y did not become playable yet
+
+### Current state after study
+
+- Device and repo were restored to the stable s8 gameplay/audio checkpoint.
+- No `megamanx` process was left running on `192.168.31.79`.
+- Stable hashes on device after restore:
+  - `megamanx`: `5ecffe70c84c34e8aa6f6a851997232626845eda96348d452f2319973c9317bc`
+  - `run.sh`: `42dd1639693645ab39df778ec7a06c5863c677c8ed5b1a58653787d36fc645e3`
+
+### What was tested
+
+- Explicit `MMX_CTRL_BTN_JUMP=0`: no effect; this was already the default.
+- `A -> KEYCODE_SPACE(62)`: no effect.
+- Hybrid native gamepad plus touch-only actions (`A` jump, `Y` shot, `START` pause): no effect.
+- `MMX_CTRL_REAL_HELD=1`: bad default, caused continuous dash behavior.
+
+### Key evidence
+
+- Physical buttons reached the game as KeyEvents:
+  `A=96`, `B=97`, `X=99`, `Y=100`, `LB=102`, `RB=103`.
+- `B` dash still works through the native Android/Unity path and should be preserved.
+- `MMX_CTRL_FORCE_IDX=2` makes X jump/float, proving `game_key[2]` is a working jump action through
+  the direct `RockmanX.controlKey` path.
+
+### Saved run
+
+- `runs/2026-07-04-codex-forceidx-study`
+  - `force_idx_2.png`: X is airborne while `MMX_CTRL_FORCE_IDX=2` is forced.
+  - `force_idx_2.ppm`: original raw screenshot.
+  - `force_idx_2.run.out`: log for the forced-index run.
+  - PNG SHA256: `46c70129621eb8e71e0040c55e9441a3b1136041861ff0de1d1a22f743aff3fa`
+  - Log SHA256: `ee547770f5c16bfa0e4f91681e87a4c1b1c39bc13511aa1b3041c09b3596de12`
+
+### Resume point
+
+Do not retry global `MMX_CTRL_REAL_HELD=1`. The next likely fix is an edge-triggered short pulse:
+on physical `A` down, inject `game_key[2]` into the real/trigger planes for 2-3 frames only, then release.
+Find the shot index with a `MMX_CTRL_FORCE_IDX=N` sweep before mapping `Y`.
+
 ## 2026-07-04 audio ForceSL + stream fallback
 
 ### Current state

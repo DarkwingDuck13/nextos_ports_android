@@ -1,0 +1,2039 @@
+TLS guard: tpidr=0x7fa8956b80 slot+0x28=0x7fa8956ba8 pad=[0x7fa8956b90..0x7fa8956c90] DENTRO ok (val=0x0)
+=== Cuphead Unity 2017.4 IL2CPP (arm64 GLES2) so-loader ===
+[libs] z/GLESv2/EGL dlopen (glClear=0x7fa8146824)
+[F0] heap 96MB @ 0x7fa2080000, carregando libunity.so...
+so_load: Opening libunity.so
+so_load: File size: 17266232 bytes
+so_load: ELF64 AArch64, 8 program headers, 29 section headers
+so_load: Total load size: 18243584 bytes (max: 100663296)
+so_load: load base = 0x7fa2080000
+so_load: 348 dynamic symbols found
+[F0] libunity: text=0x7fa2080000+16898668 data=0x7fa309f390+1333328
+[F0] resolvendo 420 imports...
+[passthrough FALHOU dlsym] pthread_atfork\n[GOT] ANativeWindow_getFormat: 0 slots (nao achado)
+[GOT] stat64: 0 slots (nao achado)
+[GOT] lstat64: 0 slots (nao achado)
+[GOT] fstat64: 0 slots (nao achado)
+[GOT] statfs64: 0 slots (nao achado)
+[GOT] strlcpy: 0 slots (nao achado)
+[GOT] strlcat: 0 slots (nao achado)
+[GOT] pthread_kill: 0 slots (nao achado)
+[GOT] pthread_kill: 0 slots (nao achado)
+[GOT] __memcpy_chk: 0 slots (nao achado)
+[GOT] __memset_chk: 0 slots (nao achado)
+[GOT] __strcpy_chk: 0 slots (nao achado)
+[GOT] __strcat_chk: 0 slots (nao achado)
+[GOT] __snprintf_chk: 0 slots (nao achado)
+[GOT] _exit: 0 slots (nao achado)
+[GOT] sem_trywait: 0 slots (nao achado)
+[GOT] sem_timedwait: 0 slots (nao achado)
+[GOT] sem_getvalue: 0 slots (nao achado)
+[GOT] pthread_rwlock_init: 0 slots (nao achado)
+[GOT] pthread_rwlock_destroy: 0 slots (nao achado)
+[GOT] pthread_rwlock_rdlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_wrlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_tryrdlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_trywrlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_unlock: 0 slots (nao achado)
+[GOT] pthread_sigmask: 0 slots (nao achado)
+[GOT] __google_potentially_blocking_region_begin: 0 slots (nao achado)
+[GOT] __google_potentially_blocking_region_end: 0 slots (nao achado)
+[TER] storage-check 0x2d8fac (tbz->dialog) NOPado
+[MMX_PATCH] libunity+0x34eafc = 0x14000005
+[MMX_FORCESL] audio output 21/22 selector -> 22 (OpenSL)
+[CSSPY] MMX hook createSound(0x9ccaa8) instalado (fallback=1)
+[F0] init_array...
+init_array[0/426] = 0x7fa212a130 (off 0xaa130)
+init_array[1/426] = 0x7fa212a180 (off 0xaa180)
+init_array[2/426] = 0x7fa212a1c0 (off 0xaa1c0)
+init_array[3/426] = 0x7fa212a208 (off 0xaa208)
+init_array[4/426] = 0x7fa212a248 (off 0xaa248)
+init_array[5/426] = 0x7fa212a290 (off 0xaa290)
+[STUB] __cxa_atexit\n[STUB] __cxa_atexit\n[F0] libunity init OK
+[MM:pos-init_array-unity] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+jni_shim: Initialized (vm=0x555d149c00, env=0x555d149bf0)
+jni_shim: AttachCurrentThread
+jni_shim: FindClass(com/unity3d/player/UnityPlayer)
+jni_shim: >> RegisterNatives(26 metodos)
+     [0] initJni (Landroid/content/Context;)V  -> 0x7fa23ced6c
+     [1] nativeDone ()Z  -> 0x7fa23cedd4
+     [2] nativePause ()Z  -> 0x7fa23cee54
+     [3] nativeRecreateGfxState (ILandroid/view/Surface;)V  -> 0x7fa23cefb8
+     [4] nativeSendSurfaceChangedEvent ()V  -> 0x7fa23cf01c
+     [5] nativeRender ()Z  -> 0x7fa23cf068
+     [6] nativeResume ()V  -> 0x7fa23ceeac
+     [7] nativeLowMemory ()V  -> 0x7fa23ceee8
+     [8] nativeApplicationUnload ()V  -> 0x7fa23cef24
+     [9] nativeFocusChanged (Z)V  -> 0x7fa23cef68
+     [10] nativeSetInputArea (IIII)V  -> 0x7fa23cf244
+     [11] nativeSetKeyboardIsVisible (Z)V  -> 0x7fa23cf2b8
+     [12] nativeSetInputString (Ljava/lang/String;)V  -> 0x7fa23cf30c
+     [13] nativeSetInputSelection (II)V  -> 0x7fa23cf3b8
+     [14] nativeSoftInputClosed ()V  -> 0x7fa23cf4d8
+     [15] nativeSoftInputCanceled ()V  -> 0x7fa23cf414
+     [16] nativeReportKeyboardConfigChanged ()V  -> 0x7fa23cf49c
+     [17] nativeSoftInputLostFocus ()V  -> 0x7fa23cf458
+     [18] nativeInjectEvent (Landroid/view/InputEvent;)Z  -> 0x7fa23cf0bc
+     [19] nativeUnitySendMessage (Ljava/lang/String;Ljava/lang/String;[B)V  -> 0x7fa23cf51c
+     [20] nativeIsAutorotationOn ()Z  -> 0x7fa23cf6c0
+     [21] nativeMuteMasterAudio (Z)V  -> 0x7fa23cf71c
+     [22] nativeRestartActivityIndicator ()V  -> 0x7fa23cf774
+     [23] nativeSetLaunchURL (Ljava/lang/String;)V  -> 0x7fa23cf7b0
+     [24] nativeOrientationChanged (II)V  -> 0x7fa23cf92c
+     [25] nativeHidePreservedContent ()V  -> 0x7fa23cf8f0
+jni_shim: FindClass(com/google/androidgamesdk/ChoreographerCallback)
+jni_shim: >> RegisterNatives(1 metodos)
+     [0] nOnChoreographer (JJ)V  -> 0x7fa2919c6c
+jni_shim: FindClass(com/google/androidgamesdk/SwappyDisplayManager)
+jni_shim: >> RegisterNatives(2 metodos)
+     [0] nOnRefreshPeriodChanged (JJJJ)V  -> 0x7fa2917d2c
+     [1] nSetSupportedRefreshPeriods (J[J[I)V  -> 0x7fa2917b4c
+jni_shim: FindClass(com/unity3d/player/GoogleARCoreApi)
+jni_shim: >> RegisterNatives(3 metodos)
+     [0] initializeARCore (Landroid/app/Activity;)V  -> 0x7fa23ce328
+     [1] pauseARCore ()V  -> 0x7fa23ce38c
+     [2] resumeARCore ()V  -> 0x7fa23ce3d4
+jni_shim: FindClass(com/unity3d/player/Camera2Wrapper)
+jni_shim: >> RegisterNatives(4 metodos)
+     [0] initCamera2Jni ()V  -> 0x7fa239eacc
+     [1] deinitCamera2Jni ()V  -> 0x7fa239eb18
+     [2] nativeFrameReady (Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;III)V  -> 0x7fa23a59e4
+     [3] nativeSurfaceTextureReady (Ljava/lang/Object;)V  -> 0x7fa23a5890
+jni_shim: FindClass(com/unity3d/player/HFPStatus)
+jni_shim: >> RegisterNatives(2 metodos)
+     [0] initHFPStatusJni ()V  -> 0x7fa23c9328
+     [1] deinitHFPStatusJni ()V  -> 0x7fa23c9374
+jni_shim: FindClass(com/unity3d/player/AudioVolumeHandler)
+jni_shim: >> RegisterNatives(1 metodos)
+     [0] onAudioVolumeChanged (I)V  -> 0x7fa23cb5d4
+jni_shim: FindClass(com/unity3d/player/UnityCoreAssetPacksStatusCallbacks)
+jni_shim: >> RegisterNatives(1 metodos)
+     [0] nativeStatusQueryResult (Ljava/lang/String;II)V  -> 0x7fa23b3b40
+jni_shim: FindClass(com/unity3d/player/OrientationLockListener)
+jni_shim: >> RegisterNatives(1 metodos)
+     [0] nativeUpdateOrientationLockState (I)V  -> 0x7fa23a86a8
+[F0] JNI_OnLoad = 0x10006
+[F0] === libunity OK ===
+[MM:pos-JNI_OnLoad] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+so_load: Opening libil2cpp.so
+so_load: File size: 62610752 bytes
+so_load: ELF64 AArch64, 8 program headers, 28 section headers
+so_load: Total load size: 64864256 bytes (max: 100663296)
+so_load: load base = 0x7f8a000000
+so_load: 2647 dynamic symbols found
+[F1] libil2cpp: text=0x7f8a000000+57679312
+[passthrough FALHOU dlsym] pthread_atfork\n[GOT] mmap64: 0 slots (nao achado)
+[GOT] stat64: 0 slots (nao achado)
+[GOT] lstat64: 0 slots (nao achado)
+[GOT] statfs64: 0 slots (nao achado)
+[GOT] statfs: 0 slots (nao achado)
+[GOT] strlcat: 0 slots (nao achado)
+[GOT] __memcpy_chk: 0 slots (nao achado)
+[GOT] __memset_chk: 0 slots (nao achado)
+[GOT] __strcpy_chk: 0 slots (nao achado)
+[GOT] __strcat_chk: 0 slots (nao achado)
+[GOT] __snprintf_chk: 0 slots (nao achado)
+[GOT] _exit: 0 slots (nao achado)
+[GOT] __android_log_write: 0 slots (nao achado)
+[GOT] __android_log_vprint: 0 slots (nao achado)
+[GOT] sem_trywait: 0 slots (nao achado)
+[GOT] sem_destroy: 0 slots (nao achado)
+[GOT] pthread_rwlock_init: 0 slots (nao achado)
+[GOT] pthread_rwlock_destroy: 0 slots (nao achado)
+[GOT] pthread_rwlock_rdlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_wrlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_tryrdlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_trywrlock: 0 slots (nao achado)
+[GOT] pthread_rwlock_unlock: 0 slots (nao achado)
+[BOOTST] inline hook BootScene.<Start>d__5::MoveNext @ il2cpp+0xe3b438
+[F1] libil2cpp init_array...
+init_array[0/24] = 0x7f8a9e8370 (off 0x9e8370)
+init_array[1/24] = 0x7f8a9e83a4 (off 0x9e83a4)
+init_array[2/24] = 0x7f8a9e8510 (off 0x9e8510)
+init_array[3/24] = 0x7f8a9e8604 (off 0x9e8604)
+init_array[4/24] = 0x7f8a9e8718 (off 0x9e8718)
+init_array[5/24] = 0x7f8a9e8750 (off 0x9e8750)
+[F1] libil2cpp carregado OK
+[MM:pos-init_array-il2cpp] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+[NATIVES] 41 métodos registrados:
+  initJni = 0x7fa23ced6c
+  nativeDone = 0x7fa23cedd4
+  nativePause = 0x7fa23cee54
+  nativeRecreateGfxState = 0x7fa23cefb8
+  nativeSendSurfaceChangedEvent = 0x7fa23cf01c
+  nativeRender = 0x7fa23cf068
+  nativeResume = 0x7fa23ceeac
+  nativeLowMemory = 0x7fa23ceee8
+  nativeApplicationUnload = 0x7fa23cef24
+  nativeFocusChanged = 0x7fa23cef68
+  nativeSetInputArea = 0x7fa23cf244
+  nativeSetKeyboardIsVisible = 0x7fa23cf2b8
+  nativeSetInputString = 0x7fa23cf30c
+  nativeSetInputSelection = 0x7fa23cf3b8
+  nativeSoftInputClosed = 0x7fa23cf4d8
+  nativeSoftInputCanceled = 0x7fa23cf414
+  nativeReportKeyboardConfigChanged = 0x7fa23cf49c
+  nativeSoftInputLostFocus = 0x7fa23cf458
+  nativeInjectEvent = 0x7fa23cf0bc
+  nativeUnitySendMessage = 0x7fa23cf51c
+  nativeIsAutorotationOn = 0x7fa23cf6c0
+  nativeMuteMasterAudio = 0x7fa23cf71c
+  nativeRestartActivityIndicator = 0x7fa23cf774
+  nativeSetLaunchURL = 0x7fa23cf7b0
+  nativeOrientationChanged = 0x7fa23cf92c
+  nativeHidePreservedContent = 0x7fa23cf8f0
+  nOnChoreographer = 0x7fa2919c6c
+  nOnRefreshPeriodChanged = 0x7fa2917d2c
+  nSetSupportedRefreshPeriods = 0x7fa2917b4c
+  initializeARCore = 0x7fa23ce328
+  pauseARCore = 0x7fa23ce38c
+  resumeARCore = 0x7fa23ce3d4
+  initCamera2Jni = 0x7fa239eacc
+  deinitCamera2Jni = 0x7fa239eb18
+  nativeFrameReady = 0x7fa23a59e4
+  nativeSurfaceTextureReady = 0x7fa23a5890
+  initHFPStatusJni = 0x7fa23c9328
+  deinitHFPStatusJni = 0x7fa23c9374
+  onAudioVolumeChanged = 0x7fa23cb5d4
+  nativeStatusQueryResult = 0x7fa23b3b40
+  nativeUpdateOrientationLockState = 0x7fa23a86a8
+[F2] EGL REAL Mali fbdev (fbdev_window 0x0)
+[F2] initJni...
+jni_shim: GetJavaVM -> nossa VM
+jni_shim: FindClass(java/lang/ClassLoader)
+jni_shim: GetMethodID(getClassLoader, ()Ljava/lang/ClassLoader;)
+jni_shim: CallObjectMethod(getClassLoader)
+jni_shim: GetStaticMethodID(forName, (Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;)
+  [JNIEnv idx 19 chamado]\n  [JNIEnv idx 228 chamado]\n  [JNIEnv idx 228 chamado]\njni_shim: FindClass(bitter/jnibridge/JNIBridge)
+  [JNIEnv idx 228 chamado]\njni_shim: >> RegisterNatives(1 metodos)
+     [0] invoke (JLjava/lang/Class;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;  -> 0x7fa29f1d84
+  [JNIEnv idx 20 chamado]\n  [JNIEnv idx 19 chamado]\n  [JNIEnv idx 19 chamado]\njni_shim: FindClass(java/lang/StringBuilder)
+jni_shim: GetMethodID(<init>, ()V)
+jni_shim: FindClass(android/app/Activity)
+jni_shim: GetMethodID(getIntent, ()Landroid/content/Intent;)
+jni_shim: CallObjectMethod(getIntent)
+jni_shim: FindClass(android/content/Intent)
+jni_shim: GetMethodID(getExtras, ()Landroid/os/Bundle;)
+jni_shim: CallObjectMethod(getExtras)
+jni_shim: NewStringUTF(unity)
+jni_shim: FindClass(android/os/Bundle)
+jni_shim: GetMethodID(containsKey, (Ljava/lang/String;)Z)
+jni_shim: GetMethodID(toString, ()Ljava/lang/String;)
+jni_shim: FindClass(android/content/Context)
+jni_shim: GetMethodID(getAssets, ()Landroid/content/res/AssetManager;)
+jni_shim: CallObjectMethod(getAssets)
+jni_shim: NewStringUTF(bin/Data/boot.config)
+jni_shim: FindClass(android/content/res/AssetManager)
+jni_shim: GetMethodID(open, (Ljava/lang/String;)Ljava/io/InputStream;)
+jni_shim: CallObjectMethod(open)
+asset: open(bin/Data/boot.config) -> OK
+jni_shim: FindClass(java/io/IOException)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: FindClass(java/util/Scanner)
+jni_shim: GetMethodID(<init>, (Ljava/io/InputStream;Ljava/lang/String;)V)
+jni_shim: NewStringUTF(\z)
+jni_shim: GetMethodID(useDelimiter, (Ljava/lang/String;)Ljava/util/Scanner;)
+jni_shim: GetMethodID(next, ()Ljava/lang/String;)
+jni_shim: FindClass(java/util/NoSuchElementException)
+  [JNIEnv idx 20 chamado]\n  [JNIEnv idx 20 chamado]\n[F2] initJni OK
+[MM:pos-initJni] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+[MM:pre-RecreateGfxState] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+[F2] on_crash re-armado pre-RecreateGfxState
+[F2] nativeRecreateGfxState...
+[F2] nativeRecreateGfxState OK
+[MM:pos-RecreateGfxState] gMemoryManager=(nil) cursor-arena=0x7fa21b8684
+[F2] nativeRender=0x7fa23cf068 -> loop
+[MMX_INLINETASK] trampolim @0x7fa8954000 (d=0x6583a80) patch libunity+0x350580->b
+[MMX_GAMEPAD] SDL pad js0: USB Gamepad
+[r0>
+[STUB] fscanf\n[STUB] fscanf\njni_shim: FindClass(android/os/Process)
+jni_shim: GetStaticMethodID(setThreadPriority, (II)V)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+[ALOG:4 Unity] MemoryManager: Using 'Dynamic Heap' Allocator.
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+[STUB] getpriority\njni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+[STUB] getpriority\njni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: FindClass(android/media/AudioManager$OnAudioFocusChangeListener)
+jni_shim: FindClass(java/lang/Class)
+  [JNIEnv idx 172 chamado]\njni_shim: FindClass(bitter/jnibridge/JNIBridge)
+jni_shim: GetStaticMethodID(newInterfaceProxy, (J[Ljava/lang/Class;)Ljava/lang/Object;)
+jni_shim: newInterfaceProxy(handle=547071469552) -> 0x557b237160
+jni_shim: FindClass(android/location/LocationListener)
+  [JNIEnv idx 172 chamado]\njni_shim: newInterfaceProxy(handle=547071589072) -> 0x557b237c60
+jni_shim: GetStaticFieldID(LOCATION_SERVICE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(LOCATION_SERVICE) -> chave
+jni_shim: GetMethodID(getSystemService, (Ljava/lang/String;)Ljava/lang/Object;)
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: GetMethodID(initializeGoogleAr, ()Z)
+jni_shim: GetMethodID(getExternalFilesDir, (Ljava/lang/String;)Ljava/io/File;)
+jni_shim: CallObjectMethod(getExternalFilesDir)
+jni_shim: GetMethodID(getFilesDir, ()Ljava/io/File;)
+jni_shim: CallObjectMethod(getFilesDir)
+jni_shim: FindClass(android/os/Environment)
+jni_shim: GetStaticMethodID(getExternalStorageState, ()Ljava/lang/String;)
+jni_shim: GetStaticFieldID(MEDIA_MOUNTED, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(MEDIA_MOUNTED) -> fake
+jni_shim: FindClass(java/lang/String)
+jni_shim: GetMethodID(equals, (Ljava/lang/Object;)Z)
+jni_shim: FindClass(java/io/File)
+jni_shim: GetMethodID(getPath, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getPath)
+jni_shim: GetStringUTFChars -> "/storage/roms/megamanx/userdata"
+jni_shim: CallObjectMethod(getPath)
+jni_shim: GetStringUTFChars -> "/storage/roms/megamanx/userdata"
+jni_shim: GetMethodID(getPackageCodePath, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getPackageCodePath)
+jni_shim: GetStringUTFChars -> ""
+jni_shim: GetMethodID(getApplicationInfo, ()Landroid/content/pm/ApplicationInfo;)
+jni_shim: CallObjectMethod(getApplicationInfo)
+jni_shim: FindClass(android/content/pm/ApplicationInfo)
+jni_shim: GetFieldID(splitPublicSourceDirs, [Ljava/lang/String;)
+jni_shim: FindClass(com/unity3d/player/PlayAssetDeliveryUnityWrapper)
+jni_shim: GetStaticMethodID(init, (Landroid/content/Context;)Lcom/unity3d/player/PlayAssetDeliveryUnityWrapper;)
+jni_shim: CallStaticObjectMethod(init)
+jni_shim: GetMethodID(playCoreApiMissing, ()Z)
+jni_shim: FindClass(com/unity3d/player/UnityCoreAssetPacksStatusCallbacks)
+jni_shim: GetMethodID(<init>, ()V)
+jni_shim: GetMethodID(registerDownloadStatusListener, (Lcom/unity3d/player/IAssetPackManagerDownloadStatusCallback;)Ljava/lang/Object;)
+jni_shim: CallObjectMethod(registerDownloadStatusListener)
+jni_shim: NewStringUTF(UnityDataAssetPack)
+jni_shim: GetMethodID(getAssetPackState, (Ljava/lang/String;Lcom/unity3d/player/IAssetPackManagerStatusQueryCallback;)V)
+jni_shim: CallVoidMethod(getAssetPackState)
+jni_shim: getAssetPackState(UnityDataAssetPack) -> COMPLETED via nativeStatusQueryResult=0x7fa23b3b40
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: GetMethodID(getBytes, (Ljava/lang/String;)[B)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("UnityDataAssetPack") -> byte[18]
+jni_shim: NewStringUTF(UnityStreamingAssetsPack)
+jni_shim: CallVoidMethod(getAssetPackState)
+jni_shim: getAssetPackState(UnityStreamingAssetsPack) -> COMPLETED via nativeStatusQueryResult=0x7fa23b3b40
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("UnityStreamingAssetsPack") -> byte[24]
+jni_shim: GetMethodID(getObbDirs, ()[Ljava/io/File;)
+jni_shim: CallObjectMethod(getObbDirs)
+jni_shim: GetMethodID(getObbDir, ()Ljava/io/File;)
+jni_shim: CallObjectMethod(getObbDir)
+  [JNIEnv idx 172 chamado]\njni_shim: GetMethodID(getPackageName, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getPackageName)
+jni_shim: FindClass(java/lang/Runnable)
+jni_shim: newInterfaceProxy(handle=547071463856) -> 0x557b234f70
+jni_shim: GetMethodID(runOnUiThread, (Ljava/lang/Runnable;)V)
+jni_shim: CallVoidMethod(runOnUiThread)
+jni_shim: >> RODANDO Runnable (handle=547071463856) ...
+  [JNIEnv idx 7 chamado]\njni_shim: FindClass(java/lang/Object)
+jni_shim: FindClass(java/lang/reflect/Method)
+jni_shim: GetMethodID(toString, ()Ljava/lang/String;)
+jni_shim: FindClass(java/lang/NoSuchMethodError)
+jni_shim: << Runnable terminou (handle=547071463856)
+jni_shim: GetStaticFieldID(MODE_PRIVATE, I)
+jni_shim: GetStaticIntField(fid=0x555d155dc0) -> 0
+jni_shim: CallObjectMethod(getPackageName)
+jni_shim: GetStringUTFChars -> "jp.co.capcom.rockmanx"
+jni_shim: NewStringUTF(jp.co.capcom.rockmanx.v2.playerprefs)
+jni_shim: GetMethodID(getSharedPreferences, (Ljava/lang/String;I)Landroid/content/SharedPreferences;)
+jni_shim: CallObjectMethod(getSharedPreferences)
+jni_shim: FindClass(android/content/SharedPreferences)
+jni_shim: GetMethodID(edit, ()Landroid/content/SharedPreferences$Editor;)
+jni_shim: CallObjectMethod(edit)
+jni_shim: NewStringUTF(__UNITY_PLAYERPREFS_VERSION__)
+jni_shim: GetMethodID(getInt, (Ljava/lang/String;I)I)
+[PREFS] getInt key='__UNITY_PLAYERPREFS_VERSION__' def=0 -> 0
+jni_shim: NewStringUTF(jp.co.capcom.rockmanx)
+jni_shim: CallObjectMethod(getSharedPreferences)
+jni_shim: GetMethodID(getAll, ()Ljava/util/Map;)
+jni_shim: CallObjectMethod(getAll)
+jni_shim: FindClass(java/util/Map)
+jni_shim: GetMethodID(entrySet, ()Ljava/util/Set;)
+jni_shim: CallObjectMethod(entrySet)
+jni_shim: FindClass(java/util/Set)
+jni_shim: GetMethodID(iterator, ()Ljava/util/Iterator;)
+jni_shim: CallObjectMethod(iterator)
+jni_shim: FindClass(java/util/Iterator)
+jni_shim: GetMethodID(hasNext, ()Z)
+jni_shim: NewStringUTF(__UNITY_PLAYERPREFS_VERSION__)
+jni_shim: FindClass(android/content/SharedPreferences$Editor)
+jni_shim: GetMethodID(putInt, (Ljava/lang/String;I)Landroid/content/SharedPreferences$Editor;)
+jni_shim: CallObjectMethod(putInt)
+[PREFS] putInt key='__UNITY_PLAYERPREFS_VERSION__' val=1 ARMAZENADO
+jni_shim: GetMethodID(apply, ()V)
+jni_shim: CallVoidMethod(apply)
+jni_shim: FindClass(android/view/View$OnSystemUiVisibilityChangeListener)
+jni_shim: newInterfaceProxy(handle=547071463824) -> 0x557b235750
+jni_shim: FindClass(android/os/Looper)
+jni_shim: GetStaticMethodID(getMainLooper, ()Landroid/os/Looper;)
+jni_shim: CallStaticObjectMethod(getMainLooper)
+jni_shim: FindClass(android/os/Handler)
+jni_shim: GetMethodID(<init>, (Landroid/os/Looper;)V)
+jni_shim: GetMethodID(post, (Ljava/lang/Runnable;)Z)
+jni_shim: newInterfaceProxy(handle=547071463792) -> 0x557b223520
+jni_shim: CallStaticObjectMethod(getMainLooper)
+jni_shim: GetMethodID(postDelayed, (Ljava/lang/Runnable;J)Z)
+[ALOG:4 Unity] SystemInfo CPU = ARM64 FP ASIMD AES, Cores = 4, Memory = 512mb
+
+[ALOG:4 Unity] SystemInfo ARM big.LITTLE configuration: 4 big (mask: 0xf), 0 little (mask: 0x0)
+
+jni_shim: GetMethodID(getPackageManager, ()Landroid/content/pm/PackageManager;)
+jni_shim: CallObjectMethod(getPackageManager)
+jni_shim: NewStringUTF(jp.co.capcom.rockmanx)
+jni_shim: FindClass(android/content/pm/PackageManager)
+jni_shim: GetMethodID(getPackageInfo, (Ljava/lang/String;I)Landroid/content/pm/PackageInfo;)
+jni_shim: CallObjectMethod(getPackageInfo)
+jni_shim: FindClass(android/content/pm/PackageInfo)
+jni_shim: GetFieldID(versionName, Ljava/lang/String;)
+jni_shim: GetStringUTFChars -> ""
+[ALOG:4 Unity] ApplicationInfo jp.co.capcom.rockmanx version 
+
+[ALOG:4 Unity] Built from '2021.3/staging' branch, Version '2021.3.39f1 (fb3b7b32f191)', Build type 'Release', Scripting Backend 'il2cpp', CPU 'arm64-v8a', Stripping 'Enabled'
+
+jni_shim: GetMethodID(getClass, ()Ljava/lang/Class;)
+jni_shim: CallObjectMethod(getClass)
+jni_shim: GetMethodID(getClassLoader, ()Ljava/lang/ClassLoader;)
+jni_shim: CallObjectMethod(getClassLoader)
+jni_shim: NewStringUTF(il2cpp)
+jni_shim: FindClass(java/lang/ClassLoader)
+jni_shim: GetMethodID(findLibrary, (Ljava/lang/String;)Ljava/lang/String;)
+jni_shim: CallObjectMethod(findLibrary)
+jni_shim: findLibrary(il2cpp)
+jni_shim: GetStringUTFChars -> "/storage/roms/megamanx/libil2cpp.so"
+[DLOPEN] /storage/roms/megamanx/libil2cpp.so -> il2cpp module
+[DLSYM:il2cpp*] il2cpp_init -> 0x7f8acf6e28
+[DLSYM:il2cpp*] il2cpp_init_utf16 -> 0x7f8acf6e54
+[DLSYM:il2cpp*] il2cpp_shutdown -> 0x7f8acf6ed8
+[DLSYM:il2cpp*] il2cpp_set_config_dir -> 0x7f8acf6edc
+[DLSYM:il2cpp*] il2cpp_set_data_dir -> 0x7f8acf6ee0
+[DLSYM:il2cpp*] il2cpp_set_temp_dir -> 0x7f8acf6ee4
+[DLSYM:il2cpp*] il2cpp_set_commandline_arguments -> 0x7f8acf6ee8
+[DLSYM:il2cpp*] il2cpp_set_commandline_arguments_utf16 -> 0x7f8acf6ef8
+[DLSYM:il2cpp*] il2cpp_set_config_utf16 -> 0x7f8acf6f08
+[DLSYM:il2cpp*] il2cpp_set_config -> 0x7f8acf6f0c
+[DLSYM:il2cpp*] il2cpp_set_memory_callbacks -> 0x7f8acf6f10
+[DLSYM:il2cpp*] il2cpp_get_corlib -> 0x7f8acf6f14
+[DLSYM:il2cpp*] il2cpp_add_internal_call -> 0x7f8acf6f18
+[DLSYM:il2cpp*] il2cpp_resolve_icall -> 0x7f8acf6f1c
+[DLSYM:il2cpp*] il2cpp_alloc -> 0x7f8acf6f20
+[DLSYM:il2cpp*] il2cpp_free -> 0x7f8acf6f24
+[DLSYM:il2cpp*] il2cpp_array_class_get -> 0x7f8acf6f28
+[DLSYM:il2cpp*] il2cpp_array_length -> 0x7f8acf6f2c
+[DLSYM:il2cpp*] il2cpp_array_get_byte_length -> 0x7f8acf6f30
+[DLSYM:il2cpp*] il2cpp_array_new -> 0x7f8acf6f34
+[DLSYM:il2cpp*] il2cpp_array_new_specific -> 0x7f8acf6f38
+[DLSYM:il2cpp*] il2cpp_array_new_full -> 0x7f8acf6f3c
+[DLSYM:il2cpp*] il2cpp_bounded_array_class_get -> 0x7f8acf6f40
+[DLSYM:il2cpp*] il2cpp_array_element_size -> 0x7f8acf6f48
+[DLSYM:il2cpp*] il2cpp_assembly_get_image -> 0x7f8acf6f4c
+[DLSYM:il2cpp*] il2cpp_class_for_each -> 0x7f8acf7c44
+[DLSYM:il2cpp*] il2cpp_class_enum_basetype -> 0x7f8acf6f50
+[DLSYM:il2cpp*] il2cpp_class_is_generic -> 0x7f8acf6f58
+[DLSYM:il2cpp*] il2cpp_class_is_inflated -> 0x7f8acf6f5c
+[DLSYM:il2cpp*] il2cpp_class_is_assignable_from -> 0x7f8acf6f60
+[DLSYM:il2cpp*] il2cpp_class_is_subclass_of -> 0x7f8acf6f64
+[DLSYM:il2cpp*] il2cpp_class_has_parent -> 0x7f8acf6f6c
+[DLSYM:il2cpp*] il2cpp_class_from_il2cpp_type -> 0x7f8acf6f70
+[DLSYM:il2cpp*] il2cpp_class_from_name -> 0x7f8acf6f78
+[DLSYM:il2cpp*] il2cpp_class_from_system_type -> 0x7f8acf6f54
+[DLSYM:il2cpp*] il2cpp_class_get_element_class -> 0x7f8acf6f7c
+[DLSYM:il2cpp*] il2cpp_class_get_events -> 0x7f8acf6f80
+[DLSYM:il2cpp*] il2cpp_class_get_fields -> 0x7f8acf6f84
+[DLSYM:il2cpp*] il2cpp_class_get_nested_types -> 0x7f8acf6f88
+[DLSYM:il2cpp*] il2cpp_class_get_interfaces -> 0x7f8acf6f8c
+[DLSYM:il2cpp*] il2cpp_class_get_properties -> 0x7f8acf6f90
+[DLSYM:il2cpp*] il2cpp_class_get_property_from_name -> 0x7f8acf6f94
+[DLSYM:il2cpp*] il2cpp_class_get_field_from_name -> 0x7f8acf6f98
+[DLSYM:il2cpp*] il2cpp_class_get_methods -> 0x7f8acf6f9c
+[DLSYM:il2cpp*] il2cpp_class_get_method_from_name -> 0x7f8acf6fa0
+[DLSYM:il2cpp*] il2cpp_class_get_name -> 0x7f8acf6fa4
+[DLSYM:il2cpp*] il2cpp_type_get_name_chunked -> 0x7f8acf7c24
+[DLSYM:il2cpp*] il2cpp_class_get_namespace -> 0x7f8acf6fa8
+[DLSYM:il2cpp*] il2cpp_class_get_parent -> 0x7f8acf6fac
+[DLSYM:il2cpp*] il2cpp_class_get_declaring_type -> 0x7f8acf6fb0
+[DLSYM:il2cpp*] il2cpp_class_instance_size -> 0x7f8acf6fb4
+[DLSYM:il2cpp*] il2cpp_class_num_fields -> 0x7f8acf6fb8
+[DLSYM:il2cpp*] il2cpp_class_is_valuetype -> 0x7f8acf6fbc
+[DLSYM:il2cpp*] il2cpp_class_value_size -> 0x7f8acf6fc4
+[DLSYM:il2cpp*] il2cpp_class_is_blittable -> 0x7f8acf6fc0
+[DLSYM:il2cpp*] il2cpp_class_get_flags -> 0x7f8acf6fc8
+[DLSYM:il2cpp*] il2cpp_class_is_abstract -> 0x7f8acf6fcc
+[DLSYM:il2cpp*] il2cpp_class_is_interface -> 0x7f8acf6fd0
+[DLSYM:il2cpp*] il2cpp_class_array_element_size -> 0x7f8acf6fd4
+[DLSYM:il2cpp*] il2cpp_class_from_type -> 0x7f8acf6fd8
+[DLSYM:il2cpp*] il2cpp_class_get_type -> 0x7f8acf6fe0
+[DLSYM:il2cpp*] il2cpp_class_get_type_token -> 0x7f8acf6fe4
+[DLSYM:il2cpp*] il2cpp_class_has_attribute -> 0x7f8acf6fec
+[DLSYM:il2cpp*] il2cpp_class_has_references -> 0x7f8acf6ff0
+[DLSYM:il2cpp*] il2cpp_class_is_enum -> 0x7f8acf6ff4
+[DLSYM:il2cpp*] il2cpp_class_get_image -> 0x7f8acf6ff8
+[DLSYM:il2cpp*] il2cpp_class_get_assemblyname -> 0x7f8acf6ffc
+[DLSYM:il2cpp*] il2cpp_class_get_rank -> 0x7f8acf7000
+[DLSYM:il2cpp*] il2cpp_class_get_data_size -> 0x7f8acf7008
+[DLSYM:il2cpp*] il2cpp_class_get_static_field_data -> 0x7f8acf7010
+[DLSYM:il2cpp*] il2cpp_class_get_bitmap_size -> 0x7f8acf7018
+[DLSYM:il2cpp*] il2cpp_class_get_bitmap -> 0x7f8acf701c
+[DLSYM:il2cpp*] il2cpp_stats_dump_to_file -> 0x7f8acf7034
+[DLSYM:il2cpp*] il2cpp_stats_get_value -> 0x7f8acf7514
+[DLSYM:il2cpp*] il2cpp_domain_get -> 0x7f8acf7574
+[DLSYM:il2cpp*] il2cpp_domain_assembly_open -> 0x7f8acf7578
+[DLSYM:il2cpp*] il2cpp_domain_get_assemblies -> 0x7f8acf7580
+[DLSYM:il2cpp*] il2cpp_raise_exception -> 0x7f8acf75a8
+[DLSYM:il2cpp*] il2cpp_exception_from_name_msg -> 0x7f8acf75b4
+[DLSYM:il2cpp*] il2cpp_get_exception_argument_null -> 0x7f8acf75b8
+[DLSYM:il2cpp*] il2cpp_format_exception -> 0x7f8acf75bc
+[DLSYM:il2cpp*] il2cpp_format_stack_trace -> 0x7f8acf761c
+[DLSYM:il2cpp*] il2cpp_unhandled_exception -> 0x7f8acf767c
+[DLSYM:il2cpp*] il2cpp_native_stack_trace -> 0x7f8acf7680
+[DLSYM:il2cpp*] il2cpp_field_get_flags -> 0x7f8acf7734
+[DLSYM:il2cpp*] il2cpp_field_get_name -> 0x7f8acf7730
+[DLSYM:il2cpp*] il2cpp_field_get_parent -> 0x7f8acf7738
+[DLSYM:il2cpp*] il2cpp_field_get_offset -> 0x7f8acf773c
+[DLSYM:il2cpp*] il2cpp_field_get_type -> 0x7f8acf7740
+[DLSYM:il2cpp*] il2cpp_field_get_value -> 0x7f8acf7744
+[DLSYM:il2cpp*] il2cpp_field_get_value_object -> 0x7f8acf7748
+[DLSYM:il2cpp*] il2cpp_field_has_attribute -> 0x7f8acf774c
+[DLSYM:il2cpp*] il2cpp_field_set_value -> 0x7f8acf7750
+[DLSYM:il2cpp*] il2cpp_field_static_get_value -> 0x7f8acf7758
+[DLSYM:il2cpp*] il2cpp_field_static_set_value -> 0x7f8acf775c
+[DLSYM:il2cpp*] il2cpp_field_set_value_object -> 0x7f8acf7754
+[DLSYM:il2cpp*] il2cpp_field_is_literal -> 0x7f8acf7760
+[DLSYM:il2cpp*] il2cpp_gc_collect -> 0x7f8acf7770
+[DLSYM:il2cpp*] il2cpp_gc_collect_a_little -> 0x7f8acf7774
+[DLSYM:il2cpp*] il2cpp_gc_start_incremental_collection -> 0x7f8acf7778
+[DLSYM:il2cpp*] il2cpp_gc_disable -> 0x7f8acf7780
+[DLSYM:il2cpp*] il2cpp_gc_enable -> 0x7f8acf777c
+[DLSYM:il2cpp*] il2cpp_gc_is_disabled -> 0x7f8acf7784
+[DLSYM:il2cpp*] il2cpp_gc_set_mode -> 0x7f8acf7788
+[DLSYM:il2cpp*] il2cpp_gc_get_max_time_slice_ns -> 0x7f8acf7790
+[DLSYM:il2cpp*] il2cpp_gc_set_max_time_slice_ns -> 0x7f8acf7794
+[DLSYM:il2cpp*] il2cpp_gc_is_incremental -> 0x7f8acf778c
+[DLSYM:il2cpp*] il2cpp_gc_get_used_size -> 0x7f8acf7798
+[DLSYM:il2cpp*] il2cpp_gc_get_heap_size -> 0x7f8acf779c
+[DLSYM:il2cpp*] il2cpp_gc_wbarrier_set_field -> 0x7f8acf7848
+[DLSYM:il2cpp*] il2cpp_gc_has_strict_wbarriers -> 0x7f8acf7854
+[DLSYM:il2cpp*] il2cpp_gc_set_external_allocation_tracker -> 0x7f8acf785c
+[DLSYM:il2cpp*] il2cpp_gc_set_external_wbarrier_tracker -> 0x7f8acf7860
+[DLSYM:il2cpp*] il2cpp_gc_foreach_heap -> 0x7f8acf77a0
+[DLSYM:il2cpp*] il2cpp_stop_gc_world -> 0x7f8acf77c8
+[DLSYM:il2cpp*] il2cpp_start_gc_world -> 0x7f8acf77cc
+[DLSYM:il2cpp*] il2cpp_gc_alloc_fixed -> 0x7f8acf77d0
+[DLSYM:il2cpp*] il2cpp_gc_free_fixed -> 0x7f8acf77d8
+[DLSYM:il2cpp*] il2cpp_gchandle_new -> 0x7f8acf77dc
+[DLSYM:il2cpp*] il2cpp_gchandle_new_weakref -> 0x7f8acf77e4
+[DLSYM:il2cpp*] il2cpp_gchandle_get_target -> 0x7f8acf781c
+[DLSYM:il2cpp*] il2cpp_gchandle_free -> 0x7f8acf7864
+[DLSYM:il2cpp*] il2cpp_gchandle_foreach_get_target -> 0x7f8acf7820
+[DLSYM:il2cpp*] il2cpp_object_header_size -> 0x7f8acf7868
+[DLSYM:il2cpp*] il2cpp_array_object_header_size -> 0x7f8acf7870
+[DLSYM:il2cpp*] il2cpp_offset_of_array_length_in_array_object_header -> 0x7f8acf7878
+[DLSYM:il2cpp*] il2cpp_offset_of_array_bounds_in_array_object_header -> 0x7f8acf7880
+[DLSYM:il2cpp*] il2cpp_allocation_granularity -> 0x7f8acf7888
+[DLSYM:il2cpp*] il2cpp_unity_liveness_allocate_struct -> 0x7f8acf7890
+[DLSYM:il2cpp*] il2cpp_unity_liveness_calculation_from_root -> 0x7f8acf7894
+[DLSYM:il2cpp*] il2cpp_unity_liveness_calculation_from_statics -> 0x7f8acf7898
+[DLSYM:il2cpp*] il2cpp_unity_liveness_finalize -> 0x7f8acf789c
+[DLSYM:il2cpp*] il2cpp_unity_liveness_free_struct -> 0x7f8acf78a0
+[DLSYM:il2cpp*] il2cpp_method_get_return_type -> 0x7f8acf78a4
+[DLSYM:il2cpp*] il2cpp_method_get_declaring_type -> 0x7f8acf78d0
+[DLSYM:il2cpp*] il2cpp_method_get_name -> 0x7f8acf78b0
+[DLSYM:il2cpp*] il2cpp_method_get_from_reflection -> 0x7f8acf78a8
+[DLSYM:il2cpp*] il2cpp_method_get_object -> 0x7f8acf78ac
+[DLSYM:il2cpp*] il2cpp_method_is_generic -> 0x7f8acf78b4
+[DLSYM:il2cpp*] il2cpp_method_is_inflated -> 0x7f8acf78b8
+[DLSYM:il2cpp*] il2cpp_method_is_instance -> 0x7f8acf78bc
+[DLSYM:il2cpp*] il2cpp_method_get_param_count -> 0x7f8acf78c0
+[DLSYM:il2cpp*] il2cpp_method_get_param -> 0x7f8acf78c4
+[DLSYM:il2cpp*] il2cpp_method_get_class -> 0x7f8acf78c8
+[DLSYM:il2cpp*] il2cpp_method_has_attribute -> 0x7f8acf78cc
+[DLSYM:il2cpp*] il2cpp_method_get_flags -> 0x7f8acf78d4
+[DLSYM:il2cpp*] il2cpp_method_get_token -> 0x7f8acf7904
+[DLSYM:il2cpp*] il2cpp_method_get_param_name -> 0x7f8acf7908
+[DLSYM:il2cpp*] il2cpp_property_get_flags -> 0x7f8acf7938
+[DLSYM:il2cpp*] il2cpp_property_get_get_method -> 0x7f8acf792c
+[DLSYM:il2cpp*] il2cpp_property_get_set_method -> 0x7f8acf7930
+[DLSYM:il2cpp*] il2cpp_property_get_name -> 0x7f8acf7928
+[DLSYM:il2cpp*] il2cpp_property_get_parent -> 0x7f8acf7934
+[DLSYM:il2cpp*] il2cpp_object_get_class -> 0x7f8acf793c
+[DLSYM:il2cpp*] il2cpp_object_get_size -> 0x7f8acf7940
+[DLSYM:il2cpp*] il2cpp_object_get_virtual_method -> 0x7f8acf7944
+[DLSYM:il2cpp*] il2cpp_object_new -> 0x7f8acf7948
+[DLSYM:il2cpp*] il2cpp_object_unbox -> 0x7f8acf7968
+[DLSYM:il2cpp*] il2cpp_value_box -> 0x7f8acf796c
+[DLSYM:il2cpp*] il2cpp_monitor_enter -> 0x7f8acf7970
+[DLSYM:il2cpp*] il2cpp_monitor_try_enter -> 0x7f8acf7974
+[DLSYM:il2cpp*] il2cpp_monitor_exit -> 0x7f8acf7978
+[DLSYM:il2cpp*] il2cpp_monitor_pulse -> 0x7f8acf797c
+[DLSYM:il2cpp*] il2cpp_monitor_pulse_all -> 0x7f8acf7980
+[DLSYM:il2cpp*] il2cpp_monitor_wait -> 0x7f8acf7984
+[DLSYM:il2cpp*] il2cpp_monitor_try_wait -> 0x7f8acf7988
+[DLSYM:il2cpp*] il2cpp_runtime_invoke -> 0x7f8acf7990
+[DLSYM:il2cpp*] il2cpp_runtime_invoke_convert_args -> 0x7f8acf798c
+[DLSYM:il2cpp*] il2cpp_runtime_class_init -> 0x7f8acf7994
+[DLSYM:il2cpp*] il2cpp_runtime_object_init -> 0x7f8acf7998
+[DLSYM:il2cpp*] il2cpp_runtime_object_init_exception -> 0x7f8acf799c
+[DLSYM:il2cpp*] il2cpp_runtime_unhandled_exception_policy_set -> 0x7f8acf79a0
+[DLSYM:il2cpp*] il2cpp_string_length -> 0x7f8acf79a4
+[DLSYM:il2cpp*] il2cpp_string_chars -> 0x7f8acf79a8
+[DLSYM:il2cpp*] il2cpp_string_new -> 0x7f8acf79ac
+[DLSYM:il2cpp*] il2cpp_string_new_len -> 0x7f8acf79b8
+[DLSYM:il2cpp*] il2cpp_string_new_utf16 -> 0x7f8acf79b4
+[DLSYM:il2cpp*] il2cpp_string_new_wrapper -> 0x7f8acf79b0
+[DLSYM:il2cpp*] il2cpp_string_intern -> 0x7f8acf79bc
+[DLSYM:il2cpp*] il2cpp_string_is_interned -> 0x7f8acf79c0
+[DLSYM:il2cpp*] il2cpp_thread_current -> 0x7f8acf79c4
+[DLSYM:il2cpp*] il2cpp_thread_attach -> 0x7f8acf79c8
+[DLSYM:il2cpp*] il2cpp_thread_detach -> 0x7f8acf79cc
+[DLSYM:il2cpp*] il2cpp_thread_get_all_attached_threads -> 0x7f8acf79d0
+[DLSYM:il2cpp*] il2cpp_is_vm_thread -> 0x7f8acf79d4
+[DLSYM:il2cpp*] il2cpp_current_thread_walk_frame_stack -> 0x7f8acf79d8
+[DLSYM:il2cpp*] il2cpp_thread_walk_frame_stack -> 0x7f8acf79dc
+[DLSYM:il2cpp*] il2cpp_current_thread_get_top_frame -> 0x7f8acf79e0
+[DLSYM:il2cpp*] il2cpp_thread_get_top_frame -> 0x7f8acf79ec
+[DLSYM:il2cpp*] il2cpp_current_thread_get_frame_at -> 0x7f8acf79f0
+[DLSYM:il2cpp*] il2cpp_thread_get_frame_at -> 0x7f8acf79f4
+[DLSYM:il2cpp*] il2cpp_current_thread_get_stack_depth -> 0x7f8acf79f8
+[DLSYM:il2cpp*] il2cpp_thread_get_stack_depth -> 0x7f8acf7a14
+[DLSYM:il2cpp*] il2cpp_override_stack_backtrace -> 0x7f8acf7a1c
+[DLSYM:il2cpp*] il2cpp_type_get_object -> 0x7f8acf7a20
+[DLSYM:il2cpp*] il2cpp_type_get_type -> 0x7f8acf7a24
+[DLSYM:il2cpp*] il2cpp_type_get_class_or_element_class -> 0x7f8acf7a28
+[DLSYM:il2cpp*] il2cpp_type_get_name -> 0x7f8acf7a2c
+[DLSYM:il2cpp*] il2cpp_type_is_byref -> 0x7f8acf7b6c
+[DLSYM:il2cpp*] il2cpp_type_get_attrs -> 0x7f8acf7b78
+[DLSYM:il2cpp*] il2cpp_type_equals -> 0x7f8acf7b80
+[DLSYM:il2cpp*] il2cpp_type_get_assembly_qualified_name -> 0x7f8acf7acc
+[DLSYM:il2cpp*] il2cpp_type_is_static -> 0x7f8acf7b84
+[DLSYM:il2cpp*] il2cpp_type_is_pointer_type -> 0x7f8acf7b90
+[DLSYM:il2cpp*] il2cpp_image_get_assembly -> 0x7f8acf7ba4
+[DLSYM:il2cpp*] il2cpp_image_get_name -> 0x7f8acf7ba8
+[DLSYM:il2cpp*] il2cpp_image_get_filename -> 0x7f8acf7bac
+[DLSYM:il2cpp*] il2cpp_image_get_entry_point -> 0x7f8acf7bb0
+[DLSYM:il2cpp*] il2cpp_image_get_class_count -> 0x7f8acf7bb4
+[DLSYM:il2cpp*] il2cpp_image_get_class -> 0x7f8acf7bc8
+[DLSYM:il2cpp*] il2cpp_capture_memory_snapshot -> 0x7f8acf7bcc
+[DLSYM:il2cpp*] il2cpp_free_captured_memory_snapshot -> 0x7f8acf7bd0
+[DLSYM:il2cpp*] il2cpp_set_find_plugin_callback -> 0x7f8acf7bd4
+[DLSYM:il2cpp*] il2cpp_register_log_callback -> 0x7f8acf7bd8
+[DLSYM:il2cpp*] il2cpp_debugger_set_agent_options -> 0x7f8acf7bdc
+[DLSYM:il2cpp*] il2cpp_is_debugger_attached -> 0x7f8acf7be0
+[DLSYM:il2cpp*] il2cpp_register_debugger_agent_transport -> 0x7f8acf7be4
+[DLSYM:il2cpp*] il2cpp_debug_get_method_info -> 0x7f8acf7be8
+[DLSYM:il2cpp*] il2cpp_unity_install_unitytls_interface -> 0x7f8acf7bec
+[DLSYM:il2cpp*] il2cpp_custom_attrs_from_class -> 0x7f8acf7bf0
+[DLSYM:il2cpp*] il2cpp_custom_attrs_from_method -> 0x7f8acf7c00
+[DLSYM:il2cpp*] il2cpp_custom_attrs_get_attr -> 0x7f8acf7c18
+[DLSYM:il2cpp*] il2cpp_custom_attrs_has_attr -> 0x7f8acf7c14
+[DLSYM:il2cpp*] il2cpp_custom_attrs_construct -> 0x7f8acf7c1c
+[DLSYM:il2cpp*] il2cpp_custom_attrs_free -> 0x7f8acf7c20
+[DLSYM:il2cpp*] il2cpp_class_set_userdata -> 0x7f8acf7c34
+[DLSYM:il2cpp*] il2cpp_class_get_userdata_offset -> 0x7f8acf7c3c
+[DLSYM:il2cpp*] il2cpp_set_default_thread_affinity -> 0x7f8acf7a18
+[DLSYM:il2cpp*] il2cpp_unity_set_android_network_up_state_func -> 0x7f8acf7c48
+[SEM] init 0x7f8dbc8330 val=0
+[DLSYM:il2cpp] end -> 0x7f8ddda848
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: FindClass(com/unity3d/player/ReflectionHelper)
+jni_shim: >> RegisterNatives(3 metodos)
+     [0] nativeProxyInvoke (JLjava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;  -> 0x7fa21731c8
+     [1] nativeProxyFinalize (J)V  -> 0x7fa2173300
+     [2] nativeProxyLogJNIInvokeException (J)V  -> 0x7fa2173348
+jni_shim: FindClass(android/view/View$OnLayoutChangeListener)
+jni_shim: newInterfaceProxy(handle=547071627728) -> 0x557b80d610
+jni_shim: FindClass(android/view/ContextThemeWrapper)
+jni_shim: GetMethodID(getResources, ()Landroid/content/res/Resources;)
+jni_shim: CallObjectMethod(getResources)
+jni_shim: NewStringUTF(unitySurfaceView)
+jni_shim: NewStringUTF(id)
+jni_shim: CallObjectMethod(getPackageName)
+jni_shim: FindClass(android/content/res/Resources)
+jni_shim: GetMethodID(getIdentifier, (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I)
+jni_shim: GetStaticFieldID(DISPLAY_SERVICE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(DISPLAY_SERVICE) -> chave
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: FindClass(android/hardware/display/DisplayManager)
+jni_shim: GetMethodID(getDisplay, (I)Landroid/view/Display;)
+jni_shim: CallObjectMethod(getDisplay)
+jni_shim: FindClass(android/view/Display)
+jni_shim: GetMethodID(getDisplayId, ()I)
+jni_shim: GetMethodID(getRotation, ()I)
+jni_shim: GetMethodID(getWidth, ()I)
+jni_shim: GetMethodID(getHeight, ()I)
+jni_shim: FindClass(android/os/Build)
+jni_shim: GetStaticFieldID(MANUFACTURER, Ljava/lang/String;)
+jni_shim: GetStringUTFChars -> "Amlogic"
+jni_shim: FindClass(android/util/DisplayMetrics)
+jni_shim: GetMethodID(<init>, ()V)
+jni_shim: GetMethodID(getRealMetrics, (Landroid/util/DisplayMetrics;)V)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: GetFieldID(widthPixels, I)
+jni_shim: GetFieldID(heightPixels, I)
+jni_shim: GetFieldID(densityDpi, I)
+jni_shim: GetMethodID(getRefreshRate, ()F)
+jni_shim: FindClass(android/os/Build$VERSION)
+jni_shim: GetStaticFieldID(SDK_INT, I)
+jni_shim: GetStaticIntField(SDK_INT) -> 30
+jni_shim: GetMethodID(isWideColorGamut, ()Z)
+jni_shim: GetMethodID(getAppVsyncOffsetNanos, ()J)
+jni_shim: GetMethodID(getPresentationDeadlineNanos, ()J)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: FindClass(android/view/View$OnApplyWindowInsetsListener)
+jni_shim: newInterfaceProxy(handle=547071550864) -> 0x557b7491b0
+[STUB] sincosf\njni_shim: NewStringUTF(UTF-8)
+jni_shim: GetMethodID(<init>, ([BLjava/lang/String;)V)
+jni_shim: FindClass(android/net/Uri)
+jni_shim: GetStaticMethodID(encode, (Ljava/lang/String;)Ljava/lang/String;)
+[PREFS] getInt key='' def=0 -> 1
+jni_shim: FindClass(java/lang/ClassCastException)
+[ALOG:4 Unity] Company Name: CAPCOM CO., LTD.
+[ALOG:4 Unity] Product Name: MAGA MAN X
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putInt)
+[PREFS] putInt key='' val=1280 ARMAZENADO (MMX blank)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putInt)
+[PREFS] putInt key='' val=720 ARMAZENADO (MMX blank)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putInt)
+[PREFS] putInt key='' val=1 ARMAZENADO (MMX blank)
+jni_shim: GetMethodID(getWindow, ()Landroid/view/Window;)
+jni_shim: CallObjectMethod(getWindow)
+jni_shim: FindClass(android/view/Window)
+jni_shim: GetMethodID(getAttributes, ()Landroid/view/WindowManager$LayoutParams;)
+jni_shim: CallObjectMethod(getAttributes)
+jni_shim: FindClass(android/view/WindowManager$LayoutParams)
+jni_shim: GetStaticFieldID(LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT, I)
+jni_shim: GetStaticIntField(fid=0x555d156030) -> 0
+jni_shim: GetFieldID(layoutInDisplayCutoutMode, I)
+  [JNIEnv idx 109 chamado]\njni_shim: CallObjectMethod(getDisplay)
+jni_shim: GetMethodID(getSupportedModes, ()[Landroid/view/Display$Mode;)
+jni_shim: CallObjectMethod(getSupportedModes)
+jni_shim: FindClass(android/hardware/display/DisplayManager$DisplayListener)
+jni_shim: newInterfaceProxy(handle=547071651248) -> 0x557ba0ade0
+jni_shim: NewStringUTF(display)
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: GetMethodID(registerDisplayListener, (Landroid/hardware/display/DisplayManager$DisplayListener;Landroid/os/Handler;)V)
+jni_shim: CallVoidMethod(registerDisplayListener)
+jni_shim: CallObjectMethod(getPackageManager)
+jni_shim: NewStringUTF(org.chromium.arc.device_management)
+jni_shim: GetMethodID(hasSystemFeature, (Ljava/lang/String;)Z)
+jni_shim: GetMethodID(getRequestedOrientation, ()I)
+jni_shim: FindClass(android/content/pm/ActivityInfo)
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_PORTRAIT, I)
+jni_shim: GetStaticIntField(fid=0x555d156090) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_REVERSE_PORTRAIT, I)
+jni_shim: GetStaticIntField(fid=0x555d1560a0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_LANDSCAPE, I)
+jni_shim: GetStaticIntField(fid=0x555d1560b0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_REVERSE_LANDSCAPE, I)
+jni_shim: GetStaticIntField(fid=0x555d1560c0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_FULL_USER, I)
+jni_shim: GetStaticIntField(fid=0x555d1560d0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_USER_PORTRAIT, I)
+jni_shim: GetStaticIntField(fid=0x555d1560e0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_USER_LANDSCAPE, I)
+jni_shim: GetStaticIntField(fid=0x555d1560f0) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_FULL_SENSOR, I)
+jni_shim: GetStaticIntField(fid=0x555d156100) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_SENSOR_PORTRAIT, I)
+jni_shim: GetStaticIntField(fid=0x555d156110) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_SENSOR_LANDSCAPE, I)
+jni_shim: GetStaticIntField(fid=0x555d156120) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_SENSOR, I)
+jni_shim: GetStaticIntField(fid=0x555d156130) -> 0
+jni_shim: GetStaticFieldID(SCREEN_ORIENTATION_UNSPECIFIED, I)
+jni_shim: GetStaticIntField(fid=0x555d156140) -> 0
+jni_shim: GetMethodID(setRequestedOrientation, (I)V)
+jni_shim: CallVoidMethod(setRequestedOrientation)
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+jni_shim: GetMethodID(getPreferences, (I)Landroid/content/SharedPreferences;)
+jni_shim: CallObjectMethod(getPreferences)
+jni_shim: NewStringUTF(gles-api-check)
+jni_shim: GetMethodID(getBoolean, (Ljava/lang/String;Z)Z)
+[PREFS] getBoolean -> 1 (gles_skip flag)
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+[ALOG:6 Unity] [EGL] eglChooseConfig(m_EGLDisplay, configAttribs, NULL, 0, &eglConfigCount): EGL_BAD_ATTRIBUTE: An unrecognized attribute or attribute value was passed in the attribute list.
+
+jni_shim: CallObjectMethod(getPreferences)
+jni_shim: NewStringUTF(gles-api-check)
+[PREFS] getBoolean -> 1 (gles_skip flag)
+jni_shim: CallObjectMethod(getDisplay)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: CallVoidMethod(setRequestedOrientation)
+[ALOG:3 Unity]  GL_OES_depth24 GL_OES_element_index_uint GL_OES_texture_npot GL_OES_rgb8_rgba8 GL_OES_packed_depth_stencil GL_OES_vertex_array_object GL_EXT_texture_format_BGRA8888 GL_OES_standard_derivatives
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+[STUB] sincosf\njni_shim: newInterfaceProxy(handle=547071546888) -> 0x557b8016c0
+jni_shim: GetMethodID(<init>, ()V)
+jni_shim: CallStaticObjectMethod(getMainLooper)
+jni_shim: GetStaticFieldID(AUDIO_SERVICE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(AUDIO_SERVICE) -> chave
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: FindClass(android/media/AudioManager)
+jni_shim: GetStaticFieldID(GET_DEVICES_OUTPUTS, I)
+jni_shim: GetStaticIntField(fid=0x555d156190) -> 0
+jni_shim: GetMethodID(getDevices, (I)[Landroid/media/AudioDeviceInfo;)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: GetStaticFieldID(PROPERTY_OUTPUT_FRAMES_PER_BUFFER, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(PROPERTY_OUTPUT_FRAMES_PER_BUFFER) -> chave
+jni_shim: GetMethodID(getProperty, (Ljava/lang/String;)Ljava/lang/String;)
+jni_shim: CallObjectMethod(getProperty)
+jni_shim: getProperty(PROPERTY_OUTPUT_FRAMES_PER_BUFFER) -> 256
+jni_shim: FindClass(java/lang/Integer)
+jni_shim: GetStaticMethodID(parseInt, (Ljava/lang/String;)I)
+jni_shim: parseInt(256) -> 256
+jni_shim: GetStaticFieldID(FEATURE_AUDIO_LOW_LATENCY, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(FEATURE_AUDIO_LOW_LATENCY) -> fake
+jni_shim: CallObjectMethod(getPackageManager)
+jni_shim: NewStringUTF(android.permission.BLUETOOTH)
+jni_shim: GetMethodID(checkCallingOrSelfPermission, (Ljava/lang/String;)I)
+jni_shim: GetStaticFieldID(PERMISSION_GRANTED, I)
+jni_shim: GetStaticIntField(fid=0x555d156200) -> 0
+jni_shim: GetMethodID(clearHFPStat, ()V)
+jni_shim: CallVoidMethod(clearHFPStat)
+jni_shim: GetStaticFieldID(PROPERTY_OUTPUT_SAMPLE_RATE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(PROPERTY_OUTPUT_SAMPLE_RATE) -> chave
+jni_shim: CallObjectMethod(getProperty)
+jni_shim: getProperty(PROPERTY_OUTPUT_SAMPLE_RATE) -> 44100
+jni_shim: parseInt(44100) -> 44100
+jni_shim: CallObjectMethod(getProperty)
+jni_shim: getProperty(PROPERTY_OUTPUT_FRAMES_PER_BUFFER) -> 256
+jni_shim: parseInt(256) -> 256
+[DLOPEN] libOpenSLES.so -> opensles_shim
+[DLSYM:SL] pede "slCreateEngine"
+[DLSYM:SL] pede "SL_IID_ENGINE"
+[DLSYM:SL] pede "SL_IID_ANDROIDSIMPLEBUFFERQUEUE"
+[DLSYM:SL] pede "SL_IID_ANDROIDCONFIGURATION"
+[DLSYM:SL] pede "SL_IID_PLAY"
+[DLSYM:SL] pede "SL_IID_RECORD"
+[DLSYM:SL] SL_IID_RECORD -> identidade generica
+[SL] slCreateEngine (FMOD entrou no caminho OpenSL)
+[SL] CreateOutputMix
+[SL] CreateAudioPlayer
+[SL] SDL audio aberto: 44100Hz 2ch 2048 samples (driver=pulseaudio)
+[SL] player fmt: 2 ch 44100 Hz 16 bit (q=16)
+[SL] player0 GetInterface(iid=0x555d119db8 desconhecido)
+[SL] bq_RegisterCallback p0 cb=0x7fa2a57de0
+[SL] pump thread ativa (4ms)
+[SL] bq_Enqueue #1 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #2 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #3 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #4 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #5 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #6 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #7 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #8 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #9 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #10 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #11 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #12 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #13 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #14 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #15 size=1024 (PCM fluindo!)
+[SL] bq_Enqueue #16 size=1024 (PCM fluindo!)
+[SL] SetPlayState p0 1->3
+[SEM] init 0x7f6002e938 val=0
+[SEM] wait 0x7f6002e938 tid=250838 count=0
+[STUB] setpriority\n[SEM] post 0x7f6002e938 tid=250873
+[SEM] init 0x7f6002e8f8 val=0
+[SEM] wait 0x7f6002e8f8 tid=250838 count=0
+[STUB] setpriority\n[SEM] post 0x7f6002e8f8 tid=250874
+[SL] pump: callback p0 #1 (readable=16384 thr=16384)
+[SL] pump: callback p0 #2 (readable=9216 thr=16384)
+[SL] pump: callback p0 #3 (readable=10240 thr=16384)
+[SL] pump: callback p0 #4 (readable=11264 thr=16384)
+[SL] pump: callback p0 #5 (readable=12288 thr=16384)
+[SL] pump: callback p0 #6 (readable=13312 thr=16384)
+[SL] pump: callback p0 #7 (readable=14336 thr=16384)
+[SL] pump: callback p0 #8 (readable=15360 thr=16384)
+[SEM] post 0x7f8dbc8330 tid=250844
+[STUB] sigsuspend\n[STUB] sigsuspend\n[SEM] post 0x7f8dbc8330 tid=250844
+[ALOG:4 IL2CPP] Java VM not initialized
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+jni_shim: GetStaticFieldID(POWER_SERVICE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(POWER_SERVICE) -> chave
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: FindClass(android/os/PowerManager)
+jni_shim: GetMethodID(isSustainedPerformanceModeSupported, ()Z)
+jni_shim: FindClass(android/hardware/input/InputManager$InputDeviceListener)
+jni_shim: newInterfaceProxy(handle=546815890304) -> 0x557b9d0b70
+jni_shim: NewStringUTF(input)
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: NewStringUTF(input)
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: FindClass(android/hardware/input/InputManager)
+jni_shim: GetMethodID(getInputDeviceIds, ()[I)
+jni_shim: CallObjectMethod(getInputDeviceIds)
+[MMX_GAMEPAD] InputManager.getInputDeviceIds()->[1]
+jni_shim: GetMethodID(getInputDevice, (I)Landroid/view/InputDevice;)
+jni_shim: CallObjectMethod(getInputDevice)
+jni_shim: FindClass(android/view/InputDevice)
+jni_shim: GetMethodID(getId, ()I)
+jni_shim: GetMethodID(getProductId, ()I)
+jni_shim: GetMethodID(getVendorId, ()I)
+jni_shim: GetMethodID(getName, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getName)
+jni_shim: GetStringUTFChars -> "XboxOneGamepadAndroid"
+jni_shim: GetMethodID(getDescriptor, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getDescriptor)
+jni_shim: GetStringUTFChars -> "mmx-xbox-one-gamepad-android"
+jni_shim: GetMethodID(isVirtual, ()Z)
+jni_shim: GetMethodID(getSources, ()I)
+jni_shim: GetStaticMethodID(getDevice, (I)Landroid/view/InputDevice;)
+jni_shim: getDevice() -> Xbox virtual
+jni_shim: GetMethodID(getMotionRanges, ()Ljava/util/List;)
+jni_shim: CallObjectMethod(getMotionRanges)
+jni_shim: FindClass(java/util/List)
+jni_shim: GetMethodID(iterator, ()Ljava/util/Iterator;)
+jni_shim: CallObjectMethod(iterator)
+jni_shim: GetMethodID(next, ()Ljava/lang/Object;)
+jni_shim: CallObjectMethod(next)
+jni_shim: FindClass(android/view/InputDevice$MotionRange)
+jni_shim: GetMethodID(getSource, ()I)
+jni_shim: GetMethodID(getFlat, ()F)
+jni_shim: GetMethodID(getAxis, ()I)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallObjectMethod(next)
+jni_shim: CallStaticObjectMethod(getMainLooper)
+jni_shim: GetMethodID(registerInputDeviceListener, (Landroid/hardware/input/InputManager$InputDeviceListener;Landroid/os/Handler;)V)
+jni_shim: CallVoidMethod(registerInputDeviceListener)
+jni_shim: GetMethodID(startOrientationListener, (I)Z)
+jni_shim: GetStaticFieldID(STREAM_MUSIC, I)
+jni_shim: GetStaticIntField(fid=0x555d156350) -> 0
+jni_shim: GetMethodID(getStreamVolume, (I)I)
+jni_shim: GetMethodID(getLaunchURL, ()Ljava/lang/String;)
+jni_shim: CallObjectMethod(getLaunchURL)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("") -> byte[0]
+<r0]
+[render 0]
+[NOINTEGRITY] procurando IntegrityCheck em 62 assemblies...
+[NOINTEGRITY] classe IntegrityCheck achada (asm 3)
+[NOINTEGRITY] get_IsSuccess -> TRUE
+[NOINTEGRITY] set_IsSuccess(true) invoked exc=(nil)
+[NOINTEGRITY] <IsSuccess>k__BackingField = true
+[NOINTEGRITY] IntegrityCheck.<Start>d__4::MoveNext -> false (coroutine done na hora)
+[MMX_FULLVER] BinHexDecoder.get_IsFull -> TRUE
+[MMX_FULLVER] IncrementalReadDummyDecoder.get_IsFull -> TRUE
+[PRODUCTINFO] bool field +0x28 isUnlock : System.Boolean -> will force true
+[PRODUCTINFO] bool field +0x29 isUse : System.Boolean -> will force true
+[MMX_FULLVER] CStoreKit.getProductUnlock -> TRUE
+[MMX_FULLVER] CStoreKit.getProductUse -> TRUE
+[MMX_FULLVER] hook CStoreKit.getProductInfo @ il2cpp+0xe6e410
+[MMX_FULLVER] hook CStoreKit.MakeProductData @ il2cpp+0xe6eb68
+[MMX_FULLVER] Achievement.get_IsUnlocked -> TRUE
+[MMX_FULLVER] PlayerStats.HasNumberOfPurchases -> TRUE
+[MMX_FULLVER] unlock scan concluído: 6 métodos forçados TRUE
+[CTRLHOOK] late hook RockmanX.controlKey @ il2cpp+0xdd6d60 old=a9be53f5/a9017bf3/f9416815/b40058d5 new=58000050/d61f0200/5d0f6490/00000055
+[MMX_FIXGAME] ativo: procurando RockmanX/CStoreKit
+[MMX_FIXGAME] EncryptedPlayerPrefs.GetInt/2 -> default(w1) @0x7f8ae3a198
+[MMX_FIXGAME] EncryptedPlayerPrefs.GetBool/2 -> default(w1) @0x7f8ae3a3c0
+[MMX_FIXGAME] EncryptedPlayerPrefs.GetString/2 -> default(x1) @0x7f8ae3a238
+[MMX_FIXGAME] RockmanX.IsInAppPayment/2 -> true @0x7f8add82c4
+[MMX_FIXGAME] CStoreKit.getProductUse/1 -> true @0x7f8ae6e5f4
+[MMX_FIXGAME] CStoreKit.getProduct/2 -> ret @0x7f8ae6e878
+[r1>
+jni_shim: GetStaticFieldID(MEDIA_ROUTER_SERVICE, Ljava/lang/String;)
+jni_shim: GetStaticObjectField(MEDIA_ROUTER_SERVICE) -> chave
+jni_shim: CallObjectMethod(getSystemService)
+jni_shim: FindClass(android/media/MediaRouter)
+jni_shim: GetStaticFieldID(ROUTE_TYPE_LIVE_VIDEO, I)
+jni_shim: GetStaticIntField(fid=0x555d156390) -> 0
+jni_shim: GetMethodID(getSelectedRoute, (I)Landroid/media/MediaRouter$RouteInfo;)
+jni_shim: CallObjectMethod(getSelectedRoute)
+jni_shim: FindClass(android/media/MediaRouter$RouteInfo)
+jni_shim: GetMethodID(getPresentationDisplay, ()Landroid/view/Display;)
+jni_shim: CallObjectMethod(getPresentationDisplay)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: CallVoidMethod(getRealMetrics)
+jni_shim: CallObjectMethod(getDisplay)
+jni_shim: CallObjectMethod(getSupportedModes)
+jni_shim: CallObjectMethod(getSelectedRoute)
+jni_shim: CallObjectMethod(getPresentationDisplay)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+[STUB] srand48\n[STUB] lrand48\n[STUB] lrand48\njni_shim: GetMethodID(hideSoftInput, ()V)
+jni_shim: CallVoidMethod(hideSoftInput)
+[SOFTINPUT] hide
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallVoidMethod(runOnUiThread)
+jni_shim: >> RODANDO Runnable (handle=547071463856) ...
+  [JNIEnv idx 7 chamado]\njni_shim: << Runnable terminou (handle=547071463856)
+jni_shim: GetMethodID(isUaaLUseCase, ()Z)
+<r1]
+[r2>
+jni_shim: GetMethodID(addPhoneCallListener, ()V)
+jni_shim: CallVoidMethod(addPhoneCallListener)
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallObjectMethod(getObbDirs)
+jni_shim: CallObjectMethod(getObbDir)
+jni_shim: CallObjectMethod(getPackageName)
+jni_shim: FindClass(java/lang/System)
+jni_shim: GetStaticMethodID(nanoTime, ()J)
+  [JNIEnv idx 133 chamado]\njni_shim: FindClass(android/os/Handler$Callback)
+jni_shim: FindClass(android/view/Choreographer$FrameCallback)
+jni_shim: newInterfaceProxy(handle=546805816656) -> 0x557d6eea90
+jni_shim: [CHOREO] FrameCallback capturado: proxy=0x557d6eea90 handle=546805816656
+jni_shim: NewStringUTF(UnityChoreographer)
+jni_shim: FindClass(android/os/HandlerThread)
+jni_shim: GetMethodID(<init>, (Ljava/lang/String;)V)
+jni_shim: FindClass(java/lang/Thread)
+jni_shim: GetMethodID(start, ()V)
+jni_shim: GetMethodID(getLooper, ()Landroid/os/Looper;)
+jni_shim: GetMethodID(<init>, (Landroid/os/Looper;Landroid/os/Handler$Callback;)V)
+jni_shim: GetMethodID(obtainMessage, (I)Landroid/os/Message;)
+jni_shim: FindClass(android/os/Message)
+jni_shim: GetMethodID(sendToTarget, ()V)
+[MMX_INLINETASK] #1 obj=0x7f502a9d50 node=0x7f6000d6b0
+<r2]
+[r3>
+jni_shim: NewStringUTF(UnityDataAssetPack)
+jni_shim: GetMethodID(getAssetPackPath, (Ljava/lang/String;)Ljava/lang/String;)
+jni_shim: CallObjectMethod(getAssetPackPath)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("/storage/roms/megamanx") -> byte[22]
+jni_shim: NewStringUTF(UnityStreamingAssetsPack)
+jni_shim: CallObjectMethod(getAssetPackPath)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("/storage/roms/megamanx") -> byte[22]
+jni_shim: GetMethodID(unregisterDownloadStatusListener, (Ljava/lang/Object;)V)
+jni_shim: CallVoidMethod(unregisterDownloadStatusListener)
+[BOOTST] pre state0=-1 state10=0 coro=0x7fe5a90ba0 f=3
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] getInt key='' def=0 -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: GetMethodID(contains, (Ljava/lang/String;)Z)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: GetMethodID(getString, (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> {} (MMX empty json)
+jni_shim: GetStaticMethodID(decode, (Ljava/lang/String;)Ljava/lang/String;)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] getInt key='' def=0 -> 1
+[BOOTST] post state0=-2 state10=0 ret=0 f=3
+[SEM] post 0x7f8dbc8330 tid=250838
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250838
+[SEM] post 0x7f8dbc8330 tid=250838
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250838
+jni_shim: CallVoidMethod(setRequestedOrientation)
+jni_shim: CallObjectMethod(getDevices)
+<r3]
+[r4>
+jni_shim: CallStaticVoidMethod(mid=0x555d155c50)
+jni_shim: CallVoidMethod(hideSoftInput)
+[SOFTINPUT] hide
+[ALOG:5 Unity] The character used for Underline is not available in font asset [TazuganeGothicStdN-Bold SDF].
+
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> {} (MMX empty json)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b500 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> {} (MMX empty json)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: GetMethodID(putString, (Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b410 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b320 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b1e0 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b0f0 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f7041b000 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f70421eb0 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+[FULLVEROBJ] getProductInfo ProductInfo=0x7f70421dc0 bool_fields=2 -> true
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+[PREFS] contains key='' -> 1
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getString)
+[PREFS] getString key='' -> ARMAZENADO
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(getBytes)
+jni_shim: getBytes("{}") -> byte[2]
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: NewStringUTF(UTF-8)
+jni_shim: CallObjectMethod(putString)
+[PREFS] putString key='' (0 bytes) ARMAZENADO (MMX blank)
+jni_shim: CallVoidMethod(apply)
+jni_shim: CallVoidMethod(setRequestedOrientation)
+<r4]
+[r5>
+<r5]
+[r6>
+<r6]
+[r7>
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+<r7]
+[r8>
+jni_shim: GetMethodID(hidePreservedContent, ()V)
+jni_shim: CallVoidMethod(hidePreservedContent)
+<r8]
+[r9>
+<r9]
+[r10>
+<r10]
+[r11>
+<r11]
+[r12>
+<r12]
+[r13>
+<r13]
+[r14>
+<r14]
+[r15>
+<r15]
+[r16>
+<r16]
+[r17>
+<r17]
+[r18>
+<r18]
+[r19>
+<r19]
+[r20>
+<r20]
+[r21>
+jni_shim: CallObjectMethod(getDevices)
+<r21]
+[r22>
+<r22]
+[r23>
+<r23]
+[r24>
+<r24]
+[r25>
+<r25]
+[r26>
+<r26]
+[r27>
+<r27]
+[r28>
+<r28]
+[r29>
+<r29]
+[r30>
+<r30]
+[r31>
+<r31]
+[r32>
+<r32]
+[r33>
+<r33]
+[r34>
+<r34]
+[r35>
+<r35]
+[r36>
+<r36]
+[r37>
+<r37]
+[r38>
+<r38]
+[r39>
+<r39]
+[r40>
+<r40]
+[r41>
+<r41]
+[r42>
+<r42]
+[r43>
+<r43]
+[r44>
+<r44]
+[r45>
+<r45]
+[r46>
+<r46]
+[r47>
+<r47]
+[r48>
+<r48]
+[r49>
+<r49]
+[r50>
+<r50]
+[r51>
+<r51]
+[r52>
+<r52]
+[r53>
+<r53]
+[r54>
+<r54]
+[r55>
+<r55]
+[r56>
+<r56]
+[r57>
+<r57]
+[r58>
+<r58]
+[r59>
+<r59]
+[r60>
+<r60]
+[render 60]
+[r61>
+<r61]
+[r62>
+<r62]
+[r63>
+<r63]
+[r64>
+<r64]
+[r65>
+<r65]
+[r66>
+<r66]
+[r67>
+<r67]
+[r68>
+<r68]
+[r69>
+<r69]
+[r70>
+<r70]
+[r71>
+<r71]
+[r72>
+<r72]
+[r73>
+<r73]
+[r74>
+jni_shim: CallObjectMethod(getDevices)
+<r74]
+[r75>
+<r75]
+[r76>
+<r76]
+[r77>
+<r77]
+[r78>
+<r78]
+[r79>
+<r79]
+[r80>
+<r80]
+[r81>
+<r81]
+[r82>
+<r82]
+[r83>
+<r83]
+[r84>
+<r84]
+[r85>
+<r85]
+[r86>
+<r86]
+[r87>
+<r87]
+[r88>
+<r88]
+[r89>
+<r89]
+[r90>
+<r90]
+[r91>
+<r91]
+[r92>
+<r92]
+[r93>
+<r93]
+[r94>
+<r94]
+[r95>
+<r95]
+[r96>
+<r96]
+[r97>
+<r97]
+[r98>
+<r98]
+[r99>
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SHADER] link FALHOU pr=8 status=0 LOG=L0010 Uniform '_ScaleRatioA' differ on precision
+
+[ALOG:6 Unity] -------- Shader TextMeshPro/Distance Field
+-------- GLSL link error: L0010 Uniform '_ScaleRatioA' differ on precision
+
+
+<r99]
+[r100>
+<r100]
+[r101>
+<r101]
+[r102>
+<r102]
+[r103>
+jni_shim: CallObjectMethod(getDevices)
+<r103]
+[r104>
+<r104]
+[r105>
+<r105]
+[r106>
+<r106]
+[r107>
+<r107]
+[r108>
+<r108]
+[r109>
+<r109]
+[r110>
+<r110]
+[r111>
+<r111]
+[r112>
+<r112]
+[r113>
+<r113]
+[r114>
+<r114]
+[r115>
+[SEM] init 0x7f60094458 val=0
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+<r115]
+[r116>
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+<r116]
+[r117>
+<r117]
+[r118>
+<r118]
+[r119>
+<r119]
+[r120>
+<r120]
+[render 120]
+[r121>
+<r121]
+[r122>
+<r122]
+[r123>
+<r123]
+[r124>
+<r124]
+[r125>
+<r125]
+[r126>
+<r126]
+[r127>
+<r127]
+[r128>
+jni_shim: CallObjectMethod(getDevices)
+<r128]
+[r129>
+<r129]
+[r130>
+<r130]
+[r131>
+<r131]
+[r132>
+<r132]
+[r133>
+<r133]
+[r134>
+<r134]
+[r135>
+<r135]
+[r136>
+<r136]
+[r137>
+<r137]
+[r138>
+<r138]
+[r139>
+<r139]
+[r140>
+<r140]
+[r141>
+<r141]
+[r142>
+<r142]
+[r143>
+<r143]
+[r144>
+<r144]
+[r145>
+<r145]
+[r146>
+<r146]
+[r147>
+<r147]
+[r148>
+<r148]
+[r149>
+<r149]
+[r150>
+<r150]
+[r151>
+<r151]
+[r152>
+<r152]
+[r153>
+<r153]
+[r154>
+<r154]
+[r155>
+<r155]
+[r156>
+<r156]
+[r157>
+<r157]
+[r158>
+<r158]
+[r159>
+<r159]
+[r160>
+jni_shim: CallObjectMethod(getDevices)
+<r160]
+[r161>
+<r161]
+[r162>
+<r162]
+[r163>
+<r163]
+[r164>
+<r164]
+[r165>
+<r165]
+[r166>
+<r166]
+[r167>
+<r167]
+[r168>
+<r168]
+[r169>
+<r169]
+[r170>
+<r170]
+[r171>
+<r171]
+[r172>
+<r172]
+[r173>
+<r173]
+[r174>
+<r174]
+[r175>
+<r175]
+[r176>
+<r176]
+[r177>
+<r177]
+[r178>
+<r178]
+[r179>
+<r179]
+[r180>
+<r180]
+[render 180]
+[r181>
+<r181]
+[r182>
+<r182]
+[r183>
+<r183]
+[r184>
+<r184]
+[r185>
+<r185]
+[r186>
+<r186]
+[r187>
+<r187]
+[r188>
+<r188]
+[r189>
+<r189]
+[r190>
+<r190]
+[r191>
+<r191]
+[r192>
+<r192]
+[r193>
+<r193]
+[r194>
+jni_shim: CallObjectMethod(getDevices)
+<r194]
+[r195>
+<r195]
+[r196>
+<r196]
+[r197>
+<r197]
+[r198>
+<r198]
+[r199>
+<r199]
+[render 240]
+jni_shim: CallObjectMethod(getDevices)
+[GOSTAGE] setGoStage(self=0x7f7013e000, 0) @ frame~284
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[render 300]
+[CSSPY] ok createSound mode=0x152 stream=0 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[render 360]
+jni_shim: CallObjectMethod(getDevices)
+[render 420]
+jni_shim: CallObjectMethod(getDevices)
+[render 480]
+[SEM] post 0x7f8dbc8330 tid=250875
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[SEM] post 0x7f8dbc8330 tid=250844
+[SEM] post 0x7f8dbc8330 tid=250875
+jni_shim: CallObjectMethod(getDevices)
+[render 540]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 600]
+[FPS] f=600 media=23.6 draws/f=0 kverts/f=0 lo/f=0 (janela 600 frames / 25.4s)
+[CSSPY] ok createSound mode=0x152 stream=0 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[CSSPY] ok createSound mode=0x152 stream=0 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[CSSPY] ok createSound mode=0x152 stream=0 -> 0
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 660]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 720]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 780]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 840]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 900]
+[SHOT] gravado shot.ppm 1280x720 (swap #900) nao-pretos=921192/921600 draws_acum=0 verts=0 clears=0
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: FindClass(android/view/InputEvent)
+jni_shim: GetMethodID(getDevice, ()Landroid/view/InputDevice;)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: GetMethodID(getSource, ()I)
+jni_shim: FindClass(android/view/MotionEvent)
+jni_shim: GetMethodID(getEventTime, ()J)
+jni_shim: FindClass(android/view/KeyEvent)
+jni_shim: GetMethodID(getKeyCode, ()I)
+[KEYEV] getKeyCode->97
+jni_shim: GetMethodID(getAction, ()I)
+[KEYEV] getAction->0
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->100
+[KEYEV] getAction->0
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: GetMethodID(getSource, ()I)
+jni_shim: GetMethodID(getDeviceId, ()I)
+jni_shim: GetMethodID(getPointerCount, ()I)
+jni_shim: GetMethodID(getHistorySize, ()I)
+jni_shim: GetMethodID(getAxisValue, (II)F)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: GetMethodID(getActionMasked, ()I)
+jni_shim: GetMethodID(getX, (I)F)
+jni_shim: GetMethodID(getY, (I)F)
+jni_shim: GetMethodID(getPressure, (I)F)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->97
+[KEYEV] getAction->1
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->100
+[KEYEV] getAction->1
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->99
+[KEYEV] getAction->0
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->99
+[KEYEV] getAction->1
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->100
+[KEYEV] getAction->0
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+[KEYEV] getKeyCode->100
+[KEYEV] getAction->1
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevice)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 960]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1020]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1080]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1140]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1200]
+[FPS] f=1200 media=12.5 draws/f=0 kverts/f=0 lo/f=0 (janela 600 frames / 48.1s)
+jni_shim: CallObjectMethod(getDevices)
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1260]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1320]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1380]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1440]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1500]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1560]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1620]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1680]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1740]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1800]
+[FPS] f=1800 media=12.4 draws/f=0 kverts/f=0 lo/f=0 (janela 600 frames / 48.6s)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1860]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[CSSPY] STREAM falhou(33) -> retry sample mode=0x52 -> 0
+jni_shim: CallObjectMethod(getDevices)
+[render 1920]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
+[render 1980]
+jni_shim: CallObjectMethod(getDevices)
+jni_shim: CallObjectMethod(getDevices)
