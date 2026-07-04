@@ -642,10 +642,86 @@ static void mmx_nuke_integrity(void) {
   }
 }
 
+/* MMX_FULLVER: destrava a versão completa (o APK é trial — mostra "BUY FULL VERSION" e a
+ * fase é demo que volta ao menu). Varre TODOS os métodos e força as checagens booleanas de
+ * compra/unlock a retornar TRUE (independente do productId), p/ o Story Mode real abrir.
+ * MMX_STOREDUMP=1 lista os métodos casados (classe.metodo/argc -> ret). */
+static void mmx_fullver_unlock(void) {
+  static int done = 0, tries = 0;
+  if (done || !getenv("MMX_FULLVER") || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done) return;
+  if (tries++ > 600) { done = 1; return; }
+  void *(*dom_get)(void) = mmx_i2sym("il2cpp_domain_get");
+  const void **(*dom_asms)(void *, size_t *) = mmx_i2sym("il2cpp_domain_get_assemblies");
+  void *(*asm_img)(const void *) = mmx_i2sym("il2cpp_assembly_get_image");
+  size_t (*img_ccount)(void *) = mmx_i2sym("il2cpp_image_get_class_count");
+  void *(*img_class)(void *, size_t) = mmx_i2sym("il2cpp_image_get_class");
+  const char *(*cls_name)(void *) = mmx_i2sym("il2cpp_class_get_name");
+  void *(*cls_methods)(void *, void **) = mmx_i2sym("il2cpp_class_get_methods");
+  const char *(*meth_name)(void *) = mmx_i2sym("il2cpp_method_get_name");
+  unsigned int (*meth_pcount)(void *) = mmx_i2sym("il2cpp_method_get_param_count");
+  void *(*meth_ret)(void *) = mmx_i2sym("il2cpp_method_get_return_type");
+  const char *(*type_name)(void *) = mmx_i2sym("il2cpp_type_get_name");
+  if (!dom_get || !dom_asms || !asm_img || !img_ccount || !img_class || !cls_methods || !meth_name || !meth_ret) return;
+  /* nomes de métodos booleanos de "comprado/versão-completa/desbloqueado" -> TRUE */
+  static const char *want[] = {
+    "getProductUse", "getProductUnlock", "get_IsFull", "IsFull", "get_IsUnlocked",
+    "IsUnlocked", "isUnlock", "get_IsPurchased", "IsPurchased", "HasNumberOfPurchases",
+    "IsPayVersion", "get_IsPayVersion", "IsFullVersion", "get_IsFullVersion", NULL
+  };
+  void *domain = dom_get(); if (!domain) return;
+  size_t na = 0; const void **asms = dom_asms(domain, &na); if (!asms || !na) return;
+  static int npatched = 0;
+  long pg = sysconf(_SC_PAGESIZE);
+  for (size_t i = 0; i < na; i++) {
+    void *img = asm_img(asms[i]); if (!img) continue;
+    size_t nc = img_ccount(img);
+    for (size_t ci = 0; ci < nc; ci++) {
+      void *cls = img_class(img, ci); if (!cls) continue;
+      const char *ccn = cls_name ? cls_name(cls) : NULL;
+      int dump_all = getenv("MMX_STOREDUMP2") && ccn &&
+                     (strstr(ccn, "Store") || strstr(ccn, "Pay") || strstr(ccn, "Demo") ||
+                      strstr(ccn, "Kit") || strstr(ccn, "TitleMenu") || strstr(ccn, "Product") ||
+                      strstr(ccn, "Save") || strstr(ccn, "License") || strstr(ccn, "Billing"));
+      void *iter = NULL, *m;
+      while ((m = cls_methods(cls, &iter))) {
+        const char *mn = meth_name(m); if (!mn) continue;
+        if (dump_all) {
+          const char *r2 = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
+          fprintf(stderr, "[STORE2] %s.%s/%u -> %s\n", ccn, mn, meth_pcount ? meth_pcount(m) : 0, r2 ? r2 : "?");
+          fsync(2);
+        }
+        int match = 0;
+        for (int k = 0; want[k]; k++) if (!strcmp(mn, want[k])) { match = 1; break; }
+        if (!match) continue;
+        const char *rt = (meth_ret && type_name) ? type_name(meth_ret(m)) : "?";
+        int is_bool = rt && (strstr(rt, "Boolean") || strstr(rt, "bool"));
+        if (getenv("MMX_STOREDUMP"))
+          fprintf(stderr, "[STOREDUMP] %s.%s/%u -> %s\n",
+                  cls_name ? cls_name(cls) : "?", mn, meth_pcount ? meth_pcount(m) : 0, rt ? rt : "?");
+        if (!is_bool) continue;              /* só booleanos: TRUE seguro */
+        uint32_t *mp = *(uint32_t **)m; if (!mp) continue;
+        void *pa = (void *)((uintptr_t)mp & ~((uintptr_t)pg - 1));
+        mprotect(pa, pg * 2, PROT_READ | PROT_WRITE | PROT_EXEC);
+        mp[0] = 0x52800020u;  /* mov w0,#1 */
+        mp[1] = 0xD65F03C0u;  /* ret */
+        mprotect(pa, pg * 2, PROT_READ | PROT_EXEC);
+        __builtin___clear_cache((char *)pa, (char *)pa + pg * 2);
+        npatched++;
+        fprintf(stderr, "[MMX_FULLVER] %s.%s -> TRUE\n", cls_name ? cls_name(cls) : "?", mn);
+        fsync(2);
+      }
+    }
+  }
+  done = 1;
+  fprintf(stderr, "[MMX_FULLVER] unlock scan concluído: %d métodos forçados TRUE\n", npatched);
+  fsync(2);
+}
+
 /* MMX_FIXGAME: neutraliza pontos Android/IAP que quebram no so-loader depois que o
    BootScene passa. Por padrão controlKey também é neutralizado para evitar abort em
    RockmanX.Update; use MMX_KEEP_CONTROLKEY=1 para testar input real. */
 static void mmx_fix_game_methods(void) {
+  mmx_fullver_unlock();
   static int done = 0;
   if (done || !g_il2cpp_base || !g_m_il2cpp || !g_mmx_nointegrity_done || !getenv("MMX_FIXGAME")) {
     if (!getenv("MMX_FIXGAME")) done = 1;
