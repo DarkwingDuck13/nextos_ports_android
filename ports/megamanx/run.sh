@@ -52,11 +52,19 @@ export MMX_XLATE=1 MMX_BOOTST=1
 #    funciona ponta-a-ponta. MMX_CTRLHOOK+KEYFLAG_PRE = hook do RockmanX.controlKey aplicando o pad.
 #    MMX_KEYINIT = rede de seguranca (realoca/inicializa o keymap se algum dia vier vazio de verdade).
 #    Mapeamento default: dpad/analogico=mover, A=pulo, X=tiro, Y/R1=dash, B=arma, START=start.
-export MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
-# ⚠️ ESTADO: BOOTA+60fps, X renderiza na fase, CONTROLES injetam no input do jogo (provado nos logs:
-#    key_data[0] recebe os bits). MUROS ABERTOS (separados de controle): (1) menu e TOUCH — navegar
-#    ate a fase real precisa de pad->touch nos menus; (2) trial/demo volta ao titulo (gate de fullver
-#    em nivel de dados) — story mode roda um trial curto e retorna. Ver HANDOFF.md secao s6.
-echo "[run] Mega Man X — fbdev Mali-450 (boot+render+controles)"
+#    🔑 MMX_GAMEPAD=1 é OBRIGATÓRIO: liga o mmx_gamepad_frame (poll do pad SDL -> g_btn). Sem
+#    ele mmx_gp_button sempre retorna 0 e o pad fisico NAO faz nada (só o force-idx de debug anda).
+export MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
+# 🕹️ AUTO-START: o menu principal e TOUCH-only (grid de paineis; nao responde a tecla). Pra dar
+#    jogabilidade IMEDIATA com o controle, o launcher chama RockmanX.setGoStage(0) alguns frames
+#    depois do boot (New Game -> PROLOGUE -> STAGE, cena 12 = jogavel, input incondicional). Assim o
+#    jogador cai direto na fase controlando o X com o pad. (MMX_GOSTAGE_F = frame do disparo.)
+export MMX_GOSTAGE=0 MMX_GOSTAGE_F=280
+# ✅ ESTADO (2026-07-04): DESBLOQUEADO (BUY FULL VERSION fora; Story+Ranking no menu) + GAMEPLAY
+#    JOGAVEL (X dasha/anda na fase intro pelo pad — provado: gp=0x2000 -> game_key -> X move) +
+#    60fps + render limpo. Controles: pad SDL -> game_key (movimento/pulo/tiro/dash). FALTA: audio
+#    (FMOD do Unity nao inicia -> silencio; investigando) e navegacao dos submenus por controle
+#    (menu principal e contornado pelo auto-start). Ver HANDOFF.md secao s6.
+echo "[run] Mega Man X — fbdev Mali-450 (DESBLOQUEADO + gameplay + controle)"
 nohup ./megamanx > run.out 2>&1 &
 echo "[run] PID $! — log: $GAMEDIR/run.out"
