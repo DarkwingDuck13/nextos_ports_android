@@ -6249,6 +6249,16 @@ int main(int argc, char **argv) {
     }
     so_make_text_executable(); so_flush_caches();
   }
+  /* MMX_FORCESL: Unity 2021.3 / Mega Man X escolhe output 21 (AudioTrack Java)
+   * em libunity+0x423cf4..0x423cfc. Forca 22 (OpenSL) sem tocar no default.
+   * Resultado esperado: dlopen(libOpenSLES.so) -> opensles_shim -> PCM no SDL. */
+  if (getenv("MMX_FORCESL")) {
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x423cf8) = 0x528002c8u; /* mov w8,#22 */
+    *(uint32_t *)((uintptr_t)text_base + 0x423cfc) = 0x2a0803f5u; /* mov w21,w8 */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[MMX_FORCESL] audio output 21/22 selector -> 22 (OpenSL)\n");
+  }
 
   so_finalize(); so_flush_caches();
   g_alloc_ub = (uintptr_t)text_base;
@@ -6361,10 +6371,25 @@ int main(int argc, char **argv) {
       fprintf(stderr, "[DESERGUARD] hook 0x54220c (skip se *arg0==NULL)\n");
     }
   }
-  /* TER_AUDIOSPY/TER_STREAMFALLBACK: hook do createSound (libunity 0x806cb4).
-     SPY loga result de cada som; STREAMFALLBACK refaz streams falhos como sample.
-     Instalado aqui (contexto libunity, text_base=libunity, ANTES do F1/il2cpp). */
-  if (getenv("TER_AUDIOSPY") || getenv("TER_STREAMFALLBACK")) {
+  /* MMX_AUDIOSPY/MMX_STREAMFALLBACK: Mega Man X Unity 2021.3 createSound wrapper real
+     e libunity+0x9ccaa8. SPY loga result de cada som; STREAMFALLBACK refaz streams
+     falhos como sample. Gated/off por default para preservar a receita jogavel. */
+  if (getenv("MMX_AUDIOSPY") || getenv("MMX_STREAMFALLBACK")) {
+    g_stream_fallback = getenv("MMX_STREAMFALLBACK") ? 1 : 0;
+    void *tr = mk_tramp((uintptr_t)text_base + 0x9ccaa8, "mmx.createSound");
+    if (tr) {
+      cs_orig = (long (*)(void *, void *, int, void *, void *))tr;
+      extern void so_make_text_writable(void), so_make_text_executable(void);
+      so_make_text_writable();
+      hook_arm64((uintptr_t)text_base + 0x9ccaa8, (uintptr_t)cs_hook);
+      so_make_text_executable(); so_flush_caches();
+      fprintf(stderr, "[CSSPY] MMX hook createSound(0x9ccaa8) instalado (fallback=%d)\n", g_stream_fallback);
+    } else fprintf(stderr, "[CSSPY] MMX mk_tramp falhou\n");
+  }
+  /* TER_AUDIOSPY/TER_STREAMFALLBACK: hook herdado de outro Unity (libunity 0x806cb4).
+     Mantido para ports antigos; nao usar no MMX porque esse offset nao e createSound aqui. */
+  if (!getenv("MMX_AUDIOSPY") && !getenv("MMX_STREAMFALLBACK") &&
+      (getenv("TER_AUDIOSPY") || getenv("TER_STREAMFALLBACK"))) {
     g_stream_fallback = getenv("TER_STREAMFALLBACK") ? 1 : 0;
     void *tr = mk_tramp((uintptr_t)text_base + 0x806cb4, "createSound");
     if (tr) {

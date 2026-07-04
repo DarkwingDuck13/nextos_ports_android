@@ -1,5 +1,46 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-04 s8 — 🔊 ÁUDIO DESBLOQUEADO: OpenSL/SDL + fallback de streams, sem regressão de gameplay
+
+**Estado atual:** `run.sh` agora sobe **full version + gameplay + pad físico + áudio**. O único muro grande
+restante é **navegação de submenus por controle** (pause/stage-select/game-over/customize ainda são touch).
+
+**Causa real do áudio mudo:**
+
+1. O FMOD/Unity desta build escolhia o output **21** (AudioTrack/Java fake) e por isso **nunca chamava
+   `slCreateEngine`**. O shim OpenSL estava pronto, mas não era alcançado.
+2. O seletor real fica em **`libunity+0x423cf4..0x423cfc`**:
+   `cmp w0,#2; mov w8,#21; cinc w21,w8,eq`. Se a checagem não retorna 2, cai no output 21.
+3. `MMX_FORCESL=1` força o seletor para **22/OpenSL**:
+   `0x423cf8=0x528002c8` (`mov w8,#22`) e `0x423cfc=0x2a0803f5` (`mov w21,w8`).
+   Prova em log: `[DLOPEN] libOpenSLES.so -> opensles_shim`, `[SL] slCreateEngine`,
+   `CreateOutputMix`, `CreateAudioPlayer`, `bq_Enqueue`, `SetPlayState`, callbacks do pump SDL.
+4. Com OpenSL ativo, o próximo erro era `createSound` em modo stream: `mode=0xd2 stream=1 -> 33`.
+   Samples (`mode=0x152 stream=0`) já abriam com `-> 0`. O wrapper real é **`libunity+0x9ccaa8`**.
+5. `MMX_STREAMFALLBACK=1` hooka esse wrapper e, quando stream falha com 33, tenta de novo como sample
+   (`mode & ~0x80`, observado `0xd2 -> 0x52`). Resultado: **0× `Cannot create FMOD::Sound`** no run limpo.
+
+**Receita atual (run.sh):** `MMX_INLINETASK=1 MMX_PATCH=0x34eafc=0x14000005 MMX_NOINTEGRITY=1
+MMX_PREFSTRUE=1 MMX_FIXGAME=1 MMX_FULLVER=1 MMX_XLATE=1 MMX_BOOTST=1 MMX_FORCESL=1
+MMX_STREAMFALLBACK=1 MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
+MMX_GOSTAGE=0 MMX_GOSTAGE_F=280`.
+
+**Validação anti-regressão:**
+
+- Baseline pós-build sem `MMX_FORCESL`/`MMX_STREAMFALLBACK`: `GOSTAGE` e `CTRLHOOK` continuaram OK, sem logs
+  novos de áudio. Ou seja, o caminho novo é gated por env.
+- Run limpo de ~45s com `MMX_FORCESL=1 MMX_STREAMFALLBACK=1`: OpenSL iniciou, callbacks SDL rodaram,
+  stream fallback removeu os `Cannot create FMOD::Sound`, e o jogo ainda entrou na fase via `setGoStage`.
+- Screenshot: `runs/2026-07-04-codex-audio-forcesl-fallback/audio_forcesl_fallback.png`
+  SHA256 `2dea0c00f899aec7aa23ee8c9de416a421a9df7c2b91125318ed8fc93fd02a2b`.
+- Log salvo: `runs/2026-07-04-codex-audio-forcesl-fallback/run.out`.
+
+**Ferramentas novas:** `MMX_FORCESL=1` (força output 22/OpenSL no libunity), `MMX_AUDIOSPY=1`
+(diagnóstico verboso do `createSound` real em `libunity+0x9ccaa8`), `MMX_STREAMFALLBACK=1`
+(retry de streams FMOD como sample quando retornam 33).
+
+---
+
 ## 2026-07-04 s7 — 🏆🏆 DESBLOQUEADO + JOGÁVEL: BUY VERSION fora, X anda na fase pelo pad
 
 **Sequência de vitórias (commits `921fa65`, `83e5016`, `8a787fe`):**
@@ -25,17 +66,14 @@
 
 **Receita jogável (run.sh):** `MMX_INLINETASK=1 MMX_PATCH=0x34eafc=0x14000005 MMX_NOINTEGRITY=1
 MMX_PREFSTRUE=1 MMX_FIXGAME=1 MMX_FULLVER=1 MMX_XLATE=1 MMX_BOOTST=1 MMX_GAMEPAD=1 MMX_CTRLHOOK=1
-MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1 MMX_GOSTAGE=0 MMX_GOSTAGE_F=280`.
+MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1 MMX_GOSTAGE=0 MMX_GOSTAGE_F=280`
+(s8 adicionou `MMX_FORCESL=1 MMX_STREAMFALLBACK=1` para áudio).
 
 **Ferramentas novas:** `MMX_GOSTAGE=N`(New Game/fase N via setGoStage), `MMX_ILPATCH=0xOFF=0xWORD`(patch cru
 no .text do libil2cpp). Mapa de controle: dpad/analógico=mover, A=pulo, X=tiro, Y/RB=dash, LB=arma, START.
 
 **MUROS ABERTOS (o resto da missão):**
-1. **ÁUDIO** — FMOD do Unity (dentro do libunity) NÃO inicia: 972× `Cannot create FMOD::Sound instance`.
-   O shim OpenSL (`opensles_shim.c`, ring→SDL) está pronto e `slCreateEngine` retorna SUCCESS, MAS o FMOD
-   do Unity **nunca chama slCreateEngine** (log `[SL] slCreateEngine` não aparece) — a init do subsistema
-   de áudio falha ANTES de escolher output. Investigando (subagente): provável NOSOUND por JNI
-   getProperty/FMODAudioDevice retornando valor que faz o FMOD desistir, ou uma init call abortando.
+1. **ÁUDIO foi resolvido no s8** com `MMX_FORCESL=1 MMX_STREAMFALLBACK=1`. O texto abaixo é histórico.
 2. **NAVEGAÇÃO DE SUBMENUS POR CONTROLE** — o menu principal é contornado pelo auto-start, mas submenus
    in-game (pause, stage-select pós-intro, game-over, customize) são touch e precisam de pad→touch. O menu
    NÃO responde a tecla (`isKeyTrg(game_key[2])` existe em fases posteriores do TITLEMENU, mas o grid

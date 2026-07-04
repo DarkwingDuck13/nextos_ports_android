@@ -1,5 +1,47 @@
 # Mega Man X port runs
 
+## 2026-07-04 audio ForceSL + stream fallback
+
+### Current state
+
+- Full version, auto-start gameplay, physical pad, and audio are now enabled by default in `run.sh`.
+- Audio fix is two-stage:
+  - `MMX_FORCESL=1` forces Unity/FMOD output 22 (OpenSL) instead of output 21 (AudioTrack/Java fake).
+  - `MMX_STREAMFALLBACK=1` retries failing FMOD streams (`mode=0xd2 -> 33`) as samples (`mode=0x52 -> 0`).
+- Remaining major blocker: controller navigation for touch-only submenus.
+
+### Saved run
+
+- `runs/2026-07-04-codex-audio-forcesl-fallback`
+  - `run.out`: clean 45s validation log.
+  - `audio_forcesl_fallback.png`: gameplay screenshot after audio fix.
+  - Screenshot SHA256: `2dea0c00f899aec7aa23ee8c9de416a421a9df7c2b91125318ed8fc93fd02a2b`.
+
+### Key evidence
+
+- OpenSL path reached: `[SL] slCreateEngine`, `CreateOutputMix`, `CreateAudioPlayer`, `bq_Enqueue`,
+  `SetPlayState`, pump callbacks.
+- FMOD stream fallback worked: `STREAM falhou(33) -> retry sample mode=0x52 -> 0`.
+- `Cannot create FMOD::Sound` count in the clean validation: `0`.
+- Gameplay/control still alive in the same run: `GOSTAGE`, `CTRLHOOK`, and `MMX_GAMEPAD` logs are present.
+
+### Current playable recipe
+
+```sh
+sh /storage/roms/megamanx/run.sh
+```
+
+Important envs inside `run.sh`:
+
+```sh
+MMX_INLINETASK=1 MMX_PATCH=0x34eafc=0x14000005
+MMX_NOINTEGRITY=1 MMX_PREFSTRUE=1 MMX_FIXGAME=1 MMX_FULLVER=1
+MMX_XLATE=1 MMX_BOOTST=1
+MMX_FORCESL=1 MMX_STREAMFALLBACK=1
+MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
+MMX_GOSTAGE=0 MMX_GOSTAGE_F=280
+```
+
 ## 2026-07-03 pause checkpoint
 
 User asked to pause. No `megamanx` process left running on `192.168.31.79`.

@@ -44,6 +44,12 @@ export MMX_NOINTEGRITY=1 MMX_PREFSTRUE=1 MMX_FIXGAME=1 MMX_FULLVER=1
 # shaders GLES3->GLES2: o data.unity3d ja foi TRANSPILADO offline (transpile_shaders.py).
 # MMX_XLATE mantem o hook glShaderSource pronto (o GLSL do data ja e #version 100). MMX_BOOTST=estado.
 export MMX_XLATE=1 MMX_BOOTST=1
+# 🔊 AUDIO (fix 2026-07-04): o FMOD desta build escolhia output 21 (AudioTrack Java fake) e nunca
+#    chamava OpenSL. MMX_FORCESL forca output 22 -> libOpenSLES -> opensles_shim -> SDL. Os BGM/vozes
+#    que entram como stream (mode=0xd2) falhavam com erro 33; MMX_STREAMFALLBACK reabre como sample
+#    (mode=0x52), removendo os "Cannot create FMOD::Sound". MMX_AUDIOSPY existe, mas fica OFF no
+#    default por ser diagnostico verboso.
+export MMX_FORCESL=1 MMX_STREAMFALLBACK=1
 # 🎮 CONTROLES (fix 2026-07-03): o pad fisico (SDL) dirige o input do jogo. A raiz do "controle nao
 #    funciona" de sessoes passadas era um BUG DE LEITURA: mmx_managed_array_len usava addr_readable,
 #    que consulta um snapshot ANTIGO de /proc/self/maps SEM as paginas do GC heap do il2cpp -> os
@@ -62,9 +68,8 @@ export MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
 export MMX_GOSTAGE=0 MMX_GOSTAGE_F=280
 # ✅ ESTADO (2026-07-04): DESBLOQUEADO (BUY FULL VERSION fora; Story+Ranking no menu) + GAMEPLAY
 #    JOGAVEL (X dasha/anda na fase intro pelo pad — provado: gp=0x2000 -> game_key -> X move) +
-#    60fps + render limpo. Controles: pad SDL -> game_key (movimento/pulo/tiro/dash). FALTA: audio
-#    (FMOD do Unity nao inicia -> silencio; investigando) e navegacao dos submenus por controle
-#    (menu principal e contornado pelo auto-start). Ver HANDOFF.md secao s6.
-echo "[run] Mega Man X — fbdev Mali-450 (DESBLOQUEADO + gameplay + controle)"
+#    audio via OpenSL/SDL + render limpo. Controles: pad SDL -> game_key (movimento/pulo/tiro/dash).
+#    FALTA: navegacao dos submenus por controle (menu principal e contornado pelo auto-start).
+echo "[run] Mega Man X — fbdev Mali-450 (DESBLOQUEADO + gameplay + controle + audio)"
 nohup ./megamanx > run.out 2>&1 &
 echo "[run] PID $! — log: $GAMEDIR/run.out"
