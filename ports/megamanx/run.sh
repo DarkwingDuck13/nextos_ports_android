@@ -50,14 +50,21 @@ export MMX_XLATE=1 MMX_BOOTST=1
 #    (mode=0x52), removendo os "Cannot create FMOD::Sound". MMX_AUDIOSPY existe, mas fica OFF no
 #    default por ser diagnostico verboso.
 export MMX_FORCESL=1 MMX_STREAMFALLBACK=1
-# 🎮 CONTROLES (fix 2026-07-03): o pad fisico (SDL) dirige o input do jogo. A raiz do "controle nao
-#    funciona" de sessoes passadas era um BUG DE LEITURA: mmx_managed_array_len usava addr_readable,
-#    que consulta um snapshot ANTIGO de /proc/self/maps SEM as paginas do GC heap do il2cpp -> os
-#    arrays de keymap (KeyFlag=3, key_data=7, game_key=11) liam como len=0 (falso "keymap vazio").
-#    Corrigido -> a injecao (game_key[acao] -> KeyFlag -> controlKey -> key_data[0] que isKeyOn le)
-#    funciona ponta-a-ponta. MMX_CTRLHOOK+KEYFLAG_PRE = hook do RockmanX.controlKey aplicando o pad.
-#    MMX_KEYINIT = rede de seguranca (realoca/inicializa o keymap se algum dia vier vazio de verdade).
-#    Mapeamento default: dpad/analogico=mover, A=pulo, X=tiro, Y/R1=dash, B=arma, START=start.
+# 🎮 CONTROLES (s10 2026-07-05): o pad fisico (SDL) dirige o input do jogo via game_key REAL
+#    (enum GAMEKEY do global-metadata): 0=UP 2=DOWN 4=LEFT 5=RIGHT 6=ATTACK 7=CHANGE 8=JUMP 9=DASH.
+#    A raiz do "A/X/Y nao fazem nada" era DUPLA: (1) indices errados (2=DOWN, nao JUMP! o "pulo" que
+#    viamos era o DASH que compartilha a mascara 0x8000); (2) o plano real/trigger precisava de PULSO
+#    de MMX_CTRL_PULSE frames (default 3) por borda — 1 frame o jogo perdia, e o held constante em kd0
+#    matava a deteccao 0->1 do controlKey (por isso FORCE_IDX funcionava e o botao fisico nao).
+#    Mapeamento FISICO (pad do usuario, layout trocado no SDL: fisA=SDL1 fisB=SDL0 fisX=SDL3
+#    fisY=SDL2): A=pulo, B=dash, X=dash, Y=tiro/carga, L1/R1=troca de arma, START=PAUSE
+#    (dialog real: initDialog(30)+setStep(19) na thread do jogo — a engrenagem NAO e touch-region),
+#    SELECT=modo CURSOR, SELECT+START=sair. KeyEvents nativos dos botoes de face suprimidos
+#    (BUTTON_B nativo dava dash e conflitava; MMX_NATKEYS=1 restaura). Tunaveis: MMX_CTRL_BTN_*.
+#    🖱️ MODO CURSOR (estilo COD BOZ): SELECT alterna; dpad/analogicos (esq+dir) movem o crosshair
+#    (acelera segurando; tiro segurado=fino; MMX_CUR_SPEED), botao de pulo=toque (menus pedem
+#    2 taps: 1o seleciona, 2o confirma). Desenhado por GL no swap (precisa MMX_GAMEPAD, que
+#    tambem ativa o hook do eglSwapBuffers).
 #    🔑 MMX_GAMEPAD=1 é OBRIGATÓRIO: liga o mmx_gamepad_frame (poll do pad SDL -> g_btn). Sem
 #    ele mmx_gp_button sempre retorna 0 e o pad fisico NAO faz nada (só o force-idx de debug anda).
 export MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1

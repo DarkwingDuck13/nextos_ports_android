@@ -421,6 +421,58 @@ static void gamepad_touch_frame(void *env, void *thiz, void *inject) {
   }
 }
 
+/* ---- MODO CURSOR (estilo COD BOZ): SELECT alterna game-mode <-> cursor-mode ----
+ * Em cursor-mode o pad vira mouse: dpad/analógico move um cursor na tela (espaço touch
+ * 1280x720), A = toque no ponto (down/move/up de verdade, então segurar+arrastar
+ * funciona). A injeção de teclas do jogo (mmx_ctrl_*) é suprimida enquanto ativo
+ * (mmx_cursor_mode() é consultado pelo main.c), e o cursor é desenhado como overlay GL
+ * no my_eglSwapBuffers. Serve p/ navegar TODOS os menus touch (pause/stage
+ * select/customize/opções) sem depender de coordenadas fixas. */
+static int g_cursor_on;
+static float g_cur_x = 640.0f, g_cur_y = 360.0f;
+static int g_cur_press;
+
+int mmx_cursor_mode(void) { return g_cursor_on; }
+int mmx_cursor_pressed(void) { return g_cur_press; }
+void mmx_cursor_pos(float *x, float *y) { if (x) *x = g_cur_x; if (y) *y = g_cur_y; }
+
+static void cursor_frame(void *env, void *thiz, void *inject) {
+  float sw = envf("MMX_CUR_W", 1280), sh = envf("MMX_CUR_H", 720);
+  float sp = envf("MMX_CUR_SPEED", 16);
+  float dx = 0, dy = 0;
+  if (g_btn[GP_LEFT])  dx -= 1; if (g_btn[GP_RIGHT]) dx += 1;
+  if (g_btn[GP_UP])    dy -= 1; if (g_btn[GP_DOWN])  dy += 1;
+  if (fabsf(g_axis[AX_LX]) > 0.15f) dx = g_axis[AX_LX];
+  if (fabsf(g_axis[AX_LY]) > 0.15f) dy = g_axis[AX_LY];
+  if (fabsf(g_axis[AX_RX]) > 0.15f) dx = g_axis[AX_RX];   /* analógico direito também move */
+  if (fabsf(g_axis[AX_RY]) > 0.15f) dy = g_axis[AX_RY];
+  /* aceleração: segurando a direção o cursor cruza a tela rápido; toques curtos = fino */
+  static int movf;
+  movf = (dx || dy) ? movf + 1 : 0;
+  if (movf > 25) sp *= 1.8f;
+  int prec_btn = getenv("MMX_CTRL_BTN_SHOT") ? atoi(getenv("MMX_CTRL_BTN_SHOT")) : 2;
+  if (mmx_gp_button(prec_btn)) { dx *= 0.3f; dy *= 0.3f; }   /* tiro segurado = precisão */
+  g_cur_x += dx * sp; g_cur_y += dy * sp;
+  if (g_cur_x < 2) g_cur_x = 2; if (g_cur_x > sw - 2) g_cur_x = sw - 2;
+  if (g_cur_y < 2) g_cur_y = 2; if (g_cur_y > sh - 2) g_cur_y = sh - 2;
+
+  /* toque = botão mapeado como PULO (físico A), acompanhando o layout do usuário */
+  int tap_btn = getenv("MMX_CTRL_BTN_JUMP") ? atoi(getenv("MMX_CTRL_BTN_JUMP")) : 1;
+  int press = mmx_gp_button(tap_btn);
+  if (press) { g_mt_x[0] = g_cur_x; g_mt_y[0] = g_cur_y; g_mt_id[0] = 0; g_mt_count = 1; }
+  if (press && !g_cur_press) {           /* borda: DOWN no cursor */
+    g_touch_down_ms = now_ms();
+    touch_send(env, thiz, inject, 0, 0);
+  } else if (press) {                    /* segurando: MOVE (arrastar) */
+    touch_send(env, thiz, inject, 2, 0);
+  } else if (!press && g_cur_press) {    /* soltou: UP na última posição */
+    touch_send(env, thiz, inject, 1, 0);
+    g_mt_count = 0;
+    g_touch_down_ms = 0;
+  }
+  g_cur_press = press;
+}
+
 void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
   if (!mmx_gamepad_enabled() || !inject) return;
   memcpy(g_prev_btn, g_btn, sizeof(g_prev_btn));
@@ -436,10 +488,37 @@ void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
     kill(getpid(), SIGKILL);
   }
 
+  /* SELECT (sozinho) alterna o modo cursor; SELECT+START continua sendo sair.
+     O SELECT é RESERVADO do loader: nunca chega ao jogo (zeramos g_btn[GP_BACK] depois
+     do toggle — senão o toggle-off vazava um KeyEvent 109 pro Unity). */
+  {
+    static int prev_raw_back;
+    int raw_back = g_btn[GP_BACK];
+    if (raw_back && !prev_raw_back && !g_btn[GP_START] && !env_on("MMX_NOCURSOR")) {
+      g_cursor_on = !g_cursor_on;
+      if (!g_cursor_on && g_cur_press) {   /* saiu segurando A: solta o toque */
+        touch_send(env, thiz, inject, 1, 0);
+        g_mt_count = 0; g_touch_down_ms = 0; g_cur_press = 0;
+      }
+      fprintf(stderr, "[MMX_CURSOR] %s (cursor %.0f,%.0f)\n",
+              g_cursor_on ? "ON (pad=mouse, A=toque, X=preciso, SELECT=volta)" : "OFF (game-mode)",
+              g_cur_x, g_cur_y);
+      fsync(2);
+    }
+    prev_raw_back = raw_back;
+    g_btn[GP_BACK] = 0;
+  }
+  if (g_cursor_on) { cursor_frame(env, thiz, inject); return; }
+
   /* MMX_GP_TOUCH=1: caminho correto p/ o port mobile (pad -> toque nos controles da tela). */
   if (env_on("MMX_GP_TOUCH")) { gamepad_touch_frame(env, thiz, inject); return; }
 
   for (int i = 0; i < GP_COUNT; i++) {
+    /* botões de face (A/B/X/Y) NÃO viram KeyEvent: o jogo trata BUTTON_B nativo como
+       dash — conflitaria com o mapeamento por game_key (ex.: físico A=pulo daria dash
+       nativo junto). Tudo dos botões de face passa pela injeção do controlKey.
+       MMX_NATKEYS=1 restaura o comportamento antigo. */
+    if (i <= GP_Y && !env_on("MMX_NATKEYS")) continue;
     if (g_btn[i] != g_prev_btn[i]) inject_key(env, thiz, inject, i, g_btn[i] ? 1 : 0);
   }
   if (state_changed() || gp_any_state() || env_on("MMX_GPMOTION_ALWAYS"))

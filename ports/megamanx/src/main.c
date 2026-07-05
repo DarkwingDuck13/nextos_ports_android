@@ -741,19 +741,82 @@ static void mmx_ctrl_or_idx(void *game_key, int idx, uint32_t *held, uint32_t *r
     if (real_on) real[i] |= src[i];
   }
 }
-static int mmx_ctrl_act_bits_now(void) {
-  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
-  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
-  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
-  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
-  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
-  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
-  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
-  int weap  = mmx_gp_button(4);
-  int start = mmx_gp_button(7);
-  return (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
-         (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
-         (weap ? 128 : 0) | (start ? 256 : 0);
+/* ---- amostra ÚNICA de input por chamada do controlKey (s10) ----
+   Ações (bit): 1 UP, 2 DOWN, 4 LEFT, 8 RIGHT, 16 JUMP(A), 32 SHOT(X), 64 DASH(Y),
+   128 WPREV(L1), 256 WNEXT(R1), 512 START. B fica FORA daqui: dash nativo Android/Unity.
+   🔑 PULSO (lição do s9): FORCE_IDX aciona pulo porque segura held+real TODO frame; o
+   botão físico só dava 1 frame de "real" (borda) e o jogo perdia o trigger — e o kd0
+   injetado todo frame matava a detecção 0→1 do próprio controlKey. Agora cada borda
+   arma MMX_CTRL_PULSE frames (default 3) de injeção no plano real — imita o FORCE numa
+   janela curta, sem o dash/pulo infinito do REAL_HELD global. */
+/* 🔑 Índices REAIS do game_key (enum GAMEKEY do global-metadata, validado por disasm s10):
+   0=UP 1=UP_2 2=DOWN 3=DOWN_2 4=LEFT 5=RIGHT 6=ATTACK 7=CHANGE(arma) 8=JUMP 9=DASH
+   10=DASH_2 (desligado por default no config). NÃO existe START/pause no game_key —
+   pause é touch (engrenagem no topo) → botão START vira tap sintético (mmx_gamepad.c). */
+#define MMX_ACT_N 10
+static const struct { const char *env; int defidx; int bit; } g_mmx_ctrl_maps[MMX_ACT_N] = {
+  {"MMX_CTRL_IDX_UP",     0,   1},
+  {"MMX_CTRL_IDX_DOWN",   2,   2},
+  {"MMX_CTRL_IDX_LEFT",   4,   4},
+  {"MMX_CTRL_IDX_RIGHT",  5,   8},
+  {"MMX_CTRL_IDX_JUMP",   8,  16},
+  {"MMX_CTRL_IDX_SHOT",   6,  32},
+  {"MMX_CTRL_IDX_DASH",   9,  64},
+  {"MMX_CTRL_IDX_WPREV",  7, 128},
+  {"MMX_CTRL_IDX_WNEXT",  7, 256},
+  {"MMX_CTRL_IDX_START", -1, 512},
+};
+static int g_mmx_act_bits, g_mmx_edge_bits, g_mmx_pulse_bits;
+static int g_mmx_pulse[MMX_ACT_N];
+static void mmx_ctrl_sample(void) {
+  extern int mmx_cursor_mode(void);
+  int act = 0;
+  if (!mmx_cursor_mode()) {   /* modo cursor: pad vira mouse, jogo não recebe teclas */
+    int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
+    int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
+    int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
+    int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
+    /* layout FÍSICO pedido pelo usuário: A=pulo, B=dash, X=dash, Y=tiro. No pad dele o
+       SDL entrega trocado (físico A=SDL1, B=SDL0, X=SDL3, Y=SDL2 — layout Nintendo), então
+       os defaults abaixo são em índice SDL. Ajustável por env se o mapping do pad mudar. */
+    int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 1));
+    int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
+    int dash  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_DASH", 3)) ||
+                mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_DASH2", 0));
+    int wprev = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_WPREV", 4));
+    int wnext = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_WNEXT", 5));
+    int start = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_START", 7));
+    act = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
+          (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
+          (wprev ? 128 : 0) | (wnext ? 256 : 0) | (start ? 512 : 0);
+  }
+  static int prev_act;
+  g_mmx_edge_bits = act & ~prev_act;
+  prev_act = act;
+  g_mmx_act_bits = act;
+  int pdur = mmx_env_i("MMX_CTRL_PULSE", 3);
+  int pbits = 0;
+  for (int i = 0; i < MMX_ACT_N; i++) {
+    if (g_mmx_edge_bits & g_mmx_ctrl_maps[i].bit) g_mmx_pulse[i] = pdur;
+    if (g_mmx_pulse[i] > 0) { pbits |= g_mmx_ctrl_maps[i].bit; g_mmx_pulse[i]--; }
+  }
+  g_mmx_pulse_bits = pbits;
+}
+static int mmx_ctrl_act_bits_now(void) { return g_mmx_act_bits; }
+/* monta as máscaras held/real a partir do estado amostrado (compartilhado pelos dois
+   pontos de injeção: KeyFlag pré-controlKey e key_data pós-controlKey) */
+static void mmx_ctrl_masks_from_state(void *game_key, uint32_t *held, uint32_t *real, int maxn) {
+  int real_held = getenv("MMX_CTRL_REAL_HELD") ? mmx_env_i("MMX_CTRL_REAL_HELD", 1) : 0;
+  int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
+  if (force >= 0) { mmx_ctrl_or_idx(game_key, force, held, real, 1, maxn); return; }
+  for (int i = 0; i < MMX_ACT_N; i++) {
+    int bit = g_mmx_ctrl_maps[i].bit;
+    if (!((g_mmx_act_bits | g_mmx_pulse_bits) & bit)) continue;
+    int idx = mmx_env_i(g_mmx_ctrl_maps[i].env, g_mmx_ctrl_maps[i].defidx);
+    if (idx < 0) continue;
+    int real_on = real_held || (g_mmx_pulse_bits & bit);
+    mmx_ctrl_or_idx(game_key, idx, held, real, real_on, maxn);
+  }
 }
 static void mmx_ctrl_apply(long self) {
   if (!self || !getenv("MMX_CTRLHOOK")) return;
@@ -782,45 +845,9 @@ static void mmx_ctrl_apply(long self) {
     keyflag[i] &= ~prev_held[i];
 
   uint32_t held[8] = {0}, real[8] = {0};
-  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
-  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
-  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
-  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
-  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
-  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
-  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
-  int weap  = mmx_gp_button(4);
-  int start = mmx_gp_button(7);
-  int act_bits = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
-                 (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
-                 (weap ? 128 : 0) | (start ? 256 : 0);
-  static int prev_act_bits;
-  int edge_bits = act_bits & ~prev_act_bits;
-  prev_act_bits = act_bits;
-  int real_held = getenv("MMX_CTRL_REAL_HELD") ? mmx_env_i("MMX_CTRL_REAL_HELD", 1) : 0;
-
-  struct ctrl_map { const char *env; int defidx; int active; int edgebit; } maps[] = {
-    {"MMX_CTRL_IDX_UP",    0, up,    1},
-    {"MMX_CTRL_IDX_DOWN",  1, down,  2},
-    {"MMX_CTRL_IDX_LEFT",  4, left,  4},
-    {"MMX_CTRL_IDX_RIGHT", 5, right, 8},
-    {"MMX_CTRL_IDX_JUMP",  2, jump,  16},
-    {"MMX_CTRL_IDX_SHOT",  3, shot,  32},
-    {"MMX_CTRL_IDX_DASH", -1, dash,  64},
-    {"MMX_CTRL_IDX_WEAPON",-1, weap, 128},
-    {"MMX_CTRL_IDX_START",-1, start, 256},
-  };
+  mmx_ctrl_masks_from_state(game_key, held, real, maxn);
+  int act_bits = g_mmx_act_bits, edge_bits = g_mmx_edge_bits;
   int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
-  if (force >= 0) {
-    mmx_ctrl_or_idx(game_key, force, held, real, 1, maxn);
-  } else {
-    for (unsigned i = 0; i < sizeof maps / sizeof maps[0]; i++) {
-      int idx = mmx_env_i(maps[i].env, maps[i].defidx);
-      if (idx < 0 || !maps[i].active) continue;
-      int real_on = real_held || (edge_bits & maps[i].edgebit);
-      mmx_ctrl_or_idx(game_key, idx, held, real, real_on, maxn);
-    }
-  }
 
   for (int i = 0; i < maxn; i++) {
     keyflag[i] |= held[i];
@@ -830,57 +857,13 @@ static void mmx_ctrl_apply(long self) {
   if (getenv("MMX_CTRLSPY")) {
     static int nlog;
     if (nlog++ < 240 || act_bits || force >= 0) {
-      fprintf(stderr, "[CTRLHOOK] f=%d self=%p gp=0x%x act=0x%x edge=0x%x force=%d held=%08x/%08x/%08x real=%08x/%08x/%08x key=%08x/%08x/%08x\n",
-              g_render_frame, (void *)self, mmx_gp_buttons_mask(), act_bits, edge_bits, force,
+      fprintf(stderr, "[CTRLHOOK] f=%d self=%p gp=0x%x act=0x%x edge=0x%x pulse=0x%x force=%d held=%08x/%08x/%08x real=%08x/%08x/%08x key=%08x/%08x/%08x\n",
+              g_render_frame, (void *)self, mmx_gp_buttons_mask(), act_bits, edge_bits, g_mmx_pulse_bits, force,
               held[0], held[1], held[2], real[0], real[1], real[2],
               keyflag[0], maxn > 1 ? keyflag[1] : 0, maxn > 2 ? keyflag[2] : 0);
       fsync(2);
     }
   }
-}
-static void mmx_ctrl_build_masks(void *game_key, uint32_t *held, uint32_t *real,
-                                 int maxn, int *act_out, int *edge_out, int *force_out) {
-  int right = mmx_gp_button(13) || mmx_gp_axis(0) > 0.50f;
-  int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
-  int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
-  int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
-  int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 0));
-  int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
-  int dash  = mmx_gp_button(3) || mmx_gp_button(5);
-  int weap  = mmx_gp_button(4);
-  int start = mmx_gp_button(7);
-  int act_bits = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0) |
-                 (jump ? 16 : 0) | (shot ? 32 : 0) | (dash ? 64 : 0) |
-                 (weap ? 128 : 0) | (start ? 256 : 0);
-  static int prev_act_bits2;
-  int edge_bits = act_bits & ~prev_act_bits2;
-  prev_act_bits2 = act_bits;
-  int real_held = getenv("MMX_CTRL_REAL_HELD") ? mmx_env_i("MMX_CTRL_REAL_HELD", 1) : 0;
-  struct ctrl_map { const char *env; int defidx; int active; int edgebit; } maps[] = {
-    {"MMX_CTRL_IDX_UP",     0, up,    1},
-    {"MMX_CTRL_IDX_DOWN",   1, down,  2},
-    {"MMX_CTRL_IDX_LEFT",   4, left,  4},
-    {"MMX_CTRL_IDX_RIGHT",  5, right, 8},
-    {"MMX_CTRL_IDX_JUMP",   2, jump,  16},
-    {"MMX_CTRL_IDX_SHOT",   3, shot,  32},
-    {"MMX_CTRL_IDX_DASH",  -1, dash,  64},
-    {"MMX_CTRL_IDX_WEAPON",-1, weap, 128},
-    {"MMX_CTRL_IDX_START", -1, start, 256},
-  };
-  int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
-  if (force >= 0) {
-    mmx_ctrl_or_idx(game_key, force, held, real, 1, maxn);
-  } else {
-    for (unsigned i = 0; i < sizeof maps / sizeof maps[0]; i++) {
-      int idx = mmx_env_i(maps[i].env, maps[i].defidx);
-      if (idx < 0 || !maps[i].active) continue;
-      int real_on = real_held || (edge_bits & maps[i].edgebit);
-      mmx_ctrl_or_idx(game_key, idx, held, real, real_on, maxn);
-    }
-  }
-  if (act_out) *act_out = act_bits;
-  if (edge_out) *edge_out = edge_bits;
-  if (force_out) *force_out = force;
 }
 static void mmx_ctrl_apply_keydata(long self) {
   if (!self || !getenv("MMX_CTRLHOOK")) return;
@@ -910,8 +893,9 @@ static void mmx_ctrl_apply_keydata(long self) {
   int maxn = n0 < n1 ? n0 : n1;
   if (maxn > 8) maxn = 8;
   uint32_t held[8] = {0}, real[8] = {0};
-  int act_bits = 0, edge_bits = 0, force = -1;
-  mmx_ctrl_build_masks(game_key, held, real, maxn, &act_bits, &edge_bits, &force);
+  mmx_ctrl_masks_from_state(game_key, held, real, maxn);
+  int act_bits = g_mmx_act_bits, edge_bits = g_mmx_edge_bits;
+  int force = mmx_env_i("MMX_CTRL_FORCE_IDX", -1);
   static uint32_t prev_kd_held[8];
   for (int i = 0; i < maxn; i++) {
     kd0[i] = (kd0[i] & ~prev_kd_held[i]) | held[i];
@@ -1021,8 +1005,60 @@ static void mmx_go_stage(long self) {
   setGoStage(self, n, NULL);
   done = 1;
 }
+/* dump 1x das máscaras de game_key[0..10] (diagnóstico de mapeamento de ações):
+   índice com máscara toda-zero = ação não ligada a nenhum bit físico (explica botão morto). */
+static void mmx_ctrl_dump_gamekey(long self) {
+  static int done, wait;
+  if (done || !self) return;
+  if (wait++ % 300 != 0) return;   /* re-tenta a cada ~300 chamadas até popular */
+  void *game_key = *(void **)((char *)self + 0x2e0);
+  int glen = mmx_managed_array_len(game_key);
+  if (!glen) return;
+  uint32_t any = 0;
+  for (int i = 0; i < glen && i < 16; i++) {
+    int n = 0;
+    uint32_t *m = mmx_u32_array_data(mmx_ref_array_get(game_key, i), &n);
+    for (int w = 0; m && w < n && w < 3; w++) any |= m[w];
+  }
+  if (!any && wait < 3000) return; /* setGameKey ainda não rodou; espera masks reais */
+  done = 1;
+  for (int i = 0; i < glen && i < 16; i++) {
+    int n = 0;
+    uint32_t *m = mmx_u32_array_data(mmx_ref_array_get(game_key, i), &n);
+    fprintf(stderr, "[GKDUMP] game_key[%d] len=%d mask=%08x/%08x/%08x\n",
+            i, n, (m && n > 0) ? m[0] : 0, (m && n > 1) ? m[1] : 0, (m && n > 2) ? m[2] : 0);
+  }
+  /* def_key também (47 entradas: mapa físico default por tecla) — só as 16 primeiras */
+  void *def_key = *(void **)((char *)self + 0x2d8);
+  int dlen = mmx_managed_array_len(def_key);
+  for (int i = 0; i < dlen && i < 16; i++) {
+    int n = 0;
+    uint32_t *m = mmx_u32_array_data(mmx_ref_array_get(def_key, i), &n);
+    fprintf(stderr, "[GKDUMP] def_key[%d] len=%d mask=%08x/%08x/%08x\n",
+            i, n, (m && n > 0) ? m[0] : 0, (m && n > 1) ? m[1] : 0, (m && n > 2) ? m[2] : 0);
+  }
+  fsync(2);
+}
+/* START = PAUSE de verdade (achado por disasm s10): a engrenagem NÃO é touch-region — ela
+   abre um DIALOG: initDialog(self, 30=pause, title, msg, cb) @0xe101d4 + scn_setStep(self,19)
+   @0xdecdac (sequência exata de 0xe02d6c-0xe02d98). Não há ação de start no game_key.
+   Chamado NA THREAD DO JOGO (estamos dentro do controlKey). MMX_NOPAUSECALL=1 desliga. */
+static void mmx_try_pause(long self) {
+  if (!g_il2cpp_base || !self || getenv("MMX_NOPAUSECALL")) return;
+  typedef void (*fn_initDialog)(void *, int, void *, void *, void *, void *);
+  typedef void (*fn_setStep)(void *, int, void *);
+  fn_initDialog initDialog = (fn_initDialog)(g_il2cpp_base + 0xe101d4);
+  fn_setStep    setStep    = (fn_setStep)(g_il2cpp_base + 0xdecdac);
+  fprintf(stderr, "[PAUSECALL] initDialog(self=%p, 30) + setStep(19)\n", (void *)self);
+  fsync(2);
+  initDialog((void *)self, 30, NULL, NULL, NULL, NULL);
+  setStep((void *)self, 19, NULL);
+}
 static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
   g_mmx_rockmanx_self = (void *)a0;
+  mmx_ctrl_sample();   /* 1 amostra por chamada: act/edge/pulse compartilhados pré+pós */
+  if (g_mmx_edge_bits & 512) mmx_try_pause(a0);   /* borda de START -> pause dialog */
+  if (getenv("MMX_CTRLSPY")) mmx_ctrl_dump_gamekey(a0);
   if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
   if (getenv("MMX_GOSTAGE")) mmx_go_stage(a0);
   if (getenv("MMX_CTRLSPY")) {
@@ -3784,6 +3820,54 @@ static void ter_vkbd_draw(void) {
   }
   vk_gl_end(osc, occ, oen);
 }
+/* cursor do modo SELECT (mmx_gamepad.c): seta desenhada por retângulos scissor+clear,
+   coords do espaço touch 1280x720 escaladas p/ a janela real. Sombra preta + corpo
+   branco + ponta amarela quando pressionado (A). */
+static void mmx_cursor_draw(void) {
+  extern int mmx_cursor_mode(void);
+  extern int mmx_cursor_pressed(void);
+  extern void mmx_cursor_pos(float *, float *);
+  if (!mmx_cursor_mode()) return;
+  /* o jogo pode deixar um FBO bindado no swap -> scissor+clear iriam pro FBO e o
+     cursor nunca aparecia. Binda o framebuffer 0 (tela) e restaura no fim. Idem
+     colorMask (Unity às vezes deixa máscara parcial). */
+  static void (*p_bfb)(unsigned, unsigned); static void (*p_gi2)(unsigned, int *);
+  static void (*p_cm)(unsigned char, unsigned char, unsigned char, unsigned char);
+  static unsigned char (*p_gb)(unsigned, unsigned char *);
+  if (!p_bfb) {
+    p_bfb = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+    p_gi2 = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    p_cm  = dlsym(RTLD_DEFAULT, "glColorMask");
+    p_gb  = (unsigned char (*)(unsigned, unsigned char *))dlsym(RTLD_DEFAULT, "glGetBooleanv");
+  }
+  int ofbo = 0; unsigned char ocm[4] = {1,1,1,1};
+  if (p_gi2) p_gi2(0x8CA6, &ofbo);            /* GL_FRAMEBUFFER_BINDING */
+  if (p_gb) p_gb(0x0C23, ocm);                /* GL_COLOR_WRITEMASK */
+  if (p_bfb) p_bfb(0x8D40, 0);                /* GL_FRAMEBUFFER, tela */
+  if (p_cm) p_cm(1, 1, 1, 1);
+  int sw = 0, sh = 0, osc[4], oen = 0; float occ[4];
+  if (!vk_gl_begin(&sw, &sh, osc, occ, &oen)) {
+    if (p_bfb && ofbo) p_bfb(0x8D40, (unsigned)ofbo);
+    if (p_cm) p_cm(ocm[0], ocm[1], ocm[2], ocm[3]);
+    return;
+  }
+  float fx, fy; mmx_cursor_pos(&fx, &fy);
+  float cw = getenv("MMX_CUR_W") ? (float)atof(getenv("MMX_CUR_W")) : 1280.0f;
+  float ch = getenv("MMX_CUR_H") ? (float)atof(getenv("MMX_CUR_H")) : 720.0f;
+  int x = (int)(fx * sw / cw), y = (int)(fy * sh / ch);
+  int press = mmx_cursor_pressed();
+  float br = press ? 1.00f : 0.96f, bg = press ? 0.85f : 0.96f, bb = press ? 0.10f : 0.98f;
+  /* cruz: sombra preta 1px em volta + cruz clara; centro destacado */
+  vk_rect(sw, sh, x - 2, y - 13, 5, 27, 0.0f, 0.0f, 0.0f, 1.0f);
+  vk_rect(sw, sh, x - 13, y - 2, 27, 5, 0.0f, 0.0f, 0.0f, 1.0f);
+  vk_rect(sw, sh, x - 1, y - 12, 3, 25, br, bg, bb, 1.0f);
+  vk_rect(sw, sh, x - 12, y - 1, 25, 3, br, bg, bb, 1.0f);
+  vk_rect(sw, sh, x - 3, y - 3, 7, 7, 0.0f, 0.0f, 0.0f, 1.0f);
+  vk_rect(sw, sh, x - 2, y - 2, 5, 5, press ? 1.0f : 0.2f, press ? 0.5f : 0.9f, 0.1f, 1.0f);
+  vk_gl_end(osc, occ, oen);
+  if (p_bfb && ofbo) p_bfb(0x8D40, (unsigned)ofbo);
+  if (p_cm) p_cm(ocm[0], ocm[1], ocm[2], ocm[3]);
+}
 /* relocador de ADRP p/ trampolins (corrige o page-relative ao copiar p/ outro endereço) */
 static uint32_t ter_reloc_insn(uint32_t insn, uintptr_t opc, uintptr_t npc) {
   if ((insn & 0x9F000000u) == 0x90000000u) {   /* ADRP */
@@ -4440,6 +4524,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   { extern void np_frame(void); np_frame(); }  /* 🎮 NATPAD: controle NATIVO via InControl attach */
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_vkbd_draw();
+  mmx_cursor_draw();  /* cursor do modo SELECT (pad=mouse) por cima de tudo */
   ter_testpattern_maybe();
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
@@ -6128,8 +6213,10 @@ int main(int argc, char **argv) {
   patch_got("__android_log_vprint", (void *)my_alog_vprint);
   if (getenv("CUP_EGPLOG") || getenv("CUP_NOVAO") || g_drawspy)
     patch_got("eglGetProcAddress", (void *)my_eglGetProcAddress);
-  /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap */
-  if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0"))
+  /* CUP_RENDERSCALE: interpõe eglSwapBuffers p/ dar upscale do FBO lo-res antes do swap.
+     MMX_GAMEPAD também precisa: o cursor do modo SELECT (mmx_cursor_draw) desenha no swap. */
+  if (rs_enabled() || getenv("TER_SHOT") || getenv("TER_NUKEKB") || getenv("TER_JOBWORKERS0") ||
+      getenv("MMX_GAMEPAD"))
     patch_got("eglSwapBuffers", (void *)my_eglSwapBuffers);
   /* dl* estavam COMENTADOS em imports.gen.c -> set_import foi no-op e o dlopen@plt
      caiu no glibc REAL (falha ao carregar .so Android). Sem isso o il2cpp nao carrega. */

@@ -1,5 +1,55 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-05 s10 — 🏆 CONTROLES COMPLETOS (A/X/Y/L1/R1) + MODO CURSOR com SELECT
+
+**O que foi resolvido nesta seção (provas em `runs/`-style screenshots via fb0):**
+
+1. **Mapeamento REAL do `game_key` (enum GAMEKEY no global-metadata.dat, validado por disasm):**
+   `0=UP 1=UP_2 2=DOWN 3=DOWN_2 4=LEFT 5=RIGHT 6=ATTACK 7=CHANGE(arma) 8=JUMP 9=DASH 10=DASH_2`.
+   ⚠️ O mapa antigo (2=JUMP 3=SHOT) estava ERRADO — o "pulo" do FORCE_IDX=2 do s9 era o **DASH**
+   (game_key[2]=DOWN compartilha a máscara 0x8000 word1 com game_key[9]=DASH). NÃO existe
+   START/SELECT/WEAPON_PREV/NEXT no game_key (herança keitai). Helpers: isKeyTrg=0xde8338,
+   isKeyOn=0xde86a8, isKeyRel=0xde84f0.
+2. **PULSO de trigger (a causa do A/X/Y mortos):** o FORCE_IDX funciona porque segura held+real
+   TODO frame; botão físico dava 1 frame de real (perdido) e o kd0 constante matava a detecção
+   0→1 do controlKey. Fix: `mmx_ctrl_sample()` (1 amostra por chamada do controlKey, compartilhada
+   pelos DOIS pontos de injeção) arma `MMX_CTRL_PULSE` frames (default 3) de plano real por borda.
+   **PROVADO: A=pulo (X no alto do salto), X=tiro (rajada de buster na tela), Y=dash (pose de dash).**
+3. **Botões (layout FÍSICO do pad do usuário, que chega trocado no SDL: físA=SDL1, físB=SDL0,
+   físX=SDL3, físY=SDL2):** A=JUMP(8), Y=SHOT(6), X=DASH(9), B=DASH (BTN_DASH2), L1/R1=CHANGE(7)
+   (o jogo só tem UMA ação de troca, ambos ciclam), START=pause (ver muro), SELECT=modo cursor,
+   SELECT+START=sair. **KeyEvents nativos dos botões de face SUPRIMIDOS** (BUTTON_B nativo dava
+   dash e conflitava com o remap; `MMX_NATKEYS=1` restaura). Envs: `MMX_CTRL_BTN_*` (botão SDL),
+   `MMX_CTRL_IDX_*` (índice game_key), `MMX_CTRL_PULSE`. **VALIDADO por screenshot: pulo no
+   SDL1, rajada de buster no SDL2, dash no SDL3.**
+4. **🖱️ MODO CURSOR (estilo COD BOZ) FUNCIONANDO:** SELECT alterna game-mode↔cursor-mode.
+   Cursor = crosshair GL (scissor+clear estilo vkbd, com bind de FBO 0 + colorMask no swap) movido
+   por dpad/analógico (X segurado = fino), A = toque real (down/move/up, arrastar funciona).
+   Teclas do jogo são suprimidas em cursor-mode; SELECT nunca vaza pro jogo.
+   **PROVADO ponta-a-ponta: título→(FORCE_TITLESTART)→MAIN MENU→cursor até STORY→tap duplo→
+   scn_LOAD_DATA→scn_STAGE_run.** 🔑 Menus do jogo pedem **2 taps** (1º seleciona, 2º confirma).
+   ⚠️ O hook do eglSwapBuffers agora também é patchado com `MMX_GAMEPAD` (era só
+   rs/TER_SHOT/NUKEKB/JOBWORKERS0 — sem isso o cursor não desenhava).
+5. **GKDUMP:** `MMX_CTRLSPY=1` agora dumpa as máscaras de game_key[0..10]/def_key[0..15] quando
+   populadas (diagnóstico de mapeamento).
+
+**MUROS ABERTOS:**
+- **PAUSE em gameplay (quase):** por disasm, NÃO existe touch-region da engrenagem (enum TOUCH_ID
+  não tem pause) — a engrenagem usa o sistema interno "Touch group" (coords do screen virtual
+  keitai, não 1280x720) e abre o menu como **DIALOG**: `initDialog(self,30,título,msg,cb)`
+  @0xe101d4 + `scn_setStep(self,19)` @0xdecdac (sequência da engrenagem em 0xe02d6c-0xe02d98).
+  START já chama isso (mmx_try_pause, na thread do jogo via hook do controlKey) mas com args
+  NULL não abriu (sem crash). Falta replicar os args reais dos campos estáticos de
+  0xe02d64-0xe02d88 (subagente destrinchando). RVAs úteis: scn_STAGE_run=0xdfc32c,
+  selectDialog=0xe0ffb4, endDialog=0xe10158, drawDialog=0xe10bb4, scene obj=[self+0x370],
+  step=+56, substep do dialog=+84.
+- **STORY via menu = tela preta** (movie do prólogo; codec indisponível no so-loader). O caminho de
+  produção continua `MMX_GOSTAGE=0` (auto-start, pula o movie). Cursor cobre menus in-game.
+- Troca de arma L1/R1: mapeada por metadata (CHANGE=7); validação visual pendente (fase intro não
+  tem armas especiais).
+
+---
+
 ## 2026-07-04 s9 — estudo dos botões A/Y/Start: sem regressão, estado restaurado, próximo passo é pulso curto
 
 **Estado salvo para retomar depois:** o device foi restaurado ao checkpoint estável do s8:
