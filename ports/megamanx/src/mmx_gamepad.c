@@ -45,6 +45,12 @@ enum {
 enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT, AX_COUNT };
 
 static unsigned char g_btn[GP_COUNT], g_prev_btn[GP_COUNT];
+/* snapshot PUBLICADO por frame: a thread do JOGO (hook do controlKey) lê via
+   mmx_gp_button/axis ENQUANTO a thread principal atualiza g_btn (memset→poll→virtual).
+   Sem isso o jogo via o estado zerado no meio do refresh → borda dupla (START
+   pausava e despausava no mesmo aperto). Leitores usam g_btn_snap/g_axis_snap. */
+static unsigned char g_btn_snap[GP_COUNT];
+static float g_axis_snap[AX_COUNT];
 static float g_axis[AX_COUNT], g_prev_axis[AX_COUNT];
 static int g_vbtn[GP_COUNT], g_vaxis[AX_COUNT], g_vaxis_sign[AX_COUNT];
 static SDL_GameController *g_gc;
@@ -223,28 +229,28 @@ static void poll_virtual(void) {
 
 float mmx_gp_axis(int axis) {
   switch (axis) {
-    case 0:  return g_axis[AX_LX];
-    case 1:  return g_axis[AX_LY];
-    case 11: return g_axis[AX_RX];
-    case 14: return g_axis[AX_RY];
-    case 15: return (float)(g_btn[GP_RIGHT] - g_btn[GP_LEFT]);
-    case 16: return (float)(g_btn[GP_DOWN] - g_btn[GP_UP]);
-    case 17: return g_axis[AX_LT];
-    case 18: return g_axis[AX_RT];
-    case 22: return g_axis[AX_RT];
-    case 23: return g_axis[AX_LT];
+    case 0:  return g_axis_snap[AX_LX];
+    case 1:  return g_axis_snap[AX_LY];
+    case 11: return g_axis_snap[AX_RX];
+    case 14: return g_axis_snap[AX_RY];
+    case 15: return (float)(g_btn_snap[GP_RIGHT] - g_btn_snap[GP_LEFT]);
+    case 16: return (float)(g_btn_snap[GP_DOWN] - g_btn_snap[GP_UP]);
+    case 17: return g_axis_snap[AX_LT];
+    case 18: return g_axis_snap[AX_RT];
+    case 22: return g_axis_snap[AX_RT];
+    case 23: return g_axis_snap[AX_LT];
     default: return 0.0f;
   }
 }
 
 int mmx_gp_button(int button) {
-  return (button >= 0 && button < GP_COUNT) ? g_btn[button] : 0;
+  return (button >= 0 && button < GP_COUNT) ? g_btn_snap[button] : 0;
 }
 
 unsigned mmx_gp_buttons_mask(void) {
   unsigned m = 0;
   for (int i = 0; i < GP_COUNT && i < 32; i++)
-    if (g_btn[i]) m |= 1u << i;
+    if (g_btn_snap[i]) m |= 1u << i;
   return m;
 }
 
@@ -450,7 +456,7 @@ static void cursor_frame(void *env, void *thiz, void *inject) {
   static int movf;
   movf = (dx || dy) ? movf + 1 : 0;
   if (movf > 25) sp *= 1.8f;
-  int prec_btn = getenv("MMX_CTRL_BTN_SHOT") ? atoi(getenv("MMX_CTRL_BTN_SHOT")) : 2;
+  int prec_btn = getenv("MMX_CTRL_BTN_SHOT") ? atoi(getenv("MMX_CTRL_BTN_SHOT")) : 3;
   if (mmx_gp_button(prec_btn)) { dx *= 0.3f; dy *= 0.3f; }   /* tiro segurado = precisão */
   g_cur_x += dx * sp; g_cur_y += dy * sp;
   if (g_cur_x < 2) g_cur_x = 2; if (g_cur_x > sw - 2) g_cur_x = sw - 2;
@@ -508,6 +514,9 @@ void mmx_gamepad_frame(void *env, void *thiz, void *inject) {
     prev_raw_back = raw_back;
     g_btn[GP_BACK] = 0;
   }
+  /* publica o snapshot estável pro leitor da thread do jogo (mmx_gp_button/axis) */
+  memcpy(g_btn_snap, g_btn, sizeof(g_btn_snap));
+  memcpy(g_axis_snap, g_axis, sizeof(g_axis_snap));
   if (g_cursor_on) { cursor_frame(env, thiz, inject); return; }
 
   /* MMX_GP_TOUCH=1: caminho correto p/ o port mobile (pad -> toque nos controles da tela). */

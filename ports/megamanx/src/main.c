@@ -776,12 +776,12 @@ static void mmx_ctrl_sample(void) {
     int left  = mmx_gp_button(12) || mmx_gp_axis(0) < -0.50f;
     int down  = mmx_gp_button(11) || mmx_gp_axis(1) > 0.50f;
     int up    = mmx_gp_button(10) || mmx_gp_axis(1) < -0.50f;
-    /* layout FÍSICO pedido pelo usuário: A=pulo, B=dash, X=dash, Y=tiro. No pad dele o
+    /* layout FÍSICO validado pelo usuário: A=pulo, B=dash, X=tiro, Y=dash. No pad dele o
        SDL entrega trocado (físico A=SDL1, B=SDL0, X=SDL3, Y=SDL2 — layout Nintendo), então
        os defaults abaixo são em índice SDL. Ajustável por env se o mapping do pad mudar. */
     int jump  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 1));
-    int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 2));
-    int dash  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_DASH", 3)) ||
+    int shot  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_SHOT", 3));
+    int dash  = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_DASH", 2)) ||
                 mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_DASH2", 0));
     int wprev = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_WPREV", 4));
     int wnext = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_WNEXT", 5));
@@ -1039,25 +1039,29 @@ static void mmx_ctrl_dump_gamekey(long self) {
   }
   fsync(2);
 }
-/* START = PAUSE de verdade (achado por disasm s10): a engrenagem NÃO é touch-region — ela
-   abre um DIALOG: initDialog(self, 30=pause, title, msg, cb) @0xe101d4 + scn_setStep(self,19)
-   @0xdecdac (sequência exata de 0xe02d6c-0xe02d98). Não há ação de start no game_key.
-   Chamado NA THREAD DO JOGO (estamos dentro do controlKey). MMX_NOPAUSECALL=1 desliga. */
-static void mmx_try_pause(long self) {
-  if (!g_il2cpp_base || !self || getenv("MMX_NOPAUSECALL")) return;
-  typedef void (*fn_initDialog)(void *, int, void *, void *, void *, void *);
-  typedef void (*fn_setStep)(void *, int, void *);
-  fn_initDialog initDialog = (fn_initDialog)(g_il2cpp_base + 0xe101d4);
-  fn_setStep    setStep    = (fn_setStep)(g_il2cpp_base + 0xdecdac);
-  fprintf(stderr, "[PAUSECALL] initDialog(self=%p, 30) + setStep(19)\n", (void *)self);
-  fsync(2);
-  initDialog((void *)self, 30, NULL, NULL, NULL, NULL);
-  setStep((void *)self, 19, NULL);
+/* 🏆 START = PAUSE de verdade (disasm s10, 2ª rodada): o gate do gameplay é
+   `fade_isPaused` (il2cpp+0xdd7a28, retorna textData[+0x110]==2). O GameUpdate
+   (0xdd6c74) faz controlKey -> fade_update -> fade_isPaused e SÓ chama scn_run
+   (toda a lógica de jogo) se retornar true. Hookamos fade_isPaused: enquanto
+   g_mmx_paused, retorna 0 -> jogo congela determinístico; despausa = volta ao
+   original. START alterna. (initDialog(30)+setStep(19) da tentativa anterior era
+   da cena CUSTOMIZE, não do STAGE — beco sem saída.) */
+volatile int g_mmx_paused;
+static mmx_fn8 g_mmx_fadepause_orig;
+static unsigned char g_mmx_fadepause_hooked;
+static long mmx_fadepause_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
+  if (g_mmx_paused) return 0;
+  return g_mmx_fadepause_orig ? g_mmx_fadepause_orig(a0,a1,a2,a3,a4,a5,a6,a7) : 1;
 }
 static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,long a6,long a7) {
   g_mmx_rockmanx_self = (void *)a0;
   mmx_ctrl_sample();   /* 1 amostra por chamada: act/edge/pulse compartilhados pré+pós */
-  if (g_mmx_edge_bits & 512) mmx_try_pause(a0);   /* borda de START -> pause dialog */
+  if ((g_mmx_edge_bits & 512) && !getenv("MMX_NOPAUSE")) {   /* borda de START */
+    g_mmx_paused = !g_mmx_paused;
+    fprintf(stderr, "[PAUSE] %s (fade_isPaused hook=%d)\n",
+            g_mmx_paused ? "ON" : "OFF", g_mmx_fadepause_hooked);
+    fsync(2);
+  }
   if (getenv("MMX_CTRLSPY")) mmx_ctrl_dump_gamekey(a0);
   if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
   if (getenv("MMX_GOSTAGE")) mmx_go_stage(a0);
@@ -1090,6 +1094,17 @@ static void mmx_ctrlhook_install(void) {
             old0, old1, old2, old3, p[0], p[1], p[2], p[3]);
   } else {
     fprintf(stderr, "[CTRLHOOK] late hook RockmanX.controlKey falhou\n");
+  }
+  /* pause: hook no gate fade_isPaused (0xdd7a28) — retorna 0 enquanto g_mmx_paused */
+  if (!g_mmx_fadepause_hooked && !getenv("MMX_NOPAUSE")) {
+    void *tp = NULL;
+    if (ter_install_hook4(0xdd7a28, (void *)mmx_fadepause_hook, &tp)) {
+      g_mmx_fadepause_orig = (mmx_fn8)tp;
+      g_mmx_fadepause_hooked = 1;
+      fprintf(stderr, "[PAUSE] hook fade_isPaused @ il2cpp+0xdd7a28 (START alterna)\n");
+    } else {
+      fprintf(stderr, "[PAUSE] hook fade_isPaused falhou\n");
+    }
   }
   fsync(2);
 }
@@ -3868,6 +3883,33 @@ static void mmx_cursor_draw(void) {
   if (p_bfb && ofbo) p_bfb(0x8D40, (unsigned)ofbo);
   if (p_cm) p_cm(ocm[0], ocm[1], ocm[2], ocm[3]);
 }
+/* overlay "PAUSE" quando o freeze do START está ativo (g_mmx_paused) */
+static void mmx_pause_draw(void) {
+  extern volatile int g_mmx_paused;
+  if (!g_mmx_paused) return;
+  static void (*p_bfb)(unsigned, unsigned); static void (*p_gi2)(unsigned, int *);
+  static void (*p_cm)(unsigned char, unsigned char, unsigned char, unsigned char);
+  if (!p_bfb) {
+    p_bfb = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+    p_gi2 = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    p_cm  = dlsym(RTLD_DEFAULT, "glColorMask");
+  }
+  int ofbo = 0;
+  if (p_gi2) p_gi2(0x8CA6, &ofbo);
+  if (p_bfb) p_bfb(0x8D40, 0);
+  if (p_cm) p_cm(1, 1, 1, 1);
+  int sw = 0, sh = 0, osc[4], oen = 0; float occ[4];
+  if (vk_gl_begin(&sw, &sh, osc, occ, &oen)) {
+    /* "PAUSE": 5 chars * 6px * escala 6 = 180px de largura */
+    int scale = 6, w = 5 * 6 * scale, x = (sw - w) / 2, y = sh / 6;
+    vk_rect(sw, sh, x - 14, y - 12, w + 28, 7 * scale + 24, 0.0f, 0.0f, 0.05f, 1.0f);
+    vk_text(sw, sh, x + 2, y + 2, "PAUSE", scale, 0.0f, 0.0f, 0.0f);
+    vk_text(sw, sh, x, y, "PAUSE", scale, 0.98f, 0.85f, 0.15f);
+    vk_gl_end(osc, occ, oen);
+  }
+  if (p_bfb && ofbo) p_bfb(0x8D40, (unsigned)ofbo);
+  if (p_cm) p_cm(1, 1, 1, 1);
+}
 /* relocador de ADRP p/ trampolins (corrige o page-relative ao copiar p/ outro endereço) */
 static uint32_t ter_reloc_insn(uint32_t insn, uintptr_t opc, uintptr_t npc) {
   if ((insn & 0x9F000000u) == 0x90000000u) {   /* ADRP */
@@ -4525,6 +4567,7 @@ static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
   rs_present();   /* upscale do FBO lo-res p/ a tela real ANTES do swap */
   ter_vkbd_draw();
   mmx_cursor_draw();  /* cursor do modo SELECT (pad=mouse) por cima de tudo */
+  mmx_pause_draw();   /* "PAUSE" quando o freeze do START está ativo */
   ter_testpattern_maybe();
   ter_screenshot_maybe();
   if (!r_eglSwapBuffers) r_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");

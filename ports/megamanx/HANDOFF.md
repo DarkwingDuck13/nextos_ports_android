@@ -33,16 +33,32 @@
 5. **GKDUMP:** `MMX_CTRLSPY=1` agora dumpa as máscaras de game_key[0..10]/def_key[0..15] quando
    populadas (diagnóstico de mapeamento).
 
-**MUROS ABERTOS:**
-- **PAUSE em gameplay (quase):** por disasm, NÃO existe touch-region da engrenagem (enum TOUCH_ID
-  não tem pause) — a engrenagem usa o sistema interno "Touch group" (coords do screen virtual
-  keitai, não 1280x720) e abre o menu como **DIALOG**: `initDialog(self,30,título,msg,cb)`
-  @0xe101d4 + `scn_setStep(self,19)` @0xdecdac (sequência da engrenagem em 0xe02d6c-0xe02d98).
-  START já chama isso (mmx_try_pause, na thread do jogo via hook do controlKey) mas com args
-  NULL não abriu (sem crash). Falta replicar os args reais dos campos estáticos de
-  0xe02d64-0xe02d88 (subagente destrinchando). RVAs úteis: scn_STAGE_run=0xdfc32c,
-  selectDialog=0xe0ffb4, endDialog=0xe10158, drawDialog=0xe10bb4, scene obj=[self+0x370],
-  step=+56, substep do dialog=+84.
+**✅ PAUSE RESOLVIDO (s10 fim):** o gate real do gameplay é **`fade_isPaused`
+(il2cpp+0xdd7a28)** — `GameUpdate`(0xdd6c74) faz controlKey→fade_update→fade_isPaused e SÓ
+roda `scn_run` (lógica toda) se true (== `textData[self+0x370][+0x110]`==2). Hook: retorna 0
+enquanto `g_mmx_paused` (START alterna; overlay "PAUSE" amarelo via vk_text no swap). PROVA:
+screenshot com PAUSE na tela + jogo congelado + despausa limpa. ⚠️ initDialog(30)+setStep(19)
+da 1ª tentativa era da cena CUSTOMIZE, não STAGE — beco sem saída. ⚠️ Race corrigida: o hook
+do controlKey (thread do jogo) lia g_btn no meio do refresh do frame (memset→poll) → borda
+dupla (pausava+despausava); agora leitores usam snapshot publicado (g_btn_snap/g_axis_snap).
+Extra descoberto: engrenagem visual = `dispQuickChange`(0xe15810) em scn_STAGE_draw, estado
+`state_QuickChange=[self+0x198]`, `enable_QuickChange=[self+0x180]` (menu rápido de arma —
+candidato futuro pro SELECT longo).
+
+**MUROS ABERTOS (próxima missão):**
+1. **FPS ~12 na fase** (medido por [FPS] em run limpo; usuário sente lag). Diagnóstico
+   bloqueado: CUP_RENDERSCALE=2 e CUP_DRAWCOUNT=1 TRAVAM o boot do MMX no frame 0-7 (2/2
+   tentativas — o roteamento ds_route/dlsym de GL quebra este port; investigar por quê antes
+   de medir draws). Suspeitos: swap 512MB em uso (RSS ~400-500MB em 852MB), Unity single-thread
+   (gfx-disable-mt-rendering=1 + INLINETASK per-object), fragment-bound 720p no Utgard.
+   `nice -n 19` NÃO era a causa (12fps sem nice).
+2. **Fluxo original completo (título→menu→story→fase 1→stage select) com SAVE:** o caminho
+   Story via menu fica PRETO após LOAD_DATA (provável: save inexistente — EncryptedPlayerPrefs
+   é stubado pelo MMX_FIXGAME p/ retornar defaults; e/ou movie do prólogo sem codec). Caminho
+   atual = GOSTAGE (New Game direto na fase de abertura, que É a fase 1); ao zerá-la o fluxo
+   in-engine deve seguir pro STAGESEL (a confirmar com o usuário jogando). Pra restaurar o
+   fluxo original com progresso: implementar prefs REAIS persistidas em arquivo (jni_shim
+   SharedPreferences → arquivo local) e destravar/skipar o movie do prólogo.
 - **STORY via menu = tela preta** (movie do prólogo; codec indisponível no so-loader). O caminho de
   produção continua `MMX_GOSTAGE=0` (auto-start, pula o movie). Cursor cobre menus in-game.
 - Troca de arma L1/R1: mapeada por metadata (CHANGE=7); validação visual pendente (fase intro não
