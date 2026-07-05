@@ -1381,7 +1381,7 @@ typedef void *(*ds_tweaks_get_fn)(void);
 /* indices default das acoes nativas (0x352fb91 + idx) */
 enum {
   DS_ACT_UNKNOWN0 = 0,
-  DS_ACT_INTERACT = 1,     /* usar/abrir/pegar */
+  DS_ACT_RIG = 1,          /* abrir inventario/RIG (StringIdEvent) */
   DS_ACT_WEAPON_NEXT = 2,
   DS_ACT_WEAPON_PREV = 3,
   DS_ACT_LOCATOR = 4,      /* linha ate o objetivo */
@@ -1390,7 +1390,7 @@ enum {
   DS_ACT_AIM = 7,          /* setAiming(param) */
   DS_ACT_FIRE = 8,         /* evento 1008 subtipo 6, exige mira */
   DS_ACT_RELOAD = 9,       /* evento 1008 subtipo 8 */
-  DS_ACT_KINESIS = 10,     /* telekinesis */
+  DS_ACT_TAP_CENTER = 10,  /* toque no centro da tela: porta/item/kinesis */
   DS_ACT_GRAPPLE = 11,     /* escapar de agarrao */
   DS_ACT_BACK = 12,        /* mesmo do keycode BACK */
   DS_ACT_UNKNOWN13 = 13,
@@ -1401,10 +1401,13 @@ enum {
 static volatile float g_njoy_lx, g_njoy_ly, g_njoy_rx, g_njoy_ry;
 static float g_auto_lx, g_auto_ly, g_auto_rx, g_auto_ry;  /* DS_AUTOINPUT */
 static uint8_t g_polled_buttons[SDL_CONTROLLER_BUTTON_MAX];
+/* modo cursor DENTRO do gameplay (Select liga/desliga) para objetos
+ * interativos touch (alavancas, paineis, minigames) */
+static volatile int g_gp_cursor_mode;
 static volatile Uint32 g_native_seen_ms;
 static volatile int g_native_paused = 1;
 static int g_native_hook_installed;
-static int g_cfg_move_amp, g_cfg_look_amp, g_cfg_native_log;
+static int g_cfg_move_amp, g_cfg_look_amp, g_cfg_look_scale, g_cfg_native_log;
 
 #define DS_NATQ_SIZE 64
 static volatile uint32_t g_natq[DS_NATQ_SIZE];
@@ -1472,7 +1475,9 @@ static int ds_native_onupdate_hook(void *scheme, void *upd) {
   }
 
   if (fwd_move) {
-    float x = g_njoy_lx, y = g_njoy_ly;
+    /* no modo cursor o stick esquerdo move o cursor, nao o Isaac */
+    float x = g_gp_cursor_mode ? 0.0f : g_njoy_lx;
+    float y = g_gp_cursor_mode ? 0.0f : g_njoy_ly;
     float m = sqrtf(x * x + y * y);
     if (m > 0.02f) {
       int dz = *(int *)((char *)fwd_move + DS_FWD_OFF_DEADZONE);
@@ -1493,21 +1498,28 @@ static int ds_native_onupdate_hook(void *scheme, void *upd) {
   }
 
   if (fwd_look) {
+    /* Formula real do consumidor (GameObjectPlayable::onEvent, dpad 3):
+     *   delta = evento.xy * Tweaks[0x54/0x58] * Settings.sensitivity
+     * Linear, por evento, SEM saturacao — mas a deadzone do forwarder
+     * ([fwd+0x30]) zera magnitudes baixas. Entao: magnitude enviada =
+     * deadzone + DS_LOOK_AMP * deflexao (sempre logo acima da deadzone,
+     * velocidade linear e controlavel de verdade). */
     float x = g_njoy_rx, y = g_njoy_ry;
     float m = sqrtf(x * x + y * y);
     if (m > 0.02f) {
-      int dz = *(int *)((char *)fwd_look + DS_FWD_OFF_DEADZONE);
+      if (m > 1.0f) m = 1.0f;
+      /* Escala real do consumidor: 1px/frame = giro bem lento (v1),
+       * ~10px = rapido. DS_LOOK_AMP 1..100 mapeia esse intervalo. */
       float amp = (float)g_cfg_look_amp;
-      if (amp <= 0.0f) {
-        amp = 2.2f * (float)(dz > 0 ? dz : 45);
-        if (amp < 90.0f) amp = 90.0f;
-      }
-      *(signed char *)((char *)fwd_look + DS_FWD_OFF_ACTIVE) = 1;
-      send_dpad(fwd_look, x * amp, y * amp);
+      if (amp <= 0.0f) amp = 35.0f;
+      float px = 1.0f + (amp / 100.0f) * 9.0f * m * m;
+      /* zera a deadzone do forwarder de camera para o jogo aceitar
+       * magnitudes pequenas (o jogo so re-escreve a do movimento) */
+      *(int *)((char *)fwd_look + DS_FWD_OFF_DEADZONE) = 0;
+      send_dpad(fwd_look, (x / m) * px, (y / m) * px);
       look_on = 1;
     } else if (look_on) {
       send_dpad(fwd_look, 0.0f, 0.0f);
-      *(signed char *)((char *)fwd_look + DS_FWD_OFF_ACTIVE) = 0;
       look_on = 0;
     }
   }
@@ -1539,6 +1551,7 @@ static void install_native_input_hook(void) {
   }
   g_cfg_move_amp = env_int("DS_MOVE_AMP", 0);
   g_cfg_look_amp = env_int("DS_LOOK_AMP", 0);
+  g_cfg_look_scale = env_int("DS_LOOK_SCALE", 55);
   g_cfg_native_log = env_flag("DS_NATIVELOG") || control_log_enabled();
   uintptr_t stub = g_load_base + 0x4f0700u;
   write_abs_jump_stub(stub, (uintptr_t)&ds_native_onupdate_hook);
@@ -1562,16 +1575,16 @@ enum {
 };
 
 static NativeBtnCfg g_nbtn[NBTN_COUNT] = {
-  [NBTN_A]     = {"DS_BTN_A",     DS_ACT_INTERACT,   0},
+  [NBTN_A]     = {"DS_BTN_A",     DS_ACT_TAP_CENTER, 0},  /* abre porta/pega/usa */
   [NBTN_B]     = {"DS_BTN_B",     DS_ACT_MELEE,      0},
   [NBTN_X]     = {"DS_BTN_X",     DS_ACT_RELOAD,     0},
   [NBTN_Y]     = {"DS_BTN_Y",     DS_ACT_WEAPON_NEXT, 0},
   [NBTN_LB]    = {"DS_BTN_LB",    DS_ACT_STASIS,     0},
-  [NBTN_RB]    = {"DS_BTN_RB",    DS_ACT_KINESIS,    0},
+  [NBTN_RB]    = {"DS_BTN_RB",    DS_ACT_RIG,        0},  /* inventario */
   [NBTN_LT]    = {"DS_BTN_LT",    DS_ACT_AIM,        1},
   [NBTN_RT]    = {"DS_BTN_RT",    DS_ACT_FIRE,       0},
-  [NBTN_START] = {"DS_BTN_START", DS_ACT_PAUSE,      0},
-  [NBTN_BACK]  = {"DS_BTN_BACK",  DS_ACT_BACK,       0},
+  [NBTN_START] = {"DS_BTN_START", DS_ACT_BACK,       0},  /* pause real */
+  [NBTN_BACK]  = {"DS_BTN_BACK",  -1,                0},  /* Select = so cursor */
   [NBTN_L3]    = {"DS_BTN_L3",    -1,                0},
   [NBTN_R3]    = {"DS_BTN_R3",    DS_ACT_LOCATOR,    0},
 };
@@ -1669,11 +1682,13 @@ static void cursor_press(int down) {
 
 static void cursor_update_from_pad(void) {
   if (!menu_cursor_enabled()) return;
-  if (native_gameplay_active()) {
+  if (!native_gameplay_active()) g_gp_cursor_mode = 0;
+  if (native_gameplay_active() && !g_gp_cursor_mode) {
     g_cursor_visible = 0;
     if (g_cursor_pressed) cursor_press(0);
     return;
   }
+  if (g_gp_cursor_mode) g_cursor_visible = 1;
   float vx = axis_norm(lx), vy = axis_norm(ly);
   float m = sqrtf(vx * vx + vy * vy);
   if (m < 0.2f) { vx = 0.0f; vy = 0.0f; }
@@ -1696,7 +1711,7 @@ static void cursor_update_from_pad(void) {
 static void draw_menu_cursor(void) {
   if (env_flag("DS_CURSOR_TEST")) g_cursor_visible = 1;
   if (!g_cursor_visible || !menu_cursor_enabled()) return;
-  if (native_gameplay_active()) return;
+  if (native_gameplay_active() && !g_gp_cursor_mode) return;
 
   GLint vp[4];
   glGetIntegerv(GL_VIEWPORT, vp);
@@ -1790,6 +1805,21 @@ static void touch_for_button(SDL_GameControllerButton b, int pressed) {
 
 static void handle_controller_button(SDL_GameControllerButton b, int down) {
   if (native_gameplay_active()) {
+    /* Select: liga/desliga o cursor de toque dentro do gameplay */
+    if (b == SDL_CONTROLLER_BUTTON_BACK) {
+      if (down) {
+        g_gp_cursor_mode = !g_gp_cursor_mode;
+        if (!g_gp_cursor_mode && g_cursor_pressed) cursor_press(0);
+        if (control_log_enabled())
+          fprintf(stderr, "[ctl] cursor gameplay %s\n", g_gp_cursor_mode ? "ON" : "OFF");
+      }
+      return;
+    }
+    /* com cursor ligado, A toca onde o cursor esta */
+    if (g_gp_cursor_mode && b == SDL_CONTROLLER_BUTTON_A) {
+      cursor_press(down);
+      return;
+    }
     /* gameplay: acoes nativas do jogo; dpad vira movimento (poll analogico) */
     int nbtn = native_btn_for_controller(b);
     if (nbtn >= 0) {
@@ -2295,6 +2325,7 @@ static void poll_analog_controls(void) {
     if (g_touch[0].active) set_button_touch(0, 0, 360, 440);
     if (g_touch[5].active) release_right_touch();
     left_release_pending = 0;
+    if (g_gp_cursor_mode) cursor_update_from_pad();
   } else if (menu_cursor_enabled()) {
     cursor_update_from_pad();
   } else {
@@ -2769,8 +2800,14 @@ int main(int argc, char **argv) {
     last = SDL_GetTicks();
   }
 
+  /* saida blindada: se qualquer shutdown do jogo travar, o SIGALRM mata
+   * o processo e o launcher (trap EXIT) religa o EmulationStation */
+  fprintf(stderr, "saindo (Select+Start)\n");
+  fflush(NULL);
+  alarm(4);
   if (p_NativeOnPause) p_NativeOnPause(g_env, jni_activity_object());
   audio_state(0);
   SDL_Quit();
-  return 0;
+  fflush(NULL);
+  _exit(0);
 }

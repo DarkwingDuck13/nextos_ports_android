@@ -64,6 +64,22 @@ eventos SDL. A solucao foi injetar direto no pipeline interno do jogo.
   (`native_gameplay_active()`); rota antiga vira fallback automatico.
 - `DS_NO_NATIVE=1` desliga tudo e volta para a rota antiga.
 
+### Ajustes pos-teste manual do NextOS (2026-07-05, APROVADO "perfeito")
+
+- Camera direita: consumidor real achado em `GameObjectPlayable::onEvent`
+  (dpad id 3): `delta = evento.xy * Tweaks[0x54/0x58] * Settings.sensitivity`,
+  linear POR EVENTO, faixa util 1..10 px/frame (1px = a versao "bem lenta").
+  Solucao final: deadzone do fwdLook zerada pelo hook + magnitude =
+  `1 + (DS_LOOK_AMP/100)*9*m^2` px (default 35 ~= 4px full stick, meio
+  stick mira fina). NAO usar amplitudes grandes: acima de ~10px satura.
+- A = acao idx10 (toque no centro da tela) — abre porta/pega item/usa
+  painel olhando pro objeto. idx1 e RIG/inventario (agora no RB).
+- Start = idx12 (pause real). Select = SO liga/desliga cursor de toque
+  no gameplay (stick esquerdo move, A toca; para alavancas/minigames).
+- Select+Start = sair; saida blindada com alarm(4)+_exit e launcher
+  religa o ES (emustation.service mascarado no 114 -> fallback nohup).
+- Debounce dpad 2 polls (Twin USB PS2 flickera sozinho).
+
 ### Validacao (autoinput no 114, logs + framedumps)
 
 - Menu -> Play (tap 165,650) -> dificuldade -> cutscene -> Chapter 1.
