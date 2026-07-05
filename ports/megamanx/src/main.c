@@ -1005,6 +1005,49 @@ static void mmx_go_stage(long self) {
   setGoStage(self, n, NULL);
   done = 1;
 }
+/* 🏆 MMX_NEWGAME=1: New Game NATIVO (disasm s10) — o handler de STORY do TITLEMENU faz
+   exatamente rock_initGame(self)+rock_initGameCustomize(self)+setGoStage(self,1). O
+   rock_initGame (0xdd8538) ZERA a progressão (armaduras/heart/weapons em save+404..476) —
+   por isso o setGoStage sozinho abria com TODAS as armaduras (save NG+/debug intacto).
+   setGoStage(1) roteia por [save+556]: ==0 -> PROLOGUE(texto de história, espera toque) ->
+   fase; >=9 -> STAGE direto. MMX_NEWGAME_SKIP_PROLOGUE=1 grava save+556=9 pra pular o texto.
+   MMX_NEWGAME_RAW=1 pula o initGameCustomize (100% cru, sem reconceder IAP). */
+static void mmx_new_game(long self) {
+  static int done, wait;
+  if (done || !self || !getenv("MMX_NEWGAME") || !g_il2cpp_base) return;
+  int at = mmx_env_i("MMX_NEWGAME_F", 280);
+  if (wait++ < at) return;
+  typedef void (*rx_void0)(void *self, void *method);
+  typedef void (*rx_seti)(void *self, int n, void *method);
+  rx_void0 initGame    = (rx_void0)(g_il2cpp_base + 0xdd8538);
+  rx_void0 initGameCust = (rx_void0)(g_il2cpp_base + 0xdd8680);
+  rx_seti  setGoStage  = (rx_seti)(g_il2cpp_base + 0xe0fa74);
+  initGame(self, NULL);                       /* zera armaduras/upgrades (começo REAL) */
+  if (!getenv("MMX_NEWGAME_RAW")) initGameCust(self, NULL);  /* reconcede só IAP comprado */
+  int skip_prologue = getenv("MMX_NEWGAME_SKIP_PROLOGUE") ? 1 : 0;
+  if (skip_prologue) {
+    void *sys  = *(void **)((char *)self + 0xB8);
+    void *save = sys ? *(void **)((char *)sys + 0x18) : NULL;
+    if (mmx_ptr_sane(save)) *(int *)((char *)save + 556) = 9;  /* >=9 => STAGE, pula PROLOGUE */
+  }
+  fprintf(stderr, "[NEWGAME] initGame+%s setGoStage(1) skip_prologue=%d @ frame~%d\n",
+          getenv("MMX_NEWGAME_RAW") ? "raw" : "custom", skip_prologue, g_render_frame);
+  fsync(2);
+  setGoStage(self, 1, NULL);
+  done = 1;
+}
+/* 🏆 MENU DE ARMA NATIVO (QuickChange) — o "pause" real in-stage do MMX é a janela de troca
+   rápida de arma (dispQuickChange @0xe15810 em scn_STAGE_draw). O gear hit-testa em coords
+   internas (não px), por isso toque não abre. Abrimos por campo: enable_QuickChange[self+0x180]=1
+   + state_QuickChange[self+0x198]=1(WINDOW_OPEN); o draw avança e desenha. A ação da fase
+   congela sozinha com a janela aberta. */
+static void mmx_open_quickchange(long self) {
+  if (!self) return;
+  *(int *)((char *)self + 0x180) = 1;   /* enable_QuickChange */
+  *(int *)((char *)self + 0x198) = 1;   /* state_QuickChange = WINDOW_OPEN */
+  fprintf(stderr, "[QUICKCHG] abrir menu de arma (self=%p)\n", (void *)self);
+  fsync(2);
+}
 /* dump 1x das máscaras de game_key[0..10] (diagnóstico de mapeamento de ações):
    índice com máscara toda-zero = ação não ligada a nenhum bit físico (explica botão morto). */
 static void mmx_ctrl_dump_gamekey(long self) {
@@ -1057,14 +1100,20 @@ static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,
   g_mmx_rockmanx_self = (void *)a0;
   mmx_ctrl_sample();   /* 1 amostra por chamada: act/edge/pulse compartilhados pré+pós */
   if ((g_mmx_edge_bits & 512) && !getenv("MMX_NOPAUSE")) {   /* borda de START */
-    g_mmx_paused = !g_mmx_paused;
-    fprintf(stderr, "[PAUSE] %s (fade_isPaused hook=%d)\n",
-            g_mmx_paused ? "ON" : "OFF", g_mmx_fadepause_hooked);
-    fsync(2);
+    if (getenv("MMX_PAUSEFREEZE")) {
+      /* modo antigo: freeze puro + overlay "PAUSE" (sem menu do jogo) */
+      g_mmx_paused = !g_mmx_paused;
+      fprintf(stderr, "[PAUSE] %s (freeze)\n", g_mmx_paused ? "ON" : "OFF");
+      fsync(2);
+    } else {
+      /* padrão: menu de troca de arma NATIVO (QuickChange) — o "pause" real do MMX */
+      mmx_open_quickchange(a0);
+    }
   }
   if (getenv("MMX_CTRLSPY")) mmx_ctrl_dump_gamekey(a0);
   if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
   if (getenv("MMX_GOSTAGE")) mmx_go_stage(a0);
+  if (getenv("MMX_NEWGAME")) mmx_new_game(a0);
   if (getenv("MMX_CTRLSPY")) {
     static int nentry;
     int act_now = mmx_ctrl_act_bits_now();

@@ -68,11 +68,14 @@ export MMX_FORCESL=1 MMX_STREAMFALLBACK=1
 #    🔑 MMX_GAMEPAD=1 é OBRIGATÓRIO: liga o mmx_gamepad_frame (poll do pad SDL -> g_btn). Sem
 #    ele mmx_gp_button sempre retorna 0 e o pad fisico NAO faz nada (só o force-idx de debug anda).
 export MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
-# 🕹️ AUTO-START: o menu principal e TOUCH-only (grid de paineis; nao responde a tecla). Pra dar
-#    jogabilidade IMEDIATA com o controle, o launcher chama RockmanX.setGoStage(0) alguns frames
-#    depois do boot (New Game -> PROLOGUE -> STAGE, cena 12 = jogavel, input incondicional). Assim o
-#    jogador cai direto na fase controlando o X com o pad. (MMX_GOSTAGE_F = frame do disparo.)
-export MMX_GOSTAGE=0 MMX_GOSTAGE_F=280
+# 🕹️ AUTO-START = NEW GAME NATIVO (s10): o menu principal e TOUCH-only. O launcher dispara o
+#    MESMO fluxo que o botao STORY do jogo: rock_initGame (ZERA armaduras/upgrades = comeco REAL,
+#    o setGoStage sozinho abria com TODAS as armaduras do save NG+/debug) + rock_initGameCustomize
+#    + setGoStage(1) -> PROLOGUE (texto de historia, passa com toque/START) -> fase intro Central
+#    Highway com X SEM upgrades. Progressao nativa dai: stage select, boss, ganho de poder.
+#    MMX_NEWGAME_SKIP_PROLOGUE=1 pula o texto direto pra fase; MMX_NEWGAME_RAW=1 = 100% cru (sem IAP).
+#    (MMX_GOSTAGE=N ainda existe p/ debug: pula pra fase N com o save atual, sem zerar.)
+export MMX_NEWGAME=1 MMX_NEWGAME_F=280
 # ✅ ESTADO (2026-07-04): DESBLOQUEADO (BUY FULL VERSION fora; Story+Ranking no menu) + GAMEPLAY
 #    JOGAVEL (X dasha/anda na fase intro pelo pad — provado: gp=0x2000 -> game_key -> X move) +
 #    audio via OpenSL/SDL + render limpo. Controles: pad SDL -> game_key (movimento/pulo/tiro/dash).
