@@ -1,0 +1,7 @@
+# dados do jogo (copyright EA) e artefatos de build/analise ficam fora
+assets/
+lib/
+deadspace
+.tmp/
+*.log
+*.ppm
