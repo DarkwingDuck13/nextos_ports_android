@@ -1422,6 +1422,70 @@ static void native_queue_action(int idx, int param) {
   g_natq_w = w + 1;
 }
 
+/* ---- rastreio das regioes interativas (portas/itens/paineis) ----
+ * O jogo reprojeta o centro de cada regiao de toque a cada frame via
+ * InputRegionBox/Circle::setCenter (0x7d238/0x7d2c4). Substituimos as
+ * duas funcoes por replicas que tambem registram os centros; o botao A
+ * toca na regiao mais proxima do centro da tela. */
+#define DS_OFF_REGBOX_SETCENTER    0x7d238u
+#define DS_OFF_REGCIRCLE_SETCENTER 0x7d2c4u
+#define REGTRACK_N 16
+static volatile int g_regs_x[REGTRACK_N], g_regs_y[REGTRACK_N];
+static volatile Uint32 g_regs_tick[REGTRACK_N];
+static volatile unsigned g_regs_i;
+
+static void regtrack_record(int x, int y) {
+  if (x < 4 || y < 4 || x > 4096 || y > 4096) return;
+  unsigned i = g_regs_i % REGTRACK_N;
+  g_regs_x[i] = x;
+  g_regs_y[i] = y;
+  g_regs_tick[i] = SDL_GetTicks();
+  g_regs_i = i + 1;
+}
+
+static void ds_hook_regionbox_setcenter(void *self, int cx, int cy) {
+  int w = *(int *)((char *)self + 20);
+  int h = *(int *)((char *)self + 24);
+  *(int *)((char *)self + 12) = cx - (w >> 1);
+  *(int *)((char *)self + 16) = cy - (h >> 1);
+  regtrack_record(cx, cy);
+}
+
+static void ds_hook_regioncircle_setcenter(void *self, int cx, int cy) {
+  *(int *)((char *)self + 12) = cx;
+  *(int *)((char *)self + 16) = cy;
+  regtrack_record(cx, cy);
+}
+
+/* acha a regiao interativa recente mais proxima do centro da tela;
+ * devolve coords logicas 1280x720 para os helpers de touch */
+static int find_interact_target(float *ox, float *oy) {
+  Uint32 now = SDL_GetTicks();
+  float cx = (float)g_w * 0.5f, cy = (float)g_h * 0.5f;
+  float best = (float)g_w * 0.38f;  /* raio maximo de captura */
+  best *= best;
+  int found = 0;
+  float bx = 0, by = 0;
+  for (int i = 0; i < REGTRACK_N; i++) {
+    Uint32 t = g_regs_tick[i];
+    if (!t || now - t > 150) continue;  /* so regioes vivas neste frame */
+    float dx = (float)g_regs_x[i] - cx;
+    float dy = (float)g_regs_y[i] - cy;
+    float d = dx * dx + dy * dy;
+    if (d < best) {
+      best = d;
+      bx = (float)g_regs_x[i];
+      by = (float)g_regs_y[i];
+      found = 1;
+    }
+  }
+  if (found) {
+    *ox = bx * 1280.0f / (float)g_w;
+    *oy = by * 720.0f / (float)g_h;
+  }
+  return found;
+}
+
 static int native_gameplay_active(void) {
   if (!g_native_hook_installed) return 0;
   Uint32 seen = g_native_seen_ms;
@@ -1556,8 +1620,15 @@ static void install_native_input_hook(void) {
   uintptr_t stub = g_load_base + 0x4f0700u;
   write_abs_jump_stub(stub, (uintptr_t)&ds_native_onupdate_hook);
   patch_arm_entry(g_load_base + DS_OFF_DPADSREL_ONUPDATE, stub);
+  /* rastreio de regioes interativas (portas/itens) para o botao A */
+  uintptr_t stub_box = g_load_base + 0x4f0740u;
+  uintptr_t stub_circle = g_load_base + 0x4f0760u;
+  write_abs_jump_stub(stub_box, (uintptr_t)&ds_hook_regionbox_setcenter);
+  write_abs_jump_stub(stub_circle, (uintptr_t)&ds_hook_regioncircle_setcenter);
+  patch_arm_entry(g_load_base + DS_OFF_REGBOX_SETCENTER, stub_box);
+  patch_arm_entry(g_load_base + DS_OFF_REGCIRCLE_SETCENTER, stub_circle);
   g_native_hook_installed = 1;
-  fprintf(stderr, "native input hook instalado em 0x%x (stub %p)\n",
+  fprintf(stderr, "native input hook instalado em 0x%x (stub %p) + regtrack\n",
           DS_OFF_DPADSREL_ONUPDATE, (void *)stub);
 }
 
@@ -1818,6 +1889,22 @@ static void handle_controller_button(SDL_GameControllerButton b, int down) {
     /* com cursor ligado, A toca onde o cursor esta */
     if (g_gp_cursor_mode && b == SDL_CONTROLLER_BUTTON_A) {
       cursor_press(down);
+      return;
+    }
+    /* A sem cursor = TOQUE REAL na regiao interativa mais proxima do
+     * centro (porta/alavanca/item rastreados pelo hook de setCenter);
+     * sem regiao viva, toca no centro. DS_A_NATIVE=1 volta pro idx10. */
+    if (b == SDL_CONTROLLER_BUTTON_A && !env_flag("DS_A_NATIVE")) {
+      static float ax = 640.0f, ay = 360.0f;
+      if (down) {
+        if (!find_interact_target(&ax, &ay)) {
+          ax = 640.0f;
+          ay = 360.0f;
+        }
+        if (control_log_enabled())
+          fprintf(stderr, "[ctl] A-tap em %.0f,%.0f\n", ax, ay);
+      }
+      set_button_touch(13, down, ax, ay);
       return;
     }
     /* gameplay: acoes nativas do jogo; dpad vira movimento (poll analogico) */

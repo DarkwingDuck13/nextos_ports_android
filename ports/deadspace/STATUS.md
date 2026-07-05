@@ -79,6 +79,14 @@ eventos SDL. A solucao foi injetar direto no pipeline interno do jogo.
 - Select+Start = sair; saida blindada com alarm(4)+_exit e launcher
   religa o ES (emustation.service mascarado no 114 -> fallback nohup).
 - Debounce dpad 2 polls (Twin USB PS2 flickera sozinho).
+- Botao A definitivo ("A inteligente", APROVADO): hooks nas replicas de
+  `InputRegionBox::setCenter` (0x7d238) e `InputRegionCircle::setCenter`
+  (0x7d2c4) registram por frame os centros das regioes interativas
+  (portas/alavancas/itens, reprojetadas pelo jogo). A = TOQUE REAL na
+  regiao viva (<150ms) mais proxima do centro (raio de captura 38% da
+  largura); sem regiao, toca no centro. `DS_A_NATIVE=1` volta o
+  doSpecialAction idx10 antigo. Motivo: portas escutam toque na tela
+  (InputForwarderTapToAction na regiao), nao o InteractionWithObjects.
 
 ### Validacao (autoinput no 114, logs + framedumps)
 
