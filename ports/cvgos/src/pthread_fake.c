@@ -110,6 +110,16 @@ int pthread_cond_broadcast_fake(void **slot) { ct_signal(slot, 1); return pthrea
 #include <time.h>
 static long g_cond_poll_ms = 0;   /* 0 = wait infinito normal */
 void cond_set_poll(int ms) { g_cond_poll_ms = ms; }
+static __thread void *volatile g_tls_cond_cslot;
+static __thread void *volatile g_tls_cond_mslot;
+static __thread void *volatile g_tls_cond_caller;
+static __thread volatile int g_tls_cond_timed;
+void pt_cond_tls_state(void **cslot, void **mslot, void **caller, int *timed) {
+  if (cslot) *cslot = g_tls_cond_cslot;
+  if (mslot) *mslot = g_tls_cond_mslot;
+  if (caller) *caller = g_tls_cond_caller;
+  if (timed) *timed = g_tls_cond_timed;
+}
 /* 🔑 GC-SAFE WAIT: enquanto uma thread está BLOQUEADA num cond/sem do nosso shim, ela está num
    PONTO SEGURO (stack estável, não roda código managed). É exatamente quando o GC PODE suspendê-la.
    As threads do il2cpp (GC Finalizer/Loading) bloqueiam SIGPWR e ficam presas aqui → o stop-the-world
@@ -159,7 +169,12 @@ int pthread_cond_wait_fake(void **cslot, void **mslot) {
   }
   if (g_cond_poll_ms <= 0) {
     sigset_t old; gc_wait_unblock(&old);
+    g_tls_cond_cslot = cslot;
+    g_tls_cond_mslot = mslot;
+    g_tls_cond_caller = __builtin_return_address(0);
+    g_tls_cond_timed = 0;
     int r = pthread_cond_wait(cond_get(cslot), mtx_get(mslot));
+    g_tls_cond_cslot = NULL;
     gc_wait_restore(&old);
     return r;
   }
@@ -167,12 +182,22 @@ int pthread_cond_wait_fake(void **cslot, void **mslot) {
   clock_gettime(CLOCK_REALTIME, &ts);
   ts.tv_nsec += g_cond_poll_ms * 1000000L;
   if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+  g_tls_cond_cslot = cslot;
+  g_tls_cond_mslot = mslot;
+  g_tls_cond_caller = __builtin_return_address(0);
+  g_tls_cond_timed = 1;
   int r = pthread_cond_timedwait(cond_get(cslot), mtx_get(mslot), &ts);
+  g_tls_cond_cslot = NULL;
   return (r == ETIMEDOUT) ? 0 : r;   /* timeout vira wakeup espúrio */
 }
 int pthread_cond_timedwait_fake(void **cslot, void **mslot, const struct timespec *ts) {
   sigset_t old; gc_wait_unblock(&old);
+  g_tls_cond_cslot = cslot;
+  g_tls_cond_mslot = mslot;
+  g_tls_cond_caller = __builtin_return_address(0);
+  g_tls_cond_timed = 1;
   int r = pthread_cond_timedwait(cond_get(cslot), mtx_get(mslot), ts);
+  g_tls_cond_cslot = NULL;
   gc_wait_restore(&old);
   return r;
 }
@@ -245,7 +270,7 @@ static void *thr_trampoline(void *p) {
     extern uintptr_t ter_unity_base(void);
     uintptr_t ub = ter_unity_base();
     uintptr_t so = (uintptr_t)b.start;
-    int tid = (int)syscall(178 /*arm64 gettid*/);
+    int tid = (int)syscall(SYS_gettid);
     char comm[20] = ""; FILE *f = fopen("/proc/self/comm", "r");
     if (f) { if (fgets(comm, sizeof comm, f)) { char *nl = strchr(comm, '\n'); if (nl) *nl = 0; } fclose(f); }
     char line[512]; int n = 0;
@@ -277,18 +302,58 @@ static void *thr_trampoline(void *p) {
   return b.start(b.arg);
 }
 int pthread_create_fake(pthread_t *t, const void *attr, void *(*start)(void *), void *arg) {
-  (void)attr;
   struct thr_boot *b = malloc(sizeof *b);
   if (!b) return pthread_create(t, NULL, start, arg);
   b->start = start; b->arg = arg;
-  int rc = pthread_create(t, NULL, thr_trampoline, b);
-  if (rc) { free(b); rc = pthread_create(t, NULL, start, arg); }
+  pthread_attr_t real_attr;
+  pthread_attr_t *real_attrp = NULL;
+  size_t fake_stack = 0;
+  if (attr) {
+    const uint32_t *fa = (const uint32_t *)attr;
+    if (fa[0] == 0x43564154u) fake_stack = fa[1];  /* "CVAT" */
+  }
+  if (!fake_stack) {
+    const char *ss = getenv("TER_THREADSTACK");
+    fake_stack = ss ? (size_t)strtoul(ss, NULL, 0) : (512 * 1024);
+  }
+  if (fake_stack >= 16 * 1024) {
+    pthread_attr_init(&real_attr);
+    if (pthread_attr_setstacksize(&real_attr, fake_stack) == 0) real_attrp = &real_attr;
+    else pthread_attr_destroy(&real_attr);
+  }
+  int rc = pthread_create(t, real_attrp, thr_trampoline, b);
+  if (real_attrp) pthread_attr_destroy(real_attrp);
+  if (rc) {
+    fprintf(stderr, "[PTCREATE] rc=%d start=%p arg=%p stack=%zu\n",
+            rc, (void *)start, arg, fake_stack);
+    fsync(2);
+    free(b);
+    rc = pthread_create(t, NULL, start, arg);
+  } else if (getenv("TER_PTCREATELOG")) {
+    fprintf(stderr, "[PTCREATE] rc=0 start=%p arg=%p stack=%zu\n",
+            (void *)start, arg, fake_stack);
+    fsync(2);
+  }
   return rc;
 }
-int pthread_attr_init_fake(void *a) { (void)a; return 0; }
+int pthread_attr_init_fake(void *a) {
+  if (a) {
+    uint32_t *fa = (uint32_t *)a;
+    fa[0] = 0x43564154u;  /* "CVAT" */
+    fa[1] = 0;
+  }
+  return 0;
+}
 int pthread_attr_destroy_fake(void *a) { (void)a; return 0; }
 int pthread_attr_setdetachstate_fake(void *a, int s) { (void)a; (void)s; return 0; }
-int pthread_attr_setstacksize_fake(void *a, size_t s) { (void)a; (void)s; return 0; }
+int pthread_attr_setstacksize_fake(void *a, size_t s) {
+  if (a) {
+    uint32_t *fa = (uint32_t *)a;
+    fa[0] = 0x43564154u;
+    fa[1] = (uint32_t)s;
+  }
+  return 0;
+}
 int pthread_attr_setschedparam_fake(void *a, const void *p) { (void)a; (void)p; return 0; }
 int pthread_setschedparam_fake(pthread_t t, int p, const void *s) { (void)t; (void)p; (void)s; return 0; }
 int pthread_setname_np_fake(pthread_t t, const char *n) { (void)t; (void)n; return 0; }

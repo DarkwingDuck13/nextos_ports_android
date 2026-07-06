@@ -1,5 +1,35 @@
 # Castlevania: Grimoire of Souls (jp.konami.castlevania) — Mali-450 .79 — STATUS
 
+## 2026-07-05 — PAUSA SOLICITADA: estado salvo da retomada
+
+- **Testes parados a pedido do Felipe**. Matei `cvgos` no device `192.168.31.90`; `pgrep -x cvgos` ficou vazio.
+- **Binario atual**: `ports/cvgos/cvgos` foi buildado com sucesso e enviado para `/storage/roms/ports/cvgos/cvgos`. O source local tem guards novos em `src/main.c` e melhorias JNI/reflection em `src/jni_shim.c`.
+- **Melhor estado confirmado da retomada**: com o env base abaixo, sem `CVGOS_NREFLECTSKIP`, o port passa do crash de metadata flag, cria contexto GLES2/Mali, chega em `[render 0]` e `[r1>]`, carrega muitos assets/UI, entra no fluxo `[SPARKGEAR]`, resolve `currentActivity -> getFilesDir -> getCanonicalPath`, e então morre em `System.NullReferenceException` no helper de throw:
+  - log bom: `/tmp/cvgos_metaflag.log` no device.
+  - ponto final bom: `[ARRAYSKIP] throw_helper #2 ... class=System.NullReferenceException ... lr=libil2cpp+0x7a8b70`.
+  - esse bloqueio já não é GLES; GLES está OK (`eglCreateContext`, `MakeCurrent REAL OK`, extensoes GL e render frame).
+- **Fix novo validado**: `I2-METAFLAG` no `on_crash` para `libil2cpp+0x775398`, `+0x775408` e `+0x775414`. Ele pula apenas a escrita/leitura de bitset de metadata quando o indice/tabela esta fora de area valida. Isso passou o crash antigo em `libil2cpp+0x775398` e deixou o jogo chegar ao `render 0`.
+- **Experimento novo, nao usar como baseline ainda**: `CVGOS_NREFLECTSKIP=1`.
+  - Ele consegue transformar o `NullReferenceException` de reflexao em `return reflect-nre`.
+  - Sem o inner guard, avancou ate crash em `libil2cpp+0x7a970c` (`r4=0`, inner exception nulo).
+  - Foi adicionado guard env-gated para `libil2cpp+0x7a970c` retornar o objeto de excecao em `r5`.
+  - Ultimo teste com esse env caiu mais cedo em `libunity+0x31c350` logo apos paths `userdata`; tratar como experimento instavel, nao como regressao do baseline.
+- **Env base recomendado para retomar do ultimo ponto bom**:
+  `CVGOS_THROWLOG=1 CVGOS_NOEXCGUARD=1 CVGOS_ARRAYSKIP=1 CVGOS_LOGRESGUARD=1 CVGOS_TMPFONTGUARD=1 CVGOS_VECGUARD=1 CVGOS_ENUMNULLGUARD=1`
+  junto com `SDL_VIDEODRIVER=mali CUP_VIDEO=kmsdrm CUP_GLES_MAJOR=2 CUP_1CORE=1 CUP_NOLOGFILE=1 CUP_NOSIGH=1`.
+- **Proximo foco tecnico**: resolver o NRE de reflexao sem deixar objeto nulo seguir. Caminho provavel: melhorar o objeto/retorno fake do `ReflectionHelper`/JNI para `getFilesDir/getCanonicalPath` ou criar um resultado managed valido; evitar engolir NRE generico.
+
+## 2026-07-05 — progresso real: frame 1, GLES OK, muro atual = serialização/IL2CPP
+
+- **Avançou desde o estado anterior**: o jogo não fica mais preso em asset corrompido/OOM. `sharedassets0.assets` combinado abre, `egl_shim MakeCurrent REAL OK`, `render 0` completa e o loop entra em `r1>`.
+- **`EXCGUARD` corrigido**: estava sendo aplicado no F0 com `g_il2cpp_base=0`. Foi movido para o F1; agora loga base real e patcha `libil2cpp+0x7a8a88` corretamente. Esse patch serve para experimento, mas não é solução final porque só empurra uma exceção managed para crash secundário.
+- **Raiz capturada sem `EXCGUARD`**: `System.ArrayTypeMismatchException: Attempted to access an element as a type incompatible with the array.` logo após warnings de Unity serialization layout.
+- **Simbologia runtime adicionada**: `CVGOS_IL2CPPSTACK=1` e `CVGOS_I2SYM=1` tentam mapear return addresses para `MethodInfo`. A stack managed oficial vem vazia, mas o casamento por `MethodInfo->methodPointer` já apontou os primeiros gargalos:
+  - `TMPro.TMP_FontAsset` / `FontOffsetInfo` no primeiro throw.
+  - Com `CVGOS_TMPFONTGUARD=1`, passa desse ponto e avança por muitos objetos UI/tween antes de novo `ArrayTypeMismatch`, agora perto de `UnityEngine.EventSystems.PointerInputModule::.ctor`.
+- **APK/OBB verificados**: o APK local `castlevania-grimoire-of-souls-v1_1_4-mod.apk`, o cache `Castlevania-Grimoire-of-Souls-v1-1-4-cache.zip` e o OBB `main.110.jp.konami.castlevania.obb` batem. `sharedassets0.assets` reconstruído bate byte a byte com a concatenação dos splits do APK. Portanto o problema não parece ser mistura de versões dos arquivos.
+- **Suspeita atual**: o guard `I2-METATABLE` em `libil2cpp+0x77cd18` pode estar devolvendo tipo/classe errado quando a tabela de metadata/rgctx vem NULL. Isso explicaria vários layouts esperados diferentes mesmo com assets corretos. Próximo foco: substituir o recovery por patch/lookup correto nessa função, em vez de retornar `a21` cegamente.
+
 ## 🧱 MURO FINAL sessão 1 — RecreateGfxState constrói java.lang.Error (intrínseco) e crasha
 Confirmado: o crash (SIGSEGV libunity+0x31fafc, `r1=*(fp+0x108)=1; ldr[r1,#12]`) acontece em **AMBOS os paths de vídeo** (fbdev E egl_shim/kmsdrm), logo no início do `nativeRecreateGfxState`, ao construir um `java.lang.Error`+StackTrace (FindClass Error/StackTraceElement, GetMethodID <init>/setStackTrace, NewStringUTF Class/Method/File). NÃO é falha de gfx nem exceção C++ (`__cxa_throw` não dispara) — é o init do **log/crash-handler da Unity (AndroidJNIHelper C++)** rodando com nosso **JNIEnv fake** e derefenciando um objeto que vale 1. Tentativas que NÃO resolveram (env-gated, default OFF): `CVGOS_CRASHSKIP` (sobrevive ~5, morre na construção aninhada), `CVGOS_SAFEOBJ` (NewObject/NewObjectArray/GetObjectArrayElement→buffer zerado; crash é ANTES do NewObject), `CVGOS_SKIPERRFUNC` (no-op de libunity+0x31fa08 PIORA — a func faz trabalho necessário). Função do crash começa em **libunity+0x31fa08** (push {r4-fp,lr}); caller em ~0x31fcf8; ambos no subsistema de exceção/thread 0x31f... (mesma família do trap-gate).
 - **RAIZ FINA (gdb single-step libunity+0x31fa08)**: `mov fp,r0` no prólogo → **fp é o `this` (objeto Unity C++), NÃO frame pointer**. A func lê `[this+0x108]` (=um handle JNI que NOSSO shim retornou e a Unity cacheou no objeto, ex 0x509d4/1) e faz `[handle]`→`[+12]`→`[+24]`→`blx` (dispatch de método via vtable estilo objeto Java). Nossos handles fake (int pequeno OU ponteiro sem layout) não têm o **grafo de objeto** que a Unity C++ espera → deref inválido → SIGSEGV. É o wrapper JNI-object do `AndroidJNIHelper`: exige que jobject/jclass tenham `[obj]`=classe/vtable, campos em offsets. **Overhaul multi-sessão do jni_shim**: dar aos handles fake um layout de objeto derefenciável (vtable zerada + campos) OU mapear a classe específica (java.lang.Error/StackTraceElement) com storage real.

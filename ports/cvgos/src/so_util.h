@@ -42,6 +42,7 @@ uintptr_t so_find_addr_rx(const char *symbol);
 uintptr_t so_find_rel_addr(const char *symbol);
 uintptr_t so_find_rel_addr_safe(const char *symbol);
 int so_patch_got(const char *symbol, uintptr_t val);
+int so_patch_import_relocs(const char *symbol, uintptr_t val);
 DynLibFunction *so_find_import(DynLibFunction *funcs, int num_funcs,
                                const char *name);
 void so_finalize(void);

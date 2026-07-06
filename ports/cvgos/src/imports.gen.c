@@ -2,7 +2,48 @@
 #include "so_util.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <dlfcn.h>
+#include <string.h>
+
+extern void *cvgos_eh_resolve_public(const char *name);
+
+static struct { const char *name; void *p; } g_cvgos_eh_cache[32];
+static int g_cvgos_eh_cache_n;
+
+void cvgos_imports_set_eh_symbol(const char *name, void *p) {
+  if (!name || !p) return;
+  for (int i = 0; i < g_cvgos_eh_cache_n; i++) {
+    if (!strcmp(g_cvgos_eh_cache[i].name, name)) {
+      g_cvgos_eh_cache[i].p = p;
+      return;
+    }
+  }
+  if (g_cvgos_eh_cache_n < (int)(sizeof g_cvgos_eh_cache / sizeof g_cvgos_eh_cache[0])) {
+    g_cvgos_eh_cache[g_cvgos_eh_cache_n].name = name;
+    g_cvgos_eh_cache[g_cvgos_eh_cache_n].p = p;
+    g_cvgos_eh_cache_n++;
+  }
+}
+
+static void *cvgos_eh_resolve_gen(const char *name) {
+  void *pub = cvgos_eh_resolve_public(name);
+  if (pub) return pub;
+  if (getenv("CVGOS_EHLOG")) fprintf(stderr, "[EHGEN] public miss %s\n", name ? name : "(null)");
+  for (int i = 0; i < g_cvgos_eh_cache_n; i++)
+    if (!strcmp(g_cvgos_eh_cache[i].name, name))
+      return g_cvgos_eh_cache[i].p;
+  if (getenv("CVGOS_EHLOG")) fprintf(stderr, "[EHGEN] local cache miss %s n=%d\n", name ? name : "(null)", g_cvgos_eh_cache_n);
+  static void *h;
+  if (!h) {
+    h = dlopen("libgcc_s.so.1", RTLD_NOW | RTLD_GLOBAL);
+    if (!h) h = dlopen("/usr/lib32/libgcc_s.so.1", RTLD_NOW | RTLD_GLOBAL);
+  }
+  void *p = h ? dlsym(h, name) : NULL;
+  if (!p) p = dlsym(RTLD_DEFAULT, name);
+  if (getenv("CVGOS_EHLOG")) fprintf(stderr, "[EHGEN] dlsym %s h=%p -> %p\n", name ? name : "(null)", h, p);
+  return p;
+}
 
 // stubs (logam nome, 1as 2 vezes, retornam 0)
 long stub_accept(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] accept\\n"); return 0; }
@@ -19,8 +60,8 @@ long stub___aeabi_memmove8(void){ static int n=0; if(n++<2) fprintf(stderr,"[STU
 long stub___aeabi_memset(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_memset\\n"); return 0; }
 long stub___aeabi_memset4(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_memset4\\n"); return 0; }
 long stub___aeabi_memset8(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_memset8\\n"); return 0; }
-long stub___aeabi_unwind_cpp_pr0(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_unwind_cpp_pr0\\n"); return 0; }
-long stub___aeabi_unwind_cpp_pr1(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_unwind_cpp_pr1\\n"); return 0; }
+long stub___aeabi_unwind_cpp_pr0(long a, void *b, void *c){ static long (*real)(long, void *, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("__aeabi_unwind_cpp_pr0"); if(real) return real(a,b,c); static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_unwind_cpp_pr0\\n"); return 0; }
+long stub___aeabi_unwind_cpp_pr1(long a, void *b, void *c){ static long (*real)(long, void *, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("__aeabi_unwind_cpp_pr1"); if(real) return real(a,b,c); static int n=0; if(n++<2) fprintf(stderr,"[STUB] __aeabi_unwind_cpp_pr1\\n"); return 0; }
 long stub_ALooper_forThread(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ALooper_forThread\\n"); return 0; }
 long stub_ALooper_prepare(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ALooper_prepare\\n"); return 0; }
 long stub_ANativeWindow_acquire(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ANativeWindow_acquire\\n"); return 0; }
@@ -82,8 +123,8 @@ long stub_getpriority(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] ge
 long stub_getpwuid(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getpwuid\\n"); return 0; }
 long stub_getsockname(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getsockname\\n"); return 0; }
 long stub_getsockopt(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] getsockopt\\n"); return 0; }
-long stub___gnu_Unwind_Find_exidx(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __gnu_Unwind_Find_exidx\\n"); return 0; }
-long stub___gnu_unwind_frame(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __gnu_unwind_frame\\n"); return 0; }
+long stub___gnu_Unwind_Find_exidx(void *a, void *b){ static long (*real)(void *, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("__gnu_Unwind_Find_exidx"); if(real) return real(a,b); static int n=0; if(n++<2) fprintf(stderr,"[STUB] __gnu_Unwind_Find_exidx\\n"); return 0; }
+long stub___gnu_unwind_frame(void *a, void *b){ static long (*real)(void *, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("__gnu_unwind_frame"); if(real) return real(a,b); static int n=0; if(n++<2) fprintf(stderr,"[STUB] __gnu_unwind_frame\\n"); return 0; }
 long stub___google_potentially_blocking_region_begin(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __google_potentially_blocking_region_begin\\n"); return 0; }
 long stub___google_potentially_blocking_region_end(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __google_potentially_blocking_region_end\\n"); return 0; }
 long stub_inet_addr(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] inet_addr\\n"); return 0; }
@@ -134,18 +175,18 @@ long stub_syscall(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] syscal
 long stub___system_property_get(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] __system_property_get\\n"); return 0; }
 long stub_tgkill(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] tgkill\\n"); return 0; }
 long stub_uname(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] uname\\n"); return 0; }
-long stub__Unwind_Backtrace(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Backtrace\\n"); return 0; }
-long stub__Unwind_Complete(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Complete\\n"); return 0; }
-long stub__Unwind_DeleteException(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_DeleteException\\n"); return 0; }
-long stub__Unwind_GetDataRelBase(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetDataRelBase\\n"); return 0; }
-long stub__Unwind_GetLanguageSpecificData(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetLanguageSpecificData\\n"); return 0; }
-long stub__Unwind_GetRegionStart(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetRegionStart\\n"); return 0; }
-long stub__Unwind_GetTextRelBase(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetTextRelBase\\n"); return 0; }
-long stub__Unwind_RaiseException(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_RaiseException\\n"); return 0; }
-long stub__Unwind_Resume(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Resume\\n"); return 0; }
-long stub__Unwind_Resume_or_Rethrow(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Resume_or_Rethrow\\n"); return 0; }
-long stub__Unwind_VRS_Get(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_VRS_Get\\n"); return 0; }
-long stub__Unwind_VRS_Set(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_VRS_Set\\n"); return 0; }
+long stub__Unwind_Backtrace(void *a, void *b){ (void)a; (void)b; static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Backtrace -> 0\\n"); return 0; }
+long stub__Unwind_Complete(void *a){ static void (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_Complete"); if(real) { real(a); return 0; } static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Complete\\n"); return 0; }
+long stub__Unwind_DeleteException(void *a){ static void (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_DeleteException"); if(real) { real(a); return 0; } static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_DeleteException\\n"); return 0; }
+long stub__Unwind_GetDataRelBase(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_GetDataRelBase"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetDataRelBase\\n"); return 0; }
+long stub__Unwind_GetLanguageSpecificData(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_GetLanguageSpecificData"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetLanguageSpecificData\\n"); return 0; }
+long stub__Unwind_GetRegionStart(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_GetRegionStart"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetRegionStart\\n"); return 0; }
+long stub__Unwind_GetTextRelBase(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_GetTextRelBase"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_GetTextRelBase\\n"); return 0; }
+long stub__Unwind_RaiseException(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_RaiseException"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_RaiseException\\n"); return 0; }
+long stub__Unwind_Resume(void *a){ static void (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_Resume"); if(real) { real(a); return 0; } static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Resume\\n"); return 0; }
+long stub__Unwind_Resume_or_Rethrow(void *a){ static long (*real)(void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_Resume_or_Rethrow"); if(real) return real(a); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_Resume_or_Rethrow\\n"); return 0; }
+long stub__Unwind_VRS_Get(void *a, int b, unsigned c, int d, void *e){ static long (*real)(void *, int, unsigned, int, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_VRS_Get"); if(real) return real(a,b,c,d,e); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_VRS_Get\\n"); return 0; }
+long stub__Unwind_VRS_Set(void *a, int b, unsigned c, int d, void *e){ static long (*real)(void *, int, unsigned, int, void *); if(!real) real=(void*)cvgos_eh_resolve_gen("_Unwind_VRS_Set"); if(real) return real(a,b,c,d,e); static int n=0; if(n++<2) fprintf(stderr,"[STUB] _Unwind_VRS_Set\\n"); return 0; }
 long stub_utime(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] utime\\n"); return 0; }
 long stub_waitpid(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] waitpid\\n"); return 0; }
 long stub_writev(void){ static int n=0; if(n++<2) fprintf(stderr,"[STUB] writev\\n"); return 0; }

@@ -136,9 +136,10 @@ void egl_shim_create_window(void) {
   if (r_eglGetCurrentDisplay) g_real_dpy = r_eglGetCurrentDisplay();
   if (r_eglGetCurrentSurface) g_win_surf = r_eglGetCurrentSurface(0x3059 /*EGL_DRAW*/);
   if (g_real_dpy && r_eglChooseConfig) {
-    /* EGL_RENDERABLE_TYPE=ES3 | SURFACE=WINDOW | RGB888 | D24 S8 */
-    static const int attrs[] = {
-      0x3040, 0x40,   /* EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT */
+    /* EGL_RENDERABLE_TYPE acompanha o contexto real criado pelo SDL. */
+    const int renderable = (g_es_major >= 3) ? 0x40 : 0x04;
+    const int attrs[] = {
+      0x3040, renderable, /* EGL_RENDERABLE_TYPE */
       0x3033, 0x04,   /* EGL_SURFACE_TYPE,    EGL_WINDOW_BIT */
       0x3024, 8,      /* EGL_RED_SIZE   */
       0x3023, 8,      /* EGL_GREEN_SIZE */
@@ -150,8 +151,8 @@ void egl_shim_create_window(void) {
     void *cfgs[8]; int n = 0;
     if (r_eglChooseConfig(g_real_dpy, attrs, cfgs, 8, &n) && n > 0) {
       g_real_cfg = cfgs[0];
-      debugPrintf("egl_shim: EGLConfig real ES3 capturada (dpy=%p cfg=%p n=%d win_surf=%p)\n",
-                  g_real_dpy, g_real_cfg, n, g_win_surf);
+      debugPrintf("egl_shim: EGLConfig real ES%d capturada (dpy=%p cfg=%p n=%d win_surf=%p)\n",
+                  g_es_major, g_real_dpy, g_real_cfg, n, g_win_surf);
       /* pbuffer real p/ os contextos worker do Unity (uploads compartilhados) */
       if (r_eglCreatePbufferSurface) {
         static const int pb[] = { 0x3057, 16, 0x3056, 16, 0x3038 }; /* WIDTH,HEIGHT,NONE */
@@ -454,22 +455,38 @@ EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
       r_eglGetConfigAttrib(g_real_dpy, g_real_cfg, attribute, value))
     return EGL_TRUE;
   switch (attribute) {
-  case 0x3020: *value = 8; break;   /* EGL_BUFFER_SIZE? (RED) */
-  case 0x3021: *value = 8; break;   /* EGL_GREEN_SIZE */
+  case 0x3020: *value = 24; break;  /* EGL_BUFFER_SIZE */
+  case 0x3021: *value = 0; break;   /* EGL_ALPHA_SIZE */
   case 0x3022: *value = 8; break;   /* EGL_BLUE_SIZE */
-  case 0x3023: *value = 0; break;   /* EGL_ALPHA_SIZE */
+  case 0x3023: *value = 8; break;   /* EGL_GREEN_SIZE */
+  case 0x3024: *value = 8; break;   /* EGL_RED_SIZE */
   case 0x3025: *value = 24; break;  /* EGL_DEPTH_SIZE */
   case 0x3026: *value = 8; break;   /* EGL_STENCIL_SIZE */
-  case 0x3024: *value = 24; break;  /* EGL_BUFFER_SIZE (RGB) */
   case 0x3027: *value = 0x3038; break; /* EGL_CONFIG_CAVEAT = EGL_NONE */
   case 0x3028: *value = 1; break;   /* EGL_CONFIG_ID */
+  case 0x3029: *value = 0; break;   /* EGL_LEVEL */
+  case 0x302a: *value = 4096; break; /* EGL_MAX_PBUFFER_HEIGHT */
+  case 0x302b: *value = 4096 * 4096; break; /* EGL_MAX_PBUFFER_PIXELS */
+  case 0x302c: *value = 4096; break; /* EGL_MAX_PBUFFER_WIDTH */
+  case 0x302d: *value = 0; break;   /* EGL_NATIVE_RENDERABLE */
+  case 0x302e: *value = 0; break;   /* EGL_NATIVE_VISUAL_ID */
+  case 0x302f: *value = 0; break;   /* EGL_NATIVE_VISUAL_TYPE */
+  case 0x3031: *value = 0; break;   /* EGL_SAMPLES */
+  case 0x3032: *value = 0; break;   /* EGL_SAMPLE_BUFFERS */
   case 0x3033: *value = 0x0005; break; /* EGL_SURFACE_TYPE = WINDOW|PBUFFER */
-  /* EGL_RENDERABLE_TYPE: anuncia ES2|ES3 — o gles-api-check do Cuphead exige o
-     bit ES3 (0x40); sem isto o jogo conclui "sem GLES3", retenta e ABORTA (SIGTRAP). */
-  case 0x3040: *value = 0x0044; break; /* EGL_OPENGL_ES2_BIT(4)|EGL_OPENGL_ES3_BIT(0x40) */
-  case 0x3042: *value = 0x0044; break; /* EGL_CONFORMANT = idem */
-  case 0x3039: *value = 0x308E; break; /* EGL_COLOR_BUFFER_TYPE = EGL_RGB_BUFFER */
-  case 0x3032: *value = 0; break;   /* EGL_NATIVE_RENDERABLE */
+  case 0x3034: *value = 0x3038; break; /* EGL_TRANSPARENT_TYPE = EGL_NONE */
+  case 0x3035: *value = 0; break;   /* EGL_TRANSPARENT_BLUE_VALUE */
+  case 0x3036: *value = 0; break;   /* EGL_TRANSPARENT_GREEN_VALUE */
+  case 0x3037: *value = 0; break;   /* EGL_TRANSPARENT_RED_VALUE */
+  case 0x3039: *value = 0; break;   /* EGL_BIND_TO_TEXTURE_RGB */
+  case 0x303a: *value = 0; break;   /* EGL_BIND_TO_TEXTURE_RGBA */
+  case 0x303b: *value = 0; break;   /* EGL_MIN_SWAP_INTERVAL */
+  case 0x303c: *value = 1; break;   /* EGL_MAX_SWAP_INTERVAL */
+  case 0x303d: *value = 0; break;   /* EGL_LUMINANCE_SIZE */
+  case 0x303e: *value = 0; break;   /* EGL_ALPHA_MASK_SIZE */
+  case 0x303f: *value = 0x308E; break; /* EGL_COLOR_BUFFER_TYPE = EGL_RGB_BUFFER */
+  case 0x3040: *value = (g_es_major >= 3) ? 0x0044 : 0x0004; break; /* EGL_RENDERABLE_TYPE */
+  case 0x3042: *value = (g_es_major >= 3) ? 0x0044 : 0x0004; break; /* EGL_CONFORMANT */
   default:
     debugPrintf("egl_shim: GetConfigAttrib(0x%x) -> 0 (default)\n", attribute);
     *value = 0; break;

@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include "jni_shim.h"
 #include "util.h"
@@ -125,6 +127,47 @@ static void *make_jstring(const char *value) {
 static const char *resolve_jstring(void *jstr) {
   return jstr ? (const char *)jstr : "";
 }
+static void *reg_mid(const char *name, const char *sig);
+static char g_reflect_last_name[128];
+static char g_reflect_last_sig[192];
+static int jni_sig_like(const char *s) {
+  if (!s || !*s) return 0;
+  if (s[0] == '(' || s[0] == '[' || s[0] == 'L') return 1;
+  return s[1] == 0 && strchr("VZBCSIJFD", s[0]) != NULL;
+}
+static int jni_member_like(const char *s) {
+  if (!s || !*s || strlen(s) >= sizeof(g_reflect_last_name)) return 0;
+  if (!strcmp(s, "<init>")) return 1;
+  unsigned char c = (unsigned char)s[0];
+  if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_')) return 0;
+  for (const char *p = s; *p; p++) {
+    c = (unsigned char)*p;
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '_' || c == '$') continue;
+    return 0;
+  }
+  return 1;
+}
+static void jni_reflect_track_string(const char *s) {
+  if (!s || !*s) return;
+  if (jni_sig_like(s)) {
+    if (g_reflect_last_name[0]) {
+      snprintf(g_reflect_last_sig, sizeof g_reflect_last_sig, "%s", s);
+    }
+    return;
+  }
+  if (jni_member_like(s)) {
+    snprintf(g_reflect_last_name, sizeof g_reflect_last_name, "%s", s);
+    g_reflect_last_sig[0] = 0;
+  }
+}
+static void *jni_reflect_mid_from_last(const char *kind) {
+  if (!g_reflect_last_name[0] || !g_reflect_last_sig[0]) return NULL;
+  void *id = reg_mid(strdup(g_reflect_last_name), strdup(g_reflect_last_sig));
+  debugPrintf("jni_shim: %s inferred %s %s -> %p\n",
+              kind, g_reflect_last_name, g_reflect_last_sig, id);
+  return id;
+}
 /* jnibridge proxy: dados no topo (usados cedo), funções definidas abaixo (precisam
    de jni_find_native). Ver bloco "EXECUTA Runnables postados". */
 static struct { void *obj; long handle; } g_proxies[512];
@@ -216,6 +259,12 @@ static const char *mid_name(void *tag) {
   if ((char *)tag >= (char *)g_midreg &&
       (char *)tag < (char *)(g_midreg + 1024))
     return ((struct mid_entry *)tag)->name;
+  return NULL;
+}
+static const char *mid_sig(void *tag) {
+  if ((char *)tag >= (char *)g_midreg &&
+      (char *)tag < (char *)(g_midreg + 1024))
+    return ((struct mid_entry *)tag)->sig;
   return NULL;
 }
 
@@ -418,6 +467,85 @@ static struct astream *astream_find(void *h) {
   return NULL;
 }
 
+/* java.util.Scanner minimo para o boot.config:
+   new Scanner(InputStream,"UTF-8").useDelimiter("\\z").next(). */
+#define MAX_SCANNERS 16
+struct jscanner { void *stream; char *text; int consumed; };
+static struct jscanner g_scanners[MAX_SCANNERS];
+static int g_scanner_n;
+static struct jscanner *scanner_find(void *h) {
+  if ((char *)h >= (char *)g_scanners &&
+      (char *)h < (char *)(g_scanners + MAX_SCANNERS))
+    return (struct jscanner *)h;
+  return NULL;
+}
+static void *scanner_new(void *stream) {
+  int i = g_scanner_n++ % MAX_SCANNERS;
+  free(g_scanners[i].text);
+  g_scanners[i].text = NULL;
+  g_scanners[i].stream = stream;
+  g_scanners[i].consumed = 0;
+  debugPrintf("jni_shim: NewObject(Scanner stream=%p)\n", stream);
+  return &g_scanners[i];
+}
+static const char *scanner_next_text(void *obj) {
+  struct jscanner *sc = scanner_find(obj);
+  if (!sc) return "";
+  if (!sc->text) {
+    struct astream *s = astream_find(sc->stream);
+    if (!s || !s->fp) {
+      sc->text = strdup("");
+    } else {
+      long pos = ftell(s->fp);
+      if (pos < 0) pos = 0;
+      long left = s->size - pos;
+      if (left < 0) left = 0;
+      sc->text = (char *)malloc((size_t)left + 1);
+      if (!sc->text) return "";
+      size_t n = fread(sc->text, 1, (size_t)left, s->fp);
+      sc->text[n] = 0;
+    }
+  }
+  sc->consumed = 1;
+  debugPrintf("jni_shim: Scanner.next -> %zu bytes\n", strlen(sc->text));
+  return sc->text;
+}
+
+/* java.lang.StringBuilder minimo usado por Unity em paths Java de config/log. */
+#define MAX_BUILDERS 16
+struct jbuilder { char *buf; size_t len, cap; };
+static struct jbuilder g_builders[MAX_BUILDERS];
+static int g_builder_n;
+static struct jbuilder *builder_find(void *h) {
+  if ((char *)h >= (char *)g_builders &&
+      (char *)h < (char *)(g_builders + MAX_BUILDERS))
+    return (struct jbuilder *)h;
+  return NULL;
+}
+static void *builder_new(void) {
+  int i = g_builder_n++ % MAX_BUILDERS;
+  free(g_builders[i].buf);
+  g_builders[i].cap = 128;
+  g_builders[i].len = 0;
+  g_builders[i].buf = (char *)calloc(1, g_builders[i].cap);
+  debugPrintf("jni_shim: NewObject(StringBuilder)\n");
+  return &g_builders[i];
+}
+static void builder_append_raw(struct jbuilder *b, const char *s) {
+  if (!b || !s) return;
+  size_t n = strlen(s);
+  if (b->len + n + 1 > b->cap) {
+    size_t nc = b->cap ? b->cap : 128;
+    while (b->len + n + 1 > nc) nc *= 2;
+    char *p = (char *)realloc(b->buf, nc);
+    if (!p) return;
+    b->buf = p;
+    b->cap = nc;
+  }
+  memcpy(b->buf + b->len, s, n + 1);
+  b->len += n;
+}
+
 /* --- JNI byte-array functions --- */
 static void *jni_NewByteArray(void *env, int len) {
   (void)env;
@@ -482,6 +610,8 @@ static int g_bool_array_class;        /* boolean[].class fake */
 static struct { const char *name; int tag; } g_classreg[128];
 static int g_classreg_n = 0;
 int g_fmod_device_obj;   /* sentinela do org.fmod.FMODAudioDevice (NewObject/métodos do FMOD) */
+static void fmod_jni_pump_start(void *env);
+static void fmod_jni_pump_stop(void);
 static void *class_for(const char *name) {
   if (!name) name = "?";
   for (int i = 0; i < g_classreg_n; i++)
@@ -529,11 +659,26 @@ static void *jni_GetFieldID(void *env, void *clazz, const char *name,
   return reg_mid(name, sig);   /* registra por nome (DisplayMetrics fields) */
 }
 
+static void *jni_FromReflectedMethod(void *env, void *method) {
+  (void)env;
+  if (!mid_name(method)) {
+    void *mid = jni_reflect_mid_from_last("FromReflectedMethod");
+    if (mid) return mid;
+  }
+  debugPrintf("jni_shim: FromReflectedMethod(%s) -> %p\n",
+              mid_name(method) ? mid_name(method) : "?", method);
+  return method ? method : reg_mid("?", "");
+}
+
 static void *jni_FromReflectedField(void *env, void *field) {
   (void)env;
   if (getenv("TER_KBFIX") && field == &g_pressedstates_field_obj) {
     debugPrintf("[KBFIX] FromReflectedField -> PressedStates fieldID\n");
     return &g_pressedstates_field_id;
+  }
+  if (!mid_name(field)) {
+    void *fid = jni_reflect_mid_from_last("FromReflectedField");
+    if (fid) return fid;
   }
   return field;
 }
@@ -616,6 +761,35 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
   debugPrintf("jni_shim: CallObjectMethod(%s)\n", nm ? nm : "?");
   static int fake_obj;
   if (nm) {
+    struct jscanner *sc = scanner_find(obj);
+    if (sc) {
+      if (strcmp(nm, "useDelimiter") == 0) {
+        (void)va_arg(ap, void *);
+        return obj;
+      }
+      if (strcmp(nm, "next") == 0)
+        return make_jstring(scanner_next_text(obj));
+    }
+    struct jbuilder *jb = builder_find(obj);
+    if (jb) {
+      if (strcmp(nm, "append") == 0) {
+        const char *sig = mid_sig(methodID);
+        if (sig && strstr(sig, "(C)")) {
+          char tmp[2] = { (char)va_arg(ap, int), 0 };
+          builder_append_raw(jb, tmp);
+        } else if (sig && (strstr(sig, "(I)") || strstr(sig, "(Z)"))) {
+          char tmp[32];
+          snprintf(tmp, sizeof tmp, "%d", va_arg(ap, int));
+          builder_append_raw(jb, tmp);
+        } else {
+          void *arg = va_arg(ap, void *);
+          builder_append_raw(jb, resolve_jstring(arg));
+        }
+        return obj;
+      }
+      if (strcmp(nm, "toString") == 0)
+        return make_jstring(jb->buf ? jb->buf : "");
+    }
     if (getenv("TER_KBFIX")) {
       if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
         void *name_j = va_arg(ap, void *);
@@ -764,8 +938,18 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
        senão o default. Faz o round-trip do save funcionar (era sempre default). */
     if (strcmp(nm, "getString") == 0) {
       void *keystr = va_arg(ap, void *);
-      void *defstr = va_arg(ap, void *);
       const char *key = resolve_jstring(keystr);
+      /* 🔑 UNITYARGS: Bundle do Intent — a libunity 2018.4 lê a command line de
+         getIntent().getExtras().getString("unity") (o /proc/self/cmdline NUNCA é lido).
+         É o ÚNICO canal pro -force-gfx-direct (single-thread gfx) chegar na engine.
+         Bundle.getString(key) tem 1 arg só — retornar ANTES do va_arg do default. */
+      if (key && strcmp(key, "unity") == 0 && !getenv("CVGOS_NOUNITYARGS")) {
+        const char *ga = getenv("CUP_GFXARGS");
+        if (!ga || !*ga) ga = "-force-gfx-direct -force-gles20";
+        debugPrintf("[UNITYARGS] Bundle.getString(unity) -> \"%s\"\n", ga);
+        return make_jstring(ga);
+      }
+      void *defstr = va_arg(ap, void *);
       /* CUP_NOFX: força o jogo a CARREGAR settings com PÓS-PROCESSAMENTO OFF
          (chromaticAberration/noise/blur) — esses efeitos usam FBO/render-to-texture
          que TRAVAM o GPU Mali Utgard no carregamento do título. */
@@ -789,6 +973,8 @@ static void *jni_CallObjectMethodV(void *env, void *obj, void *methodID,
       /* Bundle.getString(key) [metaData, 1 arg] de chave ausente -> NULL (nao o "default"
          lido como va_arg LIXO -> "4}" -> excecao no jogo). Chaves de metaData sao
          property-style (com pontos: "com.samsung...vr.application.mode"). */
+      if (key && strcmp(key, "com.samsung.android.vr.application.mode") == 0)
+        return make_jstring("");
       if (key && (strstr(key, "vr.application") || strstr(key, "com.samsung") ||
                   strstr(key, "com.oculus") || strstr(key, "com.google.")))
         return NULL;
@@ -827,6 +1013,18 @@ static void *jni_CallObjectMethod(void *env, void *obj, void *methodID, ...) {
 static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const jvalue *args) {
   (void)env;
   const char *nm = mid_name(methodID);
+  if (nm) {
+    if (strcmp(nm, "getFilesDir") == 0 || strcmp(nm, "getExternalFilesDir") == 0 ||
+        strcmp(nm, "getCacheDir") == 0 || strcmp(nm, "getExternalCacheDir") == 0 ||
+        strcmp(nm, "getDataDir") == 0 || strcmp(nm, "getExternalStorageDirectory") == 0 ||
+        strcmp(nm, "getPath") == 0 || strcmp(nm, "getAbsolutePath") == 0 ||
+        strcmp(nm, "getCanonicalPath") == 0)
+      return make_jstring("/storage/roms/ports/cvgos/userdata");
+    if (strcmp(nm, "getPackageName") == 0)
+      return make_jstring(g_package_name);
+    if (strcmp(nm, "toString") == 0)
+      return make_jstring("");
+  }
   if (nm && getenv("TER_KBFIX")) {
     if (strcmp(nm, "getField") == 0 || strcmp(nm, "getDeclaredField") == 0) {
       const char *fnm = args ? resolve_jstring(args[0].l) : "";
@@ -863,13 +1061,20 @@ static void *jni_CallObjectMethodA(void *env, void *obj, void *methodID, const j
  * Robusto contra o bug do CallBooleanMethodV (args via va_list, não parseáveis aqui). */
 static volatile int g_gles_warn_skip;
 static volatile int g_internet_deny_arm;  /* ver NewStringUTF/CallIntMethod (INTERNET denied) */
+static volatile int g_storage_dialog_skip; /* NewStringUTF(msg storage) -> pula o AlertDialog */
 
 /* CallBooleanMethod V (index 38) — lê args via va_list (variante que il2cpp usa) */
 static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
                                             void *methodID, va_list ap) {
-  (void)obj;
+  (void)env;
   const char *nm = mid_name(methodID);
+  if (obj == &g_fmod_device_obj) {
+    debugPrintf("jni_shim: FMODAudioDevice.%s -> true\n", nm ? nm : "?");
+    return 1;
+  }
   if (nm) {
+    struct jscanner *sc = scanner_find(obj);
+    if (sc && strcmp(nm, "hasNext") == 0) return sc->consumed ? 0 : 1;
     if (getenv("TER_REFLOG") && (strstr(nm,"isArray")||strstr(nm,"isPrimitive")||strstr(nm,"isAssign"))) {
       static int bn=0; if (bn++<40) debugPrintf("[REFLOG-bool] %s -> 0\n", nm);
     }
@@ -882,6 +1087,16 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
       void *r = va_arg(ap, void *);
       if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
       return 1;
+    }
+    /* 🔑 UNITYARGS: Bundle.containsKey("unity") — gate da leitura da command line
+       nativa (libunity só chama getString("unity") se containsKey devolver true).
+       Antes devolvia 0 no fallback -> a engine NUNCA lia os gfx-args. */
+    if (strcmp(nm, "containsKey") == 0) {
+      void *keyo = va_arg(ap, void *);
+      const char *key = resolve_jstring(keyo);
+      int has = (key && strcmp(key, "unity") == 0 && !getenv("CVGOS_NOUNITYARGS"));
+      debugPrintf("[UNITYARGS] containsKey('%s') -> %d\n", key ? key : "?", has);
+      return (unsigned char)has;
     }
     /* SharedPreferences.contains(key) -> 1 se ARMAZENADO (round-trip do save). */
     if (strcmp(nm, "contains") == 0) {
@@ -998,6 +1213,28 @@ static jint jni_CallIntMethod(void *env, void *obj, void *methodID, ...) {
 static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap) {
   const char *nm = mid_name(methodID);
   debugPrintf("jni_shim: CallVoidMethod(%s)\n", nm ? nm : "?");
+  if (obj == &g_fmod_device_obj && nm) {
+    if (strcmp(nm, "start") == 0) {
+      fmod_jni_pump_start(env);
+      return;
+    }
+    if (strcmp(nm, "stop") == 0 || strcmp(nm, "close") == 0 ||
+        strcmp(nm, "stopAudioRecord") == 0) {
+      if (getenv("CVGOS_FMOD_STOP_ON_CLOSE")) fmod_jni_pump_stop();
+      else debugPrintf("jni_shim: FMODAudioDevice.%s ignorado; pump fica vivo\n", nm);
+      return;
+    }
+  }
+  if (nm && strcmp(nm, "close") == 0) {
+    struct jscanner *sc = scanner_find(obj);
+    if (sc) {
+      struct astream *s = astream_find(sc->stream);
+      if (s && s->fp) { fclose(s->fp); s->fp = NULL; }
+      return;
+    }
+    struct astream *s = astream_find(obj);
+    if (s && s->fp) { fclose(s->fp); s->fp = NULL; return; }
+  }
   if (nm && strcmp(nm, "showSoftInput") == 0) {
     void *text_j = va_arg(ap, void *);
     (void)va_arg(ap, int); /* keyboardType */
@@ -1033,6 +1270,11 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID, va_list ap
   if (nm && (strcmp(nm, "runOnUiThread") == 0 || strcmp(nm, "post") == 0 ||
              strcmp(nm, "postAtFrontOfQueue") == 0)) {
     void *r = va_arg(ap, void *);
+    if (g_storage_dialog_skip && !getenv("CVGOS_SHOW_STORAGE_DIALOG")) {
+      g_storage_dialog_skip = 0;
+      debugPrintf("[CVGOS] AlertDialog de storage suprimido (r=%p)\n", r);
+      return;
+    }
     /* roda o Runnable via invoke do jnibridge (handle lido pela variante V correta).
        CUP_NORUNUI desliga. */
     if (!getenv("CUP_NORUNUI")) run_runnable(env, r);
@@ -1111,18 +1353,43 @@ static void *jni_CallStaticObjectMethodV(void *env, void *clazz,
     void *arg0 = va_arg(ap, void *);
     return arg0;
   }
-  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
+  if (nm && !strcmp(nm, "getConstructorID")) {
+    (void)va_arg(ap, void *);          /* Class */
+    void *sig_j = va_arg(ap, void *);
+    const char *sig = resolve_jstring(sig_j);
+    void *mid = reg_mid("<init>", sig);
+    debugPrintf("jni_shim: ReflectionHelper.getConstructorID(%s) -> %p\n",
+                sig ? sig : "", mid);
+    return mid;
+  }
+  if (nm && !strcmp(nm, "getMethodID")) {
     (void)va_arg(ap, void *);          /* Class */
     void *name_j = va_arg(ap, void *);
     void *sig_j = va_arg(ap, void *);
     (void)va_arg(ap, int);             /* isStatic */
     const char *fnm = resolve_jstring(name_j);
     const char *sig = resolve_jstring(sig_j);
-    if (fnm && !strcmp(fnm, "PressedStates")) {
+    void *mid = reg_mid(fnm, sig);
+    debugPrintf("jni_shim: ReflectionHelper.getMethodID(%s, %s) -> %p\n",
+                fnm ? fnm : "", sig ? sig : "", mid);
+    return mid;
+  }
+  if (nm && !strcmp(nm, "getFieldID")) {
+    (void)va_arg(ap, void *);          /* Class */
+    void *name_j = va_arg(ap, void *);
+    void *sig_j = va_arg(ap, void *);
+    (void)va_arg(ap, int);             /* isStatic */
+    const char *fnm = resolve_jstring(name_j);
+    const char *sig = resolve_jstring(sig_j);
+    if (getenv("TER_KBFIX") && fnm && !strcmp(fnm, "PressedStates")) {
       debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
                   sig ? sig : "");
       return &g_pressedstates_field_obj;
     }
+    void *fid = reg_mid(fnm, sig);
+    debugPrintf("jni_shim: ReflectionHelper.getFieldID(%s, %s) -> %p\n",
+                fnm ? fnm : "", sig ? sig : "", fid);
+    return fid;
   }
   if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldSignature")) {
     void *field = va_arg(ap, void *);
@@ -1164,14 +1431,33 @@ static void *jni_CallStaticObjectMethod(void *env, void *clazz, void *methodID, 
 static void *jni_CallStaticObjectMethodA(void *env, void *clazz, void *methodID, const jvalue *args) {
   (void)env; (void)clazz;
   const char *nm = mid_name(methodID);
-  if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldID")) {
+  if (nm && !strcmp(nm, "getConstructorID")) {
+    const char *sig = args ? resolve_jstring(args[1].l) : "";
+    void *mid = reg_mid("<init>", sig);
+    debugPrintf("jni_shim: ReflectionHelper.getConstructorIDA(%s) -> %p\n",
+                sig ? sig : "", mid);
+    return mid;
+  }
+  if (nm && !strcmp(nm, "getMethodID")) {
     const char *fnm = args ? resolve_jstring(args[1].l) : "";
     const char *sig = args ? resolve_jstring(args[2].l) : "";
-    if (fnm && !strcmp(fnm, "PressedStates")) {
+    void *mid = reg_mid(fnm, sig);
+    debugPrintf("jni_shim: ReflectionHelper.getMethodIDA(%s, %s) -> %p\n",
+                fnm ? fnm : "", sig ? sig : "", mid);
+    return mid;
+  }
+  if (nm && !strcmp(nm, "getFieldID")) {
+    const char *fnm = args ? resolve_jstring(args[1].l) : "";
+    const char *sig = args ? resolve_jstring(args[2].l) : "";
+    if (getenv("TER_KBFIX") && fnm && !strcmp(fnm, "PressedStates")) {
       debugPrintf("[KBFIX] ReflectionHelper.getFieldID(PressedStates, %s) -> field fake\n",
                   sig ? sig : "");
       return &g_pressedstates_field_obj;
     }
+    void *fid = reg_mid(fnm, sig);
+    debugPrintf("jni_shim: ReflectionHelper.getFieldIDA(%s, %s) -> %p\n",
+                fnm ? fnm : "", sig ? sig : "", fid);
+    return fid;
   }
   if (getenv("TER_KBFIX") && nm && !strcmp(nm, "getFieldSignature")) {
     void *field = args ? args[0].l : NULL;
@@ -1252,10 +1538,9 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
   (void)env;
   (void)clazz;
   const char *nm = mid_name(fieldID);
-  if (getenv("TER_KBFIX") &&
-      (fieldID == &g_current_activity_field_id ||
-       (nm && strcmp(nm, "currentActivity") == 0))) {
-    debugPrintf("[KBFIX] GetStaticObjectField(currentActivity) -> activity fake\n");
+  if (fieldID == &g_current_activity_field_id ||
+      (nm && strcmp(nm, "currentActivity") == 0)) {
+    debugPrintf("jni_shim: GetStaticObjectField(currentActivity) -> activity fake\n");
     return &g_current_activity;
   }
   /* constantes String do AudioManager: devolver o NOME como valor p/ getProperty
@@ -1296,6 +1581,7 @@ static void *jni_GetStaticObjectField(void *env, void *clazz, void *fieldID) {
 static void *jni_NewStringUTF(void *env, const char *str) {
   (void)env;
   debugPrintf("jni_shim: NewStringUTF(%s)\n", str ? str : "(null)");
+  jni_reflect_track_string(str);
   /* arma o skip do aviso GLES p/ o próximo getBoolean (ver g_gles_warn_skip) */
   if (str && strstr(str, "gles-api-check")) g_gles_warn_skip = 1;
   /* arma INTERNET=DENIED p/ o próximo checkPermission → Unity Analytics pula o fluxo
@@ -1303,6 +1589,10 @@ static void *jni_NewStringUTF(void *env, const char *str) {
      CUP_INETOK reabilita (= granted). */
   if (str && strstr(str, "permission.INTERNET") && !getenv("CUP_INETOK"))
     g_internet_deny_arm = 1;
+  if (str && strcmp(str, "Not enough storage space to install required resources.") == 0) {
+    g_storage_dialog_skip = 1;
+    debugPrintf("[CVGOS] storage dialog armado lr=%p\n", __builtin_return_address(0));
+  }
   return make_jstring(str ? str : "");
 }
 
@@ -1311,6 +1601,47 @@ static jint jni_GetStringUTFLength(void *env, void *jstr) {
   (void)env;
   const char *s = resolve_jstring(jstr);
   return (jint)strlen(s);
+}
+
+/* ---- UTF-16 string API (índices 163-166) — ANTES eram jni_stub (=0) -> a Unity lia o
+ * persistentDataPath como UTF-16 via GetStringChars/GetStringLength e pegava NULL/0, o que
+ * corrompia o processamento nativo do path (recursão/stack-overflow no GfxDevice init). Nossa
+ * jstring é um char* UTF-8/ASCII; convertemos zero-estendendo (paths são ASCII). ---- */
+typedef unsigned short jchar_t;
+/* NewString (index 163): UTF-16 jchar[len] -> nossa jstring (char* UTF-8/ASCII) */
+static void *jni_NewString(void *env, const jchar_t *unicode, jint len) {
+  (void)env;
+  if (!unicode || len < 0) return make_jstring("");
+  char *buf = (char *)malloc((size_t)len + 1);
+  if (!buf) return make_jstring("");
+  int n = 0;
+  for (jint i = 0; i < len; i++) { jchar_t c = unicode[i]; buf[n++] = (c < 0x80) ? (char)c : '?'; }
+  buf[n] = 0;
+  void *js = make_jstring(buf);
+  free(buf);
+  return js;
+}
+/* GetStringLength (index 164): nº de code units UTF-16 (== strlen p/ ASCII) */
+static jint jni_GetStringLength(void *env, void *jstr) {
+  (void)env;
+  return (jint)strlen(resolve_jstring(jstr));
+}
+/* GetStringChars (index 165): aloca jchar[len+1] zero-estendido, null-terminado */
+static const jchar_t *jni_GetStringChars(void *env, void *jstr, void *isCopy) {
+  (void)env;
+  const char *s = resolve_jstring(jstr);
+  size_t len = strlen(s);
+  jchar_t *out = (jchar_t *)malloc((len + 1) * sizeof(jchar_t));
+  if (!out) { if (isCopy) *(unsigned char *)isCopy = 1; return NULL; }
+  for (size_t i = 0; i < len; i++) out[i] = (jchar_t)(unsigned char)s[i];
+  out[len] = 0;
+  if (isCopy) *(unsigned char *)isCopy = 1;
+  return out;
+}
+/* ReleaseStringChars (index 166) */
+static void jni_ReleaseStringChars(void *env, void *jstr, const jchar_t *chars) {
+  (void)env; (void)jstr;
+  if (chars) free((void *)chars);
 }
 
 /* GetStringUTFChars (index 169) */
@@ -1362,8 +1693,8 @@ static unsigned char jni_IsInstanceOf(void *env, void *obj, void *clazz) {
 static unsigned char jni_IsSameObject(void *env, void *a, void *b) {
   (void)env; return a == b;
 }
-/* CallLongMethod V — getEventTime/getDownTime do KeyEvent (retornam long) */
-static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap) {
+/* CallLongMethod V — JNI jlong é 64-bit mesmo no ARM32. */
+static int64_t jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap) {
   (void)env; (void)ap;
   if (obj == (void *)&g_long_box_sentinel) return g_doframe_nanos;  /* Long.longValue() do doFrame */
   const char *nm = mid_name(methodID);
@@ -1383,9 +1714,9 @@ static long jni_CallLongMethodV(void *env, void *obj, void *methodID, va_list ap
   }
   return 0;
 }
-static long jni_CallLongMethod(void *env, void *obj, void *methodID, ...) {
+static int64_t jni_CallLongMethod(void *env, void *obj, void *methodID, ...) {
   va_list ap; va_start(ap, methodID);
-  long r = jni_CallLongMethodV(env, obj, methodID, ap);
+  int64_t r = jni_CallLongMethodV(env, obj, methodID, ap);
   va_end(ap);
   return r;
 }
@@ -1623,8 +1954,82 @@ static long jni_GetDirectBufferCapacity(void *env, void *buf) {
    um device fake não-nulo + métodos (start/etc.) OK; a thread C (fmod_audio_thread) bombeia
    fmodProcess no lugar da thread Java. */
 void *jni_fmod_device(void) { return &g_fmod_device_obj; }
-static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
-  (void)env; (void)mid;
+static volatile int g_fmod_pump_run;
+static volatile int g_fmod_pump_started;
+static pthread_t g_fmod_pump_thread;
+
+static void *fmod_jni_pump_thread(void *arg) {
+  void *env = arg;
+  void *bb = jni_fmod_bytebuffer();
+  unsigned long n = 0, ok = 0;
+  debugPrintf("[FMODPUMP] thread iniciada\n");
+  while (g_fmod_pump_run) {
+    void *fp = jni_find_native("fmodProcess");
+    if (!fp) {
+      usleep(10000);
+      continue;
+    }
+    int r = ((int (*)(void *, void *, void *))fp)(env, &g_fmod_device_obj, bb);
+    if (r == 0) ok++;
+    if (n < 12 || n % 300 == 0)
+      debugPrintf("[FMODPUMP] fmodProcess #%lu -> %d (ok=%lu)\n", n, r, ok);
+    n++;
+    usleep(10000);
+  }
+  debugPrintf("[FMODPUMP] thread finalizada\n");
+  return NULL;
+}
+
+static void fmod_jni_pump_start(void *env) {
+  if (getenv("CVGOS_NOFMODPUMP")) {
+    debugPrintf("[FMODPUMP] desativado por CVGOS_NOFMODPUMP\n");
+    return;
+  }
+  if (g_fmod_pump_started) {
+    debugPrintf("[FMODPUMP] start ignorado: ja ativo\n");
+    return;
+  }
+  g_fmod_pump_run = 1;
+  if (pthread_create(&g_fmod_pump_thread, NULL, fmod_jni_pump_thread, env) == 0) {
+    pthread_detach(g_fmod_pump_thread);
+    g_fmod_pump_started = 1;
+    debugPrintf("[FMODPUMP] start: thread criada\n");
+  } else {
+    g_fmod_pump_run = 0;
+    debugPrintf("[FMODPUMP] start: pthread_create falhou\n");
+  }
+}
+
+static void fmod_jni_pump_stop(void) {
+  g_fmod_pump_run = 0;
+  g_fmod_pump_started = 0;
+  debugPrintf("[FMODPUMP] stop solicitado\n");
+}
+
+static void *jni_NewObject_common(void *clazz, void *mid, va_list *ap, const jvalue *args) {
+  const char *nm = mid_name(mid);
+  if (clazz == class_for("java/util/Scanner") && nm && strcmp(nm, "<init>") == 0) {
+    void *stream = NULL;
+    if (args) {
+      stream = args[0].l;
+    } else if (ap) {
+      stream = va_arg(*ap, void *);
+      (void)va_arg(*ap, void *); /* charset */
+    }
+    return scanner_new(stream);
+  }
+  if (clazz == class_for("java/lang/StringBuilder") && nm && strcmp(nm, "<init>") == 0) {
+    void *b = builder_new();
+    if (args && args[0].l) builder_append_raw(builder_find(b), resolve_jstring(args[0].l));
+    else if (ap) {
+      const char *sig = mid_sig(mid);
+      if (sig && strstr(sig, "Ljava/lang/String;")) {
+        void *s = va_arg(*ap, void *);
+        builder_append_raw(builder_find(b), resolve_jstring(s));
+      }
+    }
+    return b;
+  }
   if (clazz == class_for("org/fmod/FMODAudioDevice")) {
     debugPrintf("jni_shim: NewObject(FMODAudioDevice) -> device fake\n"); return &g_fmod_device_obj;
   }
@@ -1634,14 +2039,35 @@ static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
   if (getenv("CVGOS_SAFEOBJ")) { static char safe[8192]; return safe; }
   return NULL;   /* comportamento atual (jni_stub=0) p/ as demais classes — sem regressão */
 }
-static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){ (void)ap; return jni_NewObject(env,clazz,mid); }
-static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args){ (void)args; return jni_NewObject(env,clazz,mid); }
+static void *jni_NewObject(void *env, void *clazz, void *mid, ...) {
+  (void)env;
+  va_list ap; va_start(ap, mid);
+  void *r = jni_NewObject_common(clazz, mid, &ap, NULL);
+  va_end(ap);
+  return r;
+}
+static void *jni_NewObjectV(void *env, void *clazz, void *mid, va_list ap){
+  (void)env;
+  va_list cp; va_copy(cp, ap);
+  void *r = jni_NewObject_common(clazz, mid, &cp, NULL);
+  va_end(cp);
+  return r;
+}
+static void *jni_NewObjectA(void *env, void *clazz, void *mid, void *args){
+  (void)env;
+  return jni_NewObject_common(clazz, mid, NULL, (const jvalue *)args);
+}
 
 /* GetJavaVM (index 219) — initJni chama isso */
 static jint jni_GetJavaVM(void *env, void **vm) {
   (void)env;
   debugPrintf("jni_shim: GetJavaVM -> nossa VM\n");
   *vm = &java_vm_ptr;   /* mesma JavaVM passada no out_vm */
+  return 0;
+}
+static jint jni_UnregisterNatives(void *env, void *clazz) {
+  (void)env; (void)clazz;
+  debugPrintf("jni_shim: UnregisterNatives -> OK\n");
   return 0;
 }
 
@@ -1666,6 +2092,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
    *   0-3:   reserved
    *   4:     GetVersion
    *   6:     FindClass
+   *   7:     FromReflectedMethod
    *   8:     FromReflectedField
    *  15:     ExceptionOccurred
    *  17:     ExceptionClear
@@ -1697,8 +2124,10 @@ void jni_shim_init(void **out_vm, void **out_env) {
    */
   jni_env_vtable[4] = (uintptr_t)jni_GetVersion;
   jni_env_vtable[6] = (uintptr_t)jni_FindClass;
+  jni_env_vtable[7] = (uintptr_t)jni_FromReflectedMethod;
   jni_env_vtable[8] = (uintptr_t)jni_FromReflectedField;
   jni_env_vtable[215] = (uintptr_t)jni_RegisterNatives;  /* recon: Unity */
+  jni_env_vtable[216] = (uintptr_t)jni_UnregisterNatives;
   jni_env_vtable[219] = (uintptr_t)jni_GetJavaVM;        /* recon: Unity initJni */
   /* AssetManager bridge: byte-array functions */
   jni_env_vtable[171] = (uintptr_t)jni_GetArrayLength_real;
@@ -1756,6 +2185,10 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[144] = (uintptr_t)jni_GetStaticFieldID;
   jni_env_vtable[145] = (uintptr_t)jni_GetStaticObjectField;
   jni_env_vtable[150] = (uintptr_t)jni_GetStaticIntField;
+  jni_env_vtable[163] = (uintptr_t)jni_NewString;          /* UTF-16 (era jni_stub=0) */
+  jni_env_vtable[164] = (uintptr_t)jni_GetStringLength;    /* UTF-16 len (era 0 -> path corrompia) */
+  jni_env_vtable[165] = (uintptr_t)jni_GetStringChars;     /* UTF-16 chars (era NULL) */
+  jni_env_vtable[166] = (uintptr_t)jni_ReleaseStringChars;
   jni_env_vtable[167] = (uintptr_t)jni_NewStringUTF;
   jni_env_vtable[168] = (uintptr_t)jni_GetStringUTFLength;
   jni_env_vtable[169] = (uintptr_t)jni_GetStringUTFChars;

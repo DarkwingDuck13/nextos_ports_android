@@ -135,6 +135,7 @@ static AudioPlayer g_players[MAX_PLAYERS];
 static pthread_mutex_t g_players_lock = PTHREAD_MUTEX_INITIALIZER;
 static SDL_AudioDeviceID g_audio_dev = 0;
 static int g_audio_initialized = 0;
+static int g_audio_drain_only = 0;
 
 static void queue_reset(AudioPlayer *p) {
   memset(p->queued_sizes, 0, sizeof(p->queued_sizes));
@@ -461,6 +462,19 @@ int opensles_shim_engine_active(void) { return g_audio_initialized && g_audio_de
  * OpenSL: callbacks numa thread de áudio); o hook do render loop vira no-op. */
 static void pump_callbacks_impl(void);
 static volatile int g_pump_thread_on;
+static void *sl_pump_thread(void *arg);
+static void start_pump_thread_once(void) {
+  if (!getenv("CVGOS_SL_PUMP")) {
+    static int warned;
+    if (!warned++) fprintf(stderr, "[SL] pump thread pulada (CVGOS_SL_PUMP ativa)\n");
+    return;
+  }
+  if (!g_pump_thread_on) {
+    g_pump_thread_on = 1;
+    pthread_t pt; pthread_create(&pt, NULL, sl_pump_thread, NULL);
+    pthread_detach(pt);
+  }
+}
 static void *sl_pump_thread(void *arg) {
   (void)arg;
   fprintf(stderr, "[SL] pump thread ativa (4ms)\n");
@@ -486,19 +500,22 @@ static void ensure_audio_initialized(void) {
     fprintf(stderr, "[SL] SDL_OpenAudioDevice FALHOU: %s (driver=%s)\n",
             SDL_GetError(), SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?");
     g_audio_initialized = 1;
+    g_audio_drain_only = 1;
+    start_pump_thread_once();
     return;
   }
 
   fprintf(stderr, "[SL] SDL audio aberto: %dHz %dch %d samples (driver=%s)\n",
           have.freq, have.channels, have.samples,
           SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?");
-  SDL_PauseAudioDevice(g_audio_dev, 0);
-  g_audio_initialized = 1;
-  if (!g_pump_thread_on) {
-    g_pump_thread_on = 1;
-    pthread_t pt; pthread_create(&pt, NULL, sl_pump_thread, NULL);
-    pthread_detach(pt);
+  if (getenv("CVGOS_SL_REAL_AUDIO")) {
+    SDL_PauseAudioDevice(g_audio_dev, 0);
+  } else {
+    g_audio_drain_only = 1;
+    fprintf(stderr, "[SL] SDL pause pulado; modo drain/no-audio (CVGOS_SL_REAL_AUDIO ativa som real)\n");
   }
+  g_audio_initialized = 1;
+  start_pump_thread_once();
 }
 
 /* Reset player metadata without touching the 4MB ring buffer.
@@ -1115,6 +1132,11 @@ static void pump_callbacks_impl(void) {
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
 
     uint32_t readable = ring_readable(p);
+    if (g_audio_drain_only && readable) {
+      queue_consume(p, readable);
+      p->ring_tail = p->ring_head;
+      readable = 0;
+    }
     uint32_t callback_threshold = p->last_enqueue_size;
     if (callback_threshold == 0 || callback_threshold > (RING_BUFFER_SIZE / 2)) {
       callback_threshold = RING_BUFFER_SIZE / 4;

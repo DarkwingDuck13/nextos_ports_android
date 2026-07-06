@@ -147,10 +147,50 @@ static void patch_pthread_shim(void) {
 
 /* ---------- crash handler (arm64) ---------- */
 static uintptr_t g_unity_base, g_il2cpp_base, g_unity_data;
+static uintptr_t g_il2cpp_text_size;
 static uintptr_t g_i2heap_base, g_i2heap_size;
+static uintptr_t g_cvgos_fake_thread_obj[8] __attribute__((aligned(8)));
+static uintptr_t g_cvgos_fake_thread_internal[64] __attribute__((aligned(8)));
 /* exposto p/ pthread_fake.c (TER_JOBLOG: symbolizar start_routine dos workers) */
 uintptr_t ter_unity_base(void) { return g_unity_base; }
 uintptr_t ter_il2cpp_base(void) { return g_il2cpp_base; }
+
+static void cvgos_patch_thread_current(void *managed_thread) {
+  if (!g_il2cpp_base || getenv("CVGOS_NO_THREADCURRENT_PATCH")) return;
+  if (!managed_thread) {
+    memset(g_cvgos_fake_thread_obj, 0, sizeof g_cvgos_fake_thread_obj);
+    memset(g_cvgos_fake_thread_internal, 0, sizeof g_cvgos_fake_thread_internal);
+    g_cvgos_fake_thread_obj[2] = (uintptr_t)g_cvgos_fake_thread_internal;       /* Thread.m_InternalThread */
+    g_cvgos_fake_thread_internal[0x70 / sizeof(uintptr_t)] = 1;                 /* ManagedThreadId */
+    managed_thread = g_cvgos_fake_thread_obj;
+  }
+  uintptr_t p = g_il2cpp_base + 0x129aab4;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  void *pa = (void *)(p & ~((uintptr_t)pgsz - 1));
+  mprotect(pa, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *w = (uint32_t *)p;
+  w[0] = 0xe59f0000u;                       /* ldr r0, [pc, #0] */
+  w[1] = 0xe12fff1eu;                       /* bx lr */
+  w[2] = (uint32_t)(uintptr_t)managed_thread;
+  mprotect(pa, pgsz, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)p, (char *)p + 12);
+  fprintf(stderr, "[CVGOS] Thread.get_CurrentThread -> %p%s\n",
+          managed_thread, managed_thread == (void *)g_cvgos_fake_thread_obj ? " (fake)" : " (managed)");
+  dbg_sync();
+}
+
+static void cvgos_patch_runtime_type_cctor(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NO_RUNTIMETYPE_PATCH")) return;
+  uintptr_t p = g_il2cpp_base + 0x122a338;       /* System.RuntimeType$$.cctor */
+  long pgsz = sysconf(_SC_PAGESIZE);
+  void *pa = (void *)(p & ~((uintptr_t)pgsz - 1));
+  mprotect(pa, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)p = 0xe12fff1eu;                  /* bx lr */
+  mprotect(pa, pgsz, PROT_READ | PROT_EXEC);
+  __builtin___clear_cache((char *)p, (char *)p + 4);
+  fprintf(stderr, "[CVGOS] System.RuntimeType::.cctor -> bx lr\n");
+  dbg_sync();
+}
 
 /* TER_INLINETASK: FINGE a conclusão do per-object future-task NA MAIN. A main constrói o future
    (0x2f3680), submete o functor a um pool, e espera em 0x2f37a4 que um worker rode o functor e
@@ -309,9 +349,48 @@ extern size_t text_size;
  * async-signal-safe e re-faulta no handler). Buffer estático grande o bastante. */
 static char g_maps_buf[64 * 1024];
 static int g_maps_len;
+struct map_ent { uintptr_t lo, hi; char perm[5]; const char *line; int len; };
+static struct map_ent g_maps_ent[512];
+static int g_maps_n, g_maps_last;
+static int maps_hex(int c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  c |= 32;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+static void maps_parse_snapshot(void) {
+  g_maps_n = 0;
+  g_maps_last = 0;
+  const char *s = g_maps_buf, *end = g_maps_buf + g_maps_len;
+  while (s < end && g_maps_n < (int)(sizeof g_maps_ent / sizeof g_maps_ent[0])) {
+    const char *eol = s; while (eol < end && *eol && *eol != '\n') eol++;
+    uintptr_t lo = 0, hi = 0; const char *q = s;
+    int ok = 1, v;
+    while (q < eol && *q != '-') {
+      v = maps_hex((unsigned char)*q++);
+      if (v < 0) { ok = 0; break; }
+      lo = (lo << 4) | (uintptr_t)v;
+    }
+    if (ok && q < eol && *q == '-') q++; else ok = 0;
+    while (ok && q < eol && *q != ' ') {
+      v = maps_hex((unsigned char)*q++);
+      if (v < 0) { ok = 0; break; }
+      hi = (hi << 4) | (uintptr_t)v;
+    }
+    if (ok && q < eol && *q == ' ' && hi > lo) {
+      struct map_ent *m = &g_maps_ent[g_maps_n++];
+      m->lo = lo; m->hi = hi; m->line = s;
+      m->len = (int)(eol - s); if (m->len > 255) m->len = 255;
+      const char *pp = q + 1;
+      for (int i = 0; i < 4; i++) m->perm[i] = (pp + i < eol) ? pp[i] : 0;
+      m->perm[4] = 0;
+    }
+    s = (eol < end && *eol == '\n') ? eol + 1 : eol;
+  }
+}
 static void maps_snapshot(void) {
   int fd = open("/proc/self/maps", O_RDONLY);
-  g_maps_len = 0;
+  g_maps_len = 0; g_maps_n = 0; g_maps_last = 0;
   if (fd < 0) return;
   int n; char *p = g_maps_buf;
   while (g_maps_len < (int)sizeof(g_maps_buf) - 1 &&
@@ -319,25 +398,26 @@ static void maps_snapshot(void) {
     g_maps_len += n;
   g_maps_buf[g_maps_len] = 0;
   close(fd);
+  maps_parse_snapshot();
 }
 /* acha a linha de maps que contém 'a'; preenche lo/hi/perm; retorna ptr p/ a linha
  * (NUL-terminada temporariamente) ou NULL. Parse manual sobre o snapshot. */
 static const char *maps_find(uintptr_t a, uintptr_t *lo_o, uintptr_t *hi_o, char perm_o[5]) {
-  const char *s = g_maps_buf;
-  while (s < g_maps_buf + g_maps_len) {
-    const char *eol = s; while (*eol && *eol != '\n') eol++;
-    uintptr_t lo = 0, hi = 0; const char *q = s;
-    while (*q && *q != '-') { lo = lo * 16 + (*q <= '9' ? *q - '0' : (*q | 32) - 'a' + 10); q++; }
-    if (*q == '-') q++;
-    while (*q && *q != ' ') { hi = hi * 16 + (*q <= '9' ? *q - '0' : (*q | 32) - 'a' + 10); q++; }
-    if (a >= lo && a < hi) {
-      if (lo_o) *lo_o = lo; if (hi_o) *hi_o = hi;
-      if (perm_o) { const char *pp = q + 1; for (int i = 0; i < 4; i++) perm_o[i] = pp[i]; perm_o[4] = 0; }
-      static char line[256]; int len = (int)(eol - s); if (len > 255) len = 255;
-      for (int i = 0; i < len; i++) line[i] = s[i]; line[len] = 0;
+  if (!g_maps_n && g_maps_len) maps_parse_snapshot();
+  int start = (g_maps_last >= 0 && g_maps_last < g_maps_n) ? g_maps_last : 0;
+  for (int pass = 0; pass < 2; pass++) {
+    int b = pass ? 0 : start, e = pass ? start : g_maps_n;
+    for (int i = b; i < e; i++) {
+      struct map_ent *m = &g_maps_ent[i];
+      if (a < m->lo || a >= m->hi) continue;
+      g_maps_last = i;
+      if (lo_o) *lo_o = m->lo; if (hi_o) *hi_o = m->hi;
+      if (perm_o) { for (int k = 0; k < 5; k++) perm_o[k] = m->perm[k]; }
+      static char line[256];
+      for (int k = 0; k < m->len; k++) line[k] = m->line[k];
+      line[m->len] = 0;
       return line;
     }
-    s = (*eol == '\n') ? eol + 1 : eol;
   }
   return NULL;
 }
@@ -413,9 +493,235 @@ static unsigned long mc_reg(const mcontext_t *m, int n) {
   default: return 0;  /* arm64-only (x16..x30) inexistente no armv7 */
   }
 }
+static size_t my_strlen_safe(const char *s);
+static const char *cvgos_safe_cstr(const char *s);
+static int cvgos_addr_readable_now(uintptr_t a);
+static const char g_i2_empty_cstr[] = "";
+static void cvgos_return_to_lr(ucontext_t *uc0, uintptr_t lr0) {
+  if (lr0 & 1) {
+    uc0->uc_mcontext.arm_pc = lr0 & ~(uintptr_t)1;
+    uc0->uc_mcontext.arm_cpsr |= 0x20;
+  } else {
+    uc0->uc_mcontext.arm_pc = lr0;
+    uc0->uc_mcontext.arm_cpsr &= ~0x20;
+  }
+}
+static const char *cvgos_meta_bucket(uintptr_t p) {
+  if (!p) return "0";
+  if (g_il2cpp_base && g_il2cpp_text_size && p >= g_il2cpp_base && p < g_il2cpp_base + g_il2cpp_text_size)
+    return "i2text";
+  if (g_i2heap_base && g_i2heap_size && p >= g_i2heap_base && p < g_i2heap_base + g_i2heap_size)
+    return "i2heap";
+  if (g_unity_base && p >= g_unity_base && p < g_unity_base + 0x3000000)
+    return "unity";
+  if (addr_readable(p)) return "read";
+  return "bad";
+}
+static uintptr_t cvgos_i2metatable_pick(uint32_t a20, uint32_t a21, uint32_t a22, uint32_t a23, int *mode_o) {
+  const char *m = getenv("CVGOS_METAMODE");
+  int mode = m ? atoi(m) : 0;
+  if (mode_o) *mode_o = mode;
+  if (mode == 1) return a22 ? a22 : (a21 ? a21 : (a23 ? a23 : a20));
+  if (mode == 2) return a20 ? a20 : (a21 ? a21 : (a22 ? a22 : a23));
+  if (mode == 3) return a23 ? a23 : (a22 ? a22 : (a21 ? a21 : a20));
+  if (mode == 4) return 0;
+  return a21 ? a21 : (a22 ? a22 : (a20 ? a20 : a23));
+}
+static void cvgos_write_ptr_abs(uintptr_t addr, uintptr_t val) {
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = addr & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uintptr_t *)addr = val;
+  __builtin___clear_cache((char *)addr, (char *)addr + sizeof(uintptr_t));
+}
+static int cvgos_ptr_writable(uintptr_t addr) {
+  char perm[5]; uintptr_t lo, hi;
+  return maps_find(addr, &lo, &hi, perm) && perm[0] == 'r' && perm[1] == 'w';
+}
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
   ucontext_t *uc0 = (ucontext_t *)uc_;
   uintptr_t pc0 = uc0->uc_mcontext.arm_pc, lr0 = uc0->uc_mcontext.arm_lr;
+  if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGTRAP) &&
+      si->si_code <= 0 &&
+      (getenv("CVGOS_SKIP_TKILL_SIGS") || getenv("CVGOS_SKIP_TKILL_SEGV"))) {
+    static volatile unsigned int n;
+    unsigned int k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (k <= 24 || (k % 200) == 0)
+      fprintf(stderr, "[SIGTKILL] skip generated sig=%d code=%d fault=%p pc=0x%lx lr=0x%lx #%u\n",
+              sig, si->si_code, si->si_addr, (unsigned long)pc0, (unsigned long)lr0, k);
+    return;
+  }
+  if (sig == SIGSEGV && g_il2cpp_base &&
+      (pc0 == g_il2cpp_base + 0x77cd14 || pc0 == g_il2cpp_base + 0x77cd18) &&
+      !addr_readable((uintptr_t)si->si_addr)) {
+    static volatile unsigned int n;
+    unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    uintptr_t set = uc0->uc_mcontext.arm_r0;
+    uintptr_t idx = uc0->uc_mcontext.arm_r1;
+    uintptr_t arg2 = uc0->uc_mcontext.arm_r2;
+    uint32_t a20 = 0, a21 = 0, a22 = 0, a23 = 0;
+    if (arg2 > 0x10000 && addr_readable(arg2) && addr_readable(arg2 + 15)) {
+      volatile uint32_t *ap = (volatile uint32_t *)arg2;
+      a20 = ap[0]; a21 = ap[1]; a22 = ap[2]; a23 = ap[3];
+    }
+    int metamode = 0;
+    uintptr_t ret = cvgos_i2metatable_pick(a20, a21, a22, a23, &metamode);
+    uc0->uc_mcontext.arm_r0 = ret;
+    cvgos_return_to_lr(uc0, lr0);
+    if (rn <= 32 || (rn % 200) == 0)
+      fprintf(stderr, "[I2-METATABLE] bad table @0x%lx set=0x%lx idx=0x%lx fault=%p arg2=0x%lx [%08x/%s %08x/%s %08x/%s %08x/%s] mode=%d -> ret=0x%lx/%s #%u\n",
+              (unsigned long)(pc0 - g_il2cpp_base), (unsigned long)set, (unsigned long)idx,
+              si->si_addr, (unsigned long)arg2,
+              a20, cvgos_meta_bucket(a20), a21, cvgos_meta_bucket(a21),
+              a22, cvgos_meta_bucket(a22), a23, cvgos_meta_bucket(a23),
+              metamode, (unsigned long)ret, cvgos_meta_bucket(ret), rn);
+    return;
+  }
+  if (sig == SIGSEGV && g_il2cpp_base && !getenv("CVGOS_NOMETAFLAGGUARD") &&
+      (pc0 == g_il2cpp_base + 0x775398 ||
+       pc0 == g_il2cpp_base + 0x775408 ||
+       pc0 == g_il2cpp_base + 0x775414) &&
+      (!addr_readable((uintptr_t)si->si_addr) ||
+       (pc0 == g_il2cpp_base + 0x775414 && !cvgos_ptr_writable((uintptr_t)si->si_addr)))) {
+    static volatile unsigned int n;
+    unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    uintptr_t idx = uc0->uc_mcontext.arm_r0;
+    uintptr_t flags = uc0->uc_mcontext.arm_r6;
+    uintptr_t klass = uc0->uc_mcontext.arm_r7;
+    uintptr_t meta = uc0->uc_mcontext.arm_r10;
+    uc0->uc_mcontext.arm_pc = g_il2cpp_base + 0x775428;
+    uc0->uc_mcontext.arm_cpsr &= ~0x20;
+    if (rn <= 32 || (rn % 200) == 0) {
+      /* nome da classe cujo GC-descriptor está sendo montado (r7=klass) + offset lixo
+         do field (r10=sl=obj+fieldoffset): identifica QUAL metadata está podre. */
+      const char *knm = "?", *kns = "";
+      if (klass && cvgos_addr_readable_now(klass) && cvgos_addr_readable_now(klass + 0xc0)) {
+        const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+        const char *(*cgs)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de34);
+        knm = cvgos_safe_cstr(cgn((void *)klass));
+        kns = cvgos_safe_cstr(cgs((void *)klass));
+      }
+      fprintf(stderr, "[I2-METAFLAG] skip bad flag bit @0x%lx idx=0x%lx flags=0x%lx/%s klass=0x%lx/%s(%s.%s) meta=0x%lx/%s fault=%p #%u\n",
+              (unsigned long)(pc0 - g_il2cpp_base), (unsigned long)idx,
+              (unsigned long)flags, cvgos_meta_bucket(flags),
+              (unsigned long)klass, cvgos_meta_bucket(klass), kns, knm,
+              (unsigned long)meta, cvgos_meta_bucket(meta), si->si_addr, rn);
+    }
+    return;
+  }
+  if (sig == SIGSEGV && g_il2cpp_base && getenv("CVGOS_NREFLECTSKIP") &&
+      pc0 == g_il2cpp_base + 0x7a970c &&
+      (uintptr_t)si->si_addr < 0x1000 &&
+      uc0->uc_mcontext.arm_r4 == 0) {
+    static volatile unsigned int n;
+    unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    uintptr_t exobj = uc0->uc_mcontext.arm_r5;
+    uc0->uc_mcontext.arm_pc = g_il2cpp_base + 0x7a9730;
+    uc0->uc_mcontext.arm_cpsr &= ~0x20;
+    if (rn <= 16 || (rn % 100) == 0)
+      fprintf(stderr, "[I2-REFLECT] exception inner NULL @0x7a970c -> return ex=0x%lx/%s #%u\n",
+              (unsigned long)exobj, cvgos_meta_bucket(exobj), rn);
+    return;
+  }
+  if (sig == SIGSEGV && g_il2cpp_base && (uintptr_t)si->si_addr < 0x10000) {
+    if (pc0 == g_il2cpp_base + 0x77cd18) {
+      static volatile unsigned int n;
+      unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+      uintptr_t idx = uc0->uc_mcontext.arm_r1;
+      uintptr_t arg2 = uc0->uc_mcontext.arm_r2;
+      uint32_t a20 = 0, a21 = 0, a22 = 0, a23 = 0;
+      if (arg2 > 0x10000) {
+        volatile uint32_t *ap = (volatile uint32_t *)arg2;
+        a20 = ap[0]; a21 = ap[1]; a22 = ap[2]; a23 = ap[3];
+      }
+      int metamode = 0;
+      uintptr_t ret = cvgos_i2metatable_pick(a20, a21, a22, a23, &metamode);
+      uc0->uc_mcontext.arm_r0 = ret;
+      cvgos_return_to_lr(uc0, lr0);
+      if (rn <= 24 || (rn % 200) == 0)
+        fprintf(stderr, "[I2-METATABLE] NULL table @0x77cd18 idx=0x%lx arg2=0x%lx [%08x/%s %08x/%s %08x/%s %08x/%s] mode=%d -> ret=0x%lx/%s #%u\n",
+                (unsigned long)idx, (unsigned long)arg2,
+                a20, cvgos_meta_bucket(a20), a21, cvgos_meta_bucket(a21),
+                a22, cvgos_meta_bucket(a22), a23, cvgos_meta_bucket(a23),
+                metamode, (unsigned long)ret, cvgos_meta_bucket(ret), rn);
+      return;
+    }
+    uintptr_t sp0 = uc0->uc_mcontext.arm_sp;
+    int from_i2_string_ctor = 0;
+    for (uintptr_t a = sp0; a < sp0 + 0x800; a += 4) {
+      uintptr_t ret = *(uintptr_t *)a;
+      if ((ret & ~(uintptr_t)1) == g_il2cpp_base + 0xa43820) {
+        from_i2_string_ctor = 1;
+        break;
+      }
+    }
+    if (from_i2_string_ctor) {
+      static volatile unsigned int n;
+      unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+      uc0->uc_mcontext.arm_r4 = (uintptr_t)g_i2_empty_cstr;
+      uc0->uc_mcontext.arm_r0 = 0;                    /* strlen retornou 0 */
+      uc0->uc_mcontext.arm_r1 = (uintptr_t)g_i2_empty_cstr;
+      uc0->uc_mcontext.arm_pc = g_il2cpp_base + 0xa43820;
+      uc0->uc_mcontext.arm_cpsr |= 0x20;              /* volta em Thumb */
+      if (rn <= 16 || (rn % 100) == 0)
+        fprintf(stderr, "[STRSAFE] recover strlen low fault=%p -> empty #%u\n", si->si_addr, rn);
+      return;
+    }
+  }
+  if (sig == SIGSEGV && g_unity_base && pc0 == g_unity_base + 0xbcddc) {
+    uintptr_t s = uc0->uc_mcontext.arm_r5;
+    uintptr_t n = uc0->uc_mcontext.arm_r4;
+    if (n > (1u << 20) && s > 0x10000) {
+      static volatile unsigned int un;
+      unsigned int rn = __atomic_add_fetch(&un, 1, __ATOMIC_RELAXED);
+      *(uint32_t *)(s + 0) = 0;
+      *(uint32_t *)(s + 20) = 0;
+      *(uint8_t *)(s + 4) = 0;
+      uc0->uc_mcontext.arm_r0 = s + 4;
+      uc0->uc_mcontext.arm_pc = g_unity_base + 0xbcde0;
+      uc0->uc_mcontext.arm_cpsr &= ~0x20;  /* ARM */
+      if (rn <= 24 || (rn % 200) == 0)
+        fprintf(stderr, "[UNITY-STRGUARD] len=%lu em metadata -> string vazia #%u\n",
+                (unsigned long)n, rn);
+      return;
+    }
+  }
+  if ((sig == SIGSEGV || sig == SIGBUS) && g_unity_base && lr0 && lr0 != pc0) {
+    if (pc0 == g_unity_base + 0x4c3b7c && (uintptr_t)si->si_addr < 0x10000) {
+      static volatile unsigned int n;
+      unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+      uc0->uc_mcontext.arm_r5 = 0;                  /* epilogo retorna r5 */
+      uc0->uc_mcontext.arm_r0 = 0;
+      uc0->uc_mcontext.arm_pc = g_unity_base + 0x4c3bb4;
+      uc0->uc_mcontext.arm_cpsr &= ~0x20;           /* ARM */
+      if (rn <= 32 || (rn % 200) == 0)
+        fprintf(stderr, "[UNITY-ARENAGUARD] 4c3b7c base=NULL size=0x%lx -> return NULL #%u\n",
+                (unsigned long)uc0->uc_mcontext.arm_r2, rn);
+      return;
+    }
+    if (pc0 == g_unity_base + 0x451074) {
+      static volatile unsigned int n;
+      unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+      unsigned long code = uc0->uc_mcontext.arm_r0;
+      uc0->uc_mcontext.arm_r0 = 0;
+      cvgos_return_to_lr(uc0, lr0);
+      if (rn <= 32 || (rn % 200) == 0)
+        fprintf(stderr, "[UNITY-TABLEGUARD] 451054 code=0x%lx fault=%p -> r0=0 #%u\n",
+                code, si->si_addr, rn);
+      return;
+    }
+    if (pc0 == g_unity_base + 0x4510ac) {
+      static volatile unsigned int n;
+      unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+      unsigned long code = uc0->uc_mcontext.arm_r1;
+      uc0->uc_mcontext.arm_r1 = 0;
+      cvgos_return_to_lr(uc0, lr0);
+      if (rn <= 32 || (rn % 200) == 0)
+        fprintf(stderr, "[UNITY-TABLEGUARD] 45108c code=0x%lx fault=%p -> r1=0 #%u\n",
+                code, si->si_addr, rn);
+      return;
+    }
+  }
   /* recovery: crash na thread de render (qualquer fault, não só arena) → volta pro
      loop e pula o frame. Só se armado e na thread certa. */
   if (g_render_jmp_armed && (int)syscall(SYS_gettid) == g_render_tid) {
@@ -428,7 +734,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
      nao-critico -> init continua. CVGOS_NOSIGBUSSKIP desliga. */
   if (sig == SIGBUS && !getenv("CVGOS_NOSIGBUSSKIP") && lr0 && lr0 != pc0) {
     static volatile unsigned long sbn = 0;
-    uc0->uc_mcontext.arm_pc = lr0;
+    cvgos_return_to_lr(uc0, lr0);
     uc0->uc_mcontext.arm_r0 = 0;
     if (sbn++ < 30)
       fprintf(stderr, "[SIGBUSSKIP] #%lu pc=0x%lx (fault=%p) -> pula p/ lr=0x%lx\n",
@@ -461,7 +767,20 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         uc0->uc_mcontext.arm_pc = pc0 + 4;    /* pula a instrução */
         handled = 1;
       }
-      if (!handled) { if (lr0 && lr0 != pc0) { uc0->uc_mcontext.arm_pc = lr0; uc0->uc_mcontext.arm_r0 = 0; } else uc0->uc_mcontext.arm_pc = pc0 + 4; }
+      if (!handled) {
+        if (lr0 && lr0 != pc0) {
+          if (lr0 & 1) {
+            uc0->uc_mcontext.arm_pc = lr0 & ~(uintptr_t)1;
+            uc0->uc_mcontext.arm_cpsr |= 0x20;
+          } else {
+            uc0->uc_mcontext.arm_pc = lr0;
+            uc0->uc_mcontext.arm_cpsr &= ~0x20;
+          }
+          uc0->uc_mcontext.arm_r0 = 0;
+        } else {
+          uc0->uc_mcontext.arm_pc = pc0 + 4;
+        }
+      }
       if (csn++ < 40)
         fprintf(stderr, "[CRASHSKIP] #%lu sig=%d pc=0x%lx fault=%p insn=0x%x %s\n",
                 csn, sig, (unsigned long)pc0, si->si_addr, insn, handled ? "skip-load" : "jmp-lr");
@@ -507,12 +826,41 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
   uintptr_t pc = uc->uc_mcontext.arm_pc, lr = uc->uc_mcontext.arm_lr;
   uintptr_t tb = (uintptr_t)text_base;
   maps_snapshot();   /* sem malloc — antes de qualquer parse */
-  fprintf(stderr, "\n=== CRASH sig=%d fault=%p pc=0x%lx", sig, si->si_addr,
-          (unsigned long)pc);
+  fprintf(stderr, "\n=== CRASH sig=%d code=%d tid=%ld fault=%p pc=0x%lx", sig, si->si_code,
+          (long)syscall(SYS_gettid), si->si_addr, (unsigned long)pc);
   if (pc >= tb && pc < tb + text_size) fprintf(stderr, " (libunity+0x%lx)", pc - tb);
   fprintf(stderr, " lr=0x%lx", (unsigned long)lr);
   if (lr >= tb && lr < tb + text_size) fprintf(stderr, " (lr unity+0x%lx)", lr - tb);
   fprintf(stderr, " ===\n"); dbg_sync();
+  /* 🔑 ASYNC-SAFE FIRST: o dump rico abaixo (fprintf) pode travar/re-faultar quando o
+     pc é lixo não-mapeado (caso 0xffffbfd8). Antes de qualquer coisa, escreve com
+     write(2) puro: lr classificado via maps + registradores + insns no call-site
+     (lr-16..lr) — o suficiente p/ achar QUEM chamou o fn-ptr lixo. */
+  {
+    char b[512]; int bl;
+    write(2, "[CR0] chk1\n", 11);
+    uintptr_t llo = 0, lhi = 0; char lperm[5];
+    const char *lline = maps_find(lr & ~(uintptr_t)1, &llo, &lhi, lperm);
+    write(2, "[CR0] chk2\n", 11);
+    bl = snprintf(b, sizeof b, "[CR0] lr=0x%lx off=+0x%lx map=%.120s\n",
+                  (unsigned long)lr, lline ? (unsigned long)((lr & ~(uintptr_t)1) - llo) : 0UL,
+                  lline ? lline : "(sem mapping)");
+    write(2, b, bl);
+    bl = 0;
+    for (int i = 0; i < 16; i++)
+      bl += snprintf(b + bl, sizeof b - bl, " r%d=0x%lx%s", i,
+                     mc_reg(&uc->uc_mcontext, i), (i % 4 == 3) ? "\n" : "");
+    write(2, b, bl);
+    uintptr_t la = (lr - 16) & ~(uintptr_t)3;
+    if (addr_readable(la) && addr_readable(la + 16)) {
+      bl = snprintf(b, sizeof b, "[CR0] insns@lr-16..lr:");
+      for (uintptr_t a = la; a <= (lr & ~(uintptr_t)3); a += 4)
+        bl += snprintf(b + bl, sizeof b - bl, " %08x", *(uint32_t *)a);
+      bl += snprintf(b + bl, sizeof b - bl, "\n");
+      write(2, b, bl);
+    }
+    fsync(2);
+  }
   for (int i = 0; i < 16; i++) {
     fprintf(stderr, " r%-2d=0x%08lx", i, mc_reg(&uc->uc_mcontext, i));
     if (i % 3 == 2) fprintf(stderr, "\n");
@@ -522,20 +870,54 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
      do fim do mapping e re-faultar dentro do handler). */
   fprintf(stderr, "[stack scan]\n");
   uintptr_t sp = uc->uc_mcontext.arm_sp;
+  crash_classify("sp", sp);
   uintptr_t slo = 0, shi = 0; char sperm[5];
   maps_find(sp, &slo, &shi, sperm);
-  uintptr_t send = shi ? shi : sp + 400 * 8;
-  for (uintptr_t a = sp, hits = 0; a + 8 <= send && hits < 32; a += 8) {
-    uintptr_t v = *(uintptr_t *)a;
-    if (v >= tb && v < tb + text_size) { fprintf(stderr, "  [sp+0x%lx] libunity+0x%lx\n", a - sp, v - tb); hits++; }
-    else if (g_il2cpp_base && v >= g_il2cpp_base && v < g_il2cpp_base + 0x3000000)
-      { fprintf(stderr, "  [sp+0x%lx] libil2cpp+0x%lx\n", a - sp, v - g_il2cpp_base); hits++; }
+  if (!shi || !addr_readable(sp)) {
+    fprintf(stderr, "  [stack scan skipped: sp=0x%lx sem mapping legivel]\n", (unsigned long)sp);
+    /* stack overflow: sp abaixo do mapping. Scaneia a PARTIR da base do mapa da pilha
+       (achada pelo endereço logo acima de sp) p/ revelar o padrão de recursão. */
+    uintptr_t plo = 0, phi = 0; char pperm[5];
+    if (maps_find(sp + 0x1000, &plo, &phi, pperm) && plo) {
+      fprintf(stderr, "  [overflow-scan de 0x%lx]\n", (unsigned long)plo);
+      for (uintptr_t a = plo, hits = 0; a + 4 <= plo + 0x800 && hits < 48; a += 4) {
+        uintptr_t v = *(uintptr_t *)a;
+        if (v >= tb && v < tb + text_size) { fprintf(stderr, "  [ovf+0x%lx] libunity+0x%lx\n", a - plo, v - tb); hits++; }
+        else if (g_il2cpp_base && v >= g_il2cpp_base && v < g_il2cpp_base + 0x3000000)
+          { fprintf(stderr, "  [ovf+0x%lx] libil2cpp+0x%lx\n", a - plo, v - g_il2cpp_base); hits++; }
+      }
+    }
+  } else {
+    uintptr_t send = shi;
+    if (send > sp + 0x20000) send = sp + 0x20000;
+    for (uintptr_t a = sp, hits = 0; a + 4 <= send && hits < 64; a += 4) {
+      uintptr_t v = *(uintptr_t *)a;
+      if (v >= tb && v < tb + text_size) { fprintf(stderr, "  [sp+0x%lx] libunity+0x%lx\n", a - sp, v - tb); hits++; }
+      else if (g_il2cpp_base && v >= g_il2cpp_base && v < g_il2cpp_base + 0x3000000)
+        { fprintf(stderr, "  [sp+0x%lx] libil2cpp+0x%lx\n", a - sp, v - g_il2cpp_base); hits++; }
+      else {
+        char perm[5]; uintptr_t lo = 0, hi = 0;
+        const char *line = maps_find(v & ~(uintptr_t)1, &lo, &hi, perm);
+        if (line && perm[2] == 'x') {
+          fprintf(stderr, "  [sp+0x%lx] 0x%lx (+0x%lx) | %s\n",
+                  a - sp, (unsigned long)v, (unsigned long)((v & ~(uintptr_t)1) - lo), line);
+          hits++;
+        }
+      }
+    }
   }
   dbg_sync();
 
   /* ---- dump rico do crash 0x7f10000004 (vtable/delegate corrompido) ---- */
   uintptr_t fault = (uintptr_t)si->si_addr;
   fprintf(stderr, "[CR] ==== diagnóstico de corrupção ====\n");
+  if (g_il2cpp_base) {
+    uintptr_t sl = g_il2cpp_base + 0x4bd9d50;
+    crash_classify("il2cpp strlen GOT", sl);
+    if (addr_readable(sl))
+      fprintf(stderr, "[CR] il2cpp strlen GOT val=%p want=%p\n",
+              *(void **)sl, (void *)my_strlen_safe);
+  }
   crash_classify("pc", pc);
   crash_classify("fault", fault);
   /* região do ponteiro-lixo (pc=0x7f10000004): o que é 0x7f10000000? */
@@ -623,8 +1005,37 @@ static int my_sched_getaffinity(int pid, size_t setsize, void *mask) {
  * é um mmap de 0x200000. Logamos alocações desse tamanho + o caller (RA→libunity/
  * il2cpp offset) p/ identificar QUAL alocador/subsistema cria a arena. CUP_MMAPLOG. */
 static int g_mmaplog;
+static int g_metadata_fd = -1;
+static off64_t g_metadata_size = 0;
+static int metadata_probe_fd(int fd) {
+  if (fd < 0) return 0;
+  if (fd == g_metadata_fd && g_metadata_size > 0) return 1;
+  char proc[64], path[512];
+  snprintf(proc, sizeof proc, "/proc/self/fd/%d", fd);
+  ssize_t n = readlink(proc, path, sizeof path - 1);
+  if (n <= 0) return 0;
+  path[n] = 0;
+  if (!strstr(path, "global-metadata.dat")) return 0;
+  struct stat64 ms;
+  if (fstat64(fd, &ms) != 0) return 0;
+  g_metadata_fd = fd;
+  g_metadata_size = ms.st_size;
+  fprintf(stderr, "[META] probe fd=%d size=%lld path=%s\n",
+          fd, (long long)g_metadata_size, path);
+  fsync(2);
+  return 1;
+}
 extern void *mmap(void *, size_t, int, int, int, long);  /* glibc real */
 static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long off) {
+  size_t orig_len = len;
+  if (fd >= 0 && off == 0) metadata_probe_fd(fd);
+  if (fd >= 0 && fd == g_metadata_fd && off == 0 && g_metadata_size > 0 &&
+      len < (size_t)g_metadata_size) {
+    len = (size_t)g_metadata_size;
+    fprintf(stderr, "[META] mmap len %zu -> %zu (global-metadata inteiro)\n",
+            orig_len, len);
+    fsync(2);
+  }
   void *r = mmap(addr, len, prot, flags, fd, off);
   if (g_mmaplog && (len == 0x200000 || (len >= 0x100000 && len <= 0x400000))) {
     uintptr_t ra = (uintptr_t)__builtin_return_address(0);
@@ -640,38 +1051,221 @@ static void *my_mmap(void *addr, size_t len, int prot, int flags, int fd, long o
 /* /proc/cpuinfo + /sys/.../cpu: Unity conta cores p/ dimensionar job workers. */
 static int g_dllog;
 static const char *asset_redirect(const char *p, char *buf, size_t bufsz);
-/* 🔑 stdio defensivo: o engine (Android/bionic) as vezes passa um FILE* de stdio
- * bionic/lixo (ex. stdout/stderr bionic, ou campo mal-lido) p/ o stdio da glibc. glibc
- * faz `ldaex [&FILE->_lock]` (atomic) -> se o FILE* for DESALINHADO (&3 != 0) = lixo,
- * ldaex faulta SIGBUS e mata a UnityMain no init. Guard: FILE* desalinhado/NULL -> stderr
- * (log) em vez de crashar. FILE* alinhado (fopen real nosso) segue normal. */
-static int fp_bad(void *s) { return !s || ((uintptr_t)s & 3) != 0; }
+static _Thread_local char g_asset_redirect_tls[512];
+static char *asset_redirect_buf(void) { return g_asset_redirect_tls; }
+/* 🔑 stdio defensivo: o engine (Android/bionic) as vezes passa FILE* bionic/fake
+ * para o stdio da glibc. Ponteiro alinhado não basta: glibc faz atomics dentro do
+ * FILE e SIGBUS/SIGSEGV corrompem registradores antes de voltarmos ao caller. Só
+ * chamamos glibc com FILE* que foram criados pelos nossos fopen/fdopen/tmpfile. */
+#define MAX_REAL_FILES 128
+static FILE *g_real_files[MAX_REAL_FILES];
+static int g_real_files_n;
+#define MAX_BIONIC_FILES 128
+struct bionic_file {
+  unsigned char pad[14];
+  short fd;
+  FILE *real;
+  unsigned magic;
+};
+static struct bionic_file g_bionic_files[MAX_BIONIC_FILES];
+#define BIONIC_FILE_MAGIC 0x43475646u
+static struct bionic_file *bf_find(FILE *s) {
+  if ((char *)s < (char *)g_bionic_files ||
+      (char *)s >= (char *)(g_bionic_files + MAX_BIONIC_FILES))
+    return NULL;
+  struct bionic_file *bf = (struct bionic_file *)s;
+  return (bf->magic == BIONIC_FILE_MAGIC && bf->real) ? bf : NULL;
+}
+static FILE *bf_wrap(FILE *real) {
+  if (!real) return NULL;
+  int fd = fileno(real);
+  if (fd < 0 || fd > 32767) return real;
+  for (int i = 0; i < MAX_BIONIC_FILES; i++) {
+    if (!g_bionic_files[i].real) {
+      memset(&g_bionic_files[i], 0, sizeof g_bionic_files[i]);
+      g_bionic_files[i].fd = (short)fd;  /* Android/bionic FILE fd lido em +14 */
+      g_bionic_files[i].real = real;
+      g_bionic_files[i].magic = BIONIC_FILE_MAGIC;
+      return (FILE *)&g_bionic_files[i];
+    }
+  }
+  return real;
+}
+static int bf_close(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (!bf) return 0;
+  FILE *real = bf->real;
+  memset(bf, 0, sizeof *bf);
+  return fclose(real);
+}
+static void fp_track(FILE *s) {
+  if (!s || s == stdin || s == stdout || s == stderr) return;
+  for (int i = 0; i < g_real_files_n; i++) if (g_real_files[i] == s) return;
+  if (g_real_files_n < MAX_REAL_FILES) g_real_files[g_real_files_n++] = s;
+}
+static void fp_untrack(FILE *s) {
+  for (int i = 0; i < g_real_files_n; i++) {
+    if (g_real_files[i] == s) {
+      g_real_files[i] = g_real_files[--g_real_files_n];
+      return;
+    }
+  }
+}
+static int fp_known(FILE *s) {
+  if (s == stdin || s == stdout || s == stderr) return 1;
+  for (int i = 0; i < g_real_files_n; i++) if (g_real_files[i] == s) return 1;
+  return 0;
+}
+static int fp_bad(void *s) {
+  if (!s || ((uintptr_t)s & 3) != 0) return 1;
+  return !fp_known((FILE *)s);
+}
+static void stdio_bad_log(const char *op, FILE *s) {
+  static volatile unsigned int n;
+  unsigned int k = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+  if (k > 64 && (k % 500) != 0) return;
+  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
+  const char *lib = "?";
+  uintptr_t off = ra;
+  if (g_unity_base && ra >= g_unity_base && ra < g_unity_base + text_size) {
+    lib = "libunity"; off = ra - g_unity_base;
+  } else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000) {
+    lib = "libil2cpp"; off = ra - g_il2cpp_base;
+  }
+  fprintf(stderr, "[%sBAD] FILE=%p caller=%s+0x%lx #%u\n", op, (void *)s, lib, (unsigned long)off, k);
+  if (k <= 16) fsync(2);
+}
 static size_t my_fwrite(const void *p, size_t sz, size_t n, FILE *s) {
-  if (fp_bad(s)) { if (p && sz && n) fwrite(p, sz, n, stderr); return n; }
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fwrite(p, sz, n, bf->real);
+  if (fp_bad(s)) { stdio_bad_log("FWRITE", s); if (p && sz && n) fwrite(p, sz, n, stderr); return n; }
   return fwrite(p, sz, n, s);
 }
-static int my_fputs(const char *str, FILE *s) { if (fp_bad(s)) return fputs(str ? str : "", stderr); return fputs(str, s); }
-static int my_fputc(int c, FILE *s) { if (fp_bad(s)) return fputc(c, stderr); return fputc(c, s); }
-static int my_fflush(FILE *s) { if (fp_bad(s)) return 0; return fflush(s); }
-static int my_fprintf(FILE *s, const char *f, ...) {
-  va_list ap; va_start(ap, f); int r = vfprintf(fp_bad(s) ? stderr : s, f, ap); va_end(ap); return r;
+static size_t my_fread(void *p, size_t sz, size_t n, FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fread(p, sz, n, bf->real);
+  if (fp_bad(s)) { stdio_bad_log("FREAD", s); return 0; }
+  return fread(p, sz, n, s);
 }
-static int my_vfprintf(FILE *s, const char *f, va_list ap) { return vfprintf(fp_bad(s) ? stderr : s, f, ap); }
-static int my_fclose(FILE *s) { if (fp_bad(s)) return 0; return fclose(s); }
+static char *my_fgets(char *str, int size, FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fgets(str, size, bf->real);
+  if (fp_bad(s)) { stdio_bad_log("FGETS", s); return NULL; }
+  return fgets(str, size, s);
+}
+static int my_fseek(FILE *s, long off, int whence) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fseek(bf->real, off, whence);
+  if (fp_bad(s)) { stdio_bad_log("FSEEK", s); return -1; }
+  return fseek(s, off, whence);
+}
+static long my_ftell(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return ftell(bf->real);
+  if (fp_bad(s)) { stdio_bad_log("FTELL", s); return -1; }
+  return ftell(s);
+}
+static int my_feof(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return feof(bf->real);
+  if (fp_bad(s)) { stdio_bad_log("FEOF", s); return 1; }
+  return feof(s);
+}
+static int my_ferror(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return ferror(bf->real);
+  if (fp_bad(s)) return 1;
+  return ferror(s);
+}
+static void my_clearerr(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) { clearerr(bf->real); return; }
+  if (!fp_bad(s)) clearerr(s);
+}
+static int my_getc(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return getc(bf->real);
+  if (fp_bad(s)) return EOF;
+  return getc(s);
+}
+static int my_setvbuf(FILE *s, char *buf, int mode, size_t size) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return setvbuf(bf->real, buf, mode, size);
+  if (fp_bad(s)) return 0;
+  return setvbuf(s, buf, mode, size);
+}
+static int my_fputs(const char *str, FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fputs(str ? str : "", bf->real);
+  if (fp_bad(s)) return fputs(str ? str : "", stderr);
+  return fputs(str, s);
+}
+static int my_fputc(int c, FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fputc(c, bf->real);
+  if (fp_bad(s)) return fputc(c, stderr);
+  return fputc(c, s);
+}
+static int my_fflush(FILE *s) {
+  struct bionic_file *bf = bf_find(s);
+  if (bf) return fflush(bf->real);
+  if (fp_bad(s)) return 0;
+  return fflush(s);
+}
+static int my_fprintf(FILE *s, const char *f, ...) {
+  struct bionic_file *bf = bf_find(s);
+  va_list ap; va_start(ap, f);
+  int r = vfprintf(bf ? bf->real : (fp_bad(s) ? stderr : s), f, ap);
+  va_end(ap); return r;
+}
+static int my_vfprintf(FILE *s, const char *f, va_list ap) {
+  struct bionic_file *bf = bf_find(s);
+  return vfprintf(bf ? bf->real : (fp_bad(s) ? stderr : s), f, ap);
+}
+static int my_fscanf(FILE *s, const char *f, ...) {
+  struct bionic_file *bf = bf_find(s);
+  if (!bf && fp_bad(s)) return 0;
+  va_list ap; va_start(ap, f); int r = vfscanf(bf ? bf->real : s, f, ap); va_end(ap); return r;
+}
+static int my_fclose(FILE *s) { if (bf_find(s)) return bf_close(s); if (fp_bad(s)) return 0; fp_untrack(s); return fclose(s); }
 
 static FILE *my_fopen(const char *p, const char *m) {
   if (p && !strcmp(p, "/proc/meminfo")) {
-    FILE *t = tmpfile(); if (t) { fputs("MemTotal:      524288 kB\nMemFree:       262144 kB\nMemAvailable:  262144 kB\n", t); rewind(t); return t; }
+    FILE *t = tmpfile(); if (t) { fputs("MemTotal:      524288 kB\nMemFree:       262144 kB\nMemAvailable:  262144 kB\n", t); rewind(t); return bf_wrap(t); }
   }
   if (p && (!strcmp(p, "/sys/devices/system/cpu/possible") || !strcmp(p, "/sys/devices/system/cpu/present") || !strcmp(p, "/sys/devices/system/cpu/online"))) {
-    FILE *t = tmpfile(); if (t) { fputs(getenv("CUP_1CORE") ? "0\n" : "0-3\n", t); rewind(t); return t; }
+    FILE *t = tmpfile(); if (t) { fputs(getenv("CUP_1CORE") ? "0\n" : "0-3\n", t); rewind(t); return bf_wrap(t); }
   }
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
   if (r) {
     if (g_dllog) fprintf(stderr, "[fopen-redir] %s -> %s\n", p, r);
-    return fopen(r, m);
+    FILE *fp = fopen(r, m);
+    if (fp && strstr(r, "global-metadata.dat")) {
+      int fd = fileno(fp);
+      struct stat64 ms;
+      if (fd >= 0 && fstat64(fd, &ms) == 0) {
+        g_metadata_fd = fd;
+        g_metadata_size = ms.st_size;
+        fprintf(stderr, "[META] fopen fd=%d size=%lld path=%s\n",
+                fd, (long long)g_metadata_size, r);
+        fsync(2);
+      }
+    }
+    return bf_wrap(fp);
   }
-  return fopen(p, m);
+  FILE *fp = fopen(p, m);
+  if (fp && p && strstr(p, "global-metadata.dat")) {
+    int fd = fileno(fp);
+    struct stat64 ms;
+    if (fd >= 0 && fstat64(fd, &ms) == 0) {
+      g_metadata_fd = fd;
+      g_metadata_size = ms.st_size;
+      fprintf(stderr, "[META] fopen fd=%d size=%lld path=%s\n",
+              fd, (long long)g_metadata_size, p);
+      fsync(2);
+    }
+  }
+  return bf_wrap(fp);
 }
 #define ASSET_BASE_M "/storage/roms/ports/cvgos/"
 /* redirect genérico de assets: o engine monta paths de dados com bases erradas
@@ -693,7 +1287,8 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
      cria (nº cores - 1) Job.Worker threads. O job-system NÃO despacha trabalho pros workers no
      nosso so-loader (eles ficam ociosos; main trava em WaitForJobGroup, counter=0). Reportando
      1 core (string "0"), Unity cria 0 Job.Worker → roda os jobs INLINE na própria thread. */
-  if (getenv("TER_1CPU") && !strncmp(p, "/sys/devices/system/cpu/", 24)) {
+  if ((getenv("TER_1CPU") || getenv("CUP_1CORE")) &&
+      !strncmp(p, "/sys/devices/system/cpu/", 24)) {
     const char *leaf = p + 24;
     if (!strcmp(leaf, "present") || !strcmp(leaf, "possible") || !strcmp(leaf, "online")) {
       static const char *fake = "/tmp/ter_cpu0";
@@ -719,6 +1314,18 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
      userdata/ sob a base ainda precisam de redirect (il2cpp/Metadata) */
   if (!strncmp(p, ASSET_BASE_M "bin/Data/", sizeof(ASSET_BASE_M "bin/Data/") - 1)) return NULL;
   const char *sub = strstr(p, "bin/Data/");
+  const char *base0 = strrchr(p, '/'); base0 = base0 ? base0 + 1 : p;
+  const char *split0 = strstr(base0, ".split");
+  if (split0 && sub) {
+    static _Thread_local char mainname[256], mainpath[512];
+    size_t n = (size_t)(split0 - base0);
+    if (n > 0 && n < sizeof mainname) {
+      memcpy(mainname, base0, n);
+      mainname[n] = 0;
+      snprintf(mainpath, sizeof mainpath, ASSET_BASE_M "bin/Data/%s", mainname);
+      if (access(mainpath, F_OK) == 0) return NULL;
+    }
+  }
   if (sub) {
     snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%s", sub + 9);
     if (access(buf, F_OK) == 0) return buf;
@@ -773,6 +1380,7 @@ static int cmdline_fd(void) {
 /* TER_GUIDLOG: rastreia o fd do unity_app_guid p/ ver COMO o engine lê (read/
  * lseek/fstat/mmap/close) — diagnóstico do "guid is empty". */
 static int g_guidlog;
+static int g_iolog;
 static int g_guid_fd = -1;
 static int my_open(const char *p, int fl, ...) {
   if (p && !strcmp(p, "/proc/cpuinfo")) {
@@ -782,13 +1390,23 @@ static int my_open(const char *p, int fl, ...) {
       fflush(t); int fd = dup(fileno(t)); fclose(t); lseek(fd, 0, SEEK_SET); return fd; }
   }
   if (p && strstr(p, "cmdline") && !getenv("CUP_NOGFXARGS")) return cmdline_fd();
-  char rb[512];
-  const char *r = asset_redirect(p, rb, sizeof rb);
+  char *rb = asset_redirect_buf();
+  const char *r = asset_redirect(p, rb, 512);
   if (r) {
     int rmode = 0;
     if (fl & O_CREAT) { va_list ap; va_start(ap, fl); rmode = va_arg(ap, int); va_end(ap); }
     int fd = open(r, fl, rmode);
     if (g_dllog) fprintf(stderr, "[open-redir%s] %s -> %s\n", fd < 0 ? "-MISS" : "", p, r);
+    if (fd >= 0 && strstr(r, "global-metadata.dat")) {
+      struct stat64 ms;
+      if (fstat64(fd, &ms) == 0) {
+        g_metadata_fd = fd;
+        g_metadata_size = ms.st_size;
+        fprintf(stderr, "[META] open fd=%d size=%lld path=%s\n",
+                fd, (long long)g_metadata_size, r);
+        fsync(2);
+      }
+    }
     if (g_guidlog && p && strstr(p, "unity_app_guid")) {
       g_guid_fd = fd;
       struct stat sb; int sr = fstat(fd, &sb);
@@ -809,14 +1427,28 @@ static int my_open(const char *p, int fl, ...) {
   return fd;
 }
 extern ssize_t read(int, void *, size_t);
+extern off_t lseek(int, off_t, int);
 extern off64_t lseek64(int, off64_t, int);
 extern int fstat64(int, struct stat64 *);
 extern void *mmap64(void *, size_t, int, int, int, off64_t);
+static void stat64_to_bionic_arm_stat(void *dst, const struct stat64 *src);
 static ssize_t my_read(int fd, void *buf, size_t n) {
   ssize_t r = read(fd, buf, n);
   if (g_guidlog && fd == g_guid_fd) {
     fprintf(stderr, "[GUID] read(fd=%d, n=%zu) -> %zd  first='%.40s'\n",
             fd, n, r, r > 0 ? (char *)buf : "");
+    fsync(2);
+  }
+  if (g_iolog && (n >= 4096 || fd == g_metadata_fd)) {
+    fprintf(stderr, "[IOREAD] fd=%d n=%zu -> %zd\n", fd, n, r);
+    fsync(2);
+  }
+  return r;
+}
+static off_t my_lseek(int fd, off_t off, int wh) {
+  off_t r = lseek(fd, off, wh);
+  if (g_iolog) {
+    fprintf(stderr, "[IOLSEEK] fd=%d off=%ld wh=%d -> %ld\n", fd, (long)off, wh, (long)r);
     fsync(2);
   }
   return r;
@@ -826,16 +1458,33 @@ static off64_t my_lseek64(int fd, off64_t off, int wh) {
   if (g_guidlog && fd == g_guid_fd)
     fprintf(stderr, "[GUID] lseek64(fd=%d, off=%lld, wh=%d) -> %lld\n",
             fd, (long long)off, wh, (long long)r), fsync(2);
+  if (g_iolog) {
+    fprintf(stderr, "[IOLSEEK64] fd=%d off=%lld wh=%d -> %lld\n",
+            fd, (long long)off, wh, (long long)r);
+    fsync(2);
+  }
   return r;
 }
-static int my_fstat64(int fd, struct stat64 *st) {
-  int r = fstat64(fd, st);
+static int my_fstat64(int fd, void *st) {
+  struct stat64 ss;
+  int r = fstat64(fd, &ss);
+  if (r == 0 && st) stat64_to_bionic_arm_stat(st, &ss);
+  else if (r == 0 && !st) { errno = EFAULT; return -1; }
   if (g_guidlog && fd == g_guid_fd)
     fprintf(stderr, "[GUID] fstat64(fd=%d) -> rc=%d st_size=%lld\n",
-            fd, r, r == 0 ? (long long)st->st_size : -1LL), fsync(2);
+            fd, r, r == 0 ? (long long)ss.st_size : -1LL), fsync(2);
   return r;
 }
 static void *my_mmap64(void *a, size_t len, int prot, int fl, int fd, off64_t off) {
+  size_t orig_len = len;
+  if (fd >= 0 && off == 0) metadata_probe_fd(fd);
+  if (fd >= 0 && fd == g_metadata_fd && off == 0 && g_metadata_size > 0 &&
+      len < (size_t)g_metadata_size) {
+    len = (size_t)g_metadata_size;
+    fprintf(stderr, "[META] mmap64 len %zu -> %zu (global-metadata inteiro)\n",
+            orig_len, len);
+    fsync(2);
+  }
   void *r = mmap64(a, len, prot, fl, fd, off);
   if (g_guidlog && fd == g_guid_fd)
     fprintf(stderr, "[GUID] mmap64(fd=%d, len=%zu, off=%lld) -> %p  first='%.40s'\n",
@@ -845,23 +1494,61 @@ static void *my_mmap64(void *a, size_t len, int prot, int fl, int fd, off64_t of
 }
 static FILE *my_fdopen(int fd, const char *mode) {
   FILE *r = fdopen(fd, mode);
+  fp_track(r);
   if (g_guidlog && fd == g_guid_fd)
     fprintf(stderr, "[GUID] fdopen(fd=%d, '%s') -> %p\n", fd, mode ? mode : "?", (void *)r), fsync(2);
   return r;
 }
+static void stat64_to_bionic_arm_stat(void *dst, const struct stat64 *src) {
+  unsigned char *b = (unsigned char *)dst;
+  memset(b, 0, 104);
+  *(uint64_t *)(b + 0)  = (uint64_t)src->st_dev;
+  *(uint32_t *)(b + 12) = (uint32_t)src->st_ino;
+  *(uint32_t *)(b + 16) = (uint32_t)src->st_mode;
+  *(uint32_t *)(b + 20) = (uint32_t)src->st_nlink;
+  *(uint32_t *)(b + 24) = (uint32_t)src->st_uid;
+  *(uint32_t *)(b + 28) = (uint32_t)src->st_gid;
+  *(uint64_t *)(b + 32) = (uint64_t)src->st_rdev;
+  *(int64_t  *)(b + 48) = (int64_t)src->st_size;
+  *(uint32_t *)(b + 56) = (uint32_t)src->st_blksize;
+  *(uint64_t *)(b + 64) = (uint64_t)src->st_blocks;
+  *(int32_t  *)(b + 72) = (int32_t)src->st_atim.tv_sec;
+  *(int32_t  *)(b + 76) = (int32_t)src->st_atim.tv_nsec;
+  *(int32_t  *)(b + 80) = (int32_t)src->st_mtim.tv_sec;
+  *(int32_t  *)(b + 84) = (int32_t)src->st_mtim.tv_nsec;
+  *(int32_t  *)(b + 88) = (int32_t)src->st_ctim.tv_sec;
+  *(int32_t  *)(b + 92) = (int32_t)src->st_ctim.tv_nsec;
+  *(uint64_t *)(b + 96) = (uint64_t)src->st_ino;
+}
+static int my_fstat(int fd, void *st) {
+  if (!st) { errno = EFAULT; return -1; }
+  struct stat64 ss;
+  int rc = fstat64(fd, &ss);
+  if (rc == 0) stat64_to_bionic_arm_stat(st, &ss);
+  return rc;
+}
 /* stat/lstat/access com o mesmo redirect — o engine checa existência antes de
    abrir ("No GlobalGameManagers file" pode vir de um stat, não do open).
-   Layout de struct stat arm64 = kernel em bionic E glibc → pass-through ok. */
+   libunity é Android ARM32: struct stat bionic tem layout kernel de 32-bit,
+   diferente do struct stat glibc ARM. Convertemos via stat64 para não deslocar
+   st_size, usado pelo loader de assets. */
 static int my_stat(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
   if (r && g_dllog) fprintf(stderr, "[stat-redir] %s -> %s\n", p, r);
-  int rc = stat(r ? r : p, (struct stat *)st);
+  struct stat64 ss;
+  int rc = stat64(r ? r : p, &ss);
+  if (rc == 0 && st) stat64_to_bionic_arm_stat(st, &ss);
+  else if (rc == 0 && !st) { errno = EFAULT; return -1; }
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat-MISS] %s\n", p);
   return rc;
 }
 static int my_lstat(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
-  return lstat(r ? r : p, (struct stat *)st);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
+  struct stat64 ss;
+  int rc = lstat64(r ? r : p, &ss);
+  if (rc == 0 && st) stat64_to_bionic_arm_stat(st, &ss);
+  else if (rc == 0 && !st) { errno = EFAULT; return -1; }
+  return rc;
 }
 /* 🔑 stat64: libunity importa stat64 (NÃO stat). O leitor de arquivos (ReadAllBytes
    @0x21db60 -> GetFileSize @0x22b7c0) pega o TAMANHO via stat64(path); sem redirect,
@@ -869,15 +1556,54 @@ static int my_lstat(const char *p, void *st) {
    -> lê 0 bytes -> guid "is empty" -> re-extract -> "Unable to initialize". O open()
    funcionava (redirecionado) mas o size não. arm64: struct stat == struct stat64. */
 static int my_stat64(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
   if (r && g_dllog) fprintf(stderr, "[stat64-redir] %s -> %s\n", p, r);
-  int rc = stat64(r ? r : p, (struct stat64 *)st);
+  struct stat64 ss;
+  int rc = stat64(r ? r : p, &ss);
+  if (rc == 0 && st) stat64_to_bionic_arm_stat(st, &ss);
+  else if (rc == 0 && !st) { errno = EFAULT; return -1; }
   if (g_dllog && rc < 0 && p) fprintf(stderr, "[stat64-MISS] %s\n", p);
   return rc;
 }
 static int my_lstat64(const char *p, void *st) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
-  return lstat64(r ? r : p, (struct stat64 *)st);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
+  struct stat64 ss;
+  int rc = lstat64(r ? r : p, &ss);
+  if (rc == 0 && st) stat64_to_bionic_arm_stat(st, &ss);
+  else if (rc == 0 && !st) { errno = EFAULT; return -1; }
+  return rc;
+}
+/* 🔑 readdir: libunity é bionic e lê `struct dirent` com d_name no offset 19 (d_ino/d_off
+ * de 64 bits). O glibc 32-bit `readdir` devolve d_name no offset 11 -> libunity lê LIXO no
+ * lugar do nome "." -> NÃO pula a entrada "." em DeleteDirectoryRecursive/GetFolderContents
+ * -> recursa no próprio diretório -> STACK OVERFLOW (o muro do GfxDevice/temp-cache init).
+ * Repackamos a dirent glibc (via readdir64) no layout bionic. */
+struct bionic_dirent { uint64_t d_ino; int64_t d_off; uint16_t d_reclen; uint8_t d_type; char d_name[256]; };
+/* glibc dirent64 (arm 32-bit): d_ino@0(8) d_off@8(8) d_reclen@16(2) d_type@18(1) d_name@19.
+ * Acesso por offset p/ não depender de _LARGEFILE64_SOURCE. */
+extern void *readdir64(void *);
+static void bionic_pack_dirent(struct bionic_dirent *bd, const unsigned char *e) {
+  bd->d_ino = *(const uint64_t *)(e + 0);
+  bd->d_off = *(const int64_t *)(e + 8);
+  bd->d_type = e[18];
+  strncpy(bd->d_name, (const char *)(e + 19), sizeof bd->d_name - 1);
+  bd->d_name[sizeof bd->d_name - 1] = 0;
+  bd->d_reclen = (uint16_t)(19 + strlen(bd->d_name) + 1);
+}
+static void *my_readdir(void *dirp) {
+  static __thread struct bionic_dirent bd;
+  unsigned char *e = (unsigned char *)readdir64(dirp);
+  if (!e) return NULL;
+  bionic_pack_dirent(&bd, e);
+  return &bd;
+}
+static int my_readdir_r(void *dirp, void *entry, void **result) {
+  errno = 0;
+  unsigned char *e = (unsigned char *)readdir64(dirp);
+  if (!e) { *result = NULL; return errno; }
+  bionic_pack_dirent((struct bionic_dirent *)entry, e);
+  *result = entry;
+  return 0;
 }
 /* === Enlighten allocator (GI) === FIX do null-deref no HLRTManager/GeoArray.
  * O allocator do Enlighten é um singleton em libunity+0xc886a0. init-A (0x32ea38) instala
@@ -918,7 +1644,7 @@ static void *my_enl_alloc(unsigned long size, unsigned long align, void *a2, int
   return r;
 }
 static int my_access(const char *p, int m) {
-  char rb[512]; const char *r = asset_redirect(p, rb, sizeof rb);
+  char *rb = asset_redirect_buf(); const char *r = asset_redirect(p, rb, 512);
   if (r && g_dllog) fprintf(stderr, "[access-redir] %s -> %s\n", p, r);
   return access(r ? r : p, m);
 }
@@ -932,13 +1658,750 @@ static void *my_memmove_chk(void *d, const void *s, size_t n, size_t dn) { (void
 static void *my_memcpy_chk(void *d, const void *s, size_t n, size_t dn) { (void)dn; return memcpy(d, s, n); }
 static void *my_memset_chk(void *d, int c, size_t n, size_t dn) { (void)dn; return memset(d, c, n); }
 static size_t my_strlen_chk(const char *s, size_t mn) { (void)mn; return strlen(s); }
+static size_t my_strlen_safe(const char *s) {
+  if (!s || (uintptr_t)s < 0x10000) {
+    static int n;
+    if (n++ < 16) fprintf(stderr, "[STRSAFE] strlen(%p) -> 0\n", (void *)s);
+    return 0;
+  }
+  return strlen(s);
+}
+static int cstr_len_readable_now(const char *s, size_t *len_out) {
+  if (!s || (uintptr_t)s < 0x10000) return 0;
+  if (!g_maps_len) maps_snapshot();
+  uintptr_t p = (uintptr_t)s;
+  if (!addr_readable(p)) {
+    maps_snapshot();  /* mappings novos aparecem no boot; o caminho comum fica cacheado */
+    if (!addr_readable(p)) return 0;
+  }
+  size_t n = 0, max = 65536;
+  while (n < max) {
+    uintptr_t cur = p + n;
+    if (!addr_readable(cur)) {
+      maps_snapshot();
+      if (!addr_readable(cur)) return 0;
+    }
+    uintptr_t next_page = (cur + 4096) & ~(uintptr_t)4095;
+    while (n < max && p + n < next_page) {
+      if (s[n] == 0) {
+        *len_out = n;
+        return 1;
+      }
+      n++;
+    }
+  }
+  return 0;
+}
+static int my_strcmp_safe(const char *a, const char *b) {
+  size_t la = 0, lb = 0;
+  int oka = cstr_len_readable_now(a, &la);
+  int okb = cstr_len_readable_now(b, &lb);
+  if (!oka) {
+    static int n;
+    if (n++ < 24) fprintf(stderr, "[STRSAFE] strcmp lhs %p -> empty\n", (void *)a);
+    a = g_i2_empty_cstr;
+  }
+  if (!okb) {
+    static int n;
+    if (n++ < 24) fprintf(stderr, "[STRSAFE] strcmp rhs %p -> empty\n", (void *)b);
+    b = g_i2_empty_cstr;
+  }
+  return strcmp(a, b);
+}
+static void *my_i2_cstr_string_ctor(void *dst, const char *s, void *alloc) {
+  const char *begin = s;
+  size_t len = 0;
+  if (!begin || (uintptr_t)begin < 0x10000) {
+    static int n;
+    if (n++ < 24) fprintf(stderr, "[STRSAFE] i2 cstr ctor %p -> empty\n", (void *)s);
+    begin = g_i2_empty_cstr;
+  } else if (!cstr_len_readable_now(begin, &len)) {
+    static int n;
+    if (n++ < 24) fprintf(stderr, "[STRSAFE] i2 cstr ctor unreadable %p -> empty\n", (void *)s);
+    begin = g_i2_empty_cstr;
+    len = 0;
+  } else {
+    goto have_len;
+  }
+  len = 0;
+have_len:
+  void *(*range_ctor)(const char *, const char *, void *, int) =
+      (void *)(g_il2cpp_base + 0x7a3920);
+  void *p = range_ctor(begin, begin + len, alloc, 0);
+  *(void **)dst = p;
+  return dst;
+}
+static void patch_i2_cstr_string_ctor(void) {
+  if (!g_il2cpp_base) return;
+  uintptr_t a = g_il2cpp_base + 0xa4380c;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = a & ~((uintptr_t)pgsz - 1);
+  uintptr_t pe = (a + 12 + (uintptr_t)pgsz - 1) & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, pe - pa, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *p = (uint32_t *)a;
+  p[0] = 0xc004f8dfu;                         /* thumb: ldr.w ip, [pc, #4] */
+  p[1] = 0x46c04760u;                         /* thumb: bx ip; nop */
+  p[2] = (uint32_t)(uintptr_t)my_i2_cstr_string_ctor;
+  __builtin___clear_cache((char *)a, (char *)a + 12);
+  mprotect((void *)pa, pe - pa, PROT_READ | PROT_EXEC);
+  fprintf(stderr, "[STRSAFE] il2cpp cstr ctor@0xa4380c -> %p\n",
+          (void *)my_i2_cstr_string_ctor);
+}
+static void patch_i2_stack_scan_guard(void) {
+  if (!g_il2cpp_base) return;
+  uintptr_t a = g_il2cpp_base + 0x7dc1b4;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = a & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *p = (uint32_t *)a;
+  p[0] = 0xe3510004u;   /* cmp r1,#4 */
+  p[1] = 0x3a000011u;   /* bcc return */
+  __builtin___clear_cache((char *)a, (char *)a + 8);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  fprintf(stderr, "[GCSTACK] il2cpp stack scan guard r1<4 @0x7dc1b4\n");
+}
+static void patch_i2_fp_epilogue_guard(void) {
+  if (!g_il2cpp_base) return;
+  uintptr_t a = g_il2cpp_base + 0x7c0d1c;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = a & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)a = 0xe28dd008u;   /* add sp, sp, #8; nao depende de fp clobberado */
+  __builtin___clear_cache((char *)a, (char *)a + 4);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  fprintf(stderr, "[FPGUARD] il2cpp+0x7c0d1c epilogue usa sp+=8\n");
+}
+
+static uint32_t arm_b_cond(uint32_t cond, uintptr_t from, uintptr_t to) {
+  intptr_t off = ((intptr_t)to - (intptr_t)from - 8) >> 2;
+  return cond | ((uint32_t)off & 0x00ffffffu);
+}
+
+static void patch_arm_word_abs(uintptr_t a, uint32_t v) {
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = a & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  *(uint32_t *)a = v;
+  __builtin___clear_cache((char *)a, (char *)a + 4);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+}
+
+static void patch_i2_metatable_return_guard(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_METABX")) return;
+  patch_arm_word_abs(g_il2cpp_base + 0x77cd20, 0xe12fff1eu); /* bxge lr -> bx lr */
+  fprintf(stderr, "[I2-METABX] libil2cpp+0x77cd20 retorna ponteiro direto\n");
+}
+
+static void *arm_hook8(uintptr_t target, void *fn);
+static void (*g_i2_throw_helper_orig)(void *);
+static int cvgos_addr_readable_now(uintptr_t a) {
+  if (addr_readable(a)) return 1;
+  maps_snapshot();
+  return addr_readable(a);
+}
+static int cvgos_i2_obj_class(void *obj, const char **ns_o, const char **name_o) {
+  if (ns_o) *ns_o = "";
+  if (name_o) *name_o = "?";
+  if (!g_il2cpp_base || !obj || (uintptr_t)obj < 0x10000) return 0;
+  uintptr_t op = (uintptr_t)obj;
+  if (!cvgos_addr_readable_now(op) ||
+      !cvgos_addr_readable_now(op + sizeof(uintptr_t) - 1)) return 0;
+  uintptr_t klass = *(uintptr_t *)obj;
+  if (!klass || !cvgos_addr_readable_now(klass) ||
+      !cvgos_addr_readable_now(klass + 0xc0)) return 0;
+
+  const char *(*class_get_name)(void *) =
+      (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+  const char *(*class_get_namespace)(void *) =
+      (const char *(*)(void *))(g_il2cpp_base + 0x79de34);
+  if (!cvgos_addr_readable_now((uintptr_t)class_get_name) ||
+      !cvgos_addr_readable_now((uintptr_t)class_get_namespace)) return 0;
+
+  const char *name = cvgos_safe_cstr(class_get_name((void *)klass));
+  const char *ns = cvgos_safe_cstr(class_get_namespace((void *)klass));
+  if (!name || !strcmp(name, "?")) return 0;
+  if (ns_o) *ns_o = (!ns || !strcmp(ns, "?")) ? "" : ns;
+  if (name_o) *name_o = name;
+  return 1;
+}
+static int cvgos_stack_has_i2_off(uintptr_t off) {
+  if (!g_il2cpp_base) return 0;
+  uintptr_t sp = 0;
+  __asm__ volatile("mov %0, sp" : "=r"(sp));
+  for (uintptr_t a = sp; a < sp + 0x1400; a += sizeof(uintptr_t)) {
+    if (!addr_readable(a)) break;
+    uintptr_t ret = *(uintptr_t *)a;
+    if ((ret & ~(uintptr_t)1) == g_il2cpp_base + off) return 1;
+  }
+  return 0;
+}
+
+static void my_i2_throw_helper(void *ex) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
+  const char *ns = "", *name = "?";
+  int got_class = cvgos_i2_obj_class(ex, &ns, &name);
+  char msgbuf[256];
+  msgbuf[0] = 0;
+  if (got_class && getenv("CVGOS_ARGENUMSKIP") &&
+      !strcmp(name, "ArgumentException") && (!ns[0] || !strcmp(ns, "System"))) {
+    void (*format_exception)(void *, char *, int) =
+        (void (*)(void *, char *, int))(g_il2cpp_base + 0x79e28c);
+    if (cvgos_addr_readable_now((uintptr_t)format_exception))
+      format_exception(ex, msgbuf, (int)sizeof msgbuf);
+    msgbuf[sizeof msgbuf - 1] = 0;
+  }
+  int is_array_mismatch =
+      got_class && !strcmp(name, "ArrayTypeMismatchException") &&
+      (!ns[0] || !strcmp(ns, "System"));
+  int is_reflect_nre =
+      got_class && getenv("CVGOS_NREFLECTSKIP") &&
+      !strcmp(name, "NullReferenceException") &&
+      (!ns[0] || !strcmp(ns, "System")) &&
+      cvgos_stack_has_i2_off(0x117a744);
+  const char *skip_reason = is_array_mismatch ? "array" :
+                            (is_reflect_nre ? "reflect-nre" : "");
+
+  static volatile unsigned int n;
+  unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+  uintptr_t lrx = lr & ~(uintptr_t)1;
+  if (rn <= 64 || skip_reason[0] || getenv("CVGOS_ARRAYLOG")) {
+    fprintf(stderr,
+            "[ARRAYSKIP] throw_helper #%u ex=%p class=%s%s%s msg='%s' lr=0x%lx%s0x%lx%s%s%s\n",
+            rn, ex,
+            got_class ? ns : "", (got_class && ns[0]) ? "." : "",
+            got_class ? name : "?",
+            msgbuf,
+            (unsigned long)lr,
+            (g_il2cpp_base && g_il2cpp_text_size && lrx >= g_il2cpp_base &&
+             lrx < g_il2cpp_base + g_il2cpp_text_size) ? " libil2cpp+" : "",
+            (g_il2cpp_base && g_il2cpp_text_size && lrx >= g_il2cpp_base &&
+             lrx < g_il2cpp_base + g_il2cpp_text_size) ?
+                (unsigned long)(lrx - g_il2cpp_base) : 0UL,
+            skip_reason[0] ? " -> return " : "",
+            skip_reason,
+            "");
+    fsync(2);
+  }
+
+  if (skip_reason[0]) return;
+  if (g_i2_throw_helper_orig) g_i2_throw_helper_orig(ex);
+  for (;;) pause();
+}
+
+static void patch_i2_array_type_mismatch_skip(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_ARRAYSKIP")) return;
+  static int done;
+  if (done) return;
+  g_i2_throw_helper_orig =
+      (void (*)(void *))arm_hook8(g_il2cpp_base + 0x7a8a88,
+                                  (void *)my_i2_throw_helper);
+  done = 1;
+  fprintf(stderr,
+          "[ARRAYSKIP] libil2cpp+0x7a8a88 throw helper hook orig=%p\n",
+          (void *)g_i2_throw_helper_orig);
+}
+
+static void patch_i2_tmp_font_guard(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_TMPFONTGUARD")) return;
+  patch_arm_word_abs(g_il2cpp_base + 0xa87cb4, 0xe3a00000u); /* TMP_FontAsset helper -> 0 */
+  patch_arm_word_abs(g_il2cpp_base + 0xa87cb8, 0xe12fff1eu);
+  patch_arm_word_abs(g_il2cpp_base + 0xa87d98, 0xe12fff1eu); /* sub-helper -> return */
+  patch_arm_word_abs(g_il2cpp_base + 0xa887d4, 0xe12fff1eu); /* TMP_FontAsset::.ctor -> return */
+  fprintf(stderr, "[TMPFONTGUARD] TMP_FontAsset ctor/helper neutralizados\n");
+}
+
+static void patch_i2_log_resources_guard(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_LOGRESGUARD")) return;
+  static int done;
+  if (done) return;
+  patch_arm_word_abs(g_il2cpp_base + 0x31f078c, 0xe12fff1eu); /* LogResources::OnAfterDeserialize */
+  done = 1;
+  fprintf(stderr, "[LOGRESGUARD] LogResources::OnAfterDeserialize -> return\n");
+}
+
+/* ===== CVGOS_RESPATHFIX: mata o NRE de boot em ResourcesPath (default ON) =====
+ * ResourcesPath::get_persistentDataPath (il2cpp 0x3970340) e get_temporaryCachePath
+ * (0x3970850) montam o path via currentActivity->getFilesDir->getCanonicalPath (JNI).
+ * No so-loader essa cadeia devolve null managed em algum passo -> a função lança
+ * NullReferenceException (bl 0x3cf1290), o que ABORTA a coroutine de boot ANTES de
+ * carregar assets -> render loop gira vazio (draws/f=0, tela preta). Hookamos os dois
+ * getters (arm_hook8, 8 bytes no prólogo) p/ devolver DIRETO uma string il2cpp com um
+ * path REAL gravável — elimina toda a dependência de JNI, determinístico. Raiz confirmada
+ * por dump IL2CPP + disasm (2026-07-06). Desliga com CVGOS_NORESPATHFIX. */
+static void *g_respath_persistent;   /* il2cpp string cacheada */
+static void *g_respath_temporary;    /* il2cpp string cacheada */
+static void *cvgos_i2_string(const char *s) {
+  if (!g_il2cpp_base) return NULL;
+  void *(*isn)(const char *) = (void *(*)(const char *))(g_il2cpp_base + 0x79e4b4); /* il2cpp_string_new */
+  return isn(s);
+}
+static void *my_respath_persistent(void) {
+  if (!g_respath_persistent) {
+    const char *p = "/storage/roms/ports/cvgos/userdata";
+    g_respath_persistent = cvgos_i2_string(p);
+    fprintf(stderr, "[RESPATHFIX] persistentDataPath -> \"%s\" (il2cpp str=%p)\n",
+            p, g_respath_persistent);
+    fsync(2);
+  }
+  return g_respath_persistent;
+}
+static void *my_respath_temporary(void) {
+  if (!g_respath_temporary) {
+    const char *p = "/storage/roms/ports/cvgos/userdata/cache";
+    g_respath_temporary = cvgos_i2_string(p);
+    fprintf(stderr, "[RESPATHFIX] temporaryCachePath -> \"%s\" (il2cpp str=%p)\n",
+            p, g_respath_temporary);
+    fsync(2);
+  }
+  return g_respath_temporary;
+}
+static void patch_i2_respath_fix(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NORESPATHFIX")) return;
+  static int done;
+  if (done) return;
+  arm_hook8(g_il2cpp_base + 0x3970340, (void *)my_respath_persistent);
+  arm_hook8(g_il2cpp_base + 0x3970850, (void *)my_respath_temporary);
+  done = 1;
+  fprintf(stderr, "[RESPATHFIX] ResourcesPath getters hookados (persistent 0x3970340, temp 0x3970850)\n");
+}
+
+/* LogResources$$OnAfterDeserialize (0x31F078C): com keys/values null (desserialização
+   incompleta neste ambiente) o método lança NRE → raise crasha/termina o processo.
+   Guard: loga os campos; se algum vier null, PULA a montagem do dict (classe é helper
+   de logging — dict vazio é tolerável). Se tudo ok, roda o original. */
+static void (*g_logres_oad_orig)(void *self, void *mi);
+static void logres_oad_guard(void *self, void *mi) {
+  uintptr_t s = (uintptr_t)self;
+  uintptr_t keys = s ? *(uintptr_t *)(s + 0xc) : 0;
+  uintptr_t values = s ? *(uintptr_t *)(s + 0x10) : 0;
+  uintptr_t dict = s ? *(uintptr_t *)(s + 0x14) : 0;
+  static int n;
+  if (n++ < 8)
+    fprintf(stderr, "[LOGRES] OnAfterDeserialize self=%p keys=%lx values=%lx dict=%lx%s\n",
+            self, (unsigned long)keys, (unsigned long)values, (unsigned long)dict,
+            (keys && values && dict) ? "" : " -> SKIP (null)");
+  if (!keys || !values || !dict) return;
+  if (g_logres_oad_orig) g_logres_oad_orig(self, mi);
+}
+static void patch_i2_logres_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOLOGRESGUARD")) return;
+  static int done;
+  if (done) return;
+  g_logres_oad_orig = (void (*)(void *, void *))arm_hook8(
+      g_il2cpp_base + 0x31F078C, (void *)logres_oad_guard);
+  done = 1;
+  fprintf(stderr, "[LOGRES] guard em LogResources$$OnAfterDeserialize (0x31F078C) orig=%p\n",
+          (void *)g_logres_oad_orig);
+}
+
+static void patch_i2_enum_null_guard(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_ENUMNULLGUARD")) return;
+  static int done;
+  if (done) return;
+
+  patch_arm_word_abs(g_il2cpp_base + 0x7c0338, 0xe3a00000u); /* mov r0,#0 */
+  patch_arm_word_abs(g_il2cpp_base + 0x7c033c, 0xe8bd8c10u); /* pop {r4,sl,fp,pc} */
+
+  done = 1;
+  fprintf(stderr, "[ENUMNULLGUARD] libil2cpp+0x7c0338 enumType NULL -> return NULL\n");
+}
+
+static void patch_i2_reflection_null_guard(void) {
+  if (!g_il2cpp_base) return;
+  static int done;
+  if (done) return;
+
+  patch_arm_word_abs(g_il2cpp_base + 0x1178bfc, 0xe3a00000u);                                      /* mov r0,#0 */
+  patch_arm_word_abs(g_il2cpp_base + 0x1178c00, 0xe12fff1eu);                                      /* bx lr */
+
+  uintptr_t callee_cmp = g_il2cpp_base + 0x117afc4;
+  patch_arm_word_abs(callee_cmp, arm_b_cond(0x0a000000u, callee_cmp, g_il2cpp_base + 0x117b134)); /* beq return null */
+  patch_arm_word_abs(g_il2cpp_base + 0x117afc8, 0xe320f000u);                                      /* nop */
+  patch_arm_word_abs(g_il2cpp_base + 0x117afcc, 0xe320f000u);                                      /* nop */
+
+  uintptr_t outer_a = g_il2cpp_base + 0x117923c;
+  patch_arm_word_abs(outer_a, arm_b_cond(0x0a000000u, outer_a, g_il2cpp_base + 0x11792c0));        /* beq next item */
+  patch_arm_word_abs(g_il2cpp_base + 0x1179240, 0xe320f000u);
+  patch_arm_word_abs(g_il2cpp_base + 0x1179244, 0xe320f000u);
+
+  uintptr_t outer_b = g_il2cpp_base + 0x1179260;
+  patch_arm_word_abs(outer_b, arm_b_cond(0x0a000000u, outer_b, g_il2cpp_base + 0x11792c0));        /* beq next item */
+  patch_arm_word_abs(g_il2cpp_base + 0x1179264, 0xe320f000u);
+  patch_arm_word_abs(g_il2cpp_base + 0x1179268, 0xe320f000u);
+
+  done = 1;
+  fprintf(stderr, "[I2-REFLECT] RuntimeInformation/Reflection null guards ativos (1178bfc->null)\n");
+}
+
+static void patch_unity_skiperrfunc(void) {
+  if (!g_unity_base || getenv("CVGOS_NOSKIPERRFUNC")) return;
+  static int done;
+  if (done) return;
+  extern void so_make_text_writable(void), so_make_text_executable(void), so_flush_caches(void);
+  uintptr_t ea = g_unity_base + 0x31fa08;
+  so_make_text_writable();
+  ((uint32_t *)ea)[0] = 0xe3a00000u;  /* mov r0, #0 */
+  ((uint32_t *)ea)[1] = 0xe12fff1eu;  /* bx  lr     */
+  so_make_text_executable();
+  so_flush_caches();
+  done = 1;
+  fprintf(stderr, "[SKIPERRFUNC] libunity+0x31fa08 -> return 0 (pula error-reporter)\n");
+}
+
+static void patch_unity_thread_ready_guard(void) {
+  if (!g_unity_base || !getenv("CVGOS_THREADREADY") || getenv("CVGOS_NOTHREADREADY")) return;
+  static int done;
+  if (done) return;
+  uintptr_t a = g_unity_base + 0x329060;
+  patch_arm_word_abs(a + 0, 0xe3a00001u);  /* mov r0,#1 */
+  patch_arm_word_abs(a + 4, 0xe5850014u);  /* str r0,[r5,#0x14] */
+  patch_arm_word_abs(a + 8, 0xea000003u);  /* b libunity+0x32907c */
+  done = 1;
+  fprintf(stderr, "[THREADREADY] libunity+0x329060 marca thread pronta e pula cond_wait\n");
+}
+
+static void my_unity_cxa_throw(void *thrown, void *tinfo, void *dest) __attribute__((noreturn));
+static void (*g_unity_cxa_throw_orig)(void *, void *, void *);
+static void my_unity_ios_failure(const char *msg) __attribute__((noreturn));
+static void (*g_unity_ios_failure_orig)(const char *);
+static void *thumb_hook12(uintptr_t target, void *fn) {
+  uint32_t orig[3];
+  memcpy(orig, (void *)target, sizeof orig);
+  uint32_t *tr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED) return NULL;
+  tr[0] = orig[0];
+  tr[1] = orig[1];
+  tr[2] = orig[2];
+  tr[3] = 0xc004f8dfu;                         /* thumb: ldr.w ip, [pc, #4] */
+  tr[4] = 0x46c04760u;                         /* thumb: bx ip; nop */
+  tr[5] = (uint32_t)((target + 12) | 1);
+  __builtin___clear_cache((char *)tr, (char *)tr + 24);
+
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = target & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *p = (uint32_t *)target;
+  p[0] = 0xc004f8dfu;
+  p[1] = 0x46c04760u;
+  p[2] = (uint32_t)(uintptr_t)fn;
+  __builtin___clear_cache((char *)target, (char *)target + 12);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  return (void *)((uintptr_t)tr | 1);
+}
+static void *thumb_hook14(uintptr_t target, void *fn) {
+  uint8_t orig[14];
+  memcpy(orig, (void *)target, sizeof orig);
+  uint8_t *trb = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (trb == MAP_FAILED) return NULL;
+  memcpy(trb, orig, sizeof orig);
+  *(uint16_t *)(trb + 14) = 0xbf00u;                  /* alinha o stub em 4 bytes */
+  uint32_t *tr = (uint32_t *)(trb + 16);
+  tr[0] = 0xc004f8dfu;                                /* thumb: ldr.w ip, [pc, #4] */
+  tr[1] = 0x46c04760u;                                /* thumb: bx ip; nop */
+  tr[2] = (uint32_t)((target + 14) | 1);
+  __builtin___clear_cache((char *)trb, (char *)trb + 28);
+
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = target & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *p = (uint32_t *)target;
+  p[0] = 0xc004f8dfu;
+  p[1] = 0x46c04760u;
+  p[2] = (uint32_t)(uintptr_t)fn;
+  __builtin___clear_cache((char *)target, (char *)target + 12);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  return (void *)((uintptr_t)trb | 1);
+}
+static void *arm_hook8(uintptr_t target, void *fn) {
+  uint32_t orig[2];
+  memcpy(orig, (void *)target, sizeof orig);
+  uint32_t *tr = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (tr == MAP_FAILED) return NULL;
+  tr[0] = orig[0];
+  tr[1] = orig[1];
+  tr[2] = 0xe51ff004u;                  /* ARM: ldr pc, [pc, #-4] */
+  tr[3] = (uint32_t)(target + 8);
+  __builtin___clear_cache((char *)tr, (char *)tr + 16);
+
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = target & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *p = (uint32_t *)target;
+  p[0] = 0xe51ff004u;                  /* ARM: ldr pc, [pc, #-4] */
+  p[1] = (uint32_t)(uintptr_t)fn;
+  __builtin___clear_cache((char *)target, (char *)target + 8);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  return tr;
+}
+static uintptr_t i2_metatable_hook(unsigned set, unsigned idx, uintptr_t arg2) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
+  uintptr_t root_slot = g_il2cpp_base + 0x4be5140;
+  uintptr_t root = (addr_readable(root_slot) ? *(uintptr_t *)root_slot : 0);
+  uintptr_t table = (root && addr_readable(root + 0x2c)) ? *(uintptr_t *)(root + 0x2c) : 0;
+  uintptr_t row = (table && addr_readable(table + (uintptr_t)set * 4)) ?
+      *(uintptr_t *)(table + (uintptr_t)set * 4) : 0;
+  uintptr_t val = (row && addr_readable(row + (uintptr_t)idx * 4)) ?
+      *(uintptr_t *)(row + (uintptr_t)idx * 4) : 0;
+  uint32_t a20 = 0, a21 = 0, a22 = 0, a23 = 0;
+  if (arg2 > 0x10000 && addr_readable(arg2 + 12)) {
+    volatile uint32_t *ap = (volatile uint32_t *)arg2;
+    a20 = ap[0]; a21 = ap[1]; a22 = ap[2]; a23 = ap[3];
+  }
+  int mode = -1;
+  uintptr_t ret = val;
+  if (!row) ret = cvgos_i2metatable_pick(a20, a21, a22, a23, &mode);
+  else if ((int32_t)ret < 0) ret = 0xffffffffu;
+
+  int filled = 0;
+  if (getenv("CVGOS_METAFILL") && table && cvgos_ptr_writable(table + (uintptr_t)set * 4) &&
+      !row && idx < 512 && ret && ret != 0xffffffffu) {
+    uintptr_t *newrow = calloc(512, sizeof(uintptr_t));
+    if (newrow) {
+      newrow[idx] = ret;
+      cvgos_write_ptr_abs(table + (uintptr_t)set * 4, (uintptr_t)newrow);
+      row = (uintptr_t)newrow;
+      filled = 1;
+    }
+  }
+  const char *kname = NULL, *kns = NULL;
+  uint32_t k2c = 0, k30 = 0, k34 = 0, kac = 0, kbe = 0;
+  if (!row && a22 && addr_readable(a22 + 0xc0)) {
+    const char *(*class_get_name)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+    const char *(*class_get_namespace)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de34);
+    kname = cvgos_safe_cstr(class_get_name((void *)(uintptr_t)a22));
+    kns = cvgos_safe_cstr(class_get_namespace((void *)(uintptr_t)a22));
+    k2c = *(uint32_t *)(uintptr_t)(a22 + 0x2c);
+    k30 = *(uint32_t *)(uintptr_t)(a22 + 0x30);
+    k34 = *(uint32_t *)(uintptr_t)(a22 + 0x34);
+    kac = *(uint16_t *)(uintptr_t)(a22 + 0xac);
+    kbe = *(uint16_t *)(uintptr_t)(a22 + 0xbe);
+  }
+
+  static volatile unsigned int n;
+  unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+  if (!row || rn <= 40 || (rn % 500) == 0) {
+    fprintf(stderr,
+            "[I2-METAHOOK] set=%u/0x%x idx=%u lr=0x%lx%s0x%lx root=0x%lx/%s table=0x%lx/%s row=0x%lx/%s val=0x%lx/%s arg2=0x%lx [%08x/%s %08x/%s %08x/%s %08x/%s] klass=%s%s%s k[2c=%08x 30=%08x 34=%08x ac=%u be=%04x] mode=%d fill=%d -> 0x%lx/%s #%u\n",
+            set, set, idx, (unsigned long)lr,
+            (g_il2cpp_base && lr >= g_il2cpp_base && lr < g_il2cpp_base + g_il2cpp_text_size) ? " libil2cpp+" : "",
+            (g_il2cpp_base && lr >= g_il2cpp_base && lr < g_il2cpp_base + g_il2cpp_text_size) ? (unsigned long)(lr - g_il2cpp_base) : 0UL,
+            (unsigned long)root, cvgos_meta_bucket(root),
+            (unsigned long)table, cvgos_meta_bucket(table),
+            (unsigned long)row, cvgos_meta_bucket(row),
+            (unsigned long)val, cvgos_meta_bucket(val),
+            (unsigned long)arg2,
+            a20, cvgos_meta_bucket(a20), a21, cvgos_meta_bucket(a21),
+            a22, cvgos_meta_bucket(a22), a23, cvgos_meta_bucket(a23),
+            kns ? kns : "", (kns && kns[0]) ? "." : "", kname ? kname : "",
+            k2c, k30, k34, kac, kbe,
+            mode, filled, (unsigned long)ret, cvgos_meta_bucket(ret), rn);
+    fsync(2);
+  }
+  return ret;
+}
+static void patch_i2_metatable_hook(void) {
+  if (!g_il2cpp_base || !getenv("CVGOS_METAHOOK")) return;
+  static int done;
+  if (done) return;
+  arm_hook8(g_il2cpp_base + 0x77cd08, (void *)i2_metatable_hook);
+  done = 1;
+  fprintf(stderr, "[I2-METAHOOK] libil2cpp+0x77cd08 hook ativo fill=%s\n",
+          getenv("CVGOS_METAFILL") ? getenv("CVGOS_METAFILL") : "0");
+}
+static void (*g_unity_vec12_resize_orig)(void *vec, int count);
+static void unity_vec12_resize_guard(void *vec, int count) {
+  int orig = count;
+  if (count < 0 || (unsigned)count > 65536u) {
+    static volatile unsigned int n;
+    unsigned int rn = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
+    if (rn <= 64 || (rn % 200) == 0) {
+      uintptr_t lr = 0;
+      __asm__ volatile("mov %0, lr" : "=r"(lr));
+      uintptr_t lrx = lr & ~(uintptr_t)1;
+      fprintf(stderr,
+              "[VECGUARD] vec12 resize count=%d/0x%x vec=%p lr=0x%lx%s0x%lx -> 0 #%u\n",
+              orig, (unsigned)orig, vec, (unsigned long)lr,
+              (g_unity_base && lrx >= g_unity_base && lrx < g_unity_base + text_size) ?
+                  " libunity+" : "",
+              (g_unity_base && lrx >= g_unity_base && lrx < g_unity_base + text_size) ?
+                  (unsigned long)(lrx - g_unity_base) : 0UL,
+              rn);
+      fsync(2);
+    }
+    count = 0;
+  }
+  if (g_unity_vec12_resize_orig) g_unity_vec12_resize_orig(vec, count);
+}
+static void patch_unity_vecguard(void) {
+  if (!g_unity_base || !getenv("CVGOS_VECGUARD")) return;
+  static int done;
+  if (done) return;
+  g_unity_vec12_resize_orig =
+      (void (*)(void *, int))arm_hook8(g_unity_base + 0x35a00c,
+                                       (void *)unity_vec12_resize_guard);
+  done = 1;
+  fprintf(stderr, "[VECGUARD] libunity+0x35a00c vec12 resize guard orig=%p\n",
+          (void *)g_unity_vec12_resize_orig);
+}
+static void (*g_unity_stream_copy_orig)(void *ctx, void *dst, unsigned len);
+static void unity_stream_copy_guard(void *ctx, void *dst, unsigned len) {
+  if (len > (32u << 20)) {
+    static int n;
+    if (n++ < 32 || (n % 200) == 0) {
+      fprintf(stderr, "[UNITY-STREAMGUARD] len=%u dst=%p ctx=%p -> skip\n", len, dst, ctx);
+      fsync(2);
+    }
+    return;
+  }
+  if (g_unity_stream_copy_orig) g_unity_stream_copy_orig(ctx, dst, len);
+}
+static void patch_unity_stream_copy_guard(void) {
+  if (!g_unity_base || getenv("CVGOS_NOSTREAMGUARD")) return;
+  static int done;
+  if (done) return;
+  g_unity_stream_copy_orig =
+      (void (*)(void *, void *, unsigned))arm_hook8(g_unity_base + 0x3ecea0,
+                                                    (void *)unity_stream_copy_guard);
+  done = 1;
+  fprintf(stderr, "[UNITY-STREAMGUARD] libunity+0x3ecea0 guard orig=%p\n",
+          (void *)g_unity_stream_copy_orig);
+}
+static void *(*g_i2_rgctx_slot_orig)(unsigned idx);
+static void *g_i2_rgctx_fallback[4096];
+/* Diagnóstico: dumpa o estado do metadata-registration que a fn 0x79f51c consulta.
+ * A fn faz: reg = *(il2cpp+0x4be5410); obj = *(reg+8); table = *(obj+0x3c); return table[idx].
+ * Se table[idx]==NULL, quero saber se reg/obj/table são válidos e se a tabela inteira é NULL
+ * (registration quebrado) ou esparsa (entrada específica). */
+static void cvgos_rgctx_dump_state(unsigned idx) {
+  if (!g_il2cpp_base) return;
+  uintptr_t regslot = g_il2cpp_base + 0x4be5410;
+  uintptr_t reg = addr_readable(regslot) ? *(uintptr_t *)regslot : 0;
+  uintptr_t obj = (reg && addr_readable(reg + 8)) ? *(uintptr_t *)(reg + 8) : 0;
+  uintptr_t table = (obj && addr_readable(obj + 0x3c)) ? *(uintptr_t *)(obj + 0x3c) : 0;
+  fprintf(stderr, "[RGCTX-STATE] idx=%u regslot=%lx reg=%lx obj=%lx table=%lx\n",
+          idx, (unsigned long)regslot, (unsigned long)reg, (unsigned long)obj, (unsigned long)table);
+  if (table) {
+    int nz = 0, nn = 0;
+    for (unsigned i = 0; i < 32; i++) {
+      uintptr_t sa = table + (uintptr_t)i * 4;
+      if (!addr_readable(sa)) break;
+      uintptr_t v = *(uintptr_t *)sa;
+      if (v) nz++; else nn++;
+    }
+    fprintf(stderr, "[RGCTX-STATE] table[0..31]: nonzero=%d null=%d ; table[idx=%u]=%lx\n",
+            nz, nn, idx,
+            addr_readable(table + (uintptr_t)idx * 4) ? (unsigned long)*(uintptr_t *)(table + (uintptr_t)idx * 4) : 0);
+  }
+  fsync(2);
+}
+static void *i2_rgctx_slot_guard(unsigned idx) {
+  void *slot = g_i2_rgctx_slot_orig ? g_i2_rgctx_slot_orig(idx) : NULL;
+  if (!slot) {
+    static int n;
+    /* CVGOS_RGCTXNULL: deixa o NULL propagar (testa se o código original faz lazy-init
+       no NULL e o guard-fallback é que corrompe). CVGOS_RGCTXDUMP: dumpa o registration. */
+    if (getenv("CVGOS_RGCTXDUMP") && n < 4) cvgos_rgctx_dump_state(idx);
+    if (getenv("CVGOS_RGCTXNULL")) {
+      if (n++ < 16) { fprintf(stderr, "[I2-RGCTX] slot idx=%u NULL -> propaga NULL\n", idx); fsync(2); }
+      return NULL;
+    }
+    unsigned fi = idx < (sizeof g_i2_rgctx_fallback / sizeof g_i2_rgctx_fallback[0]) ? idx : 0;
+    slot = &g_i2_rgctx_fallback[fi];
+    if (n++ < 16) {
+      fprintf(stderr, "[I2-RGCTX] slot idx=%u veio NULL -> fallback[%u]=%p\n", idx, fi, slot);
+      fsync(2);
+    }
+  }
+  return slot;
+}
+static void patch_i2_rgctx_slot_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NORGCTXGUARD")) return;
+  static int done;
+  if (done) return;
+  g_i2_rgctx_slot_orig = (void *(*)(unsigned))arm_hook8(g_il2cpp_base + 0x79f51c,
+                                                        (void *)i2_rgctx_slot_guard);
+  done = 1;
+  fprintf(stderr, "[I2-RGCTX] libil2cpp+0x79f51c guard orig=%p\n", (void *)g_i2_rgctx_slot_orig);
+}
+static void patch_unity_cxa_throwlog(void) {
+  if (!g_unity_base || !getenv("CVGOS_THROWLOG")) return;
+  static int done;
+  if (done) return;
+  g_unity_cxa_throw_orig =
+      (void (*)(void *, void *, void *))thumb_hook12(g_unity_base + 0xc2bff0,
+                                                     (void *)my_unity_cxa_throw);
+  g_unity_ios_failure_orig =
+      (void (*)(const char *))thumb_hook14(g_unity_base + 0xc29b88,
+                                           (void *)my_unity_ios_failure);
+  done = 1;
+  fprintf(stderr, "[THROWLOG] cxa_throw tramp=%p ios_failure tramp=%p\n",
+          (void *)g_unity_cxa_throw_orig, (void *)g_unity_ios_failure_orig);
+}
 static char *my_strcpy_chk(char *d, const char *s, size_t dn) { (void)dn; return strcpy(d, s); }
 static char *my_strcat_chk(char *d, const char *s, size_t dn) { (void)dn; return strcat(d, s); }
+static size_t my_strnlen(const char *s, size_t maxlen) {
+  if (!s) return 0;
+  const void *p = memchr(s, 0, maxlen);
+  return p ? (size_t)((const char *)p - s) : maxlen;
+}
+static char *my_strsep(char **stringp, const char *delim) {
+  if (!stringp || !*stringp) return NULL;
+  char *s = *stringp;
+  char *e = (delim && *delim) ? strpbrk(s, delim) : NULL;
+  if (e) {
+    *e++ = 0;
+    *stringp = e;
+  } else {
+    *stringp = NULL;
+  }
+  return s;
+}
+/* Detector de recursão nos wrappers snprintf (o crash da worker é stack-overflow numa
+ * formatação "%s_tmp" da Unity — recursão infinita). Loga o caller e a fmt no 1º nível
+ * fundo e, se CVGOS_SNPRINTF_BREAK, corta a recursão retornando cedo. */
+static __thread int g_snprintf_depth;
+static void snprintf_recursion_watch(const char *fmt, uintptr_t ra) {
+  if (g_snprintf_depth == 24) {
+    static int n;
+    if (n++ < 8) {
+      uintptr_t rx = ra & ~(uintptr_t)1;
+      const char *lib = "?"; uintptr_t off = rx;
+      if (g_unity_base && rx >= g_unity_base && rx < g_unity_base + text_size) { lib = "libunity"; off = rx - g_unity_base; }
+      else if (g_il2cpp_base && rx >= g_il2cpp_base && rx < g_il2cpp_base + 0x3000000) { lib = "libil2cpp"; off = rx - g_il2cpp_base; }
+      fprintf(stderr, "[SNPRINTF-RECUR] depth=%d fmt=\"%.32s\" caller=%s+0x%lx\n",
+              g_snprintf_depth, fmt ? fmt : "(null)", lib, (unsigned long)off);
+      fsync(2);
+    }
+  }
+}
 static int my_vsnprintf_chk(char *str, size_t sz, int flag, size_t slen, const char *fmt, va_list ap) {
-  (void)flag; (void)slen; return vsnprintf(str, sz, fmt, ap); }
+  (void)flag; (void)slen;
+  if (g_snprintf_depth > 64 && getenv("CVGOS_SNPRINTF_BREAK")) { if (str && sz) str[0] = 0; return 0; }
+  g_snprintf_depth++;
+  snprintf_recursion_watch(fmt, (uintptr_t)__builtin_return_address(0));
+  int r = vsnprintf(str, sz, fmt, ap);
+  g_snprintf_depth--;
+  return r; }
 static int my_snprintf_chk(char *str, size_t sz, int flag, size_t slen, const char *fmt, ...) {
-  (void)flag; (void)slen; va_list ap; va_start(ap, fmt); int r = vsnprintf(str, sz, fmt, ap); va_end(ap); return r; }
+  (void)flag; (void)slen;
+  if (g_snprintf_depth > 64 && getenv("CVGOS_SNPRINTF_BREAK")) { if (str && sz) str[0] = 0; return 0; }
+  g_snprintf_depth++;
+  snprintf_recursion_watch(fmt, (uintptr_t)__builtin_return_address(0));
+  va_list ap; va_start(ap, fmt); int r = vsnprintf(str, sz, fmt, ap); va_end(ap);
+  g_snprintf_depth--;
+  return r; }
 static void my_FD_SET_chk(int fd, fd_set *s, size_t n) { (void)n; if (fd >= 0) FD_SET(fd, s); }
+/* ARM EABI memory helpers. A tabela gerada deixava estes simbolos em stubs no-op;
+   Unity/IL2CPP usam eles em paths quentes de string/metadata. */
+static void my_aeabi_memcpy(void *d, const void *s, size_t n) { memcpy(d, s, n); }
+static void my_aeabi_memmove(void *d, const void *s, size_t n) { memmove(d, s, n); }
+static void my_aeabi_memset(void *d, size_t n, int c) { memset(d, c, n); }
+static void my_aeabi_memclr(void *d, size_t n) { memset(d, 0, n); }
 /* strlcpy/strlcat (bionic) — o regex de passthrough não cobre (vira stub que NÃO copia
    -> buffer com lixo -> heap corruption "free(): invalid size"). Implementação real. */
 static unsigned long my_strlcpy(char *dst, const char *src, unsigned long sz) {
@@ -964,6 +2427,12 @@ extern long syscall(long, ...);
    TIMEOUT curto nas esperas de futex SEM timeout → o waiter acorda periodicamente, re-checa
    seu predicado e re-espera. Cobre TODA a sincronização por futex. */
 static long g_futexpoll_ms = 0;
+static __thread volatile int g_tls_futex_waiting;
+static __thread volatile long g_tls_futex_uaddr;
+static __thread volatile long g_tls_futex_op;
+static __thread volatile long g_tls_futex_val;
+static __thread volatile long g_tls_futex_timeout;
+static __thread void *volatile g_tls_futex_caller;
 #ifndef SYS_futex
 #define SYS_futex 98
 #endif
@@ -972,6 +2441,12 @@ extern void gc_wait_restore(void *oldp);
 #ifndef SYS_rt_sigprocmask
 #define SYS_rt_sigprocmask 135
 #endif
+static int my_mkdir(const char *p, mode_t mode) {
+  long r = syscall(SYS_mkdir, p, mode);
+  if (r == 0) return 0;
+  if (errno == EEXIST) return 0;
+  return -1;
+}
 static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long a6) {
   /* 🔑 As threads do GC (Finalizer/Loading, bionic-static) BLOQUEIAM SIGPWR(30)/SIGXCPU(24) via
      rt_sigprocmask CRU (não passam pelos nossos shims pthread). Com SIGPWR bloqueado, o stop-the-world
@@ -999,7 +2474,7 @@ static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long
       /* op 0/9=WAIT, 1/10=WAKE. Loga (tid,comm,uaddr,op). WAIT dedup por (tid,uaddr);
          WAKE loga todos (raro, e é o que queremos ver: alguém acorda o uaddr do worker?). */
       int isw = (op == 0 || op == 9);
-      int tid = (int)syscall(178 /*arm64 gettid*/);
+      int tid = (int)syscall(SYS_gettid);
       int show = 1;
       if (isw) { static struct { int tid; long ua; } seen[200]; static int ns;
         for (int i = 0; i < ns; i++) if (seen[i].tid == tid && seen[i].ua == a1) { show = 0; break; }
@@ -1024,7 +2499,14 @@ static long my_syscall(long n, long a1, long a2, long a3, long a4, long a5, long
          stop-the-world do GC conseguir suspender ESTA thread (que bloqueia SIGPWR) enquanto está
          parada aqui. Sem isso, o GC manda SIGPWR, fica bloqueado, e WaitForThreadsToSuspend trava. */
       char old[128]; gc_wait_unblock(old);
+      g_tls_futex_waiting = 1;
+      g_tls_futex_uaddr = a1;
+      g_tls_futex_op = a2;
+      g_tls_futex_val = a3;
+      g_tls_futex_timeout = t4;
+      g_tls_futex_caller = __builtin_return_address(0);
       long r = syscall(n, a1, a2, a3, t4, a5, a6);
+      g_tls_futex_waiting = 0;
       gc_wait_restore(old);
       return r;
     }
@@ -1042,13 +2524,15 @@ static int my_pthread_kill(pthread_t t, int sig) {
      Nenhuma thread é suspensa → o GC (com GCOFF, sem scan) só precisa que os WAITs retornem (NOGCWAIT
      + patch do restart-wait). Neutraliza o STW inteiro sem alcançar as threads bionic-static. */
   if (getenv("TER_NOSUSPEND") && (sig == 30 || sig == 24)) return 0;
-  /* 🔑 TER_FAKEACK: a thread bionic-static que o GC quer suspender bloqueia SIGPWR e nunca dá ACK.
-     O semáforo de ACK que o WaitForThreadsToSuspend espera é o NOSSO sem_shim em il2cpp+0x31666a0.
-     Então POSTAMOS o sem no lugar da thread (fake ACK) + ENGOLIMOS o sinal (a thread não suspende) →
-     o GC conta o ACK e segue o fluxo NORMAL (≠ NOGCWAIT). Usar com CUP_GCOFF (sem scan de stack viva). */
+  /* TER_FAKEACK: a thread bionic-static que o GC quer suspender bloqueia SIGPWR e nunca da ACK.
+     No Castlevania/Unity 2018 ARMv7 o WaitForThreadsToSuspend espera o sem global em
+     libil2cpp+0x4ccbc28 (caller libil2cpp+0x7dfd88). Postamos esse sem no lugar da thread
+     e engolimos o sinal para o GC sair do stop-the-world quebrado. */
   if (getenv("TER_FAKEACK") && (sig == 30 || sig == 24) && g_il2cpp_base) {
     extern int sh_sem_post(void *);
-    sh_sem_post((void *)(g_il2cpp_base + 0x31666a0));   /* ACK do suspend (sem do WaitForThreadsToSuspend) */
+    const char *ack_env = getenv("TER_FAKEACK_SEM");
+    uintptr_t ack_off = ack_env && *ack_env ? (uintptr_t)strtoul(ack_env, NULL, 0) : 0x4ccbc28u;
+    sh_sem_post((void *)(g_il2cpp_base + ack_off));   /* ACK do suspend (sem do WaitForThreadsToSuspend) */
     return 0;
   }
   return pthread_kill(t, sig);
@@ -1077,13 +2561,56 @@ static unsigned long my_strlcat(char *dst, const char *src, unsigned long sz) {
   memcpy(dst + dl, src, c); dst[dl + c] = 0;
   return dl + sl;
 }
+static void install_aeabi_mem_shim(void) {
+  set_import("__aeabi_memcpy", (void *)my_aeabi_memcpy);
+  set_import("__aeabi_memcpy4", (void *)my_aeabi_memcpy);
+  set_import("__aeabi_memcpy8", (void *)my_aeabi_memcpy);
+  set_import("__aeabi_memmove", (void *)my_aeabi_memmove);
+  set_import("__aeabi_memmove4", (void *)my_aeabi_memmove);
+  set_import("__aeabi_memmove8", (void *)my_aeabi_memmove);
+  set_import("__aeabi_memset", (void *)my_aeabi_memset);
+  set_import("__aeabi_memset4", (void *)my_aeabi_memset);
+  set_import("__aeabi_memset8", (void *)my_aeabi_memset);
+  set_import("__aeabi_memclr", (void *)my_aeabi_memclr);
+  set_import("__aeabi_memclr4", (void *)my_aeabi_memclr);
+  set_import("__aeabi_memclr8", (void *)my_aeabi_memclr);
+}
+struct bionic_statfs32 {
+  uint32_t type, bsize, blocks, bfree, bavail, files, ffree;
+  int32_t fsid[2];
+  uint32_t namelen, frsize, flags, spare[4];
+};
+struct bionic_statfs64 {
+  uint32_t type, bsize;
+  uint64_t blocks, bfree, bavail, files, ffree;
+  int32_t fsid[2];
+  uint32_t namelen, frsize, flags, spare[4];
+} __attribute__((packed, aligned(4)));
+static void fake_statfs_values(uint64_t *blocks, uint64_t *freeb) {
+  *blocks = (100ULL * 1024 * 1024 * 1024) / 4096;  /* 100GB total */
+  *freeb = (50ULL * 1024 * 1024 * 1024) / 4096;    /* 50GB livre */
+}
+static int my_statfs(const char *p, void *buf) {
+  if (!buf) { errno = EFAULT; return -1; }
+  uint64_t blocks, freeb; fake_statfs_values(&blocks, &freeb);
+  struct bionic_statfs32 s; memset(&s, 0, sizeof s);
+  s.type = 0xef53; s.bsize = 4096;
+  s.blocks = (uint32_t)blocks; s.bfree = (uint32_t)freeb; s.bavail = (uint32_t)freeb;
+  s.files = 1000000; s.ffree = 900000; s.namelen = 255; s.frsize = 4096;
+  memcpy(buf, &s, sizeof s);
+  if (g_dllog) fprintf(stderr, "[statfs] path=%s -> fake 50GB livre\n", p ? p : "?");
+  return 0;
+}
 static int my_statfs64(const char *p, void *buf) {
-  static int (*real)(const char *, void *);
-  if (!real) { real = (void *)dlsym(RTLD_DEFAULT, "statfs64");
-               if (!real) real = (void *)dlsym(RTLD_DEFAULT, "statfs"); }
-  int rc = real ? real("/storage/roms/ports/cvgos", buf) : -1;
-  if (g_dllog) fprintf(stderr, "[statfs64] path=%s -> GAMEDIR rc=%d\n", p ? p : "?", rc);
-  return rc;
+  if (!buf) { errno = EFAULT; return -1; }
+  uint64_t blocks, freeb; fake_statfs_values(&blocks, &freeb);
+  struct bionic_statfs64 s; memset(&s, 0, sizeof s);
+  s.type = 0xef53; s.bsize = 4096;
+  s.blocks = blocks; s.bfree = freeb; s.bavail = freeb;
+  s.files = 1000000; s.ffree = 900000; s.namelen = 255; s.frsize = 4096;
+  memcpy(buf, &s, sizeof s);
+  if (g_dllog) fprintf(stderr, "[statfs64] path=%s -> fake 50GB livre\n", p ? p : "?");
+  return 0;
 }
 /* exit() do jogo: loga QUEM chamou (lr) + stack antes de morrer — a morte
    silenciosa pos-FMOD não deixava rastro. */
@@ -1103,17 +2630,61 @@ static int my_sysprop(const char *name, char *value) {
   value[0] = 0; return 0;
 }
 /* __android_log -> stderr */
+static void alog_trace_lr(int prio, const char *text, uintptr_t lr) {
+  int interesting = text && (strstr(text, "FMOD") ||
+                             strstr(text, "Unable") ||
+                             strstr(text, "audio") ||
+                             strstr(text, "Audio") ||
+                             strstr(text, "device"));
+  if (prio < 5 && !interesting)
+    return;
+  fprintf(stderr, "[ALOG_LR] lr=0x%lx", (unsigned long)lr);
+  if (g_unity_base && lr >= g_unity_base && lr < g_unity_base + text_size)
+    fprintf(stderr, " libunity+0x%lx", (unsigned long)(lr - g_unity_base));
+  else if (g_il2cpp_base && lr >= g_il2cpp_base && lr < g_il2cpp_base + 0x5000000)
+    fprintf(stderr, " libil2cpp+0x%lx", (unsigned long)(lr - g_il2cpp_base));
+  fprintf(stderr, "\n");
+  if (interesting || prio >= 5) {
+    uintptr_t sp = 0;
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+    int hits = 0;
+    for (int i = 0; i < 256 && hits < 24; i++) {
+      uintptr_t v = ((uintptr_t *)sp)[i] & ~(uintptr_t)1;
+      if (g_unity_base && v >= g_unity_base + 0x354d0 && v < g_unity_base + 0xc2ff78) {
+        fprintf(stderr, "[ALOG_STACK] sp+0x%x libunity+0x%lx\n",
+                i * 4, (unsigned long)(v - g_unity_base));
+        hits++;
+      } else if (g_il2cpp_base && v >= g_il2cpp_base && v < g_il2cpp_base + 0x5000000) {
+        fprintf(stderr, "[ALOG_STACK] sp+0x%x libil2cpp+0x%lx\n",
+                i * 4, (unsigned long)(v - g_il2cpp_base));
+        hits++;
+      }
+    }
+  }
+}
 static int my_alog_print(int prio, const char *tag, const char *fmt, ...) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
   va_list ap; va_start(ap, fmt); fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
-  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap); return 0;
+  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap);
+  alog_trace_lr(prio, fmt, lr);
+  return 0;
 }
 static int my_alog_write(int prio, const char *tag, const char *msg) {
-  fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", msg ? msg : ""); return 0;
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
+  fprintf(stderr, "[ALOG:%d %s] %s\n", prio, tag ? tag : "?", msg ? msg : "");
+  alog_trace_lr(prio, msg, lr);
+  return 0;
 }
 /* __android_log_vprint é o canal do PLAYER LOG do Unity — jamais stubar */
 static int my_alog_vprint(int prio, const char *tag, const char *fmt, va_list ap) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
   fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
-  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); return 0;
+  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n");
+  alog_trace_lr(prio, fmt, lr);
+  return 0;
 }
 /* ANativeWindow: Unity espera window !=NULL (nativeRecreateGfxState) senão trava p/ sempre.
    Os egl* do libunity são imports PLT que resolvem no libEGL REAL do Mali (dlopen GLOBAL);
@@ -4304,17 +5875,31 @@ static int my_dlclose(void *h) { (void)h; return 0; }
 
 /* ---------- TLS bridge (bionic keys -> slots nossos; 1 glibc key) ---------- */
 #define NSLOT 1024
-static pthread_key_t g_tls_base; static int g_tls_init = 0;
-static int g_slot_next = 1; static pthread_mutex_t g_slot_mtx = PTHREAD_MUTEX_INITIALIZER;
-static void tls_dtor(void *p) { free(p); }
+#define NTLSBANK 128
+static int g_slot_next = 1;
+static volatile int g_tls_banks_lock;
+struct tls_bank { int tid; void *slots[NSLOT]; };
+static struct tls_bank g_tls_banks[NTLSBANK];
+static void *g_tls_overflow[NSLOT];
 static void **tls_slots(void) {
-  if (!g_tls_init) { pthread_key_create(&g_tls_base, tls_dtor); g_tls_init = 1; }
-  void **s = (void **)pthread_getspecific(g_tls_base);
-  if (!s) { s = (void **)calloc(NSLOT, sizeof(void *)); pthread_setspecific(g_tls_base, s); }
-  return s;
+  int tid = (int)syscall(SYS_gettid);
+  void **ret = g_tls_overflow;
+  while (__sync_lock_test_and_set(&g_tls_banks_lock, 1)) sched_yield();
+  int free_i = -1;
+  for (int i = 0; i < NTLSBANK; i++) {
+    if (g_tls_banks[i].tid == tid) { ret = g_tls_banks[i].slots; break; }
+    if (g_tls_banks[i].tid == 0 && free_i < 0) free_i = i;
+  }
+  if (ret == g_tls_overflow && free_i >= 0) {
+    g_tls_banks[free_i].tid = tid;
+    ret = g_tls_banks[free_i].slots;
+  }
+  __sync_lock_release(&g_tls_banks_lock);
+  return ret;
 }
-static int sh_key_create(unsigned *k, void (*d)(void *)) { (void)d; pthread_mutex_lock(&g_slot_mtx);
-  int n = g_slot_next++; pthread_mutex_unlock(&g_slot_mtx); if (n >= NSLOT) return 11; *k = (unsigned)n; return 0; }
+static int sh_key_create(unsigned *k, void (*d)(void *)) { (void)d;
+  int n = __sync_fetch_and_add(&g_slot_next, 1);
+  if (n >= NSLOT) return 11; *k = (unsigned)n; return 0; }
 static int sh_key_delete(unsigned k) { (void)k; return 0; }
 static void *sh_getspecific(unsigned k) { if ((int)k <= 0 || (int)k >= NSLOT) return NULL; return tls_slots()[(int)k]; }
 static int sh_setspecific(unsigned k, const void *v) { if ((int)k <= 0 || (int)k >= NSLOT) return 22; tls_slots()[(int)k] = (void *)v; return 0; }
@@ -4325,13 +5910,59 @@ static void map_caller(const char *tag, uintptr_t ra) {
     fprintf(stderr, "%s caller=libunity+0x%lx\n", tag, ra - g_unity_base);
   else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000)
     fprintf(stderr, "%s caller=libil2cpp+0x%lx\n", tag, ra - g_il2cpp_base);
-  else fprintf(stderr, "%s caller=0x%lx (?)\n", tag, ra);
+  else {
+    char perm[5]; uintptr_t lo = 0, hi = 0;
+    const char *line = maps_find(ra & ~(uintptr_t)1, &lo, &hi, perm);
+    if (line) fprintf(stderr, "%s caller=0x%lx (+0x%lx) | %s\n",
+                      tag, ra, (unsigned long)((ra & ~(uintptr_t)1) - lo), line);
+    else fprintf(stderr, "%s caller=0x%lx (?)\n", tag, ra);
+  }
   fflush(stderr);
 }
+static int real_raise_signal(int sig) {
+  return (int)syscall(__NR_tgkill, getpid(), (long)syscall(SYS_gettid), sig);
+}
+static int real_pthread_kill_forward(pthread_t t, int sig) {
+  static int (*real_fn)(pthread_t, int);
+  if (!real_fn) real_fn = (int (*)(pthread_t, int))dlsym(RTLD_NEXT, "pthread_kill");
+  if (real_fn) return real_fn(t, sig);
+  return real_raise_signal(sig);
+}
+static void real_abort_forward(void) __attribute__((noreturn));
+static void real_abort_forward(void) {
+  static void (*real_fn)(void);
+  if (!real_fn) real_fn = (void (*)(void))dlsym(RTLD_NEXT, "abort");
+  if (real_fn) real_fn();
+  real_raise_signal(SIGABRT);
+  _exit(128 + SIGABRT);
+}
+int raise(int sig) {
+  maps_snapshot();
+  map_caller("[RAISE/G]", (uintptr_t)__builtin_return_address(0));
+  fprintf(stderr, "[RAISE/G] sig=%d tid=%ld\n", sig, (long)syscall(SYS_gettid)); dbg_sync();
+  if (getenv("CUP_NORAISE")) return 0;
+  return real_raise_signal(sig);
+}
+void abort(void) {
+  maps_snapshot();
+  map_caller("[ABORT/G]", (uintptr_t)__builtin_return_address(0));
+  fprintf(stderr, "[ABORT/G] tid=%ld\n", (long)syscall(SYS_gettid)); dbg_sync();
+  if (getenv("CUP_NORAISE")) for (;;) pause();
+  real_abort_forward();
+}
+int pthread_kill(pthread_t t, int sig) {
+  if (sig == SIGSEGV || sig == SIGABRT || sig == SIGBUS || sig == SIGILL || getenv("CVGOS_PKILL_ALL")) {
+    maps_snapshot();
+    map_caller("[PTHREAD_KILL/G]", (uintptr_t)__builtin_return_address(0));
+    fprintf(stderr, "[PTHREAD_KILL/G] target=%p sig=%d tid=%ld\n",
+            (void *)t, sig, (long)syscall(SYS_gettid)); dbg_sync();
+  }
+  return real_pthread_kill_forward(t, sig);
+}
 static int my_raise(int sig) { map_caller("[RAISE]", (uintptr_t)__builtin_return_address(0));
-  fprintf(stderr, "[RAISE] sig=%d\n", sig); if (getenv("CUP_NORAISE")) return 0; return raise(sig); }
+  fprintf(stderr, "[RAISE] sig=%d\n", sig); if (getenv("CUP_NORAISE")) return 0; return real_raise_signal(sig); }
 static void my_abort(void) { map_caller("[ABORT]", (uintptr_t)__builtin_return_address(0));
-  if (getenv("CUP_NORAISE")) return; abort(); }
+  if (getenv("CUP_NORAISE")) return; real_abort_forward(); }
 static int my_tgkill(int tgid, int tid, int sig) { map_caller("[TGKILL]", (uintptr_t)__builtin_return_address(0));
   fprintf(stderr, "[TGKILL] sig=%d\n", sig); if (getenv("CUP_NORAISE")) return 0; return syscall(__NR_tgkill, tgid, tid, sig); }
 
@@ -4414,6 +6045,107 @@ static int patch_got(const char *name, void *fn) {
   int n = so_patch_got(name, (uintptr_t)fn);
   if (!n) fprintf(stderr, "[GOT] %s: 0 slots (nao achado)\n", name);
   return n;
+}
+
+static const char *const g_eh_symbols[] = {
+  "_Unwind_RaiseException", "_Unwind_Resume", "_Unwind_Resume_or_Rethrow", "_Unwind_Complete",
+  "_Unwind_DeleteException", "_Unwind_Backtrace", "_Unwind_GetLanguageSpecificData",
+  "_Unwind_GetRegionStart", "_Unwind_GetDataRelBase", "_Unwind_GetTextRelBase",
+  "_Unwind_VRS_Get", "_Unwind_VRS_Set", "_Unwind_GetCFA", "_Unwind_ForcedUnwind",
+  "__gnu_Unwind_Find_exidx", "__gnu_unwind_frame",
+  "__cxa_throw", "__cxa_begin_catch", "__cxa_end_catch", "__cxa_rethrow", "__cxa_call_unexpected",
+  "__cxa_begin_cleanup", "__cxa_type_match", "__cxa_finalize", "__gxx_personality_v0",
+  "__aeabi_unwind_cpp_pr0", "__aeabi_unwind_cpp_pr1", "__aeabi_unwind_cpp_pr2", NULL
+};
+
+static void *g_eh_libgcc;
+static void *g_eh_ptrs[32];
+extern void cvgos_imports_set_eh_symbol(const char *name, void *p);
+
+static long my_unwind_backtrace(void *cb, void *ref) {
+  (void)cb; (void)ref;
+  static int n;
+  if (n++ < 2) fprintf(stderr, "[EHFIX] _Unwind_Backtrace bloqueado -> 0\n");
+  return 0;
+}
+
+static void eh_open_libgcc(void) {
+  if (g_eh_libgcc) return;
+  const char *paths[] = {
+    "libgcc_s.so.1",
+    "/usr/lib32/libgcc_s.so.1",
+    "/usr/lib/libgcc_s.so.1",
+    NULL
+  };
+  const char *used = NULL;
+  for (int i = 0; paths[i]; i++) {
+    g_eh_libgcc = dlopen(paths[i], RTLD_NOW | RTLD_GLOBAL);
+    if (g_eh_libgcc) { used = paths[i]; break; }
+  }
+  fprintf(stderr, "[EHFIX] libgcc_s handle=%p (%s)\n", g_eh_libgcc, used ? used : "nao achado");
+}
+
+static void *eh_resolve_symbol(const char *name) {
+  if (name && !strcmp(name, "_Unwind_Backtrace") && !getenv("CVGOS_REALBT"))
+    return (void *)my_unwind_backtrace;
+  eh_open_libgcc();
+  void *p = g_eh_libgcc ? dlsym(g_eh_libgcc, name) : NULL;
+  if (!p) p = dlsym(RTLD_DEFAULT, name);
+  return p;
+}
+
+void *cvgos_eh_resolve_public(const char *name) {
+  if (!name) return NULL;
+  int log = getenv("CVGOS_EHLOG") ? 1 : 0;
+  for (int i = 0; g_eh_symbols[i]; i++) {
+    if (!strcmp(g_eh_symbols[i], name)) {
+      if (log) fprintf(stderr, "[EHPUB] hit %s idx=%d cached=%p\n", name, i, g_eh_ptrs[i]);
+      if (!g_eh_ptrs[i]) {
+        g_eh_ptrs[i] = eh_resolve_symbol(name);
+        if (g_eh_ptrs[i]) cvgos_imports_set_eh_symbol(name, g_eh_ptrs[i]);
+        if (log) fprintf(stderr, "[EHPUB] resolved %s -> %p\n", name, g_eh_ptrs[i]);
+      }
+      return g_eh_ptrs[i];
+    }
+  }
+  void *p = eh_resolve_symbol(name);
+  if (log) fprintf(stderr, "[EHPUB] miss-name %s -> %p\n", name, p);
+  return p;
+}
+
+static void eh_prepare_imports(const char *tag) {
+  int ok = 0, miss = 0;
+  int log = getenv("CVGOS_EHLOG") ? 1 : 0;
+  for (int i = 0; g_eh_symbols[i]; i++) {
+    void *p = eh_resolve_symbol(g_eh_symbols[i]);
+    if (!p) { miss++; continue; }
+    g_eh_ptrs[i] = p;
+    set_import(g_eh_symbols[i], p);
+    cvgos_imports_set_eh_symbol(g_eh_symbols[i], p);
+    if (log) fprintf(stderr, "[EHFIXSYM] import %-28s -> %p\n", g_eh_symbols[i], p);
+    ok++;
+  }
+  fprintf(stderr, "[EHFIX] imports %s: %d ok, %d miss\n", tag ? tag : "", ok, miss);
+}
+
+static void eh_patch_loaded_gots(void) {
+  int miss = 0, nu = 0, ni = 0;
+  int log = getenv("CVGOS_EHLOG") ? 1 : 0;
+  so_module *c = so_save();
+  for (int i = 0; g_eh_symbols[i]; i++) {
+    void *p = eh_resolve_symbol(g_eh_symbols[i]);
+    if (!p) { miss++; continue; }
+    g_eh_ptrs[i] = p;
+    set_import(g_eh_symbols[i], p);
+    cvgos_imports_set_eh_symbol(g_eh_symbols[i], p);
+    int u = 0, il = 0;
+    if (g_m_unity) { so_use(g_m_unity); u = so_patch_import_relocs(g_eh_symbols[i], (uintptr_t)p); nu += u; }
+    if (g_m_il2cpp) { so_use(g_m_il2cpp); il = so_patch_import_relocs(g_eh_symbols[i], (uintptr_t)p); ni += il; }
+    if (log) fprintf(stderr, "[EHFIXSYM] got %-28s -> %p unity=%d il2cpp=%d\n",
+                     g_eh_symbols[i], p, u, il);
+  }
+  so_use(c); free(c);
+  fprintf(stderr, "[EHFIX] exception ABI: GOT unity=%d il2cpp=%d miss=%d\n", nu, ni, miss);
 }
 
 static void *volatile g_preload_mgr;  /* PreloadManager capturado pelo spy (CUP_PSPY) */
@@ -4685,11 +6417,78 @@ static void diag_handler(int sig, siginfo_t *si, void *uc_) {
   (void)sig; (void)si;
   ucontext_t *uc = (ucontext_t *)uc_;
   uintptr_t pc = uc->uc_mcontext.arm_pc, lr = uc->uc_mcontext.arm_lr, sp = uc->uc_mcontext.arm_sp;
+  uintptr_t r0 = uc->uc_mcontext.arm_r0, r1 = uc->uc_mcontext.arm_r1;
+  uintptr_t r2 = uc->uc_mcontext.arm_r2, r3 = uc->uc_mcontext.arm_r3;
+  uintptr_t r4 = uc->uc_mcontext.arm_r4, r5 = uc->uc_mcontext.arm_r5;
+  uintptr_t r6 = uc->uc_mcontext.arm_r6, r7 = uc->uc_mcontext.arm_r7;
+  maps_snapshot();
   uintptr_t ub = g_unity_base, ib = g_il2cpp_base;
   fprintf(stderr, "[DIAG] tid=%d pc=0x%lx lr=0x%lx", (int)syscall(SYS_gettid),
           (unsigned long)pc, (unsigned long)lr);
+  if (ub && pc >= ub && pc < ub + text_size) fprintf(stderr, " pc=libunity+0x%lx", pc - ub);
+  else if (ib && pc >= ib && pc < ib + 0x3000000) fprintf(stderr, " pc=libil2cpp+0x%lx", pc - ib);
   if (ub && lr >= ub && lr < ub + text_size) fprintf(stderr, " lr=libunity+0x%lx", lr - ub);
+  else if (ib && lr >= ib && lr < ib + 0x3000000) fprintf(stderr, " lr=libil2cpp+0x%lx", lr - ib);
   fprintf(stderr, "\n");
+  fprintf(stderr, "[DIAGREG] r0=0x%lx r1=0x%lx r2=0x%lx r3=0x%lx r4=0x%lx r5=0x%lx r6=0x%lx r7=0x%lx sp=0x%lx\n",
+          (unsigned long)r0, (unsigned long)r1, (unsigned long)r2, (unsigned long)r3,
+          (unsigned long)r4, (unsigned long)r5, (unsigned long)r6, (unsigned long)r7,
+          (unsigned long)sp);
+  { char perm[5]; uintptr_t lo, hi; const char *line;
+    line = maps_find(pc & ~(uintptr_t)1, &lo, &hi, perm);
+    if (line) fprintf(stderr, "[DIAGMAP] pc %s\n", line);
+    line = maps_find(lr & ~(uintptr_t)1, &lo, &hi, perm);
+    if (line) fprintf(stderr, "[DIAGMAP] lr %s\n", line);
+  }
+  if (r7 == 3 || r7 == SYS_futex) {
+    fprintf(stderr, "[DIAGSYS] syscall=%s(%lu) a0=0x%lx a1=0x%lx a2=0x%lx a3=0x%lx\n",
+            r7 == 3 ? "read" : "futex", (unsigned long)r7,
+            (unsigned long)r0, (unsigned long)r1, (unsigned long)r2, (unsigned long)r3);
+  }
+  if (r7 == 3 && r0 < 65536) {
+    char pbuf[64], lbuf[256];
+    int n = snprintf(pbuf, sizeof pbuf, "/proc/self/fd/%lu", (unsigned long)r0);
+    ssize_t rn = (n > 0 && n < (int)sizeof pbuf) ? readlink(pbuf, lbuf, sizeof lbuf - 1) : -1;
+    if (rn >= 0) { lbuf[rn] = 0; fprintf(stderr, "[DIAGFD] read fd=%lu -> %s\n", (unsigned long)r0, lbuf); }
+    else fprintf(stderr, "[DIAGFD] read fd=%lu -> ? errno=%d\n", (unsigned long)r0, errno);
+  }
+  extern void sh_sem_tls_state(void **, int *, void **);
+  void *sem_key = NULL, *sem_caller = NULL;
+  int sem_count = 0;
+  sh_sem_tls_state(&sem_key, &sem_count, &sem_caller);
+  if (sem_key) {
+    uintptr_t sr = (uintptr_t)sem_caller;
+    const char *lib = "?";
+    unsigned long off = sr;
+    if (ub && sr >= ub && sr < ub + text_size) { lib = "libunity"; off = sr - ub; }
+    else if (ib && sr >= ib && sr < ib + 0x3000000) { lib = "libil2cpp"; off = sr - ib; }
+    const char *tag = (ib && (uintptr_t)sem_key == ib + 0x4ccbc28u) ? " ACK" : "";
+    fprintf(stderr, "[DIAG]  in sh_sem_wait%s sem=%p count=%d caller=%s+0x%lx\n",
+            tag, sem_key, sem_count, lib, off);
+  }
+  extern void pt_cond_tls_state(void **, void **, void **, int *);
+  void *cond_cslot = NULL, *cond_mslot = NULL, *cond_caller = NULL;
+  int cond_timed = 0;
+  pt_cond_tls_state(&cond_cslot, &cond_mslot, &cond_caller, &cond_timed);
+  if (cond_cslot) {
+    uintptr_t cr = (uintptr_t)cond_caller;
+    const char *lib = "?";
+    unsigned long off = cr;
+    if (ub && cr >= ub && cr < ub + text_size) { lib = "libunity"; off = cr - ub; }
+    else if (ib && cr >= ib && cr < ib + 0x3000000) { lib = "libil2cpp"; off = cr - ib; }
+    fprintf(stderr, "[DIAG]  in pthread_cond_%swait cslot=%p mslot=%p caller=%s+0x%lx\n",
+            cond_timed ? "timed" : "", cond_cslot, cond_mslot, lib, off);
+  }
+  if (g_tls_futex_waiting) {
+    uintptr_t fr = (uintptr_t)g_tls_futex_caller;
+    const char *lib = "?";
+    unsigned long off = fr;
+    if (ub && fr >= ub && fr < ub + text_size) { lib = "libunity"; off = fr - ub; }
+    else if (ib && fr >= ib && fr < ib + 0x3000000) { lib = "libil2cpp"; off = fr - ib; }
+    fprintf(stderr, "[DIAG]  in futex_wait uaddr=%p op=0x%lx val=%ld timeout=%p caller=%s+0x%lx\n",
+            (void *)g_tls_futex_uaddr, g_tls_futex_op, g_tls_futex_val,
+            (void *)g_tls_futex_timeout, lib, off);
+  }
   int hits = 0;
   for (uintptr_t a = sp; a + 8 <= sp + 16384UL * 8 && hits < 60; a += 8) {
     if (!addr_readable(a)) break;
@@ -4798,7 +6597,7 @@ static int fmod_read_format(unsigned *blk, unsigned *rate, unsigned *ch, void **
   if (!sys || !addr_readable((uintptr_t)sys + 0x7f8)) return 0;
   if (blk)  *blk  = *(uint32_t *)((char *)sys + 0x7f4);
   /* RAIZ do "acelerado": a taxa do PCM entregue ao AudioTrack é [system+0x7d4]
-     (= o que fmodGetInfo @0x8112b0 reporta como samplerate), NÃO [+0x7c4]. O +0x7c4
+     (= o que fmodGetInfo registrado via JNI reporta como samplerate), NÃO [+0x7c4]. O +0x7c4
      é a taxa do device de saída; o mixer entrega no rate +0x7d4 (mobile costuma usar
      24000). Tocar 24000 como 44100 = ~1.8x rápido/agudo. */
   if (rate) *rate = *(uint32_t *)((char *)sys + 0x7d4);
@@ -4811,7 +6610,7 @@ static void *fmod_audio_thread(void *arg) {
   void *fp = NULL;
   while (g_fmod_run && !(fp = jni_find_native("fmodProcess"))) usleep(20000);
   if (!fp) return NULL;
-  static long fdev = 0xFAD;            /* this (FMODAudioDevice) fake */
+  void *fdev = jni_fmod_device();      /* this (FMODAudioDevice) fake */
   void *bb = jni_fmod_bytebuffer();
   void *pcm = jni_fmod_pcm();
   int pcmcap = jni_fmod_pcm_size();
@@ -4826,7 +6625,7 @@ static void *fmod_audio_thread(void *arg) {
   int got = 0;
   for (int t = 0; g_fmod_run && t < 4000; t++) {
     memset(pcmb, 0xAB, pcmcap);
-    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, fdev, bb);
     if (r == 0) {
       int last = -1;
       for (int i = pcmcap - 1; i >= 0; i--) if (pcmb[i] != 0xAB) { last = i; break; }
@@ -4836,16 +6635,18 @@ static void *fmod_audio_thread(void *arg) {
     usleep(2000);
   }
   fprintf(stderr, "[AUDIO] MEDIDO: fmodProcess escreve ~%u bytes/chamada (amostras=%d, cap=%d)\n", measured, got, pcmcap);
-  /* 🔑🔑 GROUND TRUTH do formato: fmodGetInfo(env,thiz,infoType) @libunity+0x8112b0 é a fn que o FMOD
+  /* 🔑🔑 GROUND TRUTH do formato: fmodGetInfo(env,thiz,infoType) é registrado via JNI pelo FMOD
      expõe p/ o Java montar o AudioTrack. Tipos: 0=SAMPLERATE, 1=blockSize(frames), 4=CHANNELS.
      RAIZ DO ÁUDIO RÁPIDO: o FMOD mixa a **24000 Hz** (mobile), mas o SDL estava a 44100 →
      44100/24000 = 1.84× acelerado. FIX = abrir o SDL na taxa/canais REAIS do fmodGetInfo. */
-  { int (*fgi)(void*, void*, int) = (void *)(g_unity_base + 0x8112b0);
-    for (int it = 0; it < 5; it++)
-      fprintf(stderr, "[AUDIO] fmodGetInfo(%d) = %d\n", it, fgi(g_fmod_env, &fdev, it));
-    int r0 = fgi(g_fmod_env, &fdev, 0), c4 = fgi(g_fmod_env, &fdev, 4);
-    if (r0 >= 8000 && r0 <= 192000) rate = (unsigned)r0;     /* taxa real do mixer FMOD */
-    if (c4 == 1 || c4 == 2) ch = (unsigned)c4;               /* canais reais */
+  { int (*fgi)(void*, void*, int) = (int (*)(void*, void*, int))jni_find_native("fmodGetInfo");
+    if (fgi) {
+      for (int it = 0; it < 5; it++)
+        fprintf(stderr, "[AUDIO] fmodGetInfo(%d) = %d\n", it, fgi(g_fmod_env, fdev, it));
+      int r0 = fgi(g_fmod_env, fdev, 0), c4 = fgi(g_fmod_env, fdev, 4);
+      if (r0 >= 8000 && r0 <= 192000) rate = (unsigned)r0;     /* taxa real do mixer FMOD */
+      if (c4 == 1 || c4 == 2) ch = (unsigned)c4;               /* canais reais */
+    }
   }
   if (getenv("TER_AUDIO_RATE")) rate = atoi(getenv("TER_AUDIO_RATE"));
   if (getenv("TER_AUDIO_CH"))   ch   = atoi(getenv("TER_AUDIO_CH"));
@@ -4870,7 +6671,7 @@ static void *fmod_audio_thread(void *arg) {
   Uint32 target = bytes * bpblocks;
   unsigned long n = 0, fed = 0;
   for (unsigned i = 0; dev && i < bpblocks && g_fmod_run; i++) {   /* pré-enche */
-    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, fdev, bb);
     if (r == 0) { SDL_QueueAudio(dev, pcm, bytes); fed += bytes; } else { usleep(3000); }
   }
   if (dev) SDL_PauseAudioDevice(dev, 0);
@@ -4878,7 +6679,7 @@ static void *fmod_audio_thread(void *arg) {
           dev, rate, ch, blk, bytes, bpblocks, have.freq, have.channels, dev ? "" : SDL_GetError());
   while (g_fmod_run) {
     if (dev && SDL_GetQueuedAudioSize(dev) > target) { usleep(1000); continue; }
-    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, &fdev, bb);
+    int r = ((int (*)(void *, void *, void *))fp)(g_fmod_env, fdev, bb);
     if (r == 0 && dev) { SDL_QueueAudio(dev, pcm, bytes); fed += bytes; }
     else if (r < 0) usleep(5000);      /* output ainda não pronto */
     if (n < 5 || n % 2000 == 0) {
@@ -4892,12 +6693,251 @@ static void *fmod_audio_thread(void *arg) {
 /* 🔑 __cxa_throw hook: loga o TIPO da exceção C++ (type_info->name) antes de repassar
  * -> revela O QUE a Unity lança no RecreateGfxState. CVGOS_THROWLOG ativa. */
 static void (*g_real_cxa_throw)(void *, void *, void *) = NULL;
+typedef struct {
+  const void *method;
+  uintptr_t raw_ip;
+  int sourceCodeLineNumber;
+  int ilOffset;
+  const char *filename;
+} cvgos_il2cpp_frame_info;
+typedef struct {
+  int n;
+  const char *(*method_get_name)(void *);
+  void *(*method_get_class)(void *);
+  const char *(*class_get_name)(void *);
+  const char *(*class_get_namespace)(void *);
+} cvgos_il2cpp_stack_ctx;
+static const char *cvgos_safe_cstr(const char *s) {
+  size_t len = 0;
+  return (s && cstr_len_readable_now(s, &len)) ? s : "?";
+}
+static void cvgos_il2cpp_frame_cb(const cvgos_il2cpp_frame_info *f, void *ud) {
+  cvgos_il2cpp_stack_ctx *ctx = (cvgos_il2cpp_stack_ctx *)ud;
+  if (!ctx || !f || ctx->n >= 48) return;
+  void *method = (void *)f->method;
+  const char *mn = "?";
+  const char *cn = "?";
+  const char *ns = "";
+  if (method && addr_readable((uintptr_t)method)) {
+    if (ctx->method_get_name) mn = cvgos_safe_cstr(ctx->method_get_name(method));
+    void *klass = ctx->method_get_class ? ctx->method_get_class(method) : NULL;
+    if (klass && addr_readable((uintptr_t)klass)) {
+      if (ctx->class_get_name) cn = cvgos_safe_cstr(ctx->class_get_name(klass));
+      if (ctx->class_get_namespace) ns = cvgos_safe_cstr(ctx->class_get_namespace(klass));
+      if (!strcmp(ns, "?")) ns = "";
+    }
+  }
+  uintptr_t ip = f->raw_ip & ~(uintptr_t)1;
+  char ipbuf[48];
+  if (g_il2cpp_base && g_il2cpp_text_size && ip >= g_il2cpp_base && ip < g_il2cpp_base + g_il2cpp_text_size)
+    snprintf(ipbuf, sizeof ipbuf, "libil2cpp+0x%lx", (unsigned long)(ip - g_il2cpp_base));
+  else
+    snprintf(ipbuf, sizeof ipbuf, "0x%lx", (unsigned long)ip);
+  fprintf(stderr, "[IL2CPP_STACK] #%02d %s%s%s::%s method=%p ip=%s il=%d line=%d file=%s\n",
+          ctx->n, ns, ns[0] ? "." : "", cn, mn, method, ipbuf,
+          f->ilOffset, f->sourceCodeLineNumber, cvgos_safe_cstr(f->filename));
+  ctx->n++;
+}
+static void cvgos_log_il2cpp_managed_stack(void) {
+  if (!getenv("CVGOS_IL2CPPSTACK") || !g_il2cpp_base) return;
+  cvgos_il2cpp_stack_ctx ctx;
+  memset(&ctx, 0, sizeof ctx);
+  ctx.method_get_name = (const char *(*)(void *))(g_il2cpp_base + 0x79e398);
+  ctx.method_get_class = (void *(*)(void *))(g_il2cpp_base + 0x79e3b0);
+  ctx.class_get_name = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+  ctx.class_get_namespace = (const char *(*)(void *))(g_il2cpp_base + 0x79de34);
+  int (*depth_fn)(void) = (int (*)(void))(g_il2cpp_base + 0x79e500);
+  void (*walk_fn)(void (*)(const cvgos_il2cpp_frame_info *, void *), void *) =
+      (void (*)(void (*)(const cvgos_il2cpp_frame_info *, void *), void *))(g_il2cpp_base + 0x79e4e0);
+  int depth = -1;
+  if (addr_readable((uintptr_t)depth_fn)) depth = depth_fn();
+  fprintf(stderr, "[IL2CPP_STACK] begin depth=%d\n", depth);
+  if (addr_readable((uintptr_t)walk_fn)) walk_fn(cvgos_il2cpp_frame_cb, &ctx);
+  fprintf(stderr, "[IL2CPP_STACK] end frames=%d\n", ctx.n);
+}
+typedef struct {
+  uintptr_t target;
+  uintptr_t best_mp;
+  uintptr_t best_method;
+  unsigned long best_delta;
+  const char *method_name;
+  const char *class_name;
+  const char *class_ns;
+} cvgos_i2sym_hit;
+static void cvgos_symbolize_i2_targets(uintptr_t *targets, int n) {
+  if (!getenv("CVGOS_I2SYM") || !g_il2cpp_base || !targets || n <= 0) return;
+  if (n > 64) n = 64;
+  cvgos_i2sym_hit hits[64];
+  memset(hits, 0, sizeof hits);
+  for (int i = 0; i < n; i++) {
+    hits[i].target = targets[i] & ~(uintptr_t)1;
+    hits[i].best_delta = 0xffffffffUL;
+  }
+  void *(*domain_get)(void) = (void *(*)(void))(g_il2cpp_base + 0x79e244);
+  void **(*domain_get_assemblies)(void *, size_t *) =
+      (void **(*)(void *, size_t *))(g_il2cpp_base + 0x79e250);
+  void *(*assembly_get_image)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79dde0);
+  size_t (*image_get_class_count)(void *) = (size_t (*)(void *))(g_il2cpp_base + 0x79e648);
+  void *(*image_get_class)(void *, size_t) = (void *(*)(void *, size_t))(g_il2cpp_base + 0x79e64c);
+  void *(*class_get_methods)(void *, void **) = (void *(*)(void *, void **))(g_il2cpp_base + 0x79de28);
+  const char *(*method_get_name)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79e398);
+  void *(*method_get_class)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79e3b0);
+  const char *(*class_get_name)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+  const char *(*class_get_namespace)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de34);
+  void *domain = domain_get();
+  size_t ac = 0;
+  void **assemblies = domain ? domain_get_assemblies(domain, &ac) : NULL;
+  fprintf(stderr, "[I2SYM] begin targets=%d assemblies=%zu\n", n, ac);
+  if (!assemblies || ac > 1024) {
+    fprintf(stderr, "[I2SYM] skip invalid assemblies=%p count=%zu\n", assemblies, ac);
+    return;
+  }
+  unsigned long methods_seen = 0;
+  for (size_t ai = 0; ai < ac; ai++) {
+    void *img = assembly_get_image(assemblies[ai]);
+    if (!img) continue;
+    size_t cc = image_get_class_count(img);
+    if (cc > 200000) continue;
+    for (size_t ci = 0; ci < cc; ci++) {
+      void *klass = image_get_class(img, ci);
+      if (!klass) continue;
+      void *iter = NULL;
+      void *method;
+      while ((method = class_get_methods(klass, &iter)) != NULL) {
+        methods_seen++;
+        if (!addr_readable((uintptr_t)method)) continue;
+        uintptr_t mp = *(uintptr_t *)method & ~(uintptr_t)1;
+        if (!mp || mp < g_il2cpp_base || !g_il2cpp_text_size || mp >= g_il2cpp_base + g_il2cpp_text_size) continue;
+        for (int ti = 0; ti < n; ti++) {
+          uintptr_t t = hits[ti].target;
+          if (t < mp) continue;
+          unsigned long d = (unsigned long)(t - mp);
+          if (d < hits[ti].best_delta && d < 0x40000UL) {
+            void *mklass = method_get_class(method);
+            hits[ti].best_delta = d;
+            hits[ti].best_mp = mp;
+            hits[ti].best_method = (uintptr_t)method;
+            hits[ti].method_name = cvgos_safe_cstr(method_get_name(method));
+            hits[ti].class_name = (mklass && addr_readable((uintptr_t)mklass)) ? cvgos_safe_cstr(class_get_name(mklass)) : "?";
+            hits[ti].class_ns = (mklass && addr_readable((uintptr_t)mklass)) ? cvgos_safe_cstr(class_get_namespace(mklass)) : "";
+            if (!strcmp(hits[ti].class_ns, "?")) hits[ti].class_ns = "";
+          }
+        }
+      }
+    }
+  }
+  fprintf(stderr, "[I2SYM] methods_seen=%lu\n", methods_seen);
+  for (int i = 0; i < n; i++) {
+    if (hits[i].best_mp) {
+      fprintf(stderr, "[I2SYM] libil2cpp+0x%lx -> %s%s%s::%s +0x%lx method=%p mp=0x%lx\n",
+              (unsigned long)(hits[i].target - g_il2cpp_base),
+              hits[i].class_ns ? hits[i].class_ns : "",
+              (hits[i].class_ns && hits[i].class_ns[0]) ? "." : "",
+              hits[i].class_name ? hits[i].class_name : "?",
+              hits[i].method_name ? hits[i].method_name : "?",
+              hits[i].best_delta, (void *)hits[i].best_method,
+              (unsigned long)hits[i].best_mp);
+    } else {
+      fprintf(stderr, "[I2SYM] libil2cpp+0x%lx -> ?\n",
+              (unsigned long)(hits[i].target - g_il2cpp_base));
+    }
+  }
+}
 static void my_cxa_throw(void *thrown, void *tinfo, void *dest) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
   const char *nm = "?";
   if (tinfo) { const char *p = *(const char **)((char *)tinfo + 4); if (p) nm = p; }
-  fprintf(stderr, "[CXA_THROW] tipo='%s' obj=%p\n", nm, thrown); fsync(2);
+  char loc[96] = "";
+  uintptr_t lrx = lr & ~(uintptr_t)1;
+  if (g_unity_base && lrx >= g_unity_base && lrx < g_unity_base + text_size)
+    snprintf(loc, sizeof loc, " libunity+0x%lx", lrx - g_unity_base);
+  else if (g_il2cpp_base && lrx >= g_il2cpp_base && lrx < g_il2cpp_base + 0x3000000)
+    snprintf(loc, sizeof loc, " libil2cpp+0x%lx", lrx - g_il2cpp_base);
+  fprintf(stderr, "[CXA_THROW] tipo='%s' obj=%p lr=0x%lx%s\n", nm, thrown, (unsigned long)lr, loc);
+  if (thrown && g_il2cpp_base && strstr(nm, "Il2CppExceptionWrapper")) {
+    void *ex = *(void **)thrown;
+    fprintf(stderr, "[CXA_THROW] il2cpp_ex=%p words=%08x %08x %08x %08x\n",
+            ex,
+            ex ? ((uint32_t *)ex)[0] : 0, ex ? ((uint32_t *)ex)[1] : 0,
+            ex ? ((uint32_t *)ex)[2] : 0, ex ? ((uint32_t *)ex)[3] : 0);
+    if (ex) {
+      char msg[512]; memset(msg, 0, sizeof msg);
+      ((void (*)(void *, char *, int))(g_il2cpp_base + 0x79e28c))(ex, msg, (int)sizeof msg);
+      fprintf(stderr, "[CXA_THROW] managed='%s'\n", msg);
+      char st[2048]; memset(st, 0, sizeof st);
+      ((void (*)(void *, char *, int))(g_il2cpp_base + 0x79e2d0))(ex, st, (int)sizeof st);
+      fprintf(stderr, "[CXA_THROW] stack='%s'\n", st);
+    }
+  }
+  cvgos_log_il2cpp_managed_stack();
+  uintptr_t sp = 0;
+  __asm__ volatile("mov %0, sp" : "=r"(sp));
+  if (addr_readable(sp)) {
+    int hits = 0;
+    uintptr_t i2_targets[64];
+    int i2_n = 0;
+    for (uintptr_t a = sp; a < sp + 0x3000 && hits < 40; a += 4) {
+      uintptr_t v = *(uintptr_t *)a;
+      uintptr_t x = v & ~(uintptr_t)1;
+      if (g_il2cpp_base && g_il2cpp_text_size && x >= g_il2cpp_base && x < g_il2cpp_base + g_il2cpp_text_size) {
+        fprintf(stderr, "[CXA_STACK] sp+0x%lx libil2cpp+0x%lx%s\n",
+                (unsigned long)(a - sp), (unsigned long)(x - g_il2cpp_base), (v & 1) ? " T" : "");
+        if (i2_n < (int)(sizeof i2_targets / sizeof i2_targets[0])) i2_targets[i2_n++] = x;
+        hits++;
+      } else if (g_unity_base && x >= g_unity_base && x < g_unity_base + text_size) {
+        fprintf(stderr, "[CXA_STACK] sp+0x%lx libunity+0x%lx%s\n",
+                (unsigned long)(a - sp), (unsigned long)(x - g_unity_base), (v & 1) ? " T" : "");
+        hits++;
+      }
+    }
+    cvgos_symbolize_i2_targets(i2_targets, i2_n);
+  }
+  fsync(2);
   if (!g_real_cxa_throw) g_real_cxa_throw = (void (*)(void *, void *, void *))dlsym(RTLD_DEFAULT, "__cxa_throw");
   if (g_real_cxa_throw) g_real_cxa_throw(thrown, tinfo, dest);
+  for (;;) pause();
+}
+static void my_unity_cxa_throw(void *thrown, void *tinfo, void *dest) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
+  const char *nm = "?";
+  if (tinfo) {
+    const char *p = *(const char **)((char *)tinfo + 4);
+    if (p) nm = p;
+  }
+  char loc[96] = "";
+  if (g_unity_base && (lr & ~(uintptr_t)1) >= g_unity_base &&
+      (lr & ~(uintptr_t)1) < g_unity_base + text_size)
+    snprintf(loc, sizeof loc, " libunity+0x%lx", (lr & ~(uintptr_t)1) - g_unity_base);
+  else if (g_il2cpp_base && (lr & ~(uintptr_t)1) >= g_il2cpp_base &&
+      (lr & ~(uintptr_t)1) < g_il2cpp_base + 0x3000000)
+    snprintf(loc, sizeof loc, " libil2cpp+0x%lx", (lr & ~(uintptr_t)1) - g_il2cpp_base);
+  fprintf(stderr, "[CXA_THROW:u] tipo='%s' obj=%p lr=0x%lx%s\n",
+          nm, thrown, (unsigned long)lr, loc);
+  fsync(2);
+  if (g_unity_cxa_throw_orig) g_unity_cxa_throw_orig(thrown, tinfo, dest);
+  for (;;) pause();
+}
+static void my_unity_ios_failure(const char *msg) {
+  uintptr_t lr = 0;
+  __asm__ volatile("mov %0, lr" : "=r"(lr));
+  char loc[96] = "";
+  if (g_unity_base && (lr & ~(uintptr_t)1) >= g_unity_base &&
+      (lr & ~(uintptr_t)1) < g_unity_base + text_size)
+    snprintf(loc, sizeof loc, " libunity+0x%lx", (lr & ~(uintptr_t)1) - g_unity_base);
+  else if (g_il2cpp_base && (lr & ~(uintptr_t)1) >= g_il2cpp_base &&
+      (lr & ~(uintptr_t)1) < g_il2cpp_base + 0x3000000)
+    snprintf(loc, sizeof loc, " libil2cpp+0x%lx", (lr & ~(uintptr_t)1) - g_il2cpp_base);
+
+  size_t len = 0;
+  int ok = msg && cstr_len_readable_now(msg, &len);
+  const char *safe = ok ? msg : "(bad)";
+  if (!ok) len = strlen(safe);
+  fprintf(stderr, "[IOSFAIL] what='%.*s' lr=0x%lx%s\n",
+          (int)(len > 180 ? 180 : len), safe, (unsigned long)lr, loc);
+  fsync(2);
+  if (g_unity_ios_failure_orig) g_unity_ios_failure_orig(msg);
   for (;;) pause();
 }
 
@@ -5011,30 +7051,47 @@ int main(int argc, char **argv) {
   }
   g_mmaplog = getenv("CUP_MMAPLOG") ? 1 : 0;
   g_guidlog = getenv("TER_GUIDLOG") ? 1 : 0;
+  g_iolog = getenv("CVGOS_IOLOG") ? 1 : 0;
   set_import("mmap", (void *)my_mmap);
-  set_import("mmap64", (void *)my_mmap);
+  set_import("mmap64", (void *)my_mmap64);
+  set_import("read", (void *)my_read);
+  set_import("lseek", (void *)my_lseek);
+  set_import("lseek64", (void *)my_lseek64);
   if (g_guidlog) {
-    set_import("read", (void *)my_read);
-    set_import("lseek64", (void *)my_lseek64);
     set_import("fstat64", (void *)my_fstat64);
     set_import("mmap64", (void *)my_mmap64);
     set_import("fdopen", (void *)my_fdopen);
   }
   set_import("fopen", (void *)my_fopen);
+  set_import("fdopen", (void *)my_fdopen);
+  set_import("fread", (void *)my_fread); set_import("fgets", (void *)my_fgets);
+  set_import("fseek", (void *)my_fseek); set_import("ftell", (void *)my_ftell);
+  set_import("feof", (void *)my_feof); set_import("ferror", (void *)my_ferror);
+  set_import("clearerr", (void *)my_clearerr); set_import("getc", (void *)my_getc);
+  set_import("setvbuf", (void *)my_setvbuf);
   set_import("fwrite", (void *)my_fwrite); set_import("fputs", (void *)my_fputs);
   set_import("fputc", (void *)my_fputc); set_import("fflush", (void *)my_fflush);
   set_import("fprintf", (void *)my_fprintf); set_import("vfprintf", (void *)my_vfprintf);
+  set_import("fscanf", (void *)my_fscanf);
   set_import("fclose", (void *)my_fclose);
   set_import("open", (void *)my_open);
+  set_import("fstat", (void *)my_fstat);
   set_import("stat", (void *)my_stat);
   set_import("lstat", (void *)my_lstat);
   set_import("stat64", (void *)my_stat64);
   set_import("lstat64", (void *)my_lstat64);
   set_import("access", (void *)my_access);
+  set_import("mkdir", (void *)my_mkdir);
+  set_import("readdir", (void *)my_readdir);       /* bionic dirent (d_name@19) vs glibc32 */
+  set_import("readdir64", (void *)my_readdir);
+  set_import("readdir_r", (void *)my_readdir_r);
   set_import("statfs64", (void *)my_statfs64);
-  set_import("statfs", (void *)my_statfs64);
+  set_import("statfs", (void *)my_statfs);
   set_import("strlcpy", (void *)my_strlcpy);
   set_import("strlcat", (void *)my_strlcat);
+  set_import("strnlen", (void *)my_strnlen);
+  set_import("strsep", (void *)my_strsep);
+  set_import("strcmp", (void *)my_strcmp_safe);
   g_zeroalloc = getenv("CVGOS_ZEROALLOC") ? 1 : 0;
   set_import("memalign", (void *)my_memalign);
   if (g_zeroalloc) { set_import("malloc", (void *)my_malloc); set_import("realloc", (void *)my_realloc); }
@@ -5044,15 +7101,18 @@ int main(int argc, char **argv) {
   set_import("__memcpy_chk", (void *)my_memcpy_chk);
   set_import("__memset_chk", (void *)my_memset_chk);
   set_import("__strlen_chk", (void *)my_strlen_chk);
+  set_import("strlen", (void *)my_strlen_safe);
   set_import("__strcpy_chk", (void *)my_strcpy_chk);
   set_import("__strcat_chk", (void *)my_strcat_chk);
   set_import("__vsnprintf_chk", (void *)my_vsnprintf_chk);
   set_import("__snprintf_chk", (void *)my_snprintf_chk);
   set_import("__FD_SET_chk", (void *)my_FD_SET_chk);
+  install_aeabi_mem_shim();
   set_import("__system_property_get", (void *)my_sysprop);
   set_import("__android_log_print", (void *)my_alog_print);
   set_import("__android_log_write", (void *)my_alog_write);
   set_import("sigaction", (void *)my_sigaction);
+  { extern int my_sigsuspend(); set_import("sigsuspend", (void *)my_sigsuspend); }
   set_import("dlopen", (void *)my_dlopen);
   set_import("dlsym", (void *)my_dlsym);
   set_import("dlerror", (void *)my_dlerror);
@@ -5079,6 +7139,7 @@ int main(int argc, char **argv) {
 
   fprintf(stderr, "[F0] resolvendo %zu imports...\n", dynlib_numfunctions);
   { extern void recon_fill_passthrough(void); recon_fill_passthrough(); }  /* preenche passthrough via dlsym (tabela gerada) */
+  eh_prepare_imports("libunity-pre-resolve");
   if (so_resolve(dynlib_functions, dynlib_numfunctions, 0) < 0) { fprintf(stderr, "resolve FALHOU\n"); return 1; }
   ctype_init(); ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ (bionic) p/ libunity */
   so_record_phdr("libunity.so");   /* p/ o dl_iterate_phdr custom (unwind de exceções C++) */
@@ -5110,19 +7171,34 @@ int main(int argc, char **argv) {
   /* engine checa existência dos arquivos de dados antes de abrir */
   patch_got("open", (void *)my_open);
   patch_got("fopen", (void *)my_fopen);
+  patch_got("fdopen", (void *)my_fdopen);
+  patch_got("fread", (void *)my_fread); patch_got("fgets", (void *)my_fgets);
+  patch_got("fseek", (void *)my_fseek); patch_got("ftell", (void *)my_ftell);
+  patch_got("feof", (void *)my_feof); patch_got("ferror", (void *)my_ferror);
+  patch_got("clearerr", (void *)my_clearerr); patch_got("getc", (void *)my_getc);
+  patch_got("setvbuf", (void *)my_setvbuf);
   patch_got("fwrite", (void *)my_fwrite); patch_got("fputs", (void *)my_fputs);
   patch_got("fputc", (void *)my_fputc); patch_got("fflush", (void *)my_fflush);
   patch_got("fprintf", (void *)my_fprintf); patch_got("vfprintf", (void *)my_vfprintf);
+  patch_got("fscanf", (void *)my_fscanf);
   patch_got("fclose", (void *)my_fclose);
+  patch_got("fstat", (void *)my_fstat);
   patch_got("stat", (void *)my_stat);
   patch_got("lstat", (void *)my_lstat);
   patch_got("stat64", (void *)my_stat64);
   patch_got("lstat64", (void *)my_lstat64);
   patch_got("access", (void *)my_access);
+  patch_got("mkdir", (void *)my_mkdir);
+  patch_got("readdir", (void *)my_readdir);
+  patch_got("readdir64", (void *)my_readdir);
+  patch_got("readdir_r", (void *)my_readdir_r);
   patch_got("statfs64", (void *)my_statfs64);
-  patch_got("statfs", (void *)my_statfs64);
+  patch_got("statfs", (void *)my_statfs);
   patch_got("strlcpy", (void *)my_strlcpy);
   patch_got("strlcat", (void *)my_strlcat);
+  patch_got("strnlen", (void *)my_strnlen);
+  patch_got("strsep", (void *)my_strsep);
+  patch_got("strcmp", (void *)my_strcmp_safe);
   patch_got("memalign", (void *)my_memalign);
   if (g_zeroalloc) { patch_got("malloc", (void *)my_malloc); }
   patch_got("syscall", (void *)my_syscall);
@@ -5139,6 +7215,30 @@ int main(int argc, char **argv) {
   patch_got("__memcpy_chk", (void *)my_memcpy_chk);
   patch_got("__memset_chk", (void *)my_memset_chk);
   patch_got("__strlen_chk", (void *)my_strlen_chk);
+  patch_got("strlen", (void *)my_strlen_safe);
+  { uintptr_t sl = so_find_rel_addr_safe("strlen");
+    if (sl) fprintf(stderr, "[STRSAFE] strlen GOT slot=%p val=%p want=%p\n",
+                    (void *)sl, *(void **)sl, (void *)my_strlen_safe); }
+  if (g_il2cpp_base) {
+    uint32_t *plt = (uint32_t *)(g_il2cpp_base + 0x7475f4);
+    plt[0] = 0xe51ff004u;                 /* LDR PC, [PC, #-4] */
+    plt[1] = (uint32_t)my_strlen_safe;
+    __builtin___clear_cache((char *)plt, (char *)plt + 8);
+    fprintf(stderr, "[STRSAFE] il2cpp strlen@plt -> %p\n", (void *)my_strlen_safe);
+  }
+  patch_i2_cstr_string_ctor();
+  patch_i2_stack_scan_guard();
+  patch_i2_fp_epilogue_guard();
+  patch_i2_metatable_return_guard();
+  patch_i2_metatable_hook();
+  patch_i2_array_type_mismatch_skip();
+  patch_i2_tmp_font_guard();
+  patch_i2_log_resources_guard();
+  patch_i2_respath_fix();
+  patch_i2_logres_guard();
+  patch_i2_enum_null_guard();
+  patch_i2_rgctx_slot_guard();
+  patch_i2_reflection_null_guard();
   patch_got("__strcpy_chk", (void *)my_strcpy_chk);
   patch_got("__strcat_chk", (void *)my_strcat_chk);
   patch_got("__vsnprintf_chk", (void *)my_vsnprintf_chk);
@@ -5148,11 +7248,13 @@ int main(int argc, char **argv) {
   patch_got("_exit", (void *)my_exit);
   if (g_guidlog) {
     patch_got("read", (void *)my_read);
-    patch_got("lseek64", (void *)my_lseek64);
     patch_got("fstat64", (void *)my_fstat64);
     patch_got("mmap64", (void *)my_mmap64);
     patch_got("fdopen", (void *)my_fdopen);
   }
+  patch_got("read", (void *)my_read);
+  patch_got("lseek", (void *)my_lseek);
+  patch_got("lseek64", (void *)my_lseek64);
   patch_sem_shim();  /* sem_* nos slots GOT do libunity */
   patch_pthread_shim();
   /* sensores/looper/profiler google: stub no-op (nao usados no path do gfx) */
@@ -5168,17 +7270,73 @@ int main(int argc, char **argv) {
     "__google_potentially_blocking_region_end", NULL };
   for (int i = 0; ndk_noop[i]; i++) patch_got(ndk_noop[i], (void *)ndk_stub0);
 
-  /* TER: bypass do "Not enough storage space to install required resources".
-   * RE (libunity): em 0x2d8fac `tbz w0,#0, 0x2d9068` — se a checagem de espaço/resources
-   * (0x22b7e0) retorna falso, pula pro bloco que monta o AlertDialog (string 0x9288ef).
-   * Esse bloco SÓ é alcançável por esse branch. NOP -> sempre segue o caminho de sucesso
-   * (dados já estão em bin/Data, lidos via AssetManager). */
-  if (!getenv("TER_NOSTORAGEPATCH")) {
+  /* Offset antigo de bypass do "Not enough storage..." em outra libunity. Na build atual
+   * 0x2d8fac nao e branch; manter desligado por padrao para nao tocar codigo inocente. */
+  if (getenv("TER_OLD_STORAGEPATCH")) {
     extern void so_make_text_writable(void), so_make_text_executable(void);
     so_make_text_writable();
     *(uint32_t *)((uintptr_t)text_base + 0x2d8fac) = 0xd503201fu; /* NOP */
     so_make_text_executable(); so_flush_caches();
-    fprintf(stderr, "[TER] storage-check 0x2d8fac (tbz->dialog) NOPado\n");
+    fprintf(stderr, "[TER] storage-check antigo 0x2d8fac NOPado\n");
+  }
+
+  /* CVGOS: bypass real da checagem de espaco/resources.
+   * libunity+0x31d49c faz cmp r0,#0; libunity+0x31d4a0 era bne -> sucesso.
+   * Forcamos branch incondicional para pular o bloco que monta o AlertDialog
+   * "Not enough storage space to install required resources." e chama a rotina de erro. */
+  if (!getenv("CVGOS_NOSTORAGEPATCH")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x31d4a0) = 0xea000015u; /* b 0x31d4fc */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[CVGOS] storage-check 0x31d4a0 (bne->b) aplicado\n");
+  }
+
+  /* CVGOS: no Android, esta Unity escolhe AudioTrack Java (FMOD output 21) por
+   * padrao. O caminho Java exige um FMODAudioDevice real; no so-loader usamos
+   * OpenSL shimado. Forca o fallback automatico para output 22 (OpenSL). */
+  if (!getenv("CVGOS_NOFORCEOPENSL")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x5329e8) = 0xe3a05016u; /* mov r5,#22 */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[CVGOS] fmod output 0x5329e8 -> OpenSL(22)\n");
+  }
+
+  /* CVGOS: rota sem audio para gameplay. Em vez de deixar o FMOD falhar e
+   * produzir handles invalidos, marca o AudioManager como desativado e reporta
+   * sucesso logo na entrada de init. ARM32:
+   *   mov r1,#1; strb r1,[r0,#0x228]; mov r0,#1; bx lr */
+  if (!getenv("CVGOS_NOAUDIOINITPATCH")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x531f00) = 0xe3a01001u; /* mov r1,#1 */
+    *(uint32_t *)((uintptr_t)text_base + 0x531f04) = 0xe5c01228u; /* strb r1,[r0,#0x228] */
+    *(uint32_t *)((uintptr_t)text_base + 0x531f08) = 0xe3a00001u; /* mov r0,#1 */
+    *(uint32_t *)((uintptr_t)text_base + 0x531f0c) = 0xe12fff1eu; /* bx lr */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[CVGOS] AudioManager init -> disabled success\n");
+  }
+
+  /* CVGOS: deixa o init de output FMOD rodar por completo (setOutput,
+   * System::init e registros internos), mas ignora o branch final que transforma
+   * FMOD_ERR_OUTPUT_INIT em falha fatal. ARM32 em libunity+0x533138:
+   * bne 0x533164 -> nop, caindo no epilogo de sucesso da funcao. */
+  if (!getenv("CVGOS_NOFMODFINALPATCH")) {
+    extern void so_make_text_writable(void), so_make_text_executable(void);
+    so_make_text_writable();
+    *(uint32_t *)((uintptr_t)text_base + 0x533138) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532428) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x5325f4) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532634) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532674) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x5326b4) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x5326e8) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532720) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532758) = 0xe320f000u; /* nop */
+    *(uint32_t *)((uintptr_t)text_base + 0x532790) = 0xe320f000u; /* nop */
+    so_make_text_executable(); so_flush_caches();
+    fprintf(stderr, "[CVGOS] fmod fatal branches -> nop\n");
   }
 
   /* O FIX REAL do null-deref do Enlighten é o `memalign` (acima, deixou de ser stub).
@@ -5445,19 +7603,42 @@ int main(int argc, char **argv) {
   }
   fprintf(stderr, "[F0] === libunity OK ===\n");
   mm_probe("pos-JNI_OnLoad");
+  patch_unity_skiperrfunc();
+  patch_unity_thread_ready_guard();
+  patch_unity_stream_copy_guard();
+  patch_unity_vecguard();
+  patch_unity_cxa_throwlog();
   dbg_sync();
 
   /* ---- F1: carrega libil2cpp.so (2º módulo, lógica C# do jogo) ---- */
   g_m_unity = so_save();
   size_t i2s = 96UL * 1024 * 1024;
-  void *i2heap = mmap(NULL, i2s, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  const char *i2low = getenv("CVGOS_I2LOW");
+  uintptr_t i2want = 0;
+  if (i2low && i2low[0]) {
+    char *end = NULL;
+    unsigned long v = strtoul(i2low, &end, 0);
+    i2want = (v > 0x10000UL) ? (uintptr_t)v : 0x50000000UL;
+  }
+  void *i2heap = mmap((void *)i2want, i2s, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (i2heap == MAP_FAILED && i2want) {
+    perror("[F1] mmap CVGOS_I2LOW");
+    i2heap = mmap(NULL, i2s, PROT_READ | PROT_WRITE | PROT_EXEC,
+                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  }
+  if (i2want)
+    fprintf(stderr, "[F1] CVGOS_I2LOW want=0x%lx got=%p\n",
+            (unsigned long)i2want, i2heap);
   g_i2heap_base = (uintptr_t)i2heap; g_i2heap_size = i2s;
   if (i2heap != MAP_FAILED && so_load("libil2cpp.so", i2heap, i2s) >= 0) {
     g_il2cpp_base = (uintptr_t)text_base;
+    g_il2cpp_text_size = text_size;
     g_alloc_ib = g_il2cpp_base;
     fprintf(stderr, "[F1] libil2cpp: text=%p+%zu\n", text_base, text_size);
     so_relocate();
     { extern void recon_fill_passthrough(void); recon_fill_passthrough(); }
+    eh_prepare_imports("libil2cpp-pre-resolve");
     so_resolve(dynlib_functions, dynlib_numfunctions, 0);
     ctype_resolve();   /* _ctype_/_tolower_tab_/_toupper_tab_ p/ libil2cpp tb */
     so_record_phdr("libil2cpp.so");   /* p/ o dl_iterate_phdr custom (unwind) */
@@ -5465,30 +7646,89 @@ int main(int argc, char **argv) {
     /* il2cpp abre o global-metadata.dat via open() -> intercepta p/ redirecionar.
        patch_got opera no modulo ATIVO (=il2cpp agora). Tb dlopen/dlsym/log. */
     patch_got("open", (void *)my_open);
+    patch_got("read", (void *)my_read);
+    patch_got("lseek", (void *)my_lseek);
+    patch_got("lseek64", (void *)my_lseek64);
     patch_got("mmap", (void *)my_mmap);
-    patch_got("mmap64", (void *)my_mmap);
+    patch_got("mmap64", (void *)my_mmap64);
     /* sigaction do libil2cpp (o GC instala SIGPWR/SIGXCPU por aqui). Sem patch, o GC
        instalava um handler CORROMPIDO (0x7f10000004) p/ SIGPWR -> stop-the-world
        crashava. Com my_sigaction + CUP_GCSIG, bloqueamos -> nosso handler válido fica. */
     { extern int my_sigaction(); patch_got("sigaction", (void *)my_sigaction); }
-    patch_got("fopen", (void *)my_fopen);
+    /* sigsuspend REAL (mask bionic 4B→glibc): o suspend-handler do Boehm espera o
+       restart aqui; o stub deixava a thread correr durante a coleta (GC racy). */
+    { extern int my_sigsuspend(); patch_got("sigsuspend", (void *)my_sigsuspend); }
+  patch_got("fopen", (void *)my_fopen);
+  patch_got("fdopen", (void *)my_fdopen);
+  patch_got("fread", (void *)my_fread); patch_got("fgets", (void *)my_fgets);
+  patch_got("fseek", (void *)my_fseek); patch_got("ftell", (void *)my_ftell);
+  patch_got("feof", (void *)my_feof); patch_got("ferror", (void *)my_ferror);
+  patch_got("clearerr", (void *)my_clearerr); patch_got("getc", (void *)my_getc);
+  patch_got("setvbuf", (void *)my_setvbuf);
   patch_got("fwrite", (void *)my_fwrite); patch_got("fputs", (void *)my_fputs);
   patch_got("fputc", (void *)my_fputc); patch_got("fflush", (void *)my_fflush);
   patch_got("fprintf", (void *)my_fprintf); patch_got("vfprintf", (void *)my_vfprintf);
+  patch_got("fscanf", (void *)my_fscanf);
   patch_got("fclose", (void *)my_fclose);
+    patch_got("fstat", (void *)my_fstat);
     patch_got("stat", (void *)my_stat);
     patch_got("lstat", (void *)my_lstat);
     patch_got("stat64", (void *)my_stat64);
     patch_got("lstat64", (void *)my_lstat64);
     patch_got("access", (void *)my_access);
+    patch_got("mkdir", (void *)my_mkdir);
+    patch_got("readdir", (void *)my_readdir);
+    patch_got("readdir64", (void *)my_readdir);
+    patch_got("readdir_r", (void *)my_readdir_r);
+  patch_got("readdir", (void *)my_readdir);
+  patch_got("readdir64", (void *)my_readdir);
+  patch_got("readdir_r", (void *)my_readdir_r);
   patch_got("statfs64", (void *)my_statfs64);
-  patch_got("statfs", (void *)my_statfs64);
+  patch_got("statfs", (void *)my_statfs);
   patch_got("strlcpy", (void *)my_strlcpy);
   patch_got("strlcat", (void *)my_strlcat);
+  patch_got("strnlen", (void *)my_strnlen);
+  patch_got("strsep", (void *)my_strsep);
+  patch_got("strcmp", (void *)my_strcmp_safe);
   patch_got("__memmove_chk", (void *)my_memmove_chk);
   patch_got("__memcpy_chk", (void *)my_memcpy_chk);
   patch_got("__memset_chk", (void *)my_memset_chk);
   patch_got("__strlen_chk", (void *)my_strlen_chk);
+  patch_got("strlen", (void *)my_strlen_safe);
+  { uintptr_t sl = so_find_rel_addr_safe("strlen");
+    if (sl) fprintf(stderr, "[STRSAFE] strlen GOT slot=%p val=%p want=%p\n",
+                    (void *)sl, *(void **)sl, (void *)my_strlen_safe); }
+  if (g_il2cpp_base) {
+    uint32_t *plt = (uint32_t *)(g_il2cpp_base + 0x7475f4);
+    plt[0] = 0xe51ff004u;                 /* LDR PC, [PC, #-4] */
+    plt[1] = (uint32_t)my_strlen_safe;
+    __builtin___clear_cache((char *)plt, (char *)plt + 8);
+    fprintf(stderr, "[STRSAFE] il2cpp strlen@plt -> %p\n", (void *)my_strlen_safe);
+  }
+  patch_i2_cstr_string_ctor();
+  patch_i2_stack_scan_guard();
+  patch_i2_fp_epilogue_guard();
+  patch_i2_metatable_return_guard();
+  patch_i2_metatable_hook();
+  patch_i2_array_type_mismatch_skip();
+  patch_i2_tmp_font_guard();
+  patch_i2_log_resources_guard();
+  patch_i2_respath_fix();
+  patch_i2_logres_guard();
+  patch_i2_enum_null_guard();
+  patch_i2_rgctx_slot_guard();
+  patch_i2_reflection_null_guard();
+  if (!getenv("CVGOS_NOEXCGUARD") && !getenv("CVGOS_ARRAYSKIP")) {
+    long pgsz = sysconf(_SC_PAGESIZE);
+    uintptr_t target = g_il2cpp_base + 0x7a8a88;
+    void *pa = (void *)(target & ~((uintptr_t)pgsz - 1));
+    mprotect(pa, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+    *(uint32_t *)target = 0xe12fff1eu;  /* bx lr: Il2CppExceptionWrapper throw guard */
+    mprotect(pa, pgsz, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)target, (char *)target + 4);
+    fprintf(stderr, "[EXCGUARD] base=0x%lx target=0x%lx insn=0x%08x\n",
+            (unsigned long)g_il2cpp_base, (unsigned long)target, *(uint32_t *)target);
+  }
   patch_got("__strcpy_chk", (void *)my_strcpy_chk);
   patch_got("__strcat_chk", (void *)my_strcat_chk);
   patch_got("__vsnprintf_chk", (void *)my_vsnprintf_chk);
@@ -5503,6 +7743,13 @@ int main(int argc, char **argv) {
     patch_got("__android_log_vprint", (void *)my_alog_vprint);
     patch_sem_shim();  /* sem_* nos slots GOT do libil2cpp */
     patch_pthread_shim();
+
+    /* UnitySynchronizationContext chama Thread.get_CurrentThread cedo. Nesta build,
+       o helper nativo pode retornar NULL mesmo apos il2cpp_thread_attach, e o método
+       derefere +0xc antes de checar. Retornamos um Thread mínimo com ManagedThreadId=1. */
+    cvgos_patch_thread_current(NULL);
+    cvgos_patch_runtime_type_cctor();
+
     /* CUP_CRSPY: hooks nos MoveNext das coroutines de boot (antes do flush de caches) */
     if (getenv("CUP_CRSPY")) {
       g_cr1_cont = g_il2cpp_base + 0x9A58D0 + 16;
@@ -5587,26 +7834,9 @@ int main(int argc, char **argv) {
      da libunity/il2cpp -> unwind falha -> std::terminate -> processo sai. Resolve p/ as
      REAIS (libgcc_s/libc via dlsym) nos dois módulos. CVGOS_NOEHFIX desliga. */
   if (!getenv("CVGOS_NOEHFIX")) {
-    static const char *eh[] = {
-      "_Unwind_RaiseException","_Unwind_Resume","_Unwind_Resume_or_Rethrow","_Unwind_Complete",
-      "_Unwind_DeleteException","_Unwind_Backtrace","_Unwind_GetLanguageSpecificData",
-      "_Unwind_GetRegionStart","_Unwind_GetDataRelBase","_Unwind_GetTextRelBase",
-      "_Unwind_VRS_Get","_Unwind_VRS_Set","_Unwind_GetCFA","_Unwind_ForcedUnwind",
-      "__cxa_throw","__cxa_begin_catch","__cxa_end_catch","__cxa_rethrow","__cxa_call_unexpected",
-      "__cxa_begin_cleanup","__cxa_type_match","__cxa_finalize","__gxx_personality_v0",
-      "__aeabi_unwind_cpp_pr0","__aeabi_unwind_cpp_pr1","__aeabi_unwind_cpp_pr2", 0 };
-    int nfix = 0;
-    for (int i = 0; eh[i]; i++) {
-      void *p = dlsym(RTLD_DEFAULT, eh[i]);
-      if (!p) continue;
-      so_module *c = so_save();
-      so_use(g_m_unity);  if (patch_got(eh[i], p) > 0) nfix++;
-      if (g_m_il2cpp) { so_use(g_m_il2cpp); patch_got(eh[i], p); }
-      so_use(c); free(c);
-    }
-    fprintf(stderr, "[EHFIX] exception ABI resolvida (%d simbolos patchados)\n", nfix);
+    eh_patch_loaded_gots();
     if (getenv("CVGOS_THROWLOG")) {
-      g_real_cxa_throw = (void (*)(void *, void *, void *))dlsym(RTLD_DEFAULT, "__cxa_throw");
+      g_real_cxa_throw = (void (*)(void *, void *, void *))eh_resolve_symbol("__cxa_throw");
       so_module *c = so_save();
       so_use(g_m_unity); patch_got("__cxa_throw", (void *)my_cxa_throw);
       if (g_m_il2cpp) { so_use(g_m_il2cpp); patch_got("__cxa_throw", (void *)my_cxa_throw); }
@@ -5667,8 +7897,102 @@ int main(int argc, char **argv) {
     if (i_init) { void *d = i_init("IL2CPP Root Domain"); fprintf(stderr, "[IL2CPPINIT] domain=%p\n", d); }
     dbg_sync();
   }
+  if (!getenv("CVGOS_NOIL2CPPATTACHMAIN") && g_m_il2cpp) {
+    so_module *c = so_save(); so_use(g_m_il2cpp);
+    void *(*i_domain_get)(void) = (void *)so_find_addr_safe("il2cpp_domain_get");
+    void *(*i_thread_attach)(void *) = (void *)so_find_addr_safe("il2cpp_thread_attach");
+    void *(*i_thread_current)(void) = (void *)so_find_addr_safe("il2cpp_thread_current");
+    so_use(c); free(c);
+    void *dom = i_domain_get ? i_domain_get() : NULL;
+    void *thr = (i_thread_attach && dom) ? i_thread_attach(dom) : NULL;
+    void *cur = i_thread_current ? i_thread_current() : NULL;
+    void *managed = NULL;
+    if (thr) managed = *(void **)((char *)thr + 12);
+    fprintf(stderr, "[IL2CPPTHREAD] main attach dom=%p attach=%p current=%p managed=%p\n", dom, thr, cur, managed);
+    cvgos_patch_thread_current(managed);
+    dbg_sync();
+  }
+  /* CVGOS_I2HEALTH: probe de saúde do runtime il2cpp — resolve classes core p/ saber se
+     o runtime subiu de verdade ou ficou meio-morto (metadata parcial). */
+  if (getenv("CVGOS_I2HEALTH") && g_m_il2cpp) {
+    so_module *c = so_save(); so_use(g_m_il2cpp);
+    void *(*i_corlib)(void) = (void *)so_find_addr_safe("il2cpp_get_corlib");
+    void *(*i_cfn)(void *, const char *, const char *) = (void *)so_find_addr_safe("il2cpp_class_from_name");
+    const char *(*i_cgn)(void *) = (void *)so_find_addr_safe("il2cpp_class_get_name");
+    const char *(*i_ign)(void *) = (void *)so_find_addr_safe("il2cpp_image_get_name");
+    void *(*i_dga)(void *, size_t *) = (void *)so_find_addr_safe("il2cpp_domain_get_assemblies");
+    void *(*i_agi)(void *) = (void *)so_find_addr_safe("il2cpp_assembly_get_image");
+    void *(*i_dg)(void) = (void *)so_find_addr_safe("il2cpp_domain_get");
+    so_use(c); free(c);
+    void *corlib = i_corlib ? i_corlib() : NULL;
+    fprintf(stderr, "[I2HEALTH] corlib image=%p name=%s\n", corlib,
+            (corlib && i_ign) ? i_ign(corlib) : "?");
+    if (corlib && i_cfn) {
+      void *cString = i_cfn(corlib, "System", "String");
+      void *cThread = i_cfn(corlib, "System.Threading", "Thread");
+      void *cObject = i_cfn(corlib, "System", "Object");
+      fprintf(stderr, "[I2HEALTH] String=%p(%s) Thread=%p(%s) Object=%p(%s)\n",
+              cString, (cString && i_cgn) ? i_cgn(cString) : "?",
+              cThread, (cThread && i_cgn) ? i_cgn(cThread) : "?",
+              cObject, (cObject && i_cgn) ? i_cgn(cObject) : "?");
+    }
+    void *dom2 = i_dg ? i_dg() : NULL;
+    size_t nasm = 0;
+    void **asms = (dom2 && i_dga) ? (void **)i_dga(dom2, &nasm) : NULL;
+    fprintf(stderr, "[I2HEALTH] assemblies=%zu\n", nasm);
+    if (asms && nasm && nasm < 200 && i_agi && i_ign) {
+      for (size_t k = 0; k < nasm && k < 12; k++) {
+        void *img = i_agi(asms[k]);
+        fprintf(stderr, "[I2HEALTH]   asm[%zu] image=%p name=%s\n", k, img, img ? i_ign(img) : "?");
+      }
+    }
+    dbg_sync();
+  }
+  /* CVGOS_FIELDPROBE: compara offsets de fields de classes-problema (cmnPopupInterFace,
+     outUiInterFace, LogResources — GC-descriptor via I2-METAFLAG mostrou offset lixo
+     0x1dbxxxx) com o ground-truth do dump (0xC..0x18). Diz se a metadata de fields
+     corrompe já no init ou só depois (corrupção progressiva). */
+  if (getenv("CVGOS_FIELDPROBE") && g_m_il2cpp) {
+    so_module *c = so_save(); so_use(g_m_il2cpp);
+    void *(*i_dg)(void) = (void *)so_find_addr_safe("il2cpp_domain_get");
+    void *(*i_dga)(void *, size_t *) = (void *)so_find_addr_safe("il2cpp_domain_get_assemblies");
+    void *(*i_agi)(void *) = (void *)so_find_addr_safe("il2cpp_assembly_get_image");
+    const char *(*i_ign)(void *) = (void *)so_find_addr_safe("il2cpp_image_get_name");
+    void *(*i_cfn)(void *, const char *, const char *) = (void *)so_find_addr_safe("il2cpp_class_from_name");
+    void *(*i_cgf)(void *, void **) = (void *)so_find_addr_safe("il2cpp_class_get_fields");
+    const char *(*i_fgn)(void *) = (void *)so_find_addr_safe("il2cpp_field_get_name");
+    size_t (*i_fgo)(void *) = (void *)so_find_addr_safe("il2cpp_field_get_offset");
+    so_use(c); free(c);
+    const char *want[] = { "cmnPopupInterFace", "outUiInterFace", "LogResources" };
+    void *dom2 = i_dg ? i_dg() : NULL;
+    size_t nasm = 0;
+    void **asms = (dom2 && i_dga) ? (void **)i_dga(dom2, &nasm) : NULL;
+    for (size_t w = 0; w < sizeof want / sizeof want[0]; w++) {
+      void *kls = NULL; const char *inm = "?";
+      for (size_t k = 0; asms && k < nasm && !kls; k++) {
+        void *img = i_agi ? i_agi(asms[k]) : NULL;
+        if (!img) continue;
+        kls = i_cfn ? i_cfn(img, "", want[w]) : NULL;
+        if (kls) inm = i_ign ? i_ign(img) : "?";
+      }
+      if (!kls) { fprintf(stderr, "[FIELDPROBE] %s: NAO ACHADA\n", want[w]); continue; }
+      fprintf(stderr, "[FIELDPROBE] %s (img=%s) klass=%p:", want[w], inm, kls);
+      void *it = NULL, *f;
+      int nf = 0;
+      while (i_cgf && (f = i_cgf(kls, &it)) && nf < 24) {
+        fprintf(stderr, " %s@0x%zx", i_fgn ? i_fgn(f) : "?", i_fgo ? i_fgo(f) : (size_t)-1);
+        nf++;
+      }
+      fprintf(stderr, "\n");
+    }
+    dbg_sync();
+  }
   if ((fn = jni_find_native("nativeRecreateGfxState"))) {
     mm_probe("pre-RecreateGfxState");
+    patch_unity_skiperrfunc();
+    patch_unity_thread_ready_guard();
+    patch_unity_stream_copy_guard();
+    patch_unity_vecguard();
     /* TESTE: anula o instalador de signal-handlers do Unity (0x360af8) com RET.
        Esse caminho (sigaction QUERY -> map RB-tree de old-handlers via operator-new)
        e' onde o canario estoura. Nao precisamos dos handlers do Unity (temos on_crash). */
@@ -5722,20 +8046,6 @@ int main(int argc, char **argv) {
     so_flush_caches();
     fprintf(stderr, "[TRAPGATE] libunity+0x31fe38 -> return 0 (nativeRender nao baila mais)\n");
   }
-  /* CVGOS_SKIPERRFUNC: a func libunity+0x31fa08 constroi um java.lang.Error+StackTrace no
-     RecreateGfxState (init do crash-handler/log da Unity) e crasha com nosso JNIEnv fake.
-     Patch -> return 0 (pula o error-reporter). Default ON; CVGOS_NOSKIPERRFUNC desliga. */
-  if (getenv("CVGOS_SKIPERRFUNC") && g_unity_base) {
-    extern void so_make_text_writable(void), so_make_text_executable(void), so_flush_caches(void);
-    uintptr_t ea = g_unity_base + 0x31fa08;
-    so_make_text_writable();
-    ((uint32_t *)ea)[0] = 0xe3a00000u;  /* mov r0, #0 */
-    ((uint32_t *)ea)[1] = 0xe12fff1eu;  /* bx  lr     */
-    so_make_text_executable();
-    so_flush_caches();
-    fprintf(stderr, "[SKIPERRFUNC] libunity+0x31fa08 -> return 0 (pula error-reporter)\n");
-  }
-
   /* dispara a thread de áudio do FMOD (alimenta fmodProcess em paralelo ao
      render — destrava o boot que espera o mixer). CUP_NOAUDIOTHREAD=1 desliga.
      s14: a própria thread checa opensles_shim_engine_active() e se desliga

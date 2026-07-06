@@ -95,14 +95,40 @@ int sh_sem_init(void *s, int pshared, unsigned value) {
    enfileirar). Determinístico, por-thread, sem flood. */
 static int g_poll_ms = 0;
 void sh_sem_set_poll(int ms) { g_poll_ms = ms; }
+static __thread void *g_tls_wait_sem;
+static __thread int g_tls_wait_count;
+static __thread void *g_tls_wait_caller;
+void sh_sem_tls_state(void **sem_key, int *count, void **caller) {
+  if (sem_key) *sem_key = g_tls_wait_sem;
+  if (count) *count = g_tls_wait_count;
+  if (caller) *caller = g_tls_wait_caller;
+}
 int sh_sem_wait(void *s) {
   struct mysem *m = sem_lookup(s, 1, 0);
   if (!m) return -1;
   if (g_n_wait++ < 60) fprintf(stderr, "[SEM] wait %p tid=%d count=%d\n", s, stid(), m->count);
+  if (getenv("TER_SEMWHO")) {
+    static unsigned long seen[32]; static int nseen;
+    unsigned long ra = (unsigned long)__builtin_return_address(0);
+    int known = 0; for (int i = 0; i < nseen; i++) if (seen[i] == ra) { known = 1; break; }
+    if (!known && nseen < 32) {
+      seen[nseen++] = ra;
+      const char *lib = "?"; unsigned long off = ra;
+      if (g_ubase && ra >= g_ubase && ra < g_ubase + g_usize) { lib = "libunity"; off = ra - g_ubase; }
+      else if (g_ibase && ra >= g_ibase && ra < g_ibase + g_isize) { lib = "libil2cpp"; off = ra - g_ibase; }
+      fprintf(stderr, "[SEMWHO] sem_wait caller=%s+0x%lx sem=%p tid=%d main=%d\n",
+              lib, off, s, stid(), g_main_tid);
+      fsync(2);
+    }
+  }
   int poll = (g_poll_ms > 0 && g_main_tid && stid() != g_main_tid);
   pthread_mutex_lock(&m->m);
+  g_tls_wait_sem = s;
+  g_tls_wait_count = m->count;
+  g_tls_wait_caller = __builtin_return_address(0);
   if (m->count <= 0 && g_main_tid && stid() != g_main_tid) register_tick_sem(s);
   while (m->count <= 0) {
+    g_tls_wait_count = m->count;
     sigset_t o; gc_wait_unblock(&o);
     if (poll) {
       struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
@@ -110,13 +136,14 @@ int sh_sem_wait(void *s) {
       if (ts.tv_nsec >= 1000000000L) { ts.tv_sec += ts.tv_nsec / 1000000000L; ts.tv_nsec %= 1000000000L; }
       int rc = pthread_cond_timedwait(&m->c, &m->m, &ts);
       gc_wait_restore(&o);
-      if (rc == ETIMEDOUT) { pthread_mutex_unlock(&m->m); return 0; } /* polling: retorna sem decrementar */
+      if (rc == ETIMEDOUT) { g_tls_wait_sem = NULL; pthread_mutex_unlock(&m->m); return 0; } /* polling: retorna sem decrementar */
     } else {
       pthread_cond_wait(&m->c, &m->m);
       gc_wait_restore(&o);
     }
   }
   m->count--;
+  g_tls_wait_sem = NULL;
   pthread_mutex_unlock(&m->m);
   return 0;
 }
@@ -152,7 +179,11 @@ int sh_sem_timedwait(void *s, const struct timespec *abs) {
   }
   int rc = 0;
   pthread_mutex_lock(&m->m);
+  g_tls_wait_sem = s;
+  g_tls_wait_count = m->count;
+  g_tls_wait_caller = __builtin_return_address(0);
   while (m->count <= 0) {
+    g_tls_wait_count = m->count;
     sigset_t o; gc_wait_unblock(&o);
     if (abs) {
       rc = pthread_cond_timedwait(&m->c, &m->m, abs);
@@ -164,6 +195,7 @@ int sh_sem_timedwait(void *s, const struct timespec *abs) {
     }
   }
   if (rc == 0) m->count--;
+  g_tls_wait_sem = NULL;
   pthread_mutex_unlock(&m->m);
   return rc;
 }

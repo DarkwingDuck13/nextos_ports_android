@@ -29,6 +29,19 @@ export CUP_VIDEO=kmsdrm
 # senao Unity pega variantes ES3 inexistentes -> tela preta.
 export CUP_GLES_MAJOR=2
 
+# Unity Android pode vir com sharedassets0.assets dividido em blocos de 1 MB.
+# O loader nativo abre o arquivo combinado, entao reconstruimos uma vez no primeiro run.
+DATA_DIR="$GAMEDIR/bin/Data"
+if [ ! -f "$DATA_DIR/sharedassets0.assets" ] && [ -f "$DATA_DIR/sharedassets0.assets.split0" ]; then
+  tmp="$DATA_DIR/sharedassets0.assets.tmp.$$"
+  : > "$tmp" || { echo "sem permissao para gerar sharedassets0.assets"; exit 1; }
+  for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
+    f="$DATA_DIR/sharedassets0.assets.split$i"
+    [ -f "$f" ] && cat "$f" >> "$tmp"
+  done
+  mv "$tmp" "$DATA_DIR/sharedassets0.assets"
+fi
+
 # resolucao do fb0 (auto)
 _w=; _h=
 if [ -r /sys/class/graphics/fb0/virtual_size ]; then
@@ -38,7 +51,7 @@ fi
 [ -n "$_h" ] && export CV_SCREEN_H="$_h"
 
 # Unity: GL single-thread (escapa muro MT-render) + GLES2 + ingles (regra #5)
-export CV_DATADIR="$GAMEDIR/assets/bin/Data"
+export CV_DATADIR="$GAMEDIR/bin/Data"
 export CV_OBB="$GAMEDIR/obb/jp.konami.castlevania/main.110.jp.konami.castlevania.obb"
 export CV_UNITY_ARGS="-force-gfx-direct -force-gles20"
 export CV_LANG=English

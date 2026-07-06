@@ -567,6 +567,28 @@ int so_patch_got(const char *symbol, uintptr_t val) {
   return n;
 }
 
+/* Igual ao patch_got, mas cobre tambem R_ARM_ABS32 de imports. Para imports de
+ * funcao queremos o endereco exato do simbolo, nao S+A com o valor ja resolvido. */
+int so_patch_import_relocs(const char *symbol, uintptr_t val) {
+  int n = 0;
+  for (int i = 0; i < elf_hdr->e_shnum; i++) {
+    char *sh_name = shstrtab + sec_hdr[i].sh_name;
+    if (strcmp(sh_name, ".rel.dyn") == 0 || strcmp(sh_name, ".rel.plt") == 0) {
+      Elf32_Rel *rels = (Elf32_Rel *)((uintptr_t)load_base + sec_hdr[i].sh_addr);
+      for (int j = 0; j < (int)(sec_hdr[i].sh_size / sizeof(Elf32_Rel)); j++) {
+        Elf32_Sym *sym = &syms[ELF32_R_SYM(rels[j].r_info)];
+        int type = ELF32_R_TYPE(rels[j].r_info);
+        if (sym->st_shndx != SHN_UNDEF) continue;
+        if (type != R_ARM_GLOB_DAT && type != R_ARM_JUMP_SLOT && type != R_ARM_ABS32) continue;
+        if (strcmp(dynstrtab + sym->st_name, symbol) != 0) continue;
+        *(uint32_t *)((uintptr_t)load_base + rels[j].r_offset) = (uint32_t)val;
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
 uintptr_t so_find_rel_addr_safe(const char *symbol) {
   for (int i = 0; i < elf_hdr->e_shnum; i++) {
     char *sh_name = shstrtab + sec_hdr[i].sh_name;

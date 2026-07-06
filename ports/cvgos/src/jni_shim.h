@@ -26,6 +26,7 @@ void jni_softinput_cancel(void);
 void *jni_fmod_bytebuffer(void);
 void *jni_fmod_pcm(void);
 int jni_fmod_pcm_size(void);
+void *jni_fmod_device(void);
 
 // Set package name and OBB version (call before jni_shim_init)
 void jni_shim_set_package(const char *package_name, int obb_version);

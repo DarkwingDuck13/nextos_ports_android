@@ -62,14 +62,27 @@ void ZSTD_trace_decompress_end(unsigned long long id, const void *t){ (void)id; 
  * passar &__sF[i] p/ stdio glibc no init, tratamos na F1b. ---- */
 char __sF[3 * 512];
 
-/* ====== sigaction/sigprocmask: ABI bionic x glibc (arm64) ======
- * struct sigaction bionic arm64 = { int sa_flags; void* sa_handler; unsigned long sa_mask; void* sa_restorer; } = 32B.
- * glibc = 152B (sigset_t=128B). Se chamar a glibc direto no oldact (buffer bionic de 32B) -> estoura a stack.
+/* ====== sigaction/sigprocmask: ABI bionic x glibc ======
+ * 🚨 LP32 (armv7, ESTE port): struct sigaction bionic = { void* sa_handler; unsigned long
+ * sa_mask (4B); int sa_flags; void* sa_restorer; } = 16B — HANDLER PRIMEIRO.
+ * (arm64/LP64 é { int sa_flags; void* sa_handler; ... } — layout ERRADO aqui: lia
+ * sa_mask como handler → instalava 0xffffbfd8 (sigfillset-menos-alguns) como handler →
+ * SIGPWR do Boehm GC pulava pro "fn-ptr lixo" 0xffffbfd8 = O crash do worker!)
+ * glibc = 152B (sigset_t=128B). Se chamar a glibc direto no oldact (buffer bionic) -> estoura a stack.
  * Campos bsa_* p/ não colidir com as MACROS sa_handler/sa_sigaction da glibc. */
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-struct bionic_sigaction { int bsa_flags; void *bsa_handler; unsigned long bsa_mask; void *bsa_restorer; };
+struct bionic_sigaction { void *bsa_handler; unsigned long bsa_mask; int bsa_flags; void *bsa_restorer; };
+/* sigsuspend bionic LP32: sigset_t = unsigned long (4B). O handler de suspend do Boehm
+ * GC (libil2cpp) chama sigsuspend p/ ESPERAR o restart — com o stub (=return 0) a thread
+ * "suspensa" continuava rodando durante a coleta (GC racy → corrupção). Converte a
+ * máscara e chama a glibc de verdade. */
+int my_sigsuspend(const unsigned long *bmask) {
+  sigset_t gm; sigemptyset(&gm);
+  if (bmask) for (int s = 1; s <= 32; s++) if (*bmask & (1UL << (s - 1))) sigaddset(&gm, s);
+  return sigsuspend(&gm);
+}
 int my_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_sigaction *oldact) {
   struct sigaction ga, go; struct sigaction *pga = NULL, *pgo = NULL;
   /* CUP_NOSIGH: NÃO deixa o engine instalar handler de sinais de crash -> nosso
