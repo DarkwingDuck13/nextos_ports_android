@@ -116,7 +116,7 @@ make -C ports/meujogo
 
 O `new-port.sh` mata o trabalho mais chato — a tabela de 200-370 símbolos — auto-mapeando libc/libm/GLES/pthread e listando só o que é específico do jogo.
 
-**Onde aprender:** a pasta [`facilitando_o_trabalho/`](facilitando_o_trabalho/) tem 12 receitas reutilizáveis (ponte pthread/ABI, Mali-450/GLES2, fake JNI, áudio, controle/gptokeyb, memória/VRAM, texturas ETC1/ETC2, display, empacotamento, ponteiros/hooks, Unity bootstrap/render/GC) + troubleshooting (incl. **como pegar logs**: jnitrace pré-port + shim de log IL2CPP) + a **Matriz de Ports** (cada jogo já feito → a lição que ele ensinou). Cada port é um exemplo vivo; o próximo é mais fácil que o anterior.
+**Onde aprender:** a pasta [`facilitando_o_trabalho/`](facilitando_o_trabalho/) tem 13 receitas reutilizáveis (ponte pthread/ABI, Mali-450/GLES2, fake JNI, áudio, controle/gptokeyb, memória/VRAM, texturas ETC1/ETC2, display, empacotamento, ponteiros/hooks, Unity bootstrap/render/GC e o guia mestre de Unity ports) + troubleshooting (incl. **como pegar logs**: jnitrace pré-port + shim de log IL2CPP) + a **Matriz de Ports** (cada jogo já feito → a lição que ele ensinou). Cada port é um exemplo vivo; o próximo é mais fácil que o anterior.
 
 **Portou algo novo?** Mande o port e documente o destrave — vira receita pro próximo. Só mantenha o crédito ao projeto (NextOS) e a regra BYO-data (nunca distribua dados de jogo).
 
