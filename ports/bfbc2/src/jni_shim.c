@@ -166,12 +166,21 @@ static int jni_GetStaticIntField(void *e, void *cls, void *fid) {
 }
 
 /* ---- despacho das up-calls static de KarismaBridge ---- */
+/* NÃO forçar IsXPeriaPlay: isso troca pro data package core(xperia) que exige
+ * assets ausentes (player_icons.bin → crash). O gamepad NÃO depende disso — os
+ * botões viram keycodes (TranslateKeyCode) e os sticks vão por AppOnJoystickEvent,
+ * ambos no data package normal. (BC2_XPERIA=1 força só p/ experimento.) */
+static int xperia_on(void) {
+  static int v = -1;
+  if (v < 0) v = getenv("BC2_XPERIA") ? 1 : 0;
+  return v;
+}
 static int call_static_int(const char *n) {
   if (!n) return 0;
   if (!strcmp(n, "GetSliderState")) return 0;
   if (!strcmp(n, "LowerPerformance")) return 0;   /* não é device fraco */
   if (!strcmp(n, "QualcommDevice")) return 0;
-  if (!strcmp(n, "IsXPeriaPlay")) return 0;
+  if (!strcmp(n, "IsXPeriaPlay")) return xperia_on();
   if (!strcmp(n, "GetKeyboardType")) return 0;
   if (!strcmp(n, "GetKeyboardOpened")) return 0;
   if (!strcmp(n, "checkGL20Support")) return 0;   /* força caminho GLES1 */

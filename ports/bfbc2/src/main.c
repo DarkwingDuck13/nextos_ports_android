@@ -32,14 +32,20 @@ extern DynLibFunction port_shims[];
 extern int port_shims_count;
 extern void imports_set_data_dir(const char *d);
 
-/* ---- native bridge fns ---- */
+/* ---- native bridge fns ----
+ * 🔑 libbc2 é SOFTFP: floats vão em r0-r3/stack, NÃO em s0/s1. Loader é hardfp,
+ * então TODO ponteiro de função com float precisa de pcs("aapcs") — sem isso o
+ * nativeOnTouchEvent recebia x=0/y=lixo (grade de toques inteira falhou). */
+#define SOFTFP __attribute__((pcs("aapcs")))
 typedef void (*fn_v)(void *env, void *cls);
 typedef void (*fn_ii)(void *env, void *cls, int a, int b);
 typedef void (*fn_i)(void *env, void *cls, int a);
 typedef unsigned char (*fn_z)(void *env, void *cls);
-typedef void (*fn_touch)(void *env, void *cls, int action, float x, float y, int pid);
+typedef void (SOFTFP *fn_touch)(void *env, void *cls, int action, float x, float y, int pid);
 typedef void (*fn_snd)(void *env, void *cls, void *arr, int n);
 typedef void *(*fn_str)(void *env, void *cls);
+/* Android_Karisma_AppOnJoystickEvent(action, x, y, id) — sticks (Xperia pads) */
+typedef void (SOFTFP *fn_joy)(int action, float x, float y, int id);
 
 static void *g_env, *g_vm;
 static fn_v n_render, n_createCtx, n_destroyCtx, n_backPressed;
@@ -49,6 +55,7 @@ static fn_z n_checkGL20;
 static fn_touch n_touch;
 static fn_snd n_updateSound;
 static void (*n_sendKey)(void *, void *, int, int);
+static fn_joy n_joy;   /* AppOnJoystickEvent (export direto, sem wrapper JNI) */
 
 /* ---- crash handler ARMHF ---- */
 static void crash_handler(int sig, siginfo_t *info, void *uctx) {
@@ -174,6 +181,19 @@ int main(int argc, char *argv[]) {
   BIND(n_backPressed, fn_v, "nativeOnBackPressed");
   BIND(n_updateSound, fn_snd, "nativeUpdateSound");
 #undef BIND
+  n_joy = (fn_joy)so_find_addr_safe("Android_Karisma_AppOnJoystickEvent");
+  debugPrintf("AppOnJoystickEvent=%p (sticks nativos; xperia-data=%s)\n", (void *)n_joy,
+              getenv("BC2_XPERIA") ? "ON" : "off");
+
+  /* 🎮 abre qualquer game controller conectado (config vem do sistema/PortMaster) */
+  SDL_GameController *pad = NULL;
+  for (int i = 0; i < SDL_NumJoysticks(); i++) {
+    if (SDL_IsGameController(i)) { pad = SDL_GameControllerOpen(i); break; }
+    /* sem mapping SDL: abre como joystick cru mesmo assim */
+  }
+  SDL_Joystick *rawjoy = NULL;
+  if (!pad && SDL_NumJoysticks() > 0) rawjoy = SDL_JoystickOpen(0);
+  debugPrintf("gamepad: controller=%p raw=%p (%d joysticks)\n", (void *)pad, (void *)rawjoy, SDL_NumJoysticks());
 
   /* ---- áudio: buffer + fake short[] ---- */
   SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
@@ -212,12 +232,66 @@ int main(int argc, char *argv[]) {
           case SDLK_LEFT: kc = 21; break;
           case SDLK_RIGHT: kc = 22; break;
           case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: kc = 23; break;
+          case SDLK_a: kc = 99; break;            /* □ BUTTON_X */
+          case SDLK_s: kc = 100; break;           /* △ BUTTON_Y */
+          case SDLK_q: kc = 102; break;           /* L1 */
+          case SDLK_w: kc = 103; break;           /* R1 */
+          case SDLK_TAB: kc = 109; break;         /* SELECT */
+          case SDLK_p: kc = 108; break;           /* START */
+          case SDLK_m: kc = 82; break;            /* MENU */
           case SDLK_ESCAPE: case SDLK_BACKSPACE:
             if (ev.type == SDL_KEYDOWN && n_backPressed) n_backPressed(g_env, NULL);
             kc = 0; break;
           default: kc = 0; break;
         }
         if (kc && n_sendKey) n_sendKey(g_env, NULL, ev.type == SDL_KEYDOWN ? 0 : 1, kc);
+        break; }
+      case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: {
+        /* 🎮 gamepad -> keycodes Android (tabela TranslateKeyCode do jogo):
+         * dpad 19-22, ✕=23, ○=4(back), □=99, △=100, L1=102, R1=103,
+         * start=108, select=109, guide=82(menu). */
+        int kc = 0;
+        switch (ev.cbutton.button) {
+          case SDL_CONTROLLER_BUTTON_DPAD_UP: kc = 19; break;
+          case SDL_CONTROLLER_BUTTON_DPAD_DOWN: kc = 20; break;
+          case SDL_CONTROLLER_BUTTON_DPAD_LEFT: kc = 21; break;
+          case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: kc = 22; break;
+          case SDL_CONTROLLER_BUTTON_A: kc = 23; break;
+          case SDL_CONTROLLER_BUTTON_B: kc = 4; break;
+          case SDL_CONTROLLER_BUTTON_X: kc = 99; break;
+          case SDL_CONTROLLER_BUTTON_Y: kc = 100; break;
+          case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: kc = 102; break;
+          case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: kc = 103; break;
+          case SDL_CONTROLLER_BUTTON_START: kc = 108; break;
+          case SDL_CONTROLLER_BUTTON_BACK: kc = 109; break;
+          case SDL_CONTROLLER_BUTTON_GUIDE: kc = 82; break;
+          default: kc = 0; break;
+        }
+        if (kc && n_sendKey) n_sendKey(g_env, NULL, ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
+        break; }
+      case SDL_CONTROLLERAXISMOTION: {
+        /* sticks -> AppOnJoystickEvent(action, x, y, id): id 0=esq 1=dir.
+         * action: 1=pressed (saiu do centro), 3=move, 2=released (voltou). */
+        static float jx[2], jy[2]; static int jactive[2];
+        int id = -1;
+        float v = ev.caxis.value / 32767.0f;
+        switch (ev.caxis.axis) {
+          case SDL_CONTROLLER_AXIS_LEFTX: id = 0; jx[0] = v; break;
+          case SDL_CONTROLLER_AXIS_LEFTY: id = 0; jy[0] = v; break;
+          case SDL_CONTROLLER_AXIS_RIGHTX: id = 1; jx[1] = v; break;
+          case SDL_CONTROLLER_AXIS_RIGHTY: id = 1; jy[1] = v; break;
+          default: break;
+        }
+        if (id >= 0 && n_joy) {
+          float mag = jx[id]*jx[id] + jy[id]*jy[id];
+          if (mag > 0.02f) {                       /* deadzone */
+            n_joy(jactive[id] ? 3 : 1, jx[id], jy[id], id);
+            jactive[id] = 1;
+          } else if (jactive[id]) {
+            n_joy(2, 0.0f, 0.0f, id);
+            jactive[id] = 0;
+          }
+        }
         break; }
       case SDL_FINGERDOWN: case SDL_FINGERUP: case SDL_FINGERMOTION: {
         int act = ev.type == SDL_FINGERDOWN ? 1 : ev.type == SDL_FINGERUP ? 2 : 3;
@@ -242,18 +316,27 @@ int main(int argc, char *argv[]) {
        * action 0=down 1=up. 19=UP 20=DOWN 21=LEFT 22=RIGHT 23=CENTER 66=ENTER. */
       if (frame == 120) { n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0); }
       else if (frame == 150) { n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0); }
-      else if (frame >= 400 && n_sendKey) {
+      else if (frame >= 400 && frame < 1000 && n_sendKey) {
         struct { unsigned long f; int key; } static keys[] = {
-          {400,20},{430,20},{460,23},{490,66},   /* DOWN,DOWN,CENTER,ENTER */
-          {560,19},{590,23},{620,66},            /* UP,CENTER,ENTER */
-          {700,22},{730,23},{760,66},            /* RIGHT,CENTER,ENTER */
+          {400,20},{430,20},{460,23},{490,66},   /* DOWN,DOWN,CENTER,ENTER -> CONTINUE */
+          {560,23},{620,23},{700,23},            /* CENTER p/ pular cutscene */
           {0,0}
         };
         for (int i = 0; keys[i].f; i++) if (keys[i].f == frame) {
           debugPrintf(">> KEY %d down+up (f%lu)\n", keys[i].key, frame);
-          n_sendKey(g_env, NULL, 0, keys[i].key);   /* down */
-          n_sendKey(g_env, NULL, 1, keys[i].key);   /* up */
+          n_sendKey(g_env, NULL, 0, keys[i].key);
+          n_sendKey(g_env, NULL, 1, keys[i].key);
         }
+      }
+      /* IN-GAME autopilot (frame>1100): injeta STICK DIREITO (olhar) via
+       * AppOnJoystickEvent p/ provar que o gamepad move a câmera in-game. */
+      else if (frame >= 1100 && n_joy) {
+        unsigned long t = (frame - 1100) % 240;
+        if (t < 120) n_joy(t == 0 ? 1 : 3, 0.9f, 0.0f, 1);   /* olhar direita (stick dir) */
+        else if (t == 120) n_joy(2, 0.0f, 0.0f, 1);          /* solta */
+        else if (t < 200) n_joy(t == 121 ? 1 : 3, 0.0f, -0.9f, 0); /* andar p/ frente (stick esq) */
+        else if (t == 200) n_joy(2, 0.0f, 0.0f, 0);
+        if (t == 0) debugPrintf(">> IN-GAME autopilot: stick look/move (f%lu)\n", frame);
       }
     }
     if (n_render) n_render(g_env, NULL);   /* 1o frame: AppInit + AppUpdate */
