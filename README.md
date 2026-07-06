@@ -68,6 +68,9 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Secret of Mana** (remake 2018, MCF) | so-loader (**GLES1 puro**) | Jogável completo — inglês, controle, fontes, save, BGM+SFX | [`ports/secretofmana`](ports/secretofmana/) |
 | **Call of Duty: Black Ops Zombies** (Marmalade s3e) | so-loader (loader de **Producdevity**, MIT) | Jogável — New Game, gameplay, fullscreen, áudio, controle (d-pad) | [`ports/codboz`](ports/codboz/) |
 | **Terraria** (Unity IL2CPP) | so-loader | Jogável — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
+| **BADLAND** (Cocos2d-x, FMOD) | so-loader | Jogável (Mali-450) — render GLES2, áudio FMOD, texturas ETC2→ETC1 | [`ports/badland`](ports/badland/) |
+| **Magic Rampage** (FMOD) | so-loader | Jogável (Mali-450) | [`ports/magicrampage`](ports/magicrampage/) |
+| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | Jogável (Mali-450) | [`ports/elderand`](ports/elderand/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
@@ -80,17 +83,14 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Mega Man X** (Unity IL2CPP) | so-loader | Controles/menu por cursor completos; falta jogo novo nativo | [`ports/megamanx`](ports/megamanx/) |
 | **Castlevania: Grimoire of Souls** (Unity 2018.4 IL2CPP) | so-loader | Deserializa a cena do Título; muro = skew asset↔metadata do APK mod | [`ports/cvgos`](ports/cvgos/) |
 | **Graveyard Keeper** (Unity 2018.2 IL2CPP) | so-loader | Renderiza a tela de loading (caminho Terraria) | [`ports/graveyardkeeper`](ports/graveyardkeeper/) |
-| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | Investigação de render | [`ports/elderand`](ports/elderand/) |
 | **Cuphead** (Unity IL2CPP) | so-loader | WIP | [`ports/cuphead`](ports/cuphead/) |
 | **Pixel Cup Soccer** (Unity IL2CPP) | so-loader | Loading renderiza; não passa dela (muro no 1º frame) | [`ports/pixelcup`](ports/pixelcup/) |
 | **Rockman X DiVE Offline** (Unity) | so-loader | Boot avança; throttle/CRIWARE residual entre runs | [`ports/rockmanxdive`](ports/rockmanxdive/) |
 | **NieR (reincarnation/automata)** (UE4) | so-loader | Loader OK, bootstrap do alocador UE4 resolvido | [`ports/nier`](ports/nier/) |
 | **PES 2012** (Marmalade s3e) | so-loader | FSM de download mapeado, gate de 180MB bypassado; muro = OBB sound | [`ports/pes2012`](ports/pes2012/) |
 | **The Amazing Spider-Man 2** (Gameloft) | so-loader | Boot estabiliza a 22fps, GL2JNI boot OK; muro = estado GAIA | [`ports/tasm2`](ports/tasm2/) |
-| **BADLAND** (Cocos2d-x, FMOD) | so-loader | Triagem: caminho definido (ETC2→RGBA no 1º boot) | [`ports/badland`](ports/badland/) |
 | **Legend of Mana** (remake) | so-loader | Estudo de render (CLUT/pretos) | [`ports/legendofmana`](ports/legendofmana/) |
 | **Limbo** | so-loader (NativeActivity) | Boot + render + tela inicial + controle; falta áudio Wwise | [`ports/limbo`](ports/limbo/) |
-| **Magic Rampage** (FMOD) | so-loader | Scaffold + build | [`ports/magicrampage`](ports/magicrampage/) |
 | **Left 4 Dead 2** (mobile) | so-loader (base infra RE4) | Scaffold compila (l4d2boot armhf) | [`ports/l4d2`](ports/l4d2/) |
 | **Shantae: Seven Sirens** (WayForward "wf") | so-loader | Recon — engine renderiza; estudo do caminho | [`ports/sevensirens`](ports/sevensirens/) |
 | **Summertime Saga** | so-loader | Trava das conversas resolvida (ETC1 dupla-camada runtime) | [`ports/summertimesaga`](ports/summertimesaga/) |
