@@ -720,3 +720,23 @@ Alternativa ao Waydroid p/ ter Google Play Services (o muro s19). Android Studio
 **SDK em `/mnt/ARQUIVOS/.../99-TEMP-CLAUDE/claude-1000/android-sdk` (bind: /mnt/asdk). AVD `pes13`
 (A13 x86_64 google_apis), libndk já no /system (build.prop com abilist duplicado a corrigir).**
 Genymotion (AUR) é alternativa mais fácil p/ GApps+houdini se o AVD resistir.
+
+## §s21 — EMULADOR AVD: GMS confirmado, MAS abilist=armeabi quebra o adbd (native-bridge runtime não integra)
+
+Retomei o AVD com força. Resolvidos vários gremlins do emulador:
+- **Launch:** `setsid env -i HOME=/home/felipe PATH=/usr/bin:/bin ANDROID_SDK_ROOT=/mnt/asdk ./emulator @pes13 ...`
+  **SEPARADO** do wait (o timeout do comando matava o emulador junto). **Matar TODO qemu órfão + limpar
+  `/run/user/1000/avd/running/*` antes de relançar** (órfãos quebram a descoberta do adb). **adb start-server
+  ANTES do emulador** (senão "Unable to connect to adb daemon on port 5037" e não binda 5555).
+- **GMS/Play confirmados** no image API 33 google_apis (a peça que faltava do Waydroid). ✅
+- **libndk instalado COMPLETO** no /system (lib+lib64+bin+etc COM `ld.config.arm.txt`/`cpuinfo.arm.txt`;
+  precisa `adb root`+`remount`+**1 reboot** antes do push, senão read-only).
+- **🧱 MURO DURO:** setar `ro.product.cpu.abilist=...,armeabi-v7a,armeabi` (necessário: `pm install` valida
+  abi contra ele; `--abi armeabi-v7a` dá "ABI not supported"; abilist deriva do abilist32 que vem vazio)
+  **QUEBRA o adbd** — o device fica `offline` e some após ~150s, MESMO com libndk completo E
+  `-selinux permissive`. A imagem Google APIs (Android 13) do emulador **não tolera injeção do
+  native-bridge em runtime** (o LineageOS do Waydroid tolerou). Precisaria integração em BUILD do image.
+- **⚠️ RECOMENDAÇÃO:** **Genymotion** (AUR, VirtualBox) é feito p/ isto — instala GApps + ARM translation
+  (houdini) integrados no image, sem o problema do abilist. OU rebuildar o system.img do AVD com libndk
+  (pesado). O AVD tem GMS mas o ARM 32-bit não roda sem quebrar. Waydroid continua sendo o único ambiente
+  onde o jogo REALMENTE rodou (até Loading), faltando só o Play (microG).
