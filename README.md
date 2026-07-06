@@ -68,6 +68,7 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Secret of Mana** (remake 2018, MCF) | so-loader (**GLES1 puro**) | Jogável completo — inglês, controle, fontes, save, BGM+SFX | [`ports/secretofmana`](ports/secretofmana/) |
 | **Call of Duty: Black Ops Zombies** (Marmalade s3e) | so-loader (loader de **Producdevity**, MIT) | Jogável — New Game, gameplay, fullscreen, áudio, controle (d-pad) | [`ports/codboz`](ports/codboz/) |
 | **Terraria** (Unity IL2CPP) | so-loader | Jogável — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
+| **Summertime Saga** (Ren'Py→Android) | so-loader | Jogável (Mali-450) — conversas destravadas (ETC1 dupla-camada runtime) | [`ports/summertimesaga`](ports/summertimesaga/) |
 | **BADLAND** (Cocos2d-x, FMOD) | so-loader | Jogável (Mali-450) — render GLES2, áudio FMOD, texturas ETC2→ETC1 | [`ports/badland`](ports/badland/) |
 | **Magic Rampage** (FMOD) | so-loader | Jogável (Mali-450) | [`ports/magicrampage`](ports/magicrampage/) |
 
@@ -93,7 +94,6 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Limbo** | so-loader (NativeActivity) | Boot + render + tela inicial + controle; falta áudio Wwise | [`ports/limbo`](ports/limbo/) |
 | **Left 4 Dead 2** (mobile) | so-loader (base infra RE4) | Scaffold compila (l4d2boot armhf) | [`ports/l4d2`](ports/l4d2/) |
 | **Shantae: Seven Sirens** (WayForward "wf") | so-loader | Recon — engine renderiza; estudo do caminho | [`ports/sevensirens`](ports/sevensirens/) |
-| **Summertime Saga** | so-loader | Trava das conversas resolvida (ETC1 dupla-camada runtime) | [`ports/summertimesaga`](ports/summertimesaga/) |
 | **Dusklight** (Zelda: TP recomp) | recomp + backend Aurora GLES2 | Cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
 | **Hollow Knight** (Unity IL2CPP) | so-loader | Pesquisa — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
 
