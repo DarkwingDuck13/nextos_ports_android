@@ -107,11 +107,34 @@ eventos SDL. A solucao foi injetar direto no pipeline interno do jogo.
 - `DS_CONTROLLOG=1` loga teclas/touch + raw do controle a cada 240
   frames; `DS_NATIVELOG=1` loga as acoes nativas.
 
+## Self-contained + R2 (2026-07-06)
+
+Requisito: launcher sem "muitos hooks" — logica no binario; saida nunca
+pode travar o device; pacote completo no R2 (padrao NextOS Elite).
+
+- Movido para DENTRO do binario (`src/main.c`, antes de/no `main`):
+  - `ds_kill_prior_instances()` — scan /proc, mata deadspace antigos.
+  - `ds_setup_swap()` — RESPEITA o swap fixo do sistema; so cria fallback
+    proprio se NAO houver nenhum swap ativo (nada de zram, regra #9).
+  - `ds_cpu_performance()` — governor performance nos cores.
+  - `ds_watchdog_thread()` — self-watchdog RSS (default 1 GiB) -> _exit(0).
+- Saida a prova de trava: Select+Start (ou SIGTERM/SIGINT, ex. ES
+  fechando o port) -> `g_running=0`; no teardown PULA `p_NativeOnPause`
+  (era o SIGSEGV do shutdown), so `SDL_Quit()` sob `SIGALRM(3)` + `_exit`.
+  Validado: SIGTERM -> saida limpa em ~0.5s, sem trava, ES reassume.
+- Launcher `DeadSpace.sh` agora MINIMO (env + `exec`): sem stop/start ES
+  (a EmulationStation gerencia isso sozinha — era o stop/start no .sh que
+  arriscava travar), sem gptokeyb, sem watchdog/swap em shell.
+- Entrada da ES: `ports_scripts/Dead Space.sh` = stub `exec .../deadspace/DeadSpace.sh`.
+- Pacote R2 privado full-data:
+  `r2:black-retro-content/ports_aio/nextos_elite_exclusivos/Dead Space (NextOS Elite).tar.gz`
+  estrutura `ports/deadspace/` + `ports_scripts/Dead Space.sh` +
+  `ports_scripts/images/Dead Space.png` (~362M dados limpos).
+
 ## Estado anterior (continua valido)
 
 - Imagem GLES1 ok (fix JNI width/height V/A); assets/VFS ok; ETC1 ok.
 - Audio ok na rota JNI/SDL (`SetShortArrayRegion`, backpressure etc).
-- Launcher com watchdog, swap 512MB opcional, restaura ES ao sair.
 
 ## Pendencias
 
