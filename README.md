@@ -70,7 +70,6 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Terraria** (Unity IL2CPP) | so-loader | Jogável — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
 | **BADLAND** (Cocos2d-x, FMOD) | so-loader | Jogável (Mali-450) — render GLES2, áudio FMOD, texturas ETC2→ETC1 | [`ports/badland`](ports/badland/) |
 | **Magic Rampage** (FMOD) | so-loader | Jogável (Mali-450) | [`ports/magicrampage`](ports/magicrampage/) |
-| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | Jogável (Mali-450) | [`ports/elderand`](ports/elderand/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
@@ -81,6 +80,7 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Resident Evil 4** (Unity/Mono ARM32) | so-loader | Menu + entrada Cap.1; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Final Fantasy IX** (Unity IL2CPP) | so-loader | Renderiza claro no fb0; caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
 | **Mega Man X** (Unity IL2CPP) | so-loader | Controles/menu por cursor completos; falta jogo novo nativo | [`ports/megamanx`](ports/megamanx/) |
+| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | Investigação de render | [`ports/elderand`](ports/elderand/) |
 | **Castlevania: Grimoire of Souls** (Unity 2018.4 IL2CPP) | so-loader | Deserializa a cena do Título; muro = skew asset↔metadata do APK mod | [`ports/cvgos`](ports/cvgos/) |
 | **Graveyard Keeper** (Unity 2018.2 IL2CPP) | so-loader | Renderiza a tela de loading (caminho Terraria) | [`ports/graveyardkeeper`](ports/graveyardkeeper/) |
 | **Cuphead** (Unity IL2CPP) | so-loader | WIP | [`ports/cuphead`](ports/cuphead/) |
