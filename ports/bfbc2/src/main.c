@@ -18,6 +18,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <math.h>
 
 #include <SDL2/SDL.h>
 
@@ -129,30 +130,23 @@ static void open_joysticks(void) {
 static void js_tap_center(int W, int H) {   /* splash só avança por TOQUE */
   if (n_touch) { n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0); n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0); }
 }
-/* stick -> AppOnJoystickEvent(action, x, y, id) c/ deadzone e press/move/release */
-static void js_stick(int id, float x, float y) {
-  static float sx[2], sy[2]; static int act[2];
-  if (id < 0 || id > 1 || !n_joy) return;
-  sx[id] = x; sy[id] = y;
-  float mag = sx[id]*sx[id] + sy[id]*sy[id];
-  if (mag > 0.06f) { n_joy(act[id] ? 3 : 1, sx[id], sy[id], id); act[id] = 1; }
-  else if (act[id]) { n_joy(2, 0.0f, 0.0f, id); act[id] = 0; }
-}
+/* 🎮 Modelo do TheFloW (bc2_vita): os sticks vão SEMPRE com type=3 (MOVE), valor
+ * cru (x=horizontal, y=vertical), 0.0 quando centra, deadzone 0.25, e só quando
+ * MUDA. NADA de press/release (era isso que travava/transpunha a câmera). */
+static float g_ax[8];        /* eixos crus (0/1=stick esq, 2/3=stick dir) */
 static void poll_joysticks(int W, int H) {
   if (js_log < 0) js_log = getenv("BC2_INPUTLOG") ? 1 : 0;
   struct js_event e;
-  static float ax[4][8];   /* último valor por eixo, por device */
-  static int dpad_x[4], dpad_y[4];
+  static int dpad_x, dpad_y;
   for (int d = 0; d < 4; d++) {
     if (js_fd[d] < 0) continue;
     while (read(js_fd[d], &e, sizeof e) == (int)sizeof e) {
       int init = e.type & JS_EVENT_INIT;
       int type = e.type & 0x7f;
       if (js_log && !init) debugPrintf("[js%d] type=%d num=%d val=%d\n", d, type, e.number, e.value);
-      if (init) continue;   /* estado inicial, ignora */
+      if (init) continue;
       if (type == JS_EVENT_BUTTON) {
-        /* Botões 4-7 (ombros/gatilhos) = TIRO: toque-segurado na "fire area"
-         * (canto inf-direito; controls_at_bottom). Posição via BC2_FIREX/Y (0..1). */
+        /* Botões 4-7 (ombros/gatilhos) = TIRO: toque-segurado na fire area. */
         if (e.number >= 4 && e.number <= 7 && n_touch) {
           float fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
           float fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
@@ -160,39 +154,44 @@ static void poll_joysticks(int W, int H) {
           if (e.value && !firing) { n_touch(g_env, NULL, 1, fx, fy, 1); firing = 1; }
           else if (!e.value && firing) { n_touch(g_env, NULL, 2, fx, fy, 1); firing = 0; }
         } else {
-          /* demais botões: press -> tap central (passa splash) + SELECT(23);
-           * botão 1 = back(4). */
-          int kc = (e.number == 1) ? 4 : 23;
+          int kc = (e.number == 1) ? 4 : 23;   /* botão 1 = back; resto = select */
           if (e.value) { js_tap_center(W, H); if (n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
           else if (n_sendKey) n_sendKey(g_env, NULL, 1, kc);
         }
       } else if (type == JS_EVENT_AXIS && e.number < 8) {
         float v = e.value / 32767.0f;
-        ax[d][e.number] = v;
-        switch (e.number) {
-          case 0: js_stick(0, v, ax[d][1]); break;   /* stick esq X */
-          case 1: js_stick(0, ax[d][0], v); break;   /* stick esq Y */
-          /* stick DIR = eixos Z/RZ do 0810 com X/Y TROCADOS: axis2=vertical,
-           * axis3=horizontal (senao a camera fica transposta 90 graus). */
-          case 2: js_stick(1, ax[d][3], v); break;   /* axis2 -> Y (vertical) */
-          case 3: js_stick(1, v, ax[d][2]); break;   /* axis3 -> X (horizontal) */
-          case 4: case 6: {                          /* dpad X (hat) */
-            int nx = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
-            if (nx != dpad_x[d] && n_sendKey) {
-              if (dpad_x[d]) n_sendKey(g_env, NULL, 1, dpad_x[d] > 0 ? 22 : 21);
-              if (nx) n_sendKey(g_env, NULL, 0, nx > 0 ? 22 : 21);
-              dpad_x[d] = nx;
-            } break; }
-          case 5: case 7: {                          /* dpad Y (hat) */
-            int ny = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
-            if (ny != dpad_y[d] && n_sendKey) {
-              if (dpad_y[d]) n_sendKey(g_env, NULL, 1, dpad_y[d] > 0 ? 20 : 19);
-              if (ny) n_sendKey(g_env, NULL, 0, ny > 0 ? 20 : 19);
-              dpad_y[d] = ny;
-            } break; }
+        g_ax[e.number] = v;
+        if (e.number == 4 || e.number == 6) {       /* dpad X (hat) -> keycodes */
+          int nx = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
+          if (nx != dpad_x && n_sendKey) {
+            if (dpad_x) n_sendKey(g_env, NULL, 1, dpad_x > 0 ? 22 : 21);
+            if (nx) n_sendKey(g_env, NULL, 0, nx > 0 ? 22 : 21);
+            dpad_x = nx;
+          }
+        } else if (e.number == 5 || e.number == 7) { /* dpad Y (hat) */
+          int ny = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
+          if (ny != dpad_y && n_sendKey) {
+            if (dpad_y) n_sendKey(g_env, NULL, 1, dpad_y > 0 ? 20 : 19);
+            if (ny) n_sendKey(g_env, NULL, 0, ny > 0 ? 20 : 19);
+            dpad_y = ny;
+          }
         }
       }
     }
+  }
+  /* ---- sticks (modelo TheFloW): type=3, cru, deadzone 0.25, só se mudou ---- */
+  if (!n_joy) return;
+  float lx = g_ax[0], ly = g_ax[1], rx = g_ax[2], ry = g_ax[3];
+  if (getenv("BC2_RSWAP")) { float t = rx; rx = ry; ry = t; }   /* knobs de segurança */
+  if (getenv("BC2_RINVX")) rx = -rx;
+  if (getenv("BC2_RINVY")) ry = -ry;
+  if (fabsf(lx) < 0.25f) lx = 0; if (fabsf(ly) < 0.25f) ly = 0;
+  if (fabsf(rx) < 0.25f) rx = 0; if (fabsf(ry) < 0.25f) ry = 0;
+  static float olx, oly, orx, ory;
+  if (lx != olx || ly != oly || rx != orx || ry != ory) {
+    olx = lx; oly = ly; orx = rx; ory = ry;
+    n_joy(3, lx, ly, 0);   /* stick esq (mover) */
+    n_joy(3, rx, ry, 1);   /* stick dir (câmera) */
   }
 }
 
@@ -275,16 +274,10 @@ int main(int argc, char *argv[]) {
   debugPrintf("AppOnJoystickEvent=%p (sticks nativos; xperia-data=%s)\n", (void *)n_joy,
               getenv("BC2_XPERIA") ? "ON" : "off");
 
-  /* 🎮 abre qualquer game controller conectado (config vem do sistema/PortMaster) */
-  SDL_GameController *pad = NULL;
-  for (int i = 0; i < SDL_NumJoysticks(); i++) {
-    if (SDL_IsGameController(i)) { pad = SDL_GameControllerOpen(i); break; }
-    /* sem mapping SDL: abre como joystick cru mesmo assim */
-  }
-  SDL_Joystick *rawjoy = NULL;
-  if (!pad && SDL_NumJoysticks() > 0) rawjoy = SDL_JoystickOpen(0);
-  debugPrintf("gamepad: controller=%p raw=%p (%d joysticks)\n", (void *)pad, (void *)rawjoy, SDL_NumJoysticks());
-  open_joysticks();   /* leitura DIRETA de /dev/input/jsN (robusto p/ qualquer pad) */
+  /* 🎮 NÃO abrir o SDL_GameController: ele lê o MESMO pad físico que o js0 →
+   * input DUPLICADO (dois eventos de stick por movimento) que atrapalha a câmera.
+   * Usamos SÓ a leitura direta de /dev/input/jsN (+ teclado p/ gpio keypads). */
+  open_joysticks();
 
   /* ---- áudio: buffer + fake short[] ---- */
   SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
@@ -447,12 +440,11 @@ int main(int argc, char *argv[]) {
           n_touch(g_env, NULL, 1, W*0.66f, H*0.66f, 0);
           n_touch(g_env, NULL, 2, W*0.66f, H*0.66f, 0);
         }
-        unsigned long t = (frame - 1100) % 240;
-        if (t < 120) n_joy(t == 0 ? 1 : 3, 0.9f, 0.0f, 1);   /* olhar direita (stick dir, TESTE do fix) */
-        else if (t == 120) n_joy(2, 0.0f, 0.0f, 1);
-        else if (t < 200) n_joy(t == 121 ? 1 : 3, 0.0f, -0.9f, 0);
-        else if (t == 200) n_joy(2, 0.0f, 0.0f, 0);
-        if (t == 0) debugPrintf(">> IN-GAME autopilot: stick look/move (f%lu)\n", frame);
+        if (getenv("BC2_AUTOLOOK")) {   /* injeção de stick só se pedido (senão conflita c/ teste js) */
+          unsigned long t = (frame - 1100) % 240;
+          if (t < 120) n_joy(3, 0.9f, 0.0f, 1);
+          else if (t == 120) n_joy(3, 0.0f, 0.0f, 1);
+        }
       }
     }
     if (n_render) n_render(g_env, NULL);   /* 1o frame: AppInit + AppUpdate */
