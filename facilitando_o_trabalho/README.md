@@ -33,6 +33,7 @@ Portar para o Amlogic-old não é só "fazer rodar"; é negociar com o hardware.
 10. [Empacotando no PortMaster (BYO-data)](receitas/10-empacotando-portmaster.md) — layout ports_scripts, foreground bash puro, inglês, mate+confirme.
 11. [Ponteiros: handles, GOT/PLT e trampolins](receitas/11-ponteiros-handles-e-hooks.md) — o fio condutor do so-loader: handle-as-pointer, hook por GOT, pool de trampolins.
 12. [Unity por dentro: bootstrap JNI, render loop e GC](receitas/12-unity-bootstrap-render-gc.md) — a sequência exata de boot, o loop `nativeRender` bombeado pelo host, `GC_DISABLE_INCREMENTAL=1`, `nativeInjectEvent`, `ReflectionHelper`.
+13. [Unity Android no NextOS: guia mestre para novos ports](receitas/13-unity-ports-guia-mestre.md) — matriz real dos Unitys, escolha do port base, video/audio/controle, job-system, async load, Play Asset Delivery e device alvo.
 
 ### Troubleshooting
 1.  [Diagnóstico de Crash](troubleshooting/01-diagnostico-de-crash.md) — crash handler, stack scan, gdb, BRK traps.
@@ -52,13 +53,14 @@ O [`kit_essencial/`](kit_essencial/) tem o `core/` (so_util, egl_shim, opensles_
 | **Bully: AE** | RenderWare (libGame) | hook ARM64 com pool de trampolins; fix do `glClear` no FBO; cap/meia-res de textura | [11](receitas/11-ponteiros-handles-e-hooks.md) · [03](receitas/03-domando-a-mali450.md) · [07](receitas/07-memoria-vram-e-teardown.md) · [08](receitas/08-texturas-etc1-etc2.md) |
 | **Chrono Trigger** | Cocos2d-x 3.14 | ABI do `nativeControllerButtonEvent`; refill de áudio fixo (anti-underrun) | [05](receitas/05-audio-opensles-sdl.md) · [06](receitas/06-controle-input-gptokeyb.md) |
 | **Crazy Taxi** | NativeActivity SDL2 | teclado→keycode Android pra gptokeyb | [06](receitas/06-controle-input-gptokeyb.md) |
-| **Resident Evil 4** | Unity Mono | FMOD AudioTrack fake; deadlock job-system (preservar post no sem_init) | [05](receitas/05-audio-opensles-sdl.md) · [troub.02](troubleshooting/02-deadlock-job-system.md) |
+| **Resident Evil 4** | Unity Mono | FMOD AudioTrack fake; deadlock job-system (preservar post no sem_init); demo menu/Cap.1 | [05](receitas/05-audio-opensles-sdl.md) · [13](receitas/13-unity-ports-guia-mestre.md) · [troub.02](troubleshooting/02-deadlock-job-system.md) |
 | **Streets of Rage 4** | MonoGame/.NET nativo | runtime .NET + MonoGame em GLES2; BYO-data via APK | [10](receitas/10-empacotando-portmaster.md) |
-| **Terraria** | Unity IL2CPP | IL2CPP ES2 com player/mundo/áudio/controle | [01](receitas/01-iniciando-um-port.md) |
+| **Terraria** | Unity IL2CPP | IL2CPP ES2 com player/mundo/áudio/controle; referência jogável de runtime Unity | [13](receitas/13-unity-ports-guia-mestre.md) · [12](receitas/12-unity-bootstrap-render-gc.md) |
 | **Dysmantle** | GameActivity | crash handler + BRK traps; ETC1 cache offline | [troub.01](troubleshooting/01-diagnostico-de-crash.md) · [08](receitas/08-texturas-etc1-etc2.md) |
 | **GTA Vice City** | RenderWare (re3) | limite de instruções do shader (MAX_LIGHTS); Z-clipping 2D | [03](receitas/03-domando-a-mali450.md) |
-| **Elderand** | Unity IL2CPP URP | zram multi-stream (gargalo de RAM); handshake de startup do gfxworker | [07](receitas/07-memoria-vram-e-teardown.md) · [troub.02](troubleshooting/02-deadlock-job-system.md) |
-| **Bogodroid neo** (mineração externa) | loader Unity multi-versão | sequência de boot JNI da Unity; render bombeado pelo host; GC incremental off; jnitrace + shim de log IL2CPP | [12](receitas/12-unity-bootstrap-render-gc.md) · [troub.03](troubleshooting/03-logs-jnitrace-e-shim-il2cpp.md) |
+| **Elderand** | Unity IL2CPP URP | gargalo de RAM/URP ES3; handshake de startup do gfxworker; X5M costuma ser alvo mais honesto | [13](receitas/13-unity-ports-guia-mestre.md) · [07](receitas/07-memoria-vram-e-teardown.md) · [troub.02](troubleshooting/02-deadlock-job-system.md) |
+| **Bogodroid neo** (mineração externa) | loader Unity multi-versão | sequência de boot JNI da Unity; render bombeado pelo host; GC incremental off; jnitrace + shim de log IL2CPP | [12](receitas/12-unity-bootstrap-render-gc.md) · [13](receitas/13-unity-ports-guia-mestre.md) · [troub.03](troubleshooting/03-logs-jnitrace-e-shim-il2cpp.md) |
+| **Pixel Cup / Graveyard Keeper / Mega Man X / FF9 / Hollow Knight** | Unity IL2CPP | casos de referência para Unity 2022 async/job-system, Choreographer, shader GLES3→GLES2, FMV, Rewired/touch e cap de textura | [13](receitas/13-unity-ports-guia-mestre.md) |
 
 ---
 
@@ -69,6 +71,7 @@ O [`kit_essencial/`](kit_essencial/) tem o `core/` (so_util, egl_shim, opensles_
 *   **Framebuffer sujo do run anterior** — faça o teardown EGL na saída ([07](receitas/07-memoria-vram-e-teardown.md)).
 *   **Depth/Z-clipping** em 2D (Unity/GameMaker).
 *   **Unity: ninguém está bombeando o render** — a Unity não se desenha sozinha; o host precisa chamar `nativeRender()` por frame, depois da sequência completa de boot ([12](receitas/12-unity-bootstrap-render-gc.md)).
+*   **Unity: loading renderiza mas não sai dali** — se `Resources.LoadAsync`/bundles/datapack nunca abrem, investigue job-system/async load antes de input ([13](receitas/13-unity-ports-guia-mestre.md)).
 
 ---
 *Este ecossistema cresce a cada port. Descobriu um fix novo? Documente aqui — vira receita pro próximo jogo.*
