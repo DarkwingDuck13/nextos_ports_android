@@ -1,5 +1,53 @@
 # Mega Man X (Capcom) → Mali-450 — HANDOFF completo (para a próxima seção)
 
+## 2026-07-06 s12 — 🏆 CONFIRM UNIVERSAL DO CURSOR (entra em submenus) + VOLTAR nativo
+
+**O problema (s11 deixou):** o cursor DESTACAVA o painel (borda vermelha) mas o tap NÃO
+CONFIRMAVA dentro de OPTIONS (SOUND/CHEATS/SCREEN/LANGUAGE) nem na setinha VOLTAR. O menu
+principal só era contornado por um clique-por-posição (`mmx_menu_click`, `go_scene` direto).
+
+**Raiz (disasm):** cada item de menu (IInput) tem DOIS flags separados:
+- `+0x1C (28)` = **select/hover** — lido por `InputMan.IsSelects` (0xe431b0) = a borda vermelha.
+  O toque injetado JÁ ligava esse (por isso destacava).
+- `+0x24 (36)` = **touch/confirm** — lido por `InputMan.IsTouchs` (0xe42fec) = ENTRAR.
+  O toque injetado NUNCA ligava esse (não é edge/tap/drag — é literalmente o byte errado).
+- `+0x20 (32)` = id do painel.
+
+**Fix universal (`mmx_cursor_confirm` em main.c):** no tap, pega o item destacado via
+`InputMan.IsSelects(grupo)` (varrendo grupos 0..7 — na prática o grupo UI dos submenus é o **6**,
+não o 2 do título) e liga o confirm com `IInput.SetTouch(item,1,0)` (0xe6b530 faz `[item+0x24]=1`).
+Como o `controlKey` roda ANTES do `scn_run` no mesmo frame, o `IsTouchs` da cena acha o item e
+confirma. Janela de ~4 frames pós-tap cobre a corrida entre o toque (thread main) e o
+`InputMan.update` (thread do jogo) que materializa o hover. **PROVADO na tela: entrou no
+submenu SOUND (Background Music / Sound Effects).**
+
+**VOLTAR universal (`mmx_cursor_back`):** a setinha VOLTAR é um botão TOUCH puro (sem +0x1C),
+então IsSelects nunca a pega. Em vez de mirar o pixel, emulamos a tecla VOLTAR de hardware:
+`BackProc(self)` (0xe2f82c) — o handler que o dispatcher do jogo (lê `[self+1537]`=BackKeyTrg e
+chama BackProc no 0xe2f638) executa. Fecha o submenu/volta a cena CORRENTE. Auto-protegido
+(InputMan.ExistGroup(2)). Botão = **GP_A (o B físico)** no modo cursor. **PROVADO: SOUND→OPTIONS.**
+
+**Navegação nativa do menu principal:** `MMX_NO_MENUCLICK=1` desliga o clique-por-posição (o
+`go_scene` direto deixava o menu PRETO no retorno de OPTIONS, pois não preparava o rebuild) e
+`MMX_CUR_CONFIRM_MENU=1` liga o confirm universal também na cena 6 → tudo nativo. **Usuário
+validou: "entrar e sair perfeito".** (Ambos já no `run.sh`.)
+
+**Deriva-fantasma do cursor CORRIGIDA:** o "USB Gamepad" genérico deixa o stick DIREITO (a2/a3)
+travado num extremo → o cursor corria pras bordas sozinho e auto-clicava (era o que parecia
+"flicker/instabilidade"). Fix em `mmx_gamepad.c`: stick direito p/ cursor virou OPT-IN
+(`MMX_CUR_RSTICK`) e a deadzone subiu p/ 0.35 (`MMX_CUR_DZ`). `MMX_NOPAD=1` (novo) ignora o pad
+físico (só o virtual `/tmp/mmxgp`) p/ teste determinístico — mas mantém o `SDL_InitSubSystem`
+(sem ele o boot trava; o render/eventos dependem do SDL).
+
+**FALTA confirmar:** STORY inicia jogo NOVO (sem armaduras) pelo caminho nativo — não deu p/
+validar por causa do boot intermitente (race do job-system, agravado por muitos relançamentos
+rápidos por SSH; lançar limpo pelo launcher normal boota melhor). Se continuar save-com-armaduras,
+reativar o `initGame` (zera armaduras) só no painel STORY.
+
+**Números-chave s12:** IsSelects=0xe431b0, IsTouchs=0xe42fec, IInput.SetTouch=0xe6b530
+(`[item+0x24]=w1&1`), BackProc=0xe2f82c, BackKeyTrg=`[self+1537]`, dispatcher back=0xe2f62c/0xe2f638.
+Flags do item: hover=+0x1C, id=+0x20, confirm=+0x24. Grupo UI dos submenus = 6.
+
 ## 2026-07-05 s10 — 🏆 CONTROLES COMPLETOS (A/X/Y/L1/R1) + MODO CURSOR com SELECT
 
 **O que foi resolvido nesta seção (provas em `runs/`-style screenshots via fb0):**

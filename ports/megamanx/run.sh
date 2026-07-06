@@ -73,15 +73,29 @@ export MMX_FORCESL=1 MMX_STREAMFALLBACK=1
 #    🔑 MMX_GAMEPAD=1 é OBRIGATÓRIO: liga o mmx_gamepad_frame (poll do pad SDL -> g_btn). Sem
 #    ele mmx_gp_button sempre retorna 0 e o pad fisico NAO faz nada (só o force-idx de debug anda).
 export MMX_GAMEPAD=1 MMX_CTRLHOOK=1 MMX_CTRL_KEYFLAG_PRE=1 MMX_KEYINIT=1
-# 🕹️ AUTO-START: o menu principal e TOUCH-only (grid de paineis; nao responde a tecla). Pra dar
-#    jogabilidade IMEDIATA com o controle, o launcher chama RockmanX.setGoStage(0) alguns frames
-#    depois do boot (New Game -> PROLOGUE -> STAGE, cena 12 = jogavel, input incondicional). Assim o
-#    jogador cai direto na fase controlando o X com o pad. (MMX_GOSTAGE_F = frame do disparo.)
-export MMX_GOSTAGE=0 MMX_GOSTAGE_F=280
-# ✅ ESTADO (2026-07-04): DESBLOQUEADO (BUY FULL VERSION fora; Story+Ranking no menu) + GAMEPLAY
-#    JOGAVEL (X dasha/anda na fase intro pelo pad — provado: gp=0x2000 -> game_key -> X move) +
-#    audio via OpenSL/SDL + render limpo. Controles: pad SDL -> game_key (movimento/pulo/tiro/dash).
-#    FALTA: navegacao dos submenus por controle (menu principal e contornado pelo auto-start).
-echo "[run] Mega Man X — fbdev Mali-450 (DESBLOQUEADO + gameplay + controle + audio)"
+# 🕹️ FLUXO NATIVO (s11): boota no TÍTULO -> aperta A/START -> MENU -> navega por CURSOR -> fase.
+#    Sem auto-start. MMX_TOMENU resolve 2 problemas: (1) o toque nao avanca o titulo (IsTouchs le
+#    coords internas) -> apertar A/START chama scn_goLoadScene(self,1,6)=SCN_TITLE_MENU (o "press
+#    start"); (2) o jogo "cai" sozinho no ATTRACT DEMO (cena 20, fase da agua que joga sozinha) por
+#    pop da pilha de cenas -> se cair no demo, quica de volta pro menu. Assim o jogo PARA no menu
+#    esperando o jogador. MMX_TOMENU_AUTO=1 avanca titulo->menu sem esperar press.
+#    Atalhos (debug): MMX_NEWGAME=1 (novo jogo direto, pula menu), MMX_GOSTAGE=N (fase N c/ save atual).
+# 🖱️ CONFIRM UNIVERSAL DO CURSOR (s12): descoberto por disasm que cada item de menu (IInput) tem
+#    DOIS flags — +0x1C = "select/hover" (borda vermelha, que o toque injetado JA ligava) e
+#    +0x24 = "touch/confirm" (o que InputMan.IsTouchs procura pra ENTRAR). O toque so ligava o
+#    hover -> DESTACAVA mas nunca CONFIRMAVA. Fix: no tap, pega o item destacado
+#    (InputMan.IsSelects=0xe431b0, varrendo grupos 0..7) e liga o confirm via
+#    IInput.SetTouch(item,1,0)=0xe6b530. Vale em TODO menu: OPTIONS + sub-steps SOUND/CHEATS/
+#    SCREEN/LANGUAGE (grupo 6 na pratica), titulo e menus in-game. MMX_CUR_CONFIRM_MENU=1 liga
+#    tambem o MENU principal (cena 6). VOLTAR nativo = GP_A (B fisico) chama BackProc(0xe2f82c)
+#    = a tecla "voltar" de hardware (fecha submenu/volta cena). MMX_NO_MENUCLICK=1 desliga o
+#    clique-por-posicao antigo (go_scene direto deixava o menu preto no retorno) -> tudo nativo.
+export MMX_TOMENU=1 MMX_CUR_CONFIRM_MENU=1 MMX_NO_MENUCLICK=1
+# ✅ ESTADO (2026-07-06 s12): DESBLOQUEADO + GAMEPLAY JOGAVEL + audio + controle COMPLETO +
+#    NAVEGACAO DE MENU 100% POR CURSOR (entrar em OPTIONS, submenus SOUND etc. e VOLTAR — provado
+#    na tela). Deriva-fantasma do cursor corrigida: o "USB Gamepad" generico deixa o stick DIREITO
+#    (a2/a3) travado num extremo -> stick direito p/ cursor agora e OPT-IN (MMX_CUR_RSTICK) e a
+#    deadzone subiu p/ 0.35 (MMX_CUR_DZ). FALTA confirmar: STORY inicia jogo novo pelo caminho nativo.
+echo "[run] Mega Man X — fbdev Mali-450 (DESBLOQUEADO + gameplay + controle + menu-cursor nativo + audio)"
 nohup ./megamanx > run.out 2>&1 &
 echo "[run] PID $! — log: $GAMEDIR/run.out"

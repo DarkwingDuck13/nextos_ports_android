@@ -107,8 +107,12 @@ static void open_sdl_pad_once(void) {
 }
 
 static void poll_sdl_pad(void) {
-  open_sdl_pad_once();
+  open_sdl_pad_once();          /* SEMPRE inicia o SDL (video/eventos dependem disso p/ render) */
   if (!g_gc) return;
+  /* 🧪 MMX_NOPAD: inicia o SDL normalmente mas IGNORA as leituras do pad fisico — só o pad
+     VIRTUAL (/tmp/mmxgp) dirige g_btn/g_axis. Isola o teste do controle fisico do NextOS na
+     bancada (sem quebrar o boot, que precisa do SDL_InitSubSystem). */
+  if (env_on("MMX_NOPAD")) return;
   SDL_GameControllerUpdate();
   int swap = env_on("MMX_SWAPAB") || env_on("TER_SWAPAB");
   g_btn[swap ? GP_B : GP_A] = SDL_GameControllerGetButton(g_gc, SDL_CONTROLLER_BUTTON_A);
@@ -446,12 +450,18 @@ static void cursor_frame(void *env, void *thiz, void *inject) {
   float sw = envf("MMX_CUR_W", 1280), sh = envf("MMX_CUR_H", 720);
   float sp = envf("MMX_CUR_SPEED", 16);
   float dx = 0, dy = 0;
+  /* deadzone maior (0.35): o "USB Gamepad" generico reporta eixos fantasma (esp. o stick
+     DIREITO a2/a3, que muitos pads clone deixam TRAVADO num extremo) -> cursor deriva pras
+     bordas sozinho. Deadzone alta + stick direito OPT-IN (MMX_CUR_RSTICK) matam a deriva. */
+  float dz = envf("MMX_CUR_DZ", 0.35f);
   if (g_btn[GP_LEFT])  dx -= 1; if (g_btn[GP_RIGHT]) dx += 1;
   if (g_btn[GP_UP])    dy -= 1; if (g_btn[GP_DOWN])  dy += 1;
-  if (fabsf(g_axis[AX_LX]) > 0.15f) dx = g_axis[AX_LX];
-  if (fabsf(g_axis[AX_LY]) > 0.15f) dy = g_axis[AX_LY];
-  if (fabsf(g_axis[AX_RX]) > 0.15f) dx = g_axis[AX_RX];   /* analógico direito também move */
-  if (fabsf(g_axis[AX_RY]) > 0.15f) dy = g_axis[AX_RY];
+  if (fabsf(g_axis[AX_LX]) > dz) dx = g_axis[AX_LX];
+  if (fabsf(g_axis[AX_LY]) > dz) dy = g_axis[AX_LY];
+  if (getenv("MMX_CUR_RSTICK")) {                          /* stick direito p/ cursor: opt-in */
+    if (fabsf(g_axis[AX_RX]) > dz) dx = g_axis[AX_RX];
+    if (fabsf(g_axis[AX_RY]) > dz) dy = g_axis[AX_RY];
+  }
   /* aceleração: segurando a direção o cursor cruza a tela rápido; toques curtos = fino */
   static int movf;
   movf = (dx || dy) ? movf + 1 : 0;
@@ -466,12 +476,21 @@ static void cursor_frame(void *env, void *thiz, void *inject) {
   int tap_btn = getenv("MMX_CTRL_BTN_JUMP") ? atoi(getenv("MMX_CTRL_BTN_JUMP")) : 1;
   int press = mmx_gp_button(tap_btn);
   if (press) { g_mt_x[0] = g_cur_x; g_mt_y[0] = g_cur_y; g_mt_id[0] = 0; g_mt_count = 1; }
-  if (press && !g_cur_press) {           /* borda: DOWN no cursor */
+  /* 🔑 TAP LIMPO: os menus confirmam num toque DOWN+UP sem arrasto — se eu mandar MOVE
+     todo frame (mesmo parado), o jogo lê como DRAG e só destaca, não confirma. Só emito
+     MOVE se o cursor REALMENTE andou > MMX_CUR_DRAG px desde o DOWN; parado = tap puro. */
+  static float down_x, down_y;
+  float dragpx = envf("MMX_CUR_DRAG", 4);
+  if (press && !g_cur_press) {           /* borda: DOWN */
     g_touch_down_ms = now_ms();
+    down_x = g_cur_x; down_y = g_cur_y;
     touch_send(env, thiz, inject, 0, 0);
-  } else if (press) {                    /* segurando: MOVE (arrastar) */
-    touch_send(env, thiz, inject, 2, 0);
-  } else if (!press && g_cur_press) {    /* soltou: UP na última posição */
+  } else if (press) {                    /* segurando: MOVE só se arrastou de verdade */
+    if (fabsf(g_cur_x - down_x) > dragpx || fabsf(g_cur_y - down_y) > dragpx) {
+      touch_send(env, thiz, inject, 2, 0);
+      down_x = g_cur_x; down_y = g_cur_y;
+    }
+  } else if (!press && g_cur_press) {    /* soltou: UP na posição (fecha o tap) */
     touch_send(env, thiz, inject, 1, 0);
     g_mt_count = 0;
     g_touch_down_ms = 0;

@@ -1005,6 +1005,186 @@ static void mmx_go_stage(long self) {
   setGoStage(self, n, NULL);
   done = 1;
 }
+/* 🏆 MMX_TOMENU (disasm s11): FLUXO NATIVO título→MENU + mata o attract demo.
+   Sem auto-start, o jogo mostra o título e "cai" no attract DEMO (cena 20, a fase da
+   água que joga sozinha) por POP da pilha de cenas — o toque injetado NÃO avança o
+   título (IsTouchs lê coords internas). Caminho confiável título→MENU =
+   scn_goLoadScene(self,1,6) (SCN_TITLE_MENU). Aqui: (1) no título (cena 5), quando o
+   usuário aperta A/START, empurra o MENU (=o "press start"); (2) se cair no DEMO
+   (cena 20), quica de volta pro MENU. Assim o jogo PARA no menu esperando o jogador. */
+static void mmx_to_menu(long self) {
+  if (!self || !g_il2cpp_base || !getenv("MMX_TOMENU")) return;
+  typedef int  (*scn_get_fn)(long, long);
+  typedef void (*go_scene_fn)(long, int, int);
+  scn_get_fn  scn_get  = (scn_get_fn)(g_il2cpp_base + 0xdd6304);
+  go_scene_fn go_scene = (go_scene_fn)(g_il2cpp_base + 0xdecf2c);
+  int scene = scn_get(self, 0);
+  if (scene == 20) {                 /* attract demo -> menu */
+    go_scene(self, 1, 6);
+    fprintf(stderr, "[TOMENU] demo(20)->menu(6) f=%d\n", g_render_frame); fsync(2);
+    return;
+  }
+  if (scene == 5) {                  /* título: A ou START = "press start" -> menu */
+    static int forced5;
+    int press = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 1)) || mmx_gp_button(7) ||
+                mmx_env_i("MMX_TOMENU_AUTO", 0);   /* AUTO=1 avança sem esperar press */
+    if (press && !forced5) {
+      go_scene(self, 1, 6);
+      forced5 = 1;
+      fprintf(stderr, "[TOMENU] title(5)->menu(6) por press f=%d\n", g_render_frame); fsync(2);
+    }
+  }
+}
+/* 🏆 MMX_TOMENU (clique do menu): no MENU principal (cena 6) o toque do cursor DESTACA o
+   painel mas NÃO confirma (o hit-test do menu usa coords internas, não pixels). Aqui, em
+   modo cursor + cena 6, o TAP aciona DIRETO a ação do painel sob o crosshair, mapeado por
+   posição na tela 1280x720. Layout dos 5 painéis: linha de cima = OPÇÕES(engrenagem) /
+   EXTRA(ovo) / CARDS; linha de baixo = STORY(esq) / RANKING(dir). */
+static void mmx_menu_click(long self) {
+  extern int mmx_cursor_mode(void);
+  extern void mmx_cursor_pos(float *, float *);
+  if (!self || !g_il2cpp_base || !getenv("MMX_TOMENU") || !mmx_cursor_mode()) return;
+  if (getenv("MMX_NO_MENUCLICK")) return;            /* desliga o clique-por-posição (usar confirm nativo) */
+  typedef int (*scn_get_fn)(long, long);
+  scn_get_fn scn_get = (scn_get_fn)(g_il2cpp_base + 0xdd6304);
+  if (scn_get(self, 0) != 6) return;                 /* só no menu principal */
+  int tap = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 1));
+  static int prev_tap;
+  int edge = tap && !prev_tap;
+  prev_tap = tap;
+  if (!edge) return;
+  float fx = 640, fy = 360; mmx_cursor_pos(&fx, &fy);
+  typedef void (*rx_void0)(void *, void *);
+  typedef void (*rx_seti)(void *, int, void *);
+  typedef void (*go_scene_fn)(long, int, int);
+  go_scene_fn go_scene = (go_scene_fn)(g_il2cpp_base + 0xdecf2c);
+  if (fy >= 300) {
+    if (fx < 640) {                                  /* STORY -> Novo Jogo (X zerado) */
+      rx_void0 initGame = (rx_void0)(g_il2cpp_base + 0xdd8538);
+      rx_void0 initCust = (rx_void0)(g_il2cpp_base + 0xdd8680);
+      rx_seti  goStage  = (rx_seti)(g_il2cpp_base + 0xe0fa74);
+      initGame((void *)self, NULL);
+      if (!getenv("MMX_NEWGAME_RAW")) initCust((void *)self, NULL);
+      if (getenv("MMX_NEWGAME_SKIP_PROLOGUE")) {
+        void *sys = *(void **)((char *)self + 0xB8);
+        void *sav = sys ? *(void **)((char *)sys + 0x18) : NULL;
+        if (mmx_ptr_sane(sav)) *(int *)((char *)sav + 556) = 9;
+      }
+      goStage((void *)self, 1, NULL);
+      fprintf(stderr, "[MENUCLICK] STORY -> Novo Jogo (%.0f,%.0f)\n", fx, fy);
+    } else {                                         /* RANKING */
+      go_scene(self, 1, mmx_env_i("MMX_SCENE_RANKING", 18));
+      fprintf(stderr, "[MENUCLICK] RANKING (%.0f,%.0f)\n", fx, fy);
+    }
+  } else {
+    if (fx < 450) {                                  /* engrenagem -> OPÇÕES (cena 7) */
+      go_scene(self, 1, mmx_env_i("MMX_SCENE_OPTION", 7));
+      fprintf(stderr, "[MENUCLICK] OPCOES cena %d (%.0f,%.0f)\n", mmx_env_i("MMX_SCENE_OPTION", 7), fx, fy);
+    } else {                                         /* ovo/cards — cena tunável p/ mapear depois */
+      int sc = mmx_env_i("MMX_SCENE_EXTRA", -1);
+      if (sc >= 0) { go_scene(self, 1, sc); fprintf(stderr, "[MENUCLICK] EXTRA cena %d\n", sc); }
+      else fprintf(stderr, "[MENUCLICK] painel cima-meio/dir nao mapeado (%.0f,%.0f) — use MMX_SCENE_EXTRA=N\n", fx, fy);
+    }
+  }
+  fsync(2);
+}
+/* 🏆 CONFIRM UNIVERSAL DO CURSOR (s12): por disasm cada item de menu (IInput) tem DOIS
+   flags separados — +0x1C = "select/hover" (borda vermelha; o toque injetado JÁ liga via
+   posição) e +0x24 = "touch/confirm" (o que InputMan.IsTouchs procura pra ENTRAR). O toque
+   injetado só ligava o hover -> destacava mas NUNCA confirmava (byte errado, não é edge/tap).
+   Fix universal: no TAP pega o item destacado (InputMan.IsSelects=0xe431b0, retorna o item
+   com [+0x1C]!=0) e liga o flag confirm via IInput.SetTouch(item,1,0)=0xe6b530 (faz [+0x24]=1).
+   controlKey roda ANTES do scn_run no mesmo frame -> o IsTouchs da cena acha o item -> confirma
+   e consome (SetTouch(item,0)). Vale em TODO menu: Options e sub-steps SOUND/CHEATS/SCREEN/
+   LANGUAGE (mesma cena 7 via scn_setStep, grupo 2), setinha VOLTAR, título e menus in-game.
+   Cena 6 (menu principal) fica no mmx_menu_click (ação por posição, preserva New Game c/ armaduras
+   zeradas) salvo MMX_CUR_CONFIRM_MENU. Janela de alguns frames pós-tap cobre a corrida entre o
+   toque (thread main) e o InputMan.update (thread do jogo) que liga o hover. */
+static void mmx_cursor_confirm(long self) {
+  extern int mmx_cursor_mode(void);
+  if (!self || !g_il2cpp_base || !getenv("MMX_TOMENU") || !mmx_cursor_mode()) return;
+  typedef int (*scn_get_fn)(long, long);
+  scn_get_fn scn_get = (scn_get_fn)(g_il2cpp_base + 0xdd6304);
+  int scene = scn_get(self, 0);
+  if (scene == 6 && !getenv("MMX_CUR_CONFIRM_MENU")) return;  /* menu principal = ação por posição */
+  int tap = mmx_gp_button(mmx_env_i("MMX_CTRL_BTN_JUMP", 1));
+  static int prev, pending;
+  int edge = tap && !prev; prev = tap;
+  if (edge) pending = mmx_env_i("MMX_CUR_CONFIRM_WIN", 4);   /* espera o hover materializar */
+  if (pending <= 0) return;
+  pending--;
+  typedef void *(*is_sel_fn)(int, void *);
+  typedef void  (*set_touch_fn)(void *, int, void *);
+  is_sel_fn    is_sel    = (is_sel_fn)(g_il2cpp_base + 0xe431b0);
+  set_touch_fn set_touch = (set_touch_fn)(g_il2cpp_base + 0xe6b530);
+  int grp = mmx_env_i("MMX_CUR_GROUP", 2);   /* grupo UI = 2 em título e Options */
+  void *item = is_sel(grp, NULL);
+  /* fallback: varre grupos 0..7 se o padrao nao achou item destacado (descobre o grupo certo) */
+  if (!mmx_ptr_sane(item)) {
+    for (int g = 0; g <= 7; g++) {
+      if (g == grp) continue;
+      void *it = is_sel(g, NULL);
+      if (mmx_ptr_sane(it)) { item = it; grp = g; break; }
+    }
+  }
+  if (mmx_ptr_sane(item)) {
+    set_touch(item, 1, NULL);                /* [item+0x24]=1 -> IsTouchs confirma neste frame */
+    pending = 0;
+    fprintf(stderr, "[CURCONFIRM] cena=%d grupo=%d item=%p -> touch=1\n", scene, grp, item);
+    fsync(2);
+  } else if (pending == 0) {
+    fprintf(stderr, "[CURCONFIRM] cena=%d SEM item destacado em grupos 0..7 (IsSelects null)\n", scene);
+    fsync(2);
+  }
+}
+/* 🏆 VOLTAR UNIVERSAL DO CURSOR (s12): a setinha VOLTAR (e o "fechar" de qualquer submenu/
+   diálogo) é um botão TOUCH puro (sem flag de select +0x1C), então IsSelects nunca o pega —
+   por isso o tap na setinha caía no item selecionado errado. Em vez de mirar o pixel da
+   setinha, emulamos a TECLA VOLTAR nativa: BackProc(self) @0xe2f82c é o handler que o
+   dispatcher do jogo (le [self+1537]=BackKeyTrg e chama BackProc) executa quando o back de
+   hardware é apertado — ele fecha o submenu/volta a cena CORRENTE, seja qual for. BackProc
+   se autoprotege (InputMan.ExistGroup(2): no-op se não há UI de menu). Botão VOLTAR no modo
+   cursor = GP_A (o B físico do layout do usuário; o tap/confirmar é GP_B = A físico). */
+static void mmx_cursor_back(long self) {
+  extern int mmx_cursor_mode(void);
+  if (!self || !g_il2cpp_base || !getenv("MMX_TOMENU") || !mmx_cursor_mode()) return;
+  int back = mmx_gp_button(mmx_env_i("MMX_CUR_BTN_BACK", 0));   /* GP_A = B físico = voltar */
+  static int prev;
+  int edge = back && !prev; prev = back;
+  if (!edge) return;
+  typedef void (*backproc_fn)(long);
+  backproc_fn backproc = (backproc_fn)(g_il2cpp_base + 0xe2f82c);
+  backproc(self);
+  fprintf(stderr, "[CURBACK] BackProc(self) (voltar nativo)\n"); fsync(2);
+}
+/* 🏆 MMX_NEWGAME (atalho): New Game NATIVO programático — rock_initGame ZERA armaduras/
+   upgrades (o setGoStage sozinho reabria com o save NG+/debug = todas as armaduras) +
+   setGoStage(1) roteia pelo fluxo nativo. Dispara UMA vez ao frame MMX_NEWGAME_F.
+   MMX_NEWGAME_SKIP_PROLOGUE=1 pula o texto do prólogo; MMX_NEWGAME_RAW=1 = 100% cru. */
+static void mmx_new_game(long self) {
+  static int done, wait;
+  if (done || !self || !getenv("MMX_NEWGAME") || !g_il2cpp_base) return;
+  int at = mmx_env_i("MMX_NEWGAME_F", 280);
+  if (wait++ < at) return;
+  typedef void (*rx_void0)(void *self, void *method);
+  typedef void (*rx_seti)(void *self, int n, void *method);
+  rx_void0 initGame     = (rx_void0)(g_il2cpp_base + 0xdd8538);
+  rx_void0 initGameCust = (rx_void0)(g_il2cpp_base + 0xdd8680);
+  rx_seti  setGoStage   = (rx_seti)(g_il2cpp_base + 0xe0fa74);
+  initGame(self, NULL);
+  if (!getenv("MMX_NEWGAME_RAW")) initGameCust(self, NULL);
+  int skip_prologue = getenv("MMX_NEWGAME_SKIP_PROLOGUE") ? 1 : 0;
+  if (skip_prologue) {
+    void *sys  = *(void **)((char *)self + 0xB8);
+    void *save = sys ? *(void **)((char *)sys + 0x18) : NULL;
+    if (mmx_ptr_sane(save)) *(int *)((char *)save + 556) = 9;   /* >=9 => STAGE, pula PROLOGUE */
+  }
+  fprintf(stderr, "[NEWGAME] initGame+%s setGoStage(1) skip_prologue=%d @ frame~%d\n",
+          getenv("MMX_NEWGAME_RAW") ? "raw" : "custom", skip_prologue, g_render_frame);
+  fsync(2);
+  setGoStage(self, 1, NULL);
+  done = 1;
+}
 /* dump 1x das máscaras de game_key[0..10] (diagnóstico de mapeamento de ações):
    índice com máscara toda-zero = ação não ligada a nenhum bit físico (explica botão morto). */
 static void mmx_ctrl_dump_gamekey(long self) {
@@ -1064,6 +1244,8 @@ static long mmx_controlkey_hook(long a0,long a1,long a2,long a3,long a4,long a5,
   }
   if (getenv("MMX_CTRLSPY")) mmx_ctrl_dump_gamekey(a0);
   if (getenv("MMX_KEYINIT")) mmx_ensure_keymap(a0);
+  if (getenv("MMX_TOMENU")) { mmx_to_menu(a0); mmx_menu_click(a0); mmx_cursor_confirm(a0); mmx_cursor_back(a0); }
+  if (getenv("MMX_NEWGAME")) mmx_new_game(a0);
   if (getenv("MMX_GOSTAGE")) mmx_go_stage(a0);
   if (getenv("MMX_CTRLSPY")) {
     static int nentry;
