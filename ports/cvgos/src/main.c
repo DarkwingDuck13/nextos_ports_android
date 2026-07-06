@@ -2065,6 +2065,117 @@ static void patch_i2_exc_fromname_guard(void) {
   done = 1;
   fprintf(stderr, "[EXC-FROMNAME] guard em Exception::FromNameMsg (0x7a96f0)\n");
 }
+/* Runtime::Invoke interno (0x78adfc; export il2cpp_runtime_invoke tail-b pra ca).
+   MethodInfo 2018.4/32-bit: +0 methodPointer, +4 invoker_method, +8 name, +0xc klass.
+   Metodos com methodPointer/invoker NULL (lazy metadata-init incompleto) faziam o
+   invoker pular pra pc=0 (crash pos-SPARKGEAR ao criar NRE). Guard: loga e devolve
+   NULL sem invocar (pro ctor de excecao: objeto fica sem mensagem, aceitavel). */
+static void *(*g_rt_invoke_orig)(void *m, void *obj, void **params, void **exc);
+static void *rt_invoke_guard(void *m, void *obj, void **params, void **exc) {
+  if (m && cvgos_addr_readable_now((uintptr_t)m + 0xc)) {
+    uintptr_t mp = *(uintptr_t *)m;
+    uintptr_t inv = *(uintptr_t *)((uintptr_t)m + 4);
+    if (!mp || !inv) {
+      static int n;
+      if (n++ < 16) {
+        const char *mn = "?";
+        uintptr_t np = *(uintptr_t *)((uintptr_t)m + 8);
+        if (np && cvgos_addr_readable_now(np)) mn = (const char *)np;
+        const char *kn = "?";
+        uintptr_t kp = *(uintptr_t *)((uintptr_t)m + 0xc);
+        if (kp && g_il2cpp_base) {
+          const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+          kn = cvgos_safe_cstr(cgn((void *)kp));
+        }
+        fprintf(stderr, "[RT-INVOKE] %s.%s methodPointer=%lx invoker=%lx -> SKIP (NULL)\n",
+                kn, mn, (unsigned long)mp, (unsigned long)inv);
+        fsync(2);
+      }
+      if (exc) *exc = NULL;
+      return NULL;
+    }
+  }
+  return g_rt_invoke_orig ? g_rt_invoke_orig(m, obj, params, exc) : NULL;
+}
+static void patch_i2_rt_invoke_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NORTINVOKEGUARD")) return;
+  static int done;
+  if (done) return;
+  g_rt_invoke_orig = (void *(*)(void *, void *, void **, void **))arm_hook8(
+      g_il2cpp_base + 0x78adfc, (void *)rt_invoke_guard);
+  done = 1;
+  fprintf(stderr, "[RT-INVOKE] guard em Runtime::Invoke (0x78adfc)\n");
+}
+/* Method::Init (il2cpp 0x78af68): se method->methodPointer==0, LANCA "no implementation"
+   (e a criacao DESSA excecao tambem quebra -> pc=0). Hook: loga o metodo e REPARA os
+   casos conhecidos (ctors de NullReferenceException) escrevendo o RVA do dump; senao
+   deixa o original lancar. */
+static void (*g_meth_init_orig)(void *m);
+static void meth_init_guard(void *m) {
+  if (m && cvgos_addr_readable_now((uintptr_t)m + 0x10) && *(uintptr_t *)m == 0 && g_il2cpp_base) {
+    const char *mn = "?";
+    uintptr_t np = *(uintptr_t *)((uintptr_t)m + 8);
+    if (np && cvgos_addr_readable_now(np)) mn = (const char *)np;
+    const char *kn = "?";
+    uintptr_t kp = *(uintptr_t *)((uintptr_t)m + 0xc);
+    if (kp) {
+      const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+      kn = cvgos_safe_cstr(cgn((void *)kp));
+    }
+    unsigned (*gpc)(void *) = (unsigned (*)(void *))(g_il2cpp_base + 0x79e3a8);
+    unsigned npar = gpc(m);
+    static int n;
+    if (n++ < 24) {
+      fprintf(stderr, "[METH-INIT] %s.%s methodPointer=0 nparams=%u", kn, mn, npar);
+      fsync(2);
+    }
+    uintptr_t rva = 0;
+    if (!strcmp(kn, "NullReferenceException") && !strcmp(mn, ".ctor"))
+      rva = (npar == 0) ? 0x117C7C8 : 0x117C850;
+    if (rva) {
+      *(uintptr_t *)m = g_il2cpp_base + rva;
+      if (n <= 24) { fprintf(stderr, " -> REPARADO rva=0x%lx\n", (unsigned long)rva); fsync(2); }
+      return;
+    }
+    if (n <= 24) { fprintf(stderr, " -> sem reparo (orig lanca)\n"); fsync(2); }
+  }
+  if (g_meth_init_orig) g_meth_init_orig(m);
+}
+static void patch_i2_meth_init_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOMETHINITGUARD")) return;
+  static int done;
+  if (done) return;
+  g_meth_init_orig = (void (*)(void *))arm_hook8(g_il2cpp_base + 0x78af68,
+                                                 (void *)meth_init_guard);
+  done = 1;
+  fprintf(stderr, "[METH-INIT] guard em Method::Init (0x78af68)\n");
+}
+/* MonoCustomAttrs::IsDefined (0x117a4e8): quando o Type do atributo nao converte pra
+   RuntimeClass (0x1179f64 -> 0; typeof NULL/objeto podre), o icall LANCA NRE — e o
+   raise desta build crasha (pc=0 no invoker). Semantica correta e segura: "nao
+   definido" -> retorna false. */
+static unsigned char (*g_isdef_orig)(void *obj, void *attr, int inherit, void *mi);
+static unsigned char isdef_guard(void *obj, void *attr, int inherit, void *mi) {
+  if (g_il2cpp_base) {
+    void *(*conv)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x1179f64);
+    void *k = attr ? conv(attr) : NULL;
+    if (!k) {
+      static int n;
+      if (n++ < 12) { fprintf(stderr, "[ISDEF] attributeType invalido (%p) -> false\n", attr); fsync(2); }
+      return 0;
+    }
+  }
+  return g_isdef_orig ? g_isdef_orig(obj, attr, inherit, mi) : 0;
+}
+static void patch_i2_isdefined_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOISDEFGUARD")) return;
+  static int done;
+  if (done) return;
+  g_isdef_orig = (unsigned char (*)(void *, void *, int, void *))arm_hook8(
+      g_il2cpp_base + 0x117a4e8, (void *)isdef_guard);
+  done = 1;
+  fprintf(stderr, "[ISDEF] guard em MonoCustomAttrs::IsDefined (0x117a4e8)\n");
+}
 static void patch_i2_logres_guard(void) {
   if (!g_il2cpp_base || getenv("CVGOS_NOLOGRESGUARD")) return;
   static int done;
@@ -7358,6 +7469,9 @@ int main(int argc, char **argv) {
   patch_i2_logres_guard();
   patch_i2_enum_ut_log();
   patch_i2_exc_fromname_guard();
+  patch_i2_rt_invoke_guard();
+  patch_i2_meth_init_guard();
+  patch_i2_isdefined_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
@@ -7839,6 +7953,9 @@ int main(int argc, char **argv) {
   patch_i2_logres_guard();
   patch_i2_enum_ut_log();
   patch_i2_exc_fromname_guard();
+  patch_i2_rt_invoke_guard();
+  patch_i2_meth_init_guard();
+  patch_i2_isdefined_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
