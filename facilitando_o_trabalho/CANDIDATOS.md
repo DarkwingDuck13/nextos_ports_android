@@ -19,8 +19,11 @@ Tudo **BYO-data** — o repo nunca traz o jogo.
 | **LEGO Batman 2: DC Super Heroes** | TT/Fusion | NaGaa95 `lbdcsh_nx` | Idem. |
 | **LEGO Ninjago: Shadow of Ronin** | TT/Fusion | NaGaa95 `lnsor_nx` | Idem. |
 | **FF III / IV (3D), FF IV: The After Years, FF Dimensions 1 e 2** | Square mobile (nativa/Unity) | Rinne `ff4_vita`/`ff4a_vita`, NaGaa `ff3_3d/ff4_3d/ffd/ffd2` | Bagagem de FF7/FF9. FF4 = GLES1 fixed-function. |
-| **Castle of Illusion** | Sega | Rinne `coi_vita`, NaGaa `coi_nx` | 2.5D, engine amigável. |
 | **Catálogo GameMaker/YYC** (dezenas) | GameMaker | Rinne `yoyoloader` + [compat list](https://github.com/Rinnegatamante/YoYo-Loader-Vita-Compatibility) | Com o loader genérico (receita 15): largar o APK. |
+
+> **Já em andamento (saíram de candidato):**
+> **Battlefield: Bad Company 2** (Karisma GLES1, FPS jogável no Mali-450) — ref [TheFloW/bc2_vita](https://github.com/TheOfficialFloW/bc2_vita).
+> **Castle of Illusion** (Sega "oz", NativeActivity+FMOD, tela de título rodando) — refs [Rinnegatamante/coi_vita](https://github.com/Rinnegatamante/coi_vita) · [NaGaa95/coi_nx](https://github.com/NaGaa95/coi_nx).
 
 ## 🟡 Médio / grande (viável, mais trabalho)
 
@@ -31,7 +34,6 @@ Tudo **BYO-data** — o repo nunca traz o jogo.
 | **Team Fortress 2** | Source | NaGaa95 `tf2_nx` | Idem. |
 | **Soul Calibur** | Namco (nativa) | Rinne `soulcalibur_vita` | 3D fighting. |
 | **The Conduit HD** | nativa | TheFloW/Rinne `conduit_vita` | FPS. |
-| **Battlefield: Bad Company 2** | nativa | TheFloW `bc2_vita` | FPS grande. |
 | **Fahrenheit / Indigo Prophecy** | nativa | TheFloW `fahrenheit_vita` | Aventura. |
 | **Professor Layton 1 / 2 / 3** | Level-5 | NaGaa95 `layton*_nx` | Puzzle/aventura. |
 | **After Burner Climax** | Sega | NaGaa95 `abc_nx` | Arcade. |
