@@ -688,3 +688,13 @@ Services) OU **sync de thread do s3e quebrado sob ndk_translation** (workers spi
 espera). NÃO escreve assets em claro no disco (decripta em RAM). PRÓXIMO: (a) **microG** (waydroid_script)
 p/ satisfazer LVL/download; (b) OU houdini (threading diferente); (c) OU s3e single-thread; (d) captura
 por Frida/memória se passar do Loading. **ARTEFATOS em /tmp/pesmod/ (pes-min.apk pronto).**
+
+**s19b — CONFIRMADO stall DURO (não é lentidão):** tela "Loading..." IDÊNTICA (screencap 61369 bytes)
+por 8+ min. Thread principal (Android looper) idle em epoll_wait (normal); workers `Thread<NN>` em
+busy-spin; I/O ~1.25MB/min mas SEM progresso de tela. OBB nem fica aberto (fd) — o wait é o callback
+NATIVO de download-complete (gdrm → Play Services ausente). Sem DB do downloader Google (só
+savegame.xml `notfirst=true`). **CONCLUSÃO: Waydroid VANILLA não passa do Loading sem Play/microG.**
+Ambos os caminhos (Mali port c/ SPACEPATCH passou a FSM mas trava no soundMenu; Waydroid trava NA FSM)
+convergem na dependência Google Play. PRÓXIMO REALISTA: (a) microG no Waydroid (LVL p/ 2012 = incerto);
+(b) patch nativo do gdrm/FSM no APK (RE do libinject/exec); (c) device Android FÍSICO (nativo, Play real)
+= caminho mais confiável p/ decriptar tudo e extrair. Waydroid fica instalado/configurado p/ retomar.
