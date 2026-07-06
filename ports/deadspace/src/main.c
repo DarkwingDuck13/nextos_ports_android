@@ -10,9 +10,17 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/statvfs.h>
+#include <dirent.h>
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
+
+#ifndef SYS_swapon
+#ifdef __arm__
+#define SYS_swapon 87
+#endif
+#endif
 
 #include <GLES/gl.h>
 #include <SDL2/SDL.h>
@@ -307,6 +315,18 @@ static void install_crash_handler(void) {
   sigaction(SIGBUS, &sa, NULL);
   sigaction(SIGILL, &sa, NULL);
   sigaction(SIGABRT, &sa, NULL);
+}
+
+/* SIGTERM/SIGINT (ex.: ES fechando o port) -> saida limpa pelo mesmo
+ * caminho do Select+Start (definido mais abaixo, via g_running). */
+static void request_quit(int sig) {
+  (void)sig;
+  g_running = 0;
+}
+
+static void install_quit_handler(void) {
+  signal(SIGTERM, request_quit);
+  signal(SIGINT, request_quit);
 }
 
 static void preload_device_libs(void) {
@@ -2686,10 +2706,147 @@ static int init_sdl(SDL_Window **out_win, SDL_GLContext *out_gl) {
   return 0;
 }
 
+/* ======================================================================
+ * Self-contained: o que antes era feito por "hooks" no launcher .sh agora
+ * vive no binario. O launcher fica minimo (so env + exec).
+ * ====================================================================== */
+
+/* mata instancias antigas do proprio jogo (2 jogos travam o device) */
+static void ds_kill_prior_instances(void) {
+  pid_t self = getpid();
+  DIR *d = opendir("/proc");
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+    pid_t pid = (pid_t)atoi(e->d_name);
+    if (pid <= 0 || pid == self) continue;
+    char path[64], link[512];
+    snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+    ssize_t n = readlink(path, link, sizeof(link) - 1);
+    if (n <= 0) continue;
+    link[n] = 0;
+    const char *b = strrchr(link, '/');
+    b = b ? b + 1 : link;
+    if (strcmp(b, "deadspace") == 0) kill(pid, SIGKILL);
+  }
+  closedir(d);
+}
+
+/* Swap: o sistema NextOS ja provê um swap fixo de 512MB (nao tocar, regra
+ * #9 / nada de zram). So criamos um fallback proprio se o device estiver
+ * SEM qualquer swap ativo. */
+static void ds_setup_swap(void) {
+  if (env_flag("DS_NO_SWAP")) return;
+  if (geteuid() != 0) return;
+  const char *sf = getenv("DEADSPACE_SWAPFILE");
+  if (!sf || !*sf) sf = "/storage/.cache/deadspace-swapfile";
+
+  FILE *fp = fopen("/proc/swaps", "r");
+  if (fp) {
+    char line[512];
+    int header = 1, any = 0;
+    while (fgets(line, sizeof(line), fp)) {
+      if (header) { header = 0; continue; }  /* pula cabecalho */
+      if (line[0] == '/') { any = 1; break; }
+    }
+    fclose(fp);
+    if (any) return;  /* ja existe swap (do sistema) — respeita e sai */
+  }
+
+  if (access(sf, F_OK) != 0) {
+    struct statvfs vfs;
+    if (statvfs("/storage", &vfs) == 0) {
+      unsigned long long free_kb =
+          (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_frsize / 1024ULL;
+      if (free_kb < 620000ULL) return;  /* /storage pequeno: nao arrisca */
+    }
+    /* cria diretorio pai */
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s", sf);
+    char *slash = strrchr(dir, '/');
+    if (slash) { *slash = 0; mkdir(dir, 0755); }
+
+    int fd = open(sf, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) return;
+    size_t sz = 512UL * 1024 * 1024;
+    if (ftruncate(fd, (off_t)sz) != 0) { close(fd); unlink(sf); return; }
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 4096;
+    unsigned char *pg = calloc(1, (size_t)ps);
+    if (!pg) { close(fd); unlink(sf); return; }
+    uint32_t version = 1;
+    uint32_t last_page = (uint32_t)(sz / (size_t)ps - 1);
+    memcpy(pg + 1024, &version, 4);
+    memcpy(pg + 1028, &last_page, 4);
+    memcpy(pg + ps - 10, "SWAPSPACE2", 10);
+    if (pwrite(fd, pg, (size_t)ps, 0) != ps) { free(pg); close(fd); unlink(sf); return; }
+    free(pg);
+    close(fd);
+  }
+#ifdef SYS_swapon
+  syscall(SYS_swapon, sf, 0);
+#endif
+}
+
+/* governor performance nos cores (roda melhor no Amlogic old) */
+static void ds_cpu_performance(void) {
+  if (env_flag("DS_NO_CPUPERF")) return;
+  for (int i = 0; i < 8; i++) {
+    char p[128];
+    snprintf(p, sizeof(p), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", i);
+    int fd = open(p, O_WRONLY);
+    if (fd >= 0) { (void)!write(fd, "performance", 11); close(fd); }
+  }
+}
+
+/* watchdog interno: se o RSS estourar (OOM trava o device), sai limpo e a
+ * EmulationStation reassume. Substitui o watchdog que ficava no .sh. */
+static void *ds_watchdog_thread(void *arg) {
+  (void)arg;
+  long limit_kb = 1048576;  /* 1 GiB, validado */
+  const char *env = getenv("DEADSPACE_RSS_LIMIT_KB");
+  if (env && *env) limit_kb = atol(env);
+  if (limit_kb <= 0) return NULL;
+  for (;;) {
+    struct timespec ts = {5, 0};
+    nanosleep(&ts, NULL);
+    FILE *fp = fopen("/proc/self/status", "r");
+    if (!fp) continue;
+    char l[256];
+    long rss = 0;
+    while (fgets(l, sizeof(l), fp)) {
+      if (strncmp(l, "VmRSS:", 6) == 0) { rss = atol(l + 6); break; }
+    }
+    fclose(fp);
+    if (rss > 0 && rss > limit_kb) {
+      fprintf(stderr, "watchdog: RSS %ldKB > %ldKB, saindo\n", rss, limit_kb);
+      fflush(NULL);
+      _exit(0);
+    }
+  }
+  return NULL;
+}
+
+/* SIGALRM na saida: garante que nada trave o device no fechamento */
+static void ds_alarm_exit(int sig) {
+  (void)sig;
+  _exit(0);
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
   install_crash_handler();
+  install_quit_handler();
+  ds_kill_prior_instances();
+  ds_setup_swap();
+  ds_cpu_performance();
+  {
+    pthread_t wd;
+    if (pthread_create(&wd, NULL, ds_watchdog_thread, NULL) == 0)
+      pthread_detach(wd);
+  }
   setenv("DEADSPACE_HOME", ".", 0);
   setenv("DEADSPACE_TMP", "/tmp", 0);
 
@@ -2887,12 +3044,15 @@ int main(int argc, char **argv) {
     last = SDL_GetTicks();
   }
 
-  /* saida blindada: se qualquer shutdown do jogo travar, o SIGALRM mata
-   * o processo e o launcher (trap EXIT) religa o EmulationStation */
+  /* Saida blindada (Select+Start): NUNCA pode travar o device.
+   * Pulamos p_NativeOnPause de proposito — era ele que dava SIGSEGV no
+   * shutdown do jogo. So liberamos audio+video (pra ES redesenhar) sob um
+   * SIGALRM de 3s: se SDL_Quit travar num mutex do game thread, o alarme
+   * mata o processo e a EmulationStation reassume. */
   fprintf(stderr, "saindo (Select+Start)\n");
   fflush(NULL);
-  alarm(4);
-  if (p_NativeOnPause) p_NativeOnPause(g_env, jni_activity_object());
+  signal(SIGALRM, ds_alarm_exit);
+  alarm(3);
   audio_state(0);
   SDL_Quit();
   fflush(NULL);
