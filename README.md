@@ -11,6 +11,7 @@
 </p>
 <p>
   <img alt="Alvo" src="https://img.shields.io/badge/alvo-Mali%20·%20ARM64%20·%20Linux-lightgrey?style=flat-square">
+  <img alt="PC" src="https://img.shields.io/badge/PC%20x86__64-roadmap-yellow?style=flat-square">
   <img alt="Render" src="https://img.shields.io/badge/render-EGL%20→%20SDL2%20·%20GLES1%2FGLES2-8A2BE2?style=flat-square">
   <img alt="Devices" src="https://img.shields.io/badge/devices-Amlogic%20·%20R36S%20·%20X5M%20·%20muOS%20·%20ROCKNIX-informational?style=flat-square">
   <img alt="BYO-data" src="https://img.shields.io/badge/BYO--data-sem%20jogo%20no%20repo-critical?style=flat-square">
@@ -131,7 +132,15 @@ tools/new-port.sh ~/meujogo.apk meujogo
 make -C ports/meujogo
 ```
 
-O `new-port.sh` auto-mapeia libc/libm/GLES/pthread (a tabela de 200–370 símbolos) e lista só o que é específico do jogo. A pasta [`facilitando_o_trabalho/`](facilitando_o_trabalho/) reúne receitas reutilizáveis (pthread/ABI, Mali-450/GLES2, fake JNI, áudio, controle/gptokeyb, VRAM, texturas ETC1/ETC2, hooks, Unity bootstrap/render/GC), troubleshooting e a Matriz de Ports (cada jogo → a lição que ensinou). Contribuições são bem-vindas: mantenha o crédito ao projeto (**NextOS**) e a regra BYO-data.
+O `new-port.sh` auto-mapeia libc/libm/GLES/pthread (a tabela de 200–370 símbolos) e lista só o que é específico do jogo. A pasta [`facilitando_o_trabalho/`](facilitando_o_trabalho/) reúne 16 receitas reutilizáveis (pthread/ABI, Mali-450/GLES2, fake JNI, áudio, controle/gptokeyb, VRAM, texturas ETC1/ETC2, hooks, Unity bootstrap/render/GC), troubleshooting e a Matriz de Ports (cada jogo → a lição que ensinou). Contribuições são bem-vindas: mantenha o crédito ao projeto (**NextOS**) e a regra BYO-data.
+
+### 🧭 Direções do framework
+
+- **JNI por tabela ([`nx_jni`](facilitando_o_trabalho/kit_essencial/core/nx_jni.h))** — declara os métodos JNI numa tabela em vez de escrever `switch` à mão. [Receita 14](facilitando_o_trabalho/receitas/14-jni-por-tabela.md).
+- **Loaders genéricos por engine** — 1 binário roda N jogos de uma engine (GameMaker/Cocos2d-x) via `game.cfg`, sem port novo. [Receita 15](facilitando_o_trabalho/receitas/15-loaders-genericos-por-engine.md).
+- **Alvo PC (x86_64) / multiarch** — a mesma técnica carrega o `.so` x86_64 de um APK e roda em desktop Linux; ótimo pra debugar (gdb/asan) antes do device. [Receita 16](facilitando_o_trabalho/receitas/16-alvo-pc-e-multiarch.md).
+
+Agentes de IA (Codex/Claude) que forem trabalhar no repo: leiam o [`AGENTS.md`](AGENTS.md).
 
 ## 📜 Licença e créditos
 

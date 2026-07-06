@@ -2,6 +2,15 @@
 
 Você tem um APK de Android e quer rodar no NextOS? Aqui está o "Caminho das Pedras".
 
+> **Novidades do framework (leia antes de começar):**
+> - **JNI por tabela** ([receita 14](14-jni-por-tabela.md)): não escreva mais `switch`
+>   gigante no `jni_shim` — declare os métodos numa tabela e o `nx_jni` despacha.
+> - **Loader genérico por engine** ([receita 15](15-loaders-genericos-por-engine.md)):
+>   se o seu jogo é GameMaker/Cocos2d-x e já existe um loader da engine, talvez seja
+>   só largar o APK + `game.cfg` — sem port novo.
+> - **Alvo PC/x86_64** ([receita 16](16-alvo-pc-e-multiarch.md)): dá pra debugar o
+>   port no desktop (gdb/asan) antes de subir pro device. Muito mais rápido.
+
 ## Passo 1: Preparação do APK
 1.  Extraia o APK (use `7z x meujogo.apk`).
 2.  Vá em `lib/arm64-v8a/` e identifique o binário principal (geralmente `libGame.so`, `libunity.so` ou `libmain.so`).

@@ -157,3 +157,5 @@ AndroidManifest.xml
 ports/*/rz_*.txt
 ports/*/datacenter
 ports/*/*.rz.txt
+ports/elderand/elderand
+ports/kof2012a/kof2012a
