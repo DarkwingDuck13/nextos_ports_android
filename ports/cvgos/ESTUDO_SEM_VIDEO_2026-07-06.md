@@ -211,6 +211,53 @@ hookar o lazy-init de método (flag+bl init no prólogo il2cpp) p/ logar falhas;
 no invoker: methodPointer NULL → resolver via RVA do dump (temos script.json completo!);
 (4) raiz do GC-descriptor spray (guard preventivo: offset > instance_size → skip).
 
+## SESSÃO 3 (continuação Fable) — cena do Título deserializa; muro = metadata-usage init
+
+Progresso: passou SPARKGEAR e deserializa a cena do Título INTEIRA (TitleSerializedResources,
+TMPro.TextMeshProUGUI, UnityEngine.UI.Image/Text/RawImage, mvTweenAlpha). Morre no
+scan de atributos/Awake das MonoBehaviours.
+
+### Diagnóstico decisivo (SIZEPROBE) — o layout de runtime está CORRETO
+`CVGOS_SIZEPROBE` chama `il2cpp_class_instance_size` (0x79de40) em builtins:
+`UnityEngine.UI.Text=124 (0x7c)` — CASA o dump (campos até 0x78 +4). Image=0x8c,
+RawImage=0x78, MonoBehaviour=0xc. Logo **NÃO há bug de Class::SetupFields/pointer-size**
+no nosso runtime. Os avisos `[ALOG:6] "A scripted object ... different serialization
+layout (Read 68 bytes but expected 128)"` são **RED HERRING TOLERADO** (asset skew do
+repack do mod; Unity lê o que tem e zera o resto). OBB não tem o title (level0/
+sharedassets vêm do apk).
+
+### O crash REAL: MethodInfos de slots de metadata-usage não-inicializados
+Reflection-invoke (Runtime::Invoke 0x78adfc; blx em 0x78ae6c, retorno 0x78ae70) recebe
+MethodInfo CORROMPIDO: `methodPointer`(off 0) aponta pro heap MANAGED, `invoker`(off 4)
+= throw-stub (il2cpp+0x7a8b58, o "raise NRE" que o il2cpp usa p/ método sem corpo).
+`blx` pula pra dado → SIGILL/SIGSEGV com pc na região rwx do heap de metadata
+(sempre os mesmos slots il2cpp+0x4df8d8 / 0x4e3858 nos frames = `s_Il2CppMetadataUsages`).
+Ou seja: o método é resolvido via um slot de USAGE que nunca foi preenchido.
+
+### Guards/firewall desta sessão (todos default-ON salvo nota)
+- **INVOKE FIREWALL** (on_crash; `CVGOS_NOINVOKEFW` off): se `lr==il2cpp+0x78ae70` (retorno
+  do blx do Runtime::Invoke) e `pc` fora do .text REAL (il2cpp [base,base+0x4706b80) ou
+  libunity; o heap rwx de metadata NÃO conta como código) → `pc=lr; r0=0` = invoke devolve
+  null. FUNCIONA: pula ~6 invokes quebrados. PORÉM pular o Awake deixa objeto meio-init →
+  crash secundário (lr=0x9, estado managed destruído). Firewall sozinho não basta.
+- **RT-INVOKE** (0x78adfc): valida methodPointer/invoker ∈ .text; rejeita heap+throw-stub.
+- **METH-INIT** (0x78af68): pós-init, invoker LIXO/throw-stub → no-op stub; reescreveu o
+  thunk invoker 0x9256a4 com null-check tail-call (`cmp r0,#0; bxeq lr; mov r3,r0; mov r0,r2; bx r3`).
+- **INV0/ISDEF/ENUM-UT/EXC-FROMNAME/LOGRES**: cadeia menor pós-SPARKGEAR.
+
+### PRÓXIMO (real) — atacar a raiz, não os sintomas
+1. **RE de `MetadataCache::InitializeMethodMetadata` / `il2cpp_codegen_initialize_method`**:
+   por que os slots de `s_Il2CppMetadataUsages` não são preenchidos. Achar a tabela de
+   usages (metadataUsagePairs/tokens) na registration e conferir se está wired. Provável:
+   o codegen-init de método (que popula usages no 1º uso) não está rodando, ou a metadata
+   de usages não foi registrada no `il2cpp_init` (relacionado ao S_MetadataRegistration
+   já mapeado offline: file 0x4707eb8).
+2. Alternativa pragmática: FORÇAR `il2cpp_runtime_class_init` + resolução de todos os
+   métodos das classes da cena do Título ANTES do Awake (pré-warm), OU forçar
+   `il2cpp_codegen_initialize_method` de cada método usado.
+3. Se metadata-usage for irreparável: tentar APK STOCK (não-mod) — pode ter metadata+assets
+   consistentes (memória: stock de OUTRO jogo crashava, mas cvgos stock é não-testado).
+
 ## Notas de ambiente
 - O env "base recomendado" do STATUS está incompleto: as sessões boas rodavam num shell
   interativo que ainda tinha exports acumulados (CRASHSKIP/NOTRAPPATCH do run.sh etc.).
