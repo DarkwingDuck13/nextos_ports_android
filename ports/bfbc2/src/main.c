@@ -157,11 +157,23 @@ static void poll_joysticks(int W, int H) {
         /* Layout USB Gamepad 0810 (DragonRise): 0=Y 1=B 2=A 3=X 4=L1 5=R1
          * 6=L2 7=R2 8=SELECT 9=START 10/11=L3/R3. L2/R2 = TIRO (toque na fire area). */
         if (e.number == 6 || e.number == 7) {
-          float fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
-          float fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
-          static int firing;
-          if (e.value && !firing) { n_touch(g_env, NULL, 1, fx, fy, 1); firing = 1; }
-          else if (!e.value && firing) { n_touch(g_env, NULL, 2, fx, fy, 1); firing = 0; }
+          /* R2(7) = tiro no botão de tiro (a pé). L2(6) = tiro no CENTRO/crosshair
+           * (p/ veículo/torre, onde o crosshair fica ao mirar com o stick). Cada um
+           * usa um pointer id separado (não se atrapalham). */
+          float fx, fy; int pid;
+          if (e.number == 7) {
+            fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
+            fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
+            pid = 1;
+          } else {
+            fx = W * (getenv("BC2_FIRE2X") ? atof(getenv("BC2_FIRE2X")) : 0.5f);
+            fy = H * (getenv("BC2_FIRE2Y") ? atof(getenv("BC2_FIRE2Y")) : 0.5f);
+            pid = 2;
+          }
+          static int firing[2];
+          int idx = e.number == 7 ? 0 : 1;
+          if (e.value && !firing[idx]) { n_touch(g_env, NULL, 1, fx, fy, pid); firing[idx] = 1; }
+          else if (!e.value && firing[idx]) { n_touch(g_env, NULL, 2, fx, fy, pid); firing[idx] = 0; }
         } else {
           int kc = 0, tap = 0;
           switch (e.number) {
