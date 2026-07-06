@@ -146,17 +146,37 @@ static void poll_joysticks(int W, int H) {
       if (js_log && !init) debugPrintf("[js%d] type=%d num=%d val=%d\n", d, type, e.number, e.value);
       if (init) continue;
       if (type == JS_EVENT_BUTTON) {
-        /* Botões 4-7 (ombros/gatilhos) = TIRO: toque-segurado na fire area. */
-        if (e.number >= 4 && e.number <= 7 && n_touch) {
+        /* estado atual dos botões + combo SELECT(8)+START(9) = SAIR do jogo
+         * (padrão handheld/PortMaster, igual Bully/Dysmantle). */
+        static unsigned char btn_down[16];
+        if (e.number < 16) btn_down[e.number] = e.value ? 1 : 0;
+        if (btn_down[8] && btn_down[9]) {
+          debugPrintf(">> SELECT+START = SAIR do jogo\n");
+          g_want_exit = 1;
+        }
+        /* Layout USB Gamepad 0810 (DragonRise): 0=Y 1=B 2=A 3=X 4=L1 5=R1
+         * 6=L2 7=R2 8=SELECT 9=START 10/11=L3/R3. L2/R2 = TIRO (toque na fire area). */
+        if (e.number == 6 || e.number == 7) {
           float fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
           float fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
           static int firing;
           if (e.value && !firing) { n_touch(g_env, NULL, 1, fx, fy, 1); firing = 1; }
           else if (!e.value && firing) { n_touch(g_env, NULL, 2, fx, fy, 1); firing = 0; }
         } else {
-          int kc = (e.number == 1) ? 4 : 23;   /* botão 1 = back; resto = select */
-          if (e.value) { js_tap_center(W, H); if (n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
-          else if (n_sendKey) n_sendKey(g_env, NULL, 1, kc);
+          int kc = 0, tap = 0;
+          switch (e.number) {
+            case 2: kc = 29; tap = 1; break;   /* A/✕ = confirmar (+tap p/ splash) */
+            case 9: kc = 4;  tap = 1; break;   /* START = pausar / voltar */
+            case 1: kc = 30; break;            /* B/○ = cancelar (NÃO pausa) */
+            case 0: kc = 100; break;           /* Y/△ */
+            case 3: kc = 99;  break;           /* X/□ */
+            case 4: kc = 102; break;           /* L1 */
+            case 5: kc = 103; break;           /* R1 */
+            case 8: kc = 109; break;           /* SELECT */
+            default: kc = 23; tap = 1; break;  /* desconhecido: confirmar+tap (splash) */
+          }
+          if (e.value) { if (tap) js_tap_center(W, H); if (kc && n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
+          else if (kc && n_sendKey) n_sendKey(g_env, NULL, 1, kc);
         }
       } else if (type == JS_EVENT_AXIS && e.number < 8) {
         float v = e.value / 32767.0f;
@@ -179,19 +199,30 @@ static void poll_joysticks(int W, int H) {
       }
     }
   }
-  /* ---- sticks (modelo TheFloW): type=3, cru, deadzone 0.25, só se mudou ---- */
+  /* ---- sticks: type=3, cru. MANDA TODO FRAME enquanto deslocado (mira SUAVE
+   * contínua; enviar só-quando-muda fazia precisar dar toques). ---- */
   if (!n_joy) return;
   float lx = g_ax[0], ly = g_ax[1], rx = g_ax[2], ry = g_ax[3];
-  if (getenv("BC2_RSWAP")) { float t = rx; rx = ry; ry = t; }   /* knobs de segurança */
+  if (fabsf(lx) < 0.25f) lx = 0; if (fabsf(ly) < 0.25f) ly = 0;   /* deadzone (raw) */
+  if (fabsf(rx) < 0.25f) rx = 0; if (fabsf(ry) < 0.25f) ry = 0;
+  /* stick DIR: swap X/Y é o PADRÃO (pad do usuário); BC2_NORSWAP desliga. */
+  if (!getenv("BC2_NORSWAP")) { float t = rx; rx = ry; ry = t; }
   if (getenv("BC2_RINVX")) rx = -rx;
   if (getenv("BC2_RINVY")) ry = -ry;
-  if (fabsf(lx) < 0.25f) lx = 0; if (fabsf(ly) < 0.25f) ly = 0;
-  if (fabsf(rx) < 0.25f) rx = 0; if (fabsf(ry) < 0.25f) ry = 0;
-  static float olx, oly, orx, ory;
-  if (lx != olx || ly != oly || rx != orx || ry != ory) {
-    olx = lx; oly = ly; orx = rx; ory = ry;
-    n_joy(3, lx, ly, 0);   /* stick esq (mover) */
-    n_joy(3, rx, ry, 1);   /* stick dir (câmera) */
+  /* sensibilidade da câmera (reduzida; ajustável). Envio contínuo = mais rápido,
+   * então escala p/ baixo. Default 0.5; BC2_RSENS ajusta. */
+  float rs = getenv("BC2_RSENS") ? atof(getenv("BC2_RSENS")) : 0.5f;
+  rx *= rs; ry *= rs;
+  int nz = (lx != 0.0f || ly != 0.0f || rx != 0.0f || ry != 0.0f);
+  static int wasnz;
+  if (nz) {
+    n_joy(3, lx, ly, 0);   /* mover */
+    n_joy(3, rx, ry, 1);   /* câmera (suave, todo frame) */
+    wasnz = 1;
+  } else if (wasnz) {
+    n_joy(3, 0.0f, 0.0f, 0);   /* solta (uma vez ao centrar) */
+    n_joy(3, 0.0f, 0.0f, 1);
+    wasnz = 0;
   }
 }
 
