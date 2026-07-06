@@ -639,3 +639,52 @@ texturas). Precisa do sound group REAL descriptografado, OU um sound group VAZIO
    recurso de som esperadas) p/ construir um `soundMenu.group.bin` com 0 recursos que o deserializer
    aceite; pôr no disco + `PES_SOUND_DISK=1` (som lê do disco). Menu mudo mas jogável. Incerto: o jogo
    pode referenciar sons específicos por hash e crashar em lookup vazio.
+
+## §s19 — WAYDROID: RECEITA COMPLETA p/ rodar PES 2012 (crackeado) em Android x86 — chega ao "Loading..." (Marmalade v5.2.3)
+
+**OBJETIVO:** rodar o APK+OBB num Android real (Waydroid) p/ o jogo descriptografar o OBB num contexto
+de mount VÁLIDO, e extrair os assets em claro pro Mali-450 (que lê grupos do disco).
+
+**Setup Waydroid (Arch, kernel 7.0.13 tem binder RUST + binderfs; sessão Wayland):**
+1. `pacman -S waydroid lxc`; `mount -t binder binder /dev/binderfs`.
+2. **Kernel sem `nft_masq`**: patch `/usr/lib/waydroid/data/scripts/waydroid-net.sh`: `LXC_USE_NFT="false"`,
+   `IPTABLES_BIN=$(command -v iptables)` (backend nf_tables funciona via xt_MASQUERADE), `start_iptables`
+   com `set +e` + `|| true` (tolerar CHECKSUM/xt faltantes). Rede sobe (waydroid0 192.168.240.1).
+3. `waydroid init` baixa lineage-20 (Android 13). **USAR ANDROID 13** (o A11/lineage-18.1 NÃO spawna
+   processo ARM neste kernel + logd quebrado). Trocar imagem = extrair system.img/vendor.img em
+   `/var/lib/waydroid/images/` + **LIMPAR `~/.local/share/waydroid/data/*`** (downgrade/upgrade de versão
+   quebra o PackageManager: `VersionInfo.sdkVersion null`).
+4. **Tradução ARM (APK é armeabi)**: libndk (Google ndk_translation, variante Android 13, md5
+   `0b2207c...`) → copiar `prebuilts/*` p/ `/var/lib/waydroid/overlay/system/` + props em
+   `waydroid_base.prop` (`ro.product.cpu.abilist=...armeabi-v7a,armeabi`,
+   `ro.dalvik.vm.native.bridge=libndk_translation.so`, `ro.dalvik.vm.isa.arm=x86`, etc). houdini também
+   funciona; o erro do crack NÃO era o tradutor.
+
+**🔑 FIX DO CRACK (o muro real, NÃO é o tradutor):** o `classes.dex` do APK crackeado tem SÓ 16KB
+(`com.inject.Decracker`); as classes reais são decriptadas em runtime por `libinject.so` num JAR
+`/data/data/PKG/auynn...jar` (aberto+unlinked, 0 bytes no disco). Esse jar tem as classes do jogo +
+Marmalade do PES (LoaderAPI etc.) MAS **FALTA `com.ideaworks3d.marmalade.SuspendResumeListener`** →
+`NoClassDefFoundError` no `InjectActivity.doInBackground:75`. 
+**SOLUÇÃO (repackage):** adicionar `classes2.dex` com **APENAS** a `SuspendResumeListener` (interface:
+`onSuspendResumeEvent(SuspendResumeEvent)V`) — extraída via `baksmali d` do Sonic4EP1 stock + `smali a`
+de UMA classe (NÃO o dex inteiro do Sonic — versão 2016 causa mismatch `getListenerManager` no
+LoaderAPI 2012 do PES). Assim o PES usa o próprio LoaderActivity/LoaderAPI do jar, consistente.
+**+ renomear/copiar `libpes2012.so` → `lib/armeabi/libs3e_android.so`** (o LoaderActivity carrega
+`libs3e_android`). Resign com `jarsigner` (keystore debug; v1 basta p/ target SDK 5). `pm install -r -t`.
+
+**Permissões (app SDK<23 → diálogo de review bloqueia o spawn):** editar
+`~/.local/share/waydroid/data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml`
+(container PARADO): no bloco `com.konami.pes2012` setar TODAS as permissões `granted="true" flags="0"`
+(remove `REVIEW_REQUIRED`=0x40). Reinstalar reseta os flags → reaplicar.
+
+**RESULTADO:** InjectActivity → Decracker → Main → **LoaderActivity (Marmalade v5.2.3) + libpes2012.so
+carregam** → diálogos "older Android" (OK @tap) + "ARM6/ARM4T" (Continue @tap) → **"Loading..." (tela
+do jogo!)**. Chegou ao carregamento nativo do jogo. OBB montado (bind-mount /data/media/0/Android/obb).
+
+**🧱 MURO s19 (mesmo do s13):** trava no "Loading..." — thread PRINCIPAL do Marmalade BLOQUEADA
+(utime +1 tick em 40s, I/O flat após ler ~22MB do OBB) enquanto ~8 workers `Thread<NN>` fazem BUSY-SPIN
+(852% CPU). É a **FSM de download/licença esperando o Google Play** (Waydroid VANILLA não tem Play
+Services) OU **sync de thread do s3e quebrado sob ndk_translation** (workers spinam sem pegar jobs, main
+espera). NÃO escreve assets em claro no disco (decripta em RAM). PRÓXIMO: (a) **microG** (waydroid_script)
+p/ satisfazer LVL/download; (b) OU houdini (threading diferente); (c) OU s3e single-thread; (d) captura
+por Frida/memória se passar do Loading. **ARTEFATOS em /tmp/pesmod/ (pes-min.apk pronto).**
