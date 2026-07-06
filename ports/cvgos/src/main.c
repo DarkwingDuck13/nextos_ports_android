@@ -1016,6 +1016,27 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
   crash_classify("r3", mc_reg(&uc->uc_mcontext, 3));
   crash_classify("r9", mc_reg(&uc->uc_mcontext, 9));
   crash_classify("r12", mc_reg(&uc->uc_mcontext, 12));
+  /* ESCOPO DA CORRUPCAO: escaneia a PLTGOT do il2cpp (base+0x4bd9c50, ~454 slots) e
+     conta quantos apontam FORA de codigo valido (libc/libunity/il2cpp .text) = imports
+     corrompidos em runtime. Se >0, confirma escritor rogue na regiao RW do il2cpp. */
+  if (g_il2cpp_base) {
+    uintptr_t gp = g_il2cpp_base + 0x4bd9c50, ge = gp + 454 * 4;
+    uintptr_t tb = (uintptr_t)text_base;
+    int bad = 0, tot = 0; uintptr_t first_bad = 0;
+    for (uintptr_t a = gp; a + 4 <= ge; a += 4) {
+      if (!addr_readable(a)) break;
+      uintptr_t v = *(uintptr_t *)a;
+      if (!v) continue;
+      tot++;
+      char perm[5]; uintptr_t lo, hi;
+      const char *ml = maps_find(v & ~(uintptr_t)1, &lo, &hi, perm);
+      int ok = ml && perm[2] == 'x';
+      if (!ok) { bad++; if (!first_bad) first_bad = a; }
+    }
+    fprintf(stderr, "[CR] PLTGOT scan: %d/%d slots NAO-executaveis (corrompidos); 1o=0x%lx\n",
+            bad, tot, (unsigned long)first_bad);
+    dbg_sync();
+  }
   fprintf(stderr, "[CR] ==== fim ====\n");
   dbg_sync();
   _exit(128 + sig);
@@ -1366,13 +1387,21 @@ static const char *asset_redirect(const char *p, char *buf, size_t bufsz) {
   const char *base0 = strrchr(p, '/'); base0 = base0 ? base0 + 1 : p;
   const char *split0 = strstr(base0, ".split");
   if (split0 && sub) {
-    static _Thread_local char mainname[256], mainpath[512];
-    size_t n = (size_t)(split0 - base0);
-    if (n > 0 && n < sizeof mainname) {
-      memcpy(mainname, base0, n);
-      mainname[n] = 0;
-      snprintf(mainpath, sizeof mainpath, ASSET_BASE_M "bin/Data/%s", mainname);
-      if (access(mainpath, F_OK) == 0) return NULL;
+    /* Por padrão força o arquivo MAIN concatenado (comportamento testado). CVGOS_SPLITREDIR=1
+       redireciona cada split pro arquivo real — testado, NÃO resolve o skew de serializacao
+       (mismatch asset<->metadata inerente ao mod), entao fica opt-in. */
+    if (getenv("CVGOS_SPLITREDIR")) {
+      snprintf(buf, bufsz, ASSET_BASE_M "bin/Data/%s", base0);
+      if (access(buf, F_OK) == 0) return buf;
+    } else {
+      static _Thread_local char mainname[256], mainpath[512];
+      size_t n = (size_t)(split0 - base0);
+      if (n > 0 && n < sizeof mainname) {
+        memcpy(mainname, base0, n);
+        mainname[n] = 0;
+        snprintf(mainpath, sizeof mainpath, ASSET_BASE_M "bin/Data/%s", mainname);
+        if (access(mainpath, F_OK) == 0) return NULL;
+      }
     }
   }
   if (sub) {
