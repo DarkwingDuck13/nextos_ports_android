@@ -17,8 +17,16 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <SDL2/SDL.h>
+
+/* Linux joystick API (js_event) — lemos /dev/input/jsN DIRETO (o pad 0810:0001
+ * não é bem tratado pelo SDL_GameController; padrão comprovado no NFS). */
+struct js_event { unsigned int time; short value; unsigned char type; unsigned char number; };
+#define JS_EVENT_BUTTON 0x01
+#define JS_EVENT_AXIS   0x02
+#define JS_EVENT_INIT   0x80
 
 #include "imports.h"
 #include "jni_shim.h"
@@ -104,6 +112,75 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
   if (!n_updateSound || g_snd_locked || !g_snd_enabled) { memset(stream, 0, len); return; }
   n_updateSound(g_env, NULL, g_audio_arr, nshorts);
   memcpy(stream, g_audio_buf, len);
+}
+
+/* ---- gamepad via /dev/input/jsN (direto, robusto p/ qualquer pad) ---- */
+static int js_fd[4] = { -1, -1, -1, -1 };
+static int js_log = -1;
+static void open_joysticks(void) {
+  int n = 0;
+  for (int i = 0; i < 4; i++) {
+    char p[32]; snprintf(p, sizeof p, "/dev/input/js%d", i);
+    js_fd[i] = open(p, O_RDONLY | O_NONBLOCK);
+    if (js_fd[i] >= 0) { n++; debugPrintf("gamepad js%d aberto (fd=%d)\n", i, js_fd[i]); }
+  }
+  if (!n) debugPrintf("gamepad: nenhum /dev/input/jsN\n");
+}
+static void js_tap_center(int W, int H) {   /* splash só avança por TOQUE */
+  if (n_touch) { n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0); n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0); }
+}
+/* stick -> AppOnJoystickEvent(action, x, y, id) c/ deadzone e press/move/release */
+static void js_stick(int id, float x, float y) {
+  static float sx[2], sy[2]; static int act[2];
+  if (id < 0 || id > 1 || !n_joy) return;
+  sx[id] = x; sy[id] = y;
+  float mag = sx[id]*sx[id] + sy[id]*sy[id];
+  if (mag > 0.06f) { n_joy(act[id] ? 3 : 1, sx[id], sy[id], id); act[id] = 1; }
+  else if (act[id]) { n_joy(2, 0.0f, 0.0f, id); act[id] = 0; }
+}
+static void poll_joysticks(int W, int H) {
+  if (js_log < 0) js_log = getenv("BC2_INPUTLOG") ? 1 : 0;
+  struct js_event e;
+  static float ax[4][8];   /* último valor por eixo, por device */
+  static int dpad_x[4], dpad_y[4];
+  for (int d = 0; d < 4; d++) {
+    if (js_fd[d] < 0) continue;
+    while (read(js_fd[d], &e, sizeof e) == (int)sizeof e) {
+      int init = e.type & JS_EVENT_INIT;
+      int type = e.type & 0x7f;
+      if (js_log && !init) debugPrintf("[js%d] type=%d num=%d val=%d\n", d, type, e.number, e.value);
+      if (init) continue;   /* estado inicial, ignora */
+      if (type == JS_EVENT_BUTTON) {
+        /* QUALQUER botão: press -> tap central (splash) + SELECT(23). B(idx1)=back. */
+        int kc = (e.number == 1) ? 4 : 23;
+        if (e.value) { js_tap_center(W, H); if (n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
+        else if (n_sendKey) n_sendKey(g_env, NULL, 1, kc);
+      } else if (type == JS_EVENT_AXIS && e.number < 8) {
+        float v = e.value / 32767.0f;
+        ax[d][e.number] = v;
+        switch (e.number) {
+          case 0: js_stick(0, v, ax[d][1]); break;   /* stick esq X */
+          case 1: js_stick(0, ax[d][0], v); break;   /* stick esq Y */
+          case 2: js_stick(1, v, ax[d][3]); break;   /* stick dir X */
+          case 3: js_stick(1, ax[d][2], v); break;   /* stick dir Y */
+          case 4: case 6: {                          /* dpad X (hat) */
+            int nx = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
+            if (nx != dpad_x[d] && n_sendKey) {
+              if (dpad_x[d]) n_sendKey(g_env, NULL, 1, dpad_x[d] > 0 ? 22 : 21);
+              if (nx) n_sendKey(g_env, NULL, 0, nx > 0 ? 22 : 21);
+              dpad_x[d] = nx;
+            } break; }
+          case 5: case 7: {                          /* dpad Y (hat) */
+            int ny = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
+            if (ny != dpad_y[d] && n_sendKey) {
+              if (dpad_y[d]) n_sendKey(g_env, NULL, 1, dpad_y[d] > 0 ? 20 : 19);
+              if (ny) n_sendKey(g_env, NULL, 0, ny > 0 ? 20 : 19);
+              dpad_y[d] = ny;
+            } break; }
+        }
+      }
+    }
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -194,6 +271,7 @@ int main(int argc, char *argv[]) {
   SDL_Joystick *rawjoy = NULL;
   if (!pad && SDL_NumJoysticks() > 0) rawjoy = SDL_JoystickOpen(0);
   debugPrintf("gamepad: controller=%p raw=%p (%d joysticks)\n", (void *)pad, (void *)rawjoy, SDL_NumJoysticks());
+  open_joysticks();   /* leitura DIRETA de /dev/input/jsN (robusto p/ qualquer pad) */
 
   /* ---- áudio: buffer + fake short[] ---- */
   SDL_AudioSpec want, have; memset(&want, 0, sizeof want);
@@ -325,6 +403,7 @@ int main(int argc, char *argv[]) {
         break;
       }
     }
+    poll_joysticks(W, H);   /* gamepad direto (js0) — botões/dpad/sticks */
     /* auto-tap de teste (BC2_AUTOTAP=1): dá um toque no centro a cada ~2s p/
      * avançar o splash "TOUCH THE SCREEN" sem input físico. */
     /* auto-tap (BC2_AUTOTAP=1): gesto REALISTA down + moves contínuos + up (como
