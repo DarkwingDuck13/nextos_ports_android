@@ -1,16 +1,38 @@
-# nextos_ports_android
+<div align="center">
 
-Framework para **rodar jogos Android em Linux ARM64 sem recompilar o jogo**: carrega o `.so` nativo do APK e o executa direto, com uma camada de shim que finge ser Android (fake JNI, OpenSL ES→SDL2, EGL→SDL2, bionic→glibc). O código ARM do jogo roda no ARM do device — zero emulação de CPU. Alvo principal: handhelds e TV boxes **Mali** (Amlogic Utgard/Bifrost/Valhall, R36S, X5M, muOS, ROCKNIX). Mesma linhagem dos so-loaders de PSVita (TheFloW), adaptada para Linux ARM64 + SDL2.
+# 🎮 nextos_ports_android
 
-**BYO-data:** o repositório contém apenas o loader/código. Você fornece o `.so` e os assets de um APK que **possui legalmente**. Uso não-comercial/hobbyista.
+### Rode jogos **Android** nativamente em **Linux ARM64** — sem recompilar, sem emular
 
+<p>
+  <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-26-brightgreen?style=for-the-badge">
+  <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-21-orange?style=for-the-badge">
+</p>
+<p>
+  <img alt="Alvo" src="https://img.shields.io/badge/alvo-Mali%20·%20ARM64%20·%20Linux-lightgrey?style=flat-square">
+  <img alt="Render" src="https://img.shields.io/badge/render-EGL%20→%20SDL2%20·%20GLES1%2FGLES2-8A2BE2?style=flat-square">
+  <img alt="Devices" src="https://img.shields.io/badge/devices-Amlogic%20·%20R36S%20·%20X5M%20·%20muOS%20·%20ROCKNIX-informational?style=flat-square">
+  <img alt="BYO-data" src="https://img.shields.io/badge/BYO--data-sem%20jogo%20no%20repo-critical?style=flat-square">
+</p>
+
+</div>
+
+---
+
+Carrega o `.so` nativo do APK e o executa **direto** no Linux, com uma camada de shim que finge ser Android (fake JNI, OpenSL ES→SDL2, EGL→SDL2, bionic→glibc). O código ARM do jogo roda no ARM do device — **zero emulação de CPU**, GLES é GLES. Alvo principal: handhelds e TV boxes **Mali** (Amlogic Utgard/Bifrost/Valhall, R36S, X5M, muOS, ROCKNIX). Mesma linhagem dos so-loaders de PSVita (TheFloW), adaptada para Linux ARM64 + SDL2.
+
+> [!IMPORTANT]
+> **BYO-data.** O repositório contém **apenas o loader/código** — nenhum dado de jogo. Você fornece o `.so` e os assets de um APK que **possui legalmente**. Uso não-comercial/hobbyista.
+
+> [!NOTE]
 > Estes **não** são ports PortMaster: cada jogo roda a versão **Android** via so-loader, não um build Linux/PC. O empacotamento PortMaster é usado apenas para lançar (control.txt + gptokeyb).
 
-## Destaques
+## ✨ Destaques
 
 Vários **primeiros ports mundiais** em Linux/aarch64: **Bully: Anniversary Edition** (Rockstar — mundo aberto completo), **Sonic Mania Plus** (RSDKv5), **GTA: Vice City**, **Final Fantasy VII** (com FMV próprio) e **Dead Space**. **Streets of Rage 4** e **Carrion** rodam **nativos** (runtime .NET 9 + MonoGame em GLES2). Cada port documenta seus destraves técnicos na própria pasta.
 
-## Jogos portados
+## 🕹️ Jogos portados
 
 Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde indicado como **nativo**/**recomp**. Alvo principal: **Mali-450 (Utgard)**; muitos validados também em R36S/X5M/muOS/ROCKNIX.
 
@@ -74,13 +96,13 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 |---|---|---|
 | **Syberia** (GLES1) · **LEGO Star Wars: TCS** (GLES2) | so-loader (ref. **mtojek**) — totalmente jogáveis no Mali-450 | [`docs/reference/syberia-src`](docs/reference/syberia-src/) · [`lswtcs-src`](docs/reference/lswtcs-src/) |
 
-## Como funciona
+## ⚙️ Como funciona
 
 Android é Linux e o código do jogo é **ARM nativo** — GLES é GLES (mesma API), sem tradução de CPU nem de gráficos. Só a "casca" Android é substituída por SDL2/glibc. Nos TV boxes é praticamente o hardware nativo do jogo (mesmo SoC/GPU classe Android).
 
 Dois caminhos: a maioria é **so-loader** (carrega o `.so` e roda direto); alguns são **nativos** (SOR4 e Carrion executam o runtime .NET 9 + MonoGame; Dusklight é um recomp). O build linka **GLES1** (`GLES_CM`, ex. Syberia) ou **GLES2** (`GLESv2`, ex. LEGO Star Wars) por port — o `new-port.sh` detecta pela presença de símbolos GLES1-only.
 
-## Estrutura
+## 🗂️ Estrutura do projeto
 
 ```
 core/                    # reutilizável entre todos os ports (não editar por jogo)
@@ -96,7 +118,7 @@ ports/<jogo>/            # cada port vive aqui
 facilitando_o_trabalho/  # base de conhecimento: receitas + troubleshooting + Matriz de Ports
 ```
 
-## Portar um jogo novo
+## 🚀 Portar um jogo novo
 
 ```bash
 # 1. bootstrap: extrai o .so, classifica símbolos, gera o esqueleto compilável
@@ -111,7 +133,7 @@ make -C ports/meujogo
 
 O `new-port.sh` auto-mapeia libc/libm/GLES/pthread (a tabela de 200–370 símbolos) e lista só o que é específico do jogo. A pasta [`facilitando_o_trabalho/`](facilitando_o_trabalho/) reúne receitas reutilizáveis (pthread/ABI, Mali-450/GLES2, fake JNI, áudio, controle/gptokeyb, VRAM, texturas ETC1/ETC2, hooks, Unity bootstrap/render/GC), troubleshooting e a Matriz de Ports (cada jogo → a lição que ensinou). Contribuições são bem-vindas: mantenha o crédito ao projeto (**NextOS**) e a regra BYO-data.
 
-## Licença e créditos
+## 📜 Licença e créditos
 
 **[GPL-3.0](LICENSE)** — use, modifique e redistribua mantendo a mesma licença, os créditos ao projeto (**NextOS**) e o código-fonte das suas modificações (copyleft). Os jogos continuam sendo dos seus donos (BYO-data).
 
