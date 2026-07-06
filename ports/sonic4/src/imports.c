@@ -28,6 +28,7 @@
 #include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "so_util.h"
@@ -153,6 +154,19 @@ static void b_assert2(const char *file, int line, const char *func, const char *
 }
 static int b_system_property_get(const char *name, char *value) {
   (void)name; if (value) value[0] = '\0'; return 0;
+}
+/* glibc <= 2.32 (ArkOS 2.30) does not export the plain stat/lstat/fstat
+ * symbols that newer glibc has. libfox imports those names directly, so
+ * fallback dlsym leaves them unresolved and ArkOS stalls during early file I/O.
+ * Use raw arm64 syscalls; the kernel stat layout matches bionic/glibc here. */
+static int my_stat(const char *path, void *buf) {
+  return syscall(SYS_newfstatat, AT_FDCWD, path, buf, 0);
+}
+static int my_lstat(const char *path, void *buf) {
+  return syscall(SYS_newfstatat, AT_FDCWD, path, buf, AT_SYMLINK_NOFOLLOW);
+}
+static int my_fstat(int fd, void *buf) {
+  return syscall(SYS_fstat, fd, buf);
 }
 /* bionic usa __errno() (retorna int*); glibc usa __errno_location */
 static int *b_errno(void) {
@@ -722,6 +736,9 @@ DynLibFunction shantae_overrides[] = {
     {"strlcat", (uintptr_t)b_strlcat},
     {"__assert2", (uintptr_t)b_assert2},
     {"__system_property_get", (uintptr_t)b_system_property_get},
+    {"stat", (uintptr_t)my_stat},
+    {"lstat", (uintptr_t)my_lstat},
+    {"fstat", (uintptr_t)my_fstat},
     {"__errno", (uintptr_t)b_errno},
     {"__stack_chk_fail", (uintptr_t)my_stack_chk_fail},
     {"__gnu_Unwind_Find_exidx", (uintptr_t)my_find_exidx},

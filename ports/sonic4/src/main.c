@@ -54,6 +54,9 @@ volatile int sonic_game_started = 0;
 static volatile int sonic_in_draw_frame = 0;
 static int g_fbclear = 0; /* SONIC_FBCLEAR: glClear por frame (fix candidato dos rastros) */
 extern int sonic_screen_w, sonic_screen_h; /* resolução real da tela (egl_shim) */
+static pthread_t g_main_thread;
+static volatile int g_hang_watch_active = 0;
+static int g_hang_watch_seconds = 0;
 
 /* 🔧 HANDLER DE CRASH (workflow de debug): captura SIGSEGV/ABRT/BUS/ILL/FPE,
    grava backtrace com offset `libfox+0xNNN` (= bt[i]-text_base, resolvível por
@@ -168,6 +171,84 @@ static void sonic_install_crash_handler(void) {
   int sigs[] = { SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE };
   for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
     sigaction(sigs[i], &sa, NULL);
+}
+
+static void sonic_dump_addr_module(FILE *o, const char *label, unsigned long addr) {
+  FILE *m = fopen("/proc/self/maps", "r");
+  char line[512];
+  if (!m) return;
+  while (fgets(line, sizeof line, m)) {
+    unsigned long lo = 0, hi = 0, off = 0;
+    char perms[8] = {0}, dev[16] = {0}, path[256] = {0};
+    unsigned long inode = 0;
+    int n = sscanf(line, "%lx-%lx %7s %lx %15s %lu %255[^\n]",
+                   &lo, &hi, perms, &off, dev, &inode, path);
+    if (n >= 6 && addr >= lo && addr < hi) {
+      fprintf(o, "  %s=0x%lx in %s +0x%lx file+0x%lx\n",
+              label, addr, n == 7 ? path : "?", addr - lo, off + (addr - lo));
+      break;
+    }
+  }
+  fclose(m);
+}
+
+static void sonic_hang_signal_handler(int sig, siginfo_t *si, void *uc) {
+  (void)sig; (void)si;
+  unsigned long pc = 0, lr = 0, sp = 0;
+#if defined(__aarch64__)
+  if (uc) {
+    ucontext_t *u = (ucontext_t *)uc;
+    pc = u->uc_mcontext.pc;
+    lr = u->uc_mcontext.regs[30];
+    sp = u->uc_mcontext.sp;
+  }
+#elif defined(__arm__)
+  if (uc) {
+    ucontext_t *u = (ucontext_t *)uc;
+    pc = u->uc_mcontext.arm_pc;
+    lr = u->uc_mcontext.arm_lr;
+    sp = u->uc_mcontext.arm_sp;
+  }
+#endif
+  FILE *fs[2]; fs[0] = stderr; fs[1] = fopen("hang.log", "a");
+  for (int k = 0; k < 2; k++) {
+    FILE *o = fs[k]; if (!o) continue;
+    fprintf(o, "\n==== HANG watchdog frame=%lu in_draw=%d active=%d ====\n",
+            sonic_frame_for_imports, sonic_in_draw_frame, g_hang_watch_active);
+    fprintf(o, "  PC=0x%lx LR=0x%lx SP=0x%lx text_base=0x%lx\n",
+            pc, lr, sp, (unsigned long)(uintptr_t)text_base);
+    sonic_dump_addr_module(o, "PC", pc);
+    sonic_dump_addr_module(o, "LR", lr);
+    fflush(o);
+  }
+  if (fs[1]) fclose(fs[1]);
+  _exit(124);
+}
+
+static void *sonic_hang_watchdog_thread(void *arg) {
+  (void)arg;
+  for (;;) {
+    sleep(g_hang_watch_seconds > 0 ? g_hang_watch_seconds : 5);
+    if (g_hang_watch_active)
+      pthread_kill(g_main_thread, SIGUSR1);
+  }
+  return NULL;
+}
+
+static void sonic_install_hang_watchdog(void) {
+  const char *e = getenv("SONIC_HANGALARM");
+  if (!e || !*e) return;
+  g_hang_watch_seconds = atoi(e);
+  if (g_hang_watch_seconds <= 0) g_hang_watch_seconds = 5;
+  struct sigaction sa; memset(&sa, 0, sizeof sa);
+  sa.sa_sigaction = sonic_hang_signal_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGUSR1, &sa, NULL);
+  pthread_t th;
+  pthread_create(&th, NULL, sonic_hang_watchdog_thread, NULL);
+  pthread_detach(th);
+  fprintf(stderr, "=== HANG watchdog ligado: %d s ===\n", g_hang_watch_seconds);
 }
 
 static struct {
@@ -913,6 +994,7 @@ static void *fs_thread_fn(void *arg) {
 
 int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
+  g_main_thread = pthread_self();
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
   /* modo BAKE (tela de setup da extração, estilo Bully v11): standalone, sai no stop-file. */
@@ -923,6 +1005,7 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "=== SONIC 4 EPISODE II (NN/fox) so-loader / NextOS armv7 Mali-450 ===\n");
 
   if (!getenv("SONIC_NO_CRASHLOG")) sonic_install_crash_handler();
+  sonic_install_hang_watchdog();
 
   /* mata instância anterior + confirma 0 antes de tocar no fb/EGL (regra do device). */
   sonic_kill_other_instances();
@@ -1110,6 +1193,15 @@ int main(int argc, char *argv[]) {
     patch_ret0("_Z20SsConstBloomIsEnablev"); /* bloom off */
     fprintf(stderr, "=== LOWFX: bloom desligado (perf) ===\n");
   }
+#ifdef __aarch64__
+  /* ArkOS/R36S Mali-G31 blob: nnCreatePowerIndexImage retorna com LR apontando
+     para nnPtr32Encode e entra num loop no primeiro DrawFrame. Com bloom/lowfx
+     desligado, essa LUT de post-effect nao e necessaria. */
+  if (!env_flag_enabled("SONIC_KEEP_POWERINDEX")) {
+    patch_ret0("nnCreatePowerIndexImage");
+    fprintf(stderr, "=== LOWFX64: nnCreatePowerIndexImage desligado (ArkOS hang fix) ===\n");
+  }
+#endif
   /* 🌈 SONIC_FORCETONEMAP: força o TONE-MAP (HDR->LDR Reinhard) LIGADO. O tone-map é
      SEPARADO do bloom (SsConstTonemapIsEnable). Desligar o bloom pode ter matado o
      tone-map junto -> o HDR das luzes do cassino estoura pra branco. Forçar o tone-map
@@ -1521,6 +1613,7 @@ int main(int argc, char *argv[]) {
   const char *fs = getenv("SONIC_FRAME_SLEEP_US");
   long frame_sleep_us = fs ? atol(fs) : 0;
   fprintf(stderr, "=== frame sleep us: %ld ===\n", frame_sleep_us);
+  int sonic_looplog = env_flag_enabled("SONIC_LOOPLOG");
   g_fbclear = getenv("SONIC_FBCLEAR") != NULL;
   if (g_fbclear) fprintf(stderr, "=== SONIC_FBCLEAR: glClear por frame LIGADO ===\n");
   int gameplay_start_delay_done = 0;
@@ -1609,6 +1702,8 @@ int main(int argc, char *argv[]) {
   }
   for (;;) {
     sonic_frame_for_imports = frame;
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] begin\n", frame);
     /* --- input: drenar eventos SDL + montar a máscara fox + SetPadData --- */
     SDL_Event ev; while (SDL_PollEvent(&ev)) { /* drena (quit etc) */ }
     int mask = 0;
@@ -1830,8 +1925,12 @@ int main(int argc, char *argv[]) {
               gk_cancel ? (*gk_cancel & 0xffff) : 0xdead);
     }
 
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] before save polls\n", frame);
     sonic_native_save_load_poll("frame");
     sonic_save_bootstrap_poll(frame);
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] after save polls\n", frame);
     /* dirige o continue do título (save com fase interrompida) — só fora do gameplay;
        a flag é lida exclusivamente por CStateWaitViewPausing::Next, então forçar
        o valor quando está 0 é seguro e usa o fluxo nativo. */
@@ -1862,8 +1961,12 @@ int main(int argc, char *argv[]) {
         sonic_continue_log_n++;
       }
     }
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] before GameProcess\n", frame);
     sonic_in_draw_frame = 0;
     if (fox.GameProcess) fox.GameProcess(env, thiz);
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] after GameProcess\n", frame);
     if (sonic_game_started && !gameplay_start_delay_done) {
       const char *d = getenv("SONIC_GAMEPLAY_START_DELAY_MS");
       int ms = d ? atoi(d) : 0;
@@ -1884,7 +1987,15 @@ int main(int argc, char *argv[]) {
       glBindFramebuffer(0x8D40 /* GL_FRAMEBUFFER */, 0); /* FBO 0 = tela */
       glClear(0x4100 /* COLOR | DEPTH */);
     }
-    if (fox.DrawFrame)   fox.DrawFrame(env, thiz);
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] before DrawFrame\n", frame);
+    if (fox.DrawFrame) {
+      g_hang_watch_active = 1;
+      fox.DrawFrame(env, thiz);
+      g_hang_watch_active = 0;
+    }
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] after DrawFrame\n", frame);
     sonic_in_draw_frame = 0;
     if (getenv("SONIC_TESTCLEAR")) {  /* diagnóstico: present/contexto OK? */
       extern void glClearColor(float, float, float, float);
@@ -1907,7 +2018,11 @@ int main(int argc, char *argv[]) {
       }
       glBindFramebuffer(0x8D40, 0);
     }
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] before present\n", frame);
     egl_shim_present();
+    if (sonic_looplog && frame < 6)
+      fprintf(stderr, "[loop f%lu] after present\n", frame);
     /* sinaliza intro-video done nos primeiros segundos */
     if (introCB && frame >= 30 && frame < 120 && (frame % 15) == 0) introCB(env, thiz);
 #ifdef __aarch64__
