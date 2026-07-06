@@ -231,7 +231,15 @@ int main(int argc, char *argv[]) {
           case SDLK_DOWN: kc = 20; break;
           case SDLK_LEFT: kc = 21; break;
           case SDLK_RIGHT: kc = 22; break;
-          case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: kc = 23; break;
+          case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE:
+            kc = 23;
+            /* 🔑 splash "TOUCH THE SCREEN" só avança por TOQUE, não por tecla.
+             * Confirma emite tbm um tap central (inofensivo no menu/in-game). */
+            if (ev.type == SDL_KEYDOWN && n_touch) {
+              n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0);
+              n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0);
+            }
+            break;
           case SDLK_a: kc = 99; break;            /* □ BUTTON_X */
           case SDLK_s: kc = 100; break;           /* △ BUTTON_Y */
           case SDLK_q: kc = 102; break;           /* L1 */
@@ -256,13 +264,24 @@ int main(int argc, char *argv[]) {
           case SDL_CONTROLLER_BUTTON_DPAD_DOWN: kc = 20; break;
           case SDL_CONTROLLER_BUTTON_DPAD_LEFT: kc = 21; break;
           case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: kc = 22; break;
-          case SDL_CONTROLLER_BUTTON_A: kc = 23; break;
+          case SDL_CONTROLLER_BUTTON_A: kc = 23;
+            /* splash só avança por TOQUE → A/Start emitem tap central tbm */
+            if (ev.type == SDL_CONTROLLERBUTTONDOWN && n_touch) {
+              n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0);
+              n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0);
+            }
+            break;
           case SDL_CONTROLLER_BUTTON_B: kc = 4; break;
           case SDL_CONTROLLER_BUTTON_X: kc = 99; break;
           case SDL_CONTROLLER_BUTTON_Y: kc = 100; break;
           case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: kc = 102; break;
           case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: kc = 103; break;
-          case SDL_CONTROLLER_BUTTON_START: kc = 108; break;
+          case SDL_CONTROLLER_BUTTON_START: kc = 108;
+            if (ev.type == SDL_CONTROLLERBUTTONDOWN && n_touch) {
+              n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0);
+              n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0);
+            }
+            break;
           case SDL_CONTROLLER_BUTTON_BACK: kc = 109; break;
           case SDL_CONTROLLER_BUTTON_GUIDE: kc = 82; break;
           default: kc = 0; break;
