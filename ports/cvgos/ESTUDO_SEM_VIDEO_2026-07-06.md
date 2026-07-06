@@ -178,6 +178,39 @@ FIXES (bionic_shims.c): layout LP32 correto em `my_sigaction` + **`my_sigsuspend
   abort. Suspeita: os guards da era corrompida (ARRAYSKIP/VECGUARD/ENUMNULLGUARD/
   TMPFONTGUARD) agora fazem mais mal que bem — diag_gate6 roda SEM eles.
 
+### SESSÃO 3 (continuação) — SPARKGEAR ULTRAPASSADO; cadeia de guards nova
+Sequência validada (diag_gate18/19): render 0 → `[LOGRES] SKIP (keys/values null)` →
+`[VECGUARD] count=float 1.0 → 0` ×3 → `[ENUM-UT] ICanvasElement parent null → devolve Type`
+→ **`[SPARKGEAR] Load SPFXConfig ==> SPFXConfig.asset` → "is Faild..." (jogo tolera)** →
+muro: `MonoCustomAttrs.IsDefined` lança NRE e o RAISE crasha no invoker
+(il2cpp+0x9251bc/0x9256a4 = thunks de Runtime::Invoke) com `method->methodPointer=NULL`
+p/ `NullReferenceException..ctor` (existe @0x117c7c8 no binário — o MethodInfo runtime
+vem sem ponteiro = lazy metadata-init de método não completou).
+
+RE novo (correções ao entendimento antigo):
+- il2cpp+**0x79f51c** = `Thread::GetThreadStaticData(slot)` (era rotulado "rgctx"!).
+  [0x4be5410]=lista de threads; [thr+8]=InternalThread; [internal+0x3c]=tabela; tabela[slot]
+  = ponteiro do BLOCO de statics-de-thread. il2cpp+0x79f3f4 = registrador (aloca p/ todas
+  as threads da lista). Fallback correto = bloco 4KB ZERADO por slot (zero = estado inicial
+  legítimo de thread-static). Attach-retry não resolve (main já attachada; slot falta mesmo).
+- il2cpp+**0x7753xx** (I2-METAFLAG) = builder de GC-descriptor: seta bits por field-offset;
+  com offset lixo (às vezes ponteiro absoluto) o bit-OR cai em endereço arbitrário —
+  quando a página é GRAVÁVEL, CORROMPE SILENCIOSAMENTE (só o caso não-gravável era pego).
+  Provável fonte do bit `enumtype` ligado em `UnityEngine.UI.ICanvasElement` (interface!).
+- `EqualityComparer<T>.CreateComparer` → branch enum com tipo não-enum → 
+  `Enum.GetUnderlyingType` → vm hash(type=NULL) crash. Guard: parent≠"Enum" → retorna o Type.
+- `Exception::FromNameMsg` (0x7a96f0) lê [info+4] sem null-check; thunks chamam com
+  info=NULL. Guard: buffer zerado.
+- Invokers il2cpp+0x9251xx-0x9256xx: `mov r3,r0; mov r0,r2; blx r3` etc. — pc=0 = 
+  methodPointer NULL vindo do MethodInfo.
+
+PRÓXIMOS (ordem sugerida): (1) testar caminho natural CVGOS_NOTRAPPATCH=1 (gate20) — com
+sigaction correto o SIGHUP-trap pode ter sumido e os patches invasivos do libunity
+(TRAPGATE/SKIPERRFUNC) podem ser a causa do metadata-init incompleto; (2) se persistir,
+hookar o lazy-init de método (flag+bl init no prólogo il2cpp) p/ logar falhas; (3) guard
+no invoker: methodPointer NULL → resolver via RVA do dump (temos script.json completo!);
+(4) raiz do GC-descriptor spray (guard preventivo: offset > instance_size → skip).
+
 ## Notas de ambiente
 - O env "base recomendado" do STATUS está incompleto: as sessões boas rodavam num shell
   interativo que ainda tinha exports acumulados (CRASHSKIP/NOTRAPPATCH do run.sh etc.).
