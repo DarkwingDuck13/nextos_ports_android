@@ -44,6 +44,21 @@ validar por causa do boot intermitente (race do job-system, agravado por muitos 
 rápidos por SSH; lançar limpo pelo launcher normal boota melhor). Se continuar save-com-armaduras,
 reativar o `initGame` (zera armaduras) só no painel STORY.
 
+**🔴 TAREFA PRINCIPAL DA PRÓXIMA SEÇÃO — navegação da SELEÇÃO por dpad (feedback do usuário
+2026-07-06):** "não consigo ir pros lados/pra cima, a seleção vermelha fica sempre num lugar".
+DIAGNÓSTICO: a borda vermelha é o flag de SELECT (`+0x1C`) e ele só é atualizado pela POSIÇÃO do
+TOQUE (InputMan hit-test), NÃO pelo dpad. No modo cursor o crosshair anda livre mas a seleção só
+"pula" de painel quando um toque passa por cima — então com direcional a borda fica travada.
+CAMINHO DO FIX: o jogo tem NAVEGAÇÃO NATIVA por grade — `InputMan.SetNavigation` (0xe42c90),
+`InputMan.SetNavigationMode`/`IInput.SetNavigationMode` (0xe6b978), `InputMan.CreateGrid`
+(0xe43e20), `CreatePanelSel` (0xe43b18), `InputMan.SetSelects` (0xe427b4), `InputMan.SetSelectable`
+(0xe425e4). Ideia: alimentar o dpad/analógico na NAVEGAÇÃO NATIVA (SetSelects/SetNavigation move o
+item selecionado painel-a-painel) em vez de mover só o crosshair — a borda vermelha passa a andar
+com o direcional e o A confirma (já funciona via +0x24). Isso é UX melhor que o cursor-livre p/
+menus em grade. Investigar como scn_TITLEMENU_run/scn_OPTION_run consomem SetSelects e se dá p/
+setar o índice de seleção direto (o item tem +0x1C; achar quem faz o "próximo/anterior" na grade).
+Manter o cursor-livre como fallback p/ telas sem grade (ex.: sliders SOUND).
+
 **Números-chave s12:** IsSelects=0xe431b0, IsTouchs=0xe42fec, IInput.SetTouch=0xe6b530
 (`[item+0x24]=w1&1`), BackProc=0xe2f82c, BackKeyTrg=`[self+1537]`, dispatcher back=0xe2f62c/0xe2f638.
 Flags do item: hover=+0x1C, id=+0x20, confirm=+0x24. Grupo UI dos submenus = 6.
