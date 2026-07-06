@@ -39,40 +39,68 @@ Não recompila o jogo: **carrega o `.so` nativo do Android e roda direto** no Li
 E mais jogáveis no Mali-450: **Hotline Miami 2** (GameMaker/YYC, música + gameplay), **DuckTales Remastered** (WayForward), **Minecraft Bedrock/MCPE** (fullscreen via mcpelauncher + SDL3), **Shantae and the Pirate's Curse** (WayForward, controles completos + áudio + 60fps + inglês), **Chrono Trigger** (Cocos2d-x, controle físico + áudio + inglês), **Terraria** (Unity IL2CPP) e **Crazy Taxi Classic**. Tabela completa abaixo.
 
 ## Jogos portados
+
+Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde indicado como **nativo**/**recomp**. Alvo principal: **Mali-450 (Utgard)**; vários validados também em R36S/X5M/muOS/ROCKNIX. **BYO-data**: o repo traz só o loader.
+
+### ✅ Concluídos — jogáveis
 | Jogo | Engine / método | Estado | Pasta |
 |---|---|---|---|
-| **Final Fantasy VII** (SQEX mobile = FF7 PC recompilado p/ ARM) | so-loader (`libjni_ff7.so`) + FMV VP8 próprio | **Jogável** (Mali-450) — fluxo completo New Game→FMV→campo, áudio 100% (SFX+BGM+vídeos), saves, inglês | [`ports/ff7`](ports/ff7/) |
-| **Sonic 4: Episode II** (Sega NN/"fox") | so-loader (`libfox.so`, armv7 + arm64) | **Jogável multi-device** (Mali-450, X5M, R36S, muOS, ROCKNIX) — vídeo, áudio, controle, bonus stages | [`ports/sonic4`](ports/sonic4/) |
-| **Bully: Anniversary Edition** | so-loader (`libGame.so`) | **Jogável** (Mali-450, GLES2, + R36S 1GB via streaming de texturas) — mundo, escola, personagem, controle, áudio | [`ports/bully`](ports/bully/) |
-| **Castlevania: Symphony of the Night** (DotEmu) | so-loader (SDL2 nativo ES2) | **Jogável** — boot→título→menu→gameplay, áudio, controle, save persiste | [`ports/sotn`](ports/sotn/) |
-| **GTA: Vice City** (reVC) | so-loader 2-módulos | **Jogável** (Mali-450) — mundo, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
-| **Sonic Mania Plus** (RSDKv5) | so-loader | **Jogável com som** — título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
-| **Streets of Rage 4** | MonoGame/.NET 9 nativo (não so-loader) | **Jogável** (Mali-450 GLES2) — música/SFX, texturas ETC1 | [`ports/sor4`](ports/sor4/) |
-| **Carrion** | MonoGame 3.8 / .NET 9 nativo (.NET9 CoreCLR + gl4es) | **Jogável** (Mali-450 + R36S) — render, controle, **som (FMOD)**, jogo completo | [`ports/carrion`](ports/carrion/) |
-| **Katana ZERO** (GameMaker/YYC, ed. Netflix) | so-loader (`libyoyo.so`) — **binário único universal** glibc 2.27 | **Jogável** (Mali-450 + R36S) — ataque/controle nativo, áudio, inglês, resolução auto | [`ports/katanazero`](ports/katanazero/) |
-| **DYSMANTLE** | so-loader (GameActivity) + streaming nativo de texturas | **Jogável multi-device** (Mali-450, X5M, R36S 1GB) — textura full-res paginada, áudio, bake staged no 1º boot | [`ports/dysmantle`](ports/dysmantle/) |
-| **Hotline Miami 2** (GameMaker/YYC) | so-loader (`libyoyo.so`) | **Jogável** (Mali-450) — gameplay + música + SFX | [`ports/hlm2`](ports/hlm2/) |
-| **DuckTales Remastered** (WayForward) | so-loader (armv7, FMOD) | **Jogável** (Mali-450) — menu confiável, controle, gameplay | [`ports/ducktales`](ports/ducktales/) |
-| **Minecraft Bedrock (MCPE)** | mcpelauncher (armhf) + SDL3 | **Jogável fullscreen** (Mali-450) | [`ports/mcpe`](ports/mcpe/) |
-| **GTA: Liberty City Stories** | so-loader | **Parcial** (Mali-450) — gameplay 3D visível, cutscenes nativas | [`ports/lcs`](ports/lcs/) |
-| **Final Fantasy IX** (Unity 2022 IL2CPP) | so-loader | **Em progresso** (Mali-450) — caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
-| **LEGO Batman 3** (Fusion engine) | so-loader | **Parcial** (Mali-450) — render limpo/estável | [`ports/legobatman`](ports/legobatman/) |
-| **Terraria** (Unity IL2CPP) | so-loader | **Jogável** — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
-| **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | **Jogável** (Mali-450) — render, controle físico (padrão Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
-| **Shantae and the Pirate's Curse** (WayForward "Black") | so-loader (NativeActivity **armv7**, ES2 nativo + OpenSL ES) | **Jogável** (Mali-450) — render + áudio + 60fps + inglês, **controles completos** (dpad/analógico navegam menu e andam, botões Xbox, SELECT+START sai) | [`ports/shantae`](ports/shantae/) |
-| **Crazy Taxi Classic** | so-loader (loader de **initdream** sobre o framework) | **Jogável** (Mali-450) — render + áudio + gptokeyb | [`ports/crazytaxi`](ports/crazytaxi/) |
-| **Mega Man Mobile 1–6** (Capcom, Cocos2d-x 3.9 + Cricket) | so-loader (armhf) | **Jogável** (Mali-450) — vídeo, controle dpad-touch (diagonais reais), áudio, save, Select+Start | [`ports/megaman1`](ports/megaman1/) … [`megaman6`](ports/megaman6/) |
-| **Secret of Mana** (remake 2018, MCF) | so-loader (**GLES1 puro**) | **Jogável completo** (Mali-450) — inglês, controle, fontes, save, BGM+SFX | [`ports/secretofmana`](ports/secretofmana/) |
-| **Call of Duty: Black Ops Zombies** (Marmalade s3e) | so-loader (adaptação do loader de **Producdevity**, MIT) | **Jogável** (Mali-450) — New Game, gameplay, fullscreen, áudio, controle (d-pad) | [`ports/codboz`](ports/codboz/) |
-| **PES 2012** (Marmalade s3e) | so-loader | **WIP** — FSM de download mapeado, gate de 180MB bypassado | [`ports/pes2012`](ports/pes2012/) |
-| **Mega Man X** (Unity IL2CPP) | so-loader | **WIP** — boot + render loop; muro no Choreographer/job-system | [`ports/megamanx`](ports/megamanx/) |
-| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | **WIP** — investigação de render | [`ports/elderand`](ports/elderand/) |
-| **NFS Most Wanted (2012)** | so-loader (armhf) | **Parcial** — gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
-| **Resident Evil 4** (Unity) | so-loader | **Demo** — menu + entrada Cap.1 OK; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
-| **Dusklight** (Zelda: Twilight Princess recomp) | recomp + backend Aurora GLES2 | **Em progresso** — cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
-| **Cuphead** (Unity IL2CPP) | so-loader | **WIP** | [`ports/cuphead`](ports/cuphead/) |
-| **Hollow Knight** (Unity IL2CPP) | so-loader | **Pesquisa** — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
-| **Syberia** (GLES1) · **LEGO Star Wars: TCS** (GLES2) | so-loader (ref. **mtojek**) | **Referência** (base do framework) — totalmente jogáveis no Mali-450 | [`docs/reference/syberia-src`](docs/reference/syberia-src/) · [`lswtcs-src`](docs/reference/lswtcs-src/) |
+| **Final Fantasy VII** (SQEX = FF7 PC recompilado p/ ARM) | so-loader + FMV VP8 próprio | Fluxo completo New Game→FMV→campo, áudio 100% (SFX+BGM+vídeos), saves, inglês | [`ports/ff7`](ports/ff7/) |
+| **Sonic 4: Episode II** (Sega NN/"fox") | so-loader (armv7 + arm64) | Multi-device (Mali-450, X5M, R36S, muOS, ROCKNIX) — vídeo, áudio, controle, bonus stages | [`ports/sonic4`](ports/sonic4/) |
+| **Sonic 4: Episode I** (Sega Hedgehog Engine) | so-loader | Boot completo, logos→título→fases, áudio e vídeo | [`ports/sonic4ep1`](ports/sonic4ep1/) |
+| **Bully: Anniversary Edition** | so-loader (`libGame.so`) | Mundo aberto, escola, controle, áudio (Mali-450 GLES2; + R36S 1GB via streaming) | [`ports/bully`](ports/bully/) |
+| **Castlevania: Symphony of the Night** (DotEmu) | so-loader (SDL2 nativo ES2) | Boot→título→menu→gameplay, áudio, controle, save persiste | [`ports/sotn`](ports/sotn/) |
+| **GTA: Vice City** (reVC) | so-loader 2-módulos | 100% — mundo 3D, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
+| **Sonic Mania Plus** (RSDKv5, ed. Netflix) | so-loader | 100% com som — logos→título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
+| **Streets of Rage 4** | **nativo** MonoGame/.NET 9 (GLES2) | Jogável — música/SFX (Wwise reimpl), texturas ETC1 | [`ports/sor4`](ports/sor4/) |
+| **Carrion** | **nativo** MonoGame 3.8 / .NET 9 + gl4es | 100% (Mali-450 + R36S) — render, controle, **som (FMOD)** | [`ports/carrion`](ports/carrion/) |
+| **Katana ZERO** (GameMaker/YYC, ed. Netflix) | so-loader — **binário único universal** glibc 2.27 | Jogável (Mali-450 + R36S) — ataque/controle nativo, áudio, inglês | [`ports/katanazero`](ports/katanazero/) |
+| **DYSMANTLE** | so-loader + streaming nativo de texturas | Multi-device (Mali-450, X5M, R36S 1GB) — textura full-res paginada, áudio | [`ports/dysmantle`](ports/dysmantle/) |
+| **Dead Space** (EA, so-loader armeabi) | so-loader (`libDeadSpace.so`) | Jogável (Mali-450) — gameplay, câmera/controle nativo (hooks InputRegions), som, save, HUD, saída blindada | [`ports/deadspace`](ports/deadspace/) |
+| **Don't Starve** (Klei) | so-loader | Jogável — imagem, chão, áudio e controles funcionando; texturas ETC2→ETC1 dupla-camada | [`ports/dontstarve`](ports/dontstarve/) |
+| **Hotline Miami 2** (GameMaker/YYC) | so-loader (`libyoyo.so`) | Jogável (Mali-450) — gameplay + música + SFX | [`ports/hlm2`](ports/hlm2/) |
+| **DuckTales Remastered** (WayForward) | so-loader (armv7, FMOD) | Jogável (Mali-450) — menu, controle, gameplay | [`ports/ducktales`](ports/ducktales/) |
+| **Minecraft Bedrock (MCPE 1.16)** | mcpelauncher (armhf) + SDL3 | Jogável fullscreen (Mali-450) | [`ports/mcpe`](ports/mcpe/) |
+| **Chrono Trigger** (Cocos2d-x 3.14.1) | so-loader (ES2 nativo) | Jogável — render, controle físico (Xbox), áudio, inglês | [`ports/chrono`](ports/chrono/) |
+| **Shantae and the Pirate's Curse** (WayForward) | so-loader (NativeActivity armv7, ES2) | Jogável — render + áudio + 60fps + inglês, controles completos | [`ports/shantae`](ports/shantae/) |
+| **Crazy Taxi Classic** | so-loader (loader de **initdream** sobre o framework) | Jogável (Mali-450) — render + áudio + gptokeyb | [`ports/crazytaxi`](ports/crazytaxi/) |
+| **Mega Man Mobile 1–6** (Capcom, Cocos2d-x 3.9) | so-loader (armhf) | Jogável — vídeo, controle dpad-touch, áudio, save, Select+Start | [`ports/megaman1`](ports/megaman1/) … [`megaman6`](ports/megaman6/) |
+| **Secret of Mana** (remake 2018, MCF) | so-loader (**GLES1 puro**) | Jogável completo — inglês, controle, fontes, save, BGM+SFX | [`ports/secretofmana`](ports/secretofmana/) |
+| **Call of Duty: Black Ops Zombies** (Marmalade s3e) | so-loader (loader de **Producdevity**, MIT) | Jogável — New Game, gameplay, fullscreen, áudio, controle (d-pad) | [`ports/codboz`](ports/codboz/) |
+| **Terraria** (Unity IL2CPP) | so-loader | Jogável — controle + áudio + player/mundo | [`ports/terraria`](ports/terraria/) |
+
+### 🚧 Em andamento
+| Jogo | Engine / método | Estado | Pasta |
+|---|---|---|---|
+| **GTA: Liberty City Stories** | so-loader | Carrega 100%, frame loop estável, gameplay 3D visível; ajustes finais | [`ports/lcs`](ports/lcs/) |
+| **LEGO Batman 3: Beyond Gotham** (Fusion) | so-loader | Render limpo/estável (FBCOPY), título+menu, controle Xbox; falta gameplay | [`ports/legobatman`](ports/legobatman/) |
+| **NFS Most Wanted (2012)** | so-loader (armhf) | Gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
+| **Resident Evil 4** (Unity/Mono ARM32) | so-loader | Menu + entrada Cap.1; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
+| **Final Fantasy IX** (Unity IL2CPP) | so-loader | Renderiza claro no fb0; caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
+| **Mega Man X** (Unity IL2CPP) | so-loader | Controles/menu por cursor completos; falta jogo novo nativo | [`ports/megamanx`](ports/megamanx/) |
+| **Castlevania: Grimoire of Souls** (Unity 2018.4 IL2CPP) | so-loader | Deserializa a cena do Título; muro = skew asset↔metadata do APK mod | [`ports/cvgos`](ports/cvgos/) |
+| **Graveyard Keeper** (Unity 2018.2 IL2CPP) | so-loader | Renderiza a tela de loading (caminho Terraria) | [`ports/graveyardkeeper`](ports/graveyardkeeper/) |
+| **Elderand** (Unity IL2CPP / URP 2D) | so-loader | Investigação de render | [`ports/elderand`](ports/elderand/) |
+| **Cuphead** (Unity IL2CPP) | so-loader | WIP | [`ports/cuphead`](ports/cuphead/) |
+| **Pixel Cup Soccer** (Unity IL2CPP) | so-loader | Loading renderiza; não passa dela (muro no 1º frame) | [`ports/pixelcup`](ports/pixelcup/) |
+| **Rockman X DiVE Offline** (Unity) | so-loader | Boot avança; throttle/CRIWARE residual entre runs | [`ports/rockmanxdive`](ports/rockmanxdive/) |
+| **NieR (reincarnation/automata)** (UE4) | so-loader | Loader OK, bootstrap do alocador UE4 resolvido | [`ports/nier`](ports/nier/) |
+| **PES 2012** (Marmalade s3e) | so-loader | FSM de download mapeado, gate de 180MB bypassado; muro = OBB sound | [`ports/pes2012`](ports/pes2012/) |
+| **The Amazing Spider-Man 2** (Gameloft) | so-loader | Boot estabiliza a 22fps, GL2JNI boot OK; muro = estado GAIA | [`ports/tasm2`](ports/tasm2/) |
+| **BADLAND** (Cocos2d-x, FMOD) | so-loader | Triagem: caminho definido (ETC2→RGBA no 1º boot) | [`ports/badland`](ports/badland/) |
+| **Legend of Mana** (remake) | so-loader | Estudo de render (CLUT/pretos) | [`ports/legendofmana`](ports/legendofmana/) |
+| **Limbo** | so-loader (NativeActivity) | Boot + render + tela inicial + controle; falta áudio Wwise | [`ports/limbo`](ports/limbo/) |
+| **Magic Rampage** (FMOD) | so-loader | Scaffold + build | [`ports/magicrampage`](ports/magicrampage/) |
+| **Left 4 Dead 2** (mobile) | so-loader (base infra RE4) | Scaffold compila (l4d2boot armhf) | [`ports/l4d2`](ports/l4d2/) |
+| **Shantae: Seven Sirens** (WayForward "wf") | so-loader | Recon — engine renderiza; estudo do caminho | [`ports/sevensirens`](ports/sevensirens/) |
+| **Summertime Saga** | so-loader | Trava das conversas resolvida (ETC1 dupla-camada runtime) | [`ports/summertimesaga`](ports/summertimesaga/) |
+| **Dusklight** (Zelda: TP recomp) | recomp + backend Aurora GLES2 | Cena reconhecível (castelo de Hyrule) | [`ports/dusklight`](ports/dusklight/) |
+| **Hollow Knight** (Unity IL2CPP) | so-loader | Pesquisa — renderiza em GLES3 (X5M, Mali-G310); muro = input | [`experiments/hollow-recon`](experiments/hollow-recon/) |
+
+### 📚 Referência (base do framework)
+| Jogo | Método | Pasta |
+|---|---|---|
+| **Syberia** (GLES1) · **LEGO Star Wars: TCS** (GLES2) | so-loader (ref. **mtojek**) — totalmente jogáveis no Mali-450 | [`docs/reference/syberia-src`](docs/reference/syberia-src/) · [`lswtcs-src`](docs/reference/lswtcs-src/) |
 
 > **Dois caminhos:** a maioria é **so-loader** (carrega o `.so` Android e roda direto); alguns são **nativos** — Streets of Rage 4 roda o runtime .NET 9 + MonoGame em GLES2, e Dusklight é um recomp. O empacotamento PortMaster (launcher + BYO-data) é o mesmo nos dois.
 
