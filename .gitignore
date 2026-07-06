@@ -102,3 +102,58 @@ ports/*/logs/
 *.OURS-BACKUP
 *.PRE-DBG
 *.raw
+
+# === REFORCO 2026-07-06: blindagem contra dado de jogo em ports novos ===
+# arquivos-dump / arquivos grandes de device
+*.tar
+*.tar.gz
+*.tgz
+ports/*-device.tar
+# bancos de dados / fontes / dados de app (copyright do jogo)
+*.db
+*.db-journal
+*.sqlite
+*.ttf
+*.otf
+*.mmdb
+*.plist
+*.mp3
+*.wav
+*.ktex
+*.zip
+# diretorios que so tem binario/dado (ferramentas compiladas, backups, checkpoints, app data)
+ports/*/tools/
+ports/*/backups/
+ports/*/checkpoints/
+ports/*/databases/
+ports/*/files/
+ports/*/lib/
+ports/*/obb/
+ports/*/bin/
+ports/*/game/
+ports/*/payload/
+ports/*/userdata/
+# loaders compilados dos ports novos (ELF sem extensao — reproduzir do build.sh)
+ports/badland/badland
+ports/dontstarve/dontstarve
+ports/legendofmana/legendofmana
+ports/limbo/limbo
+ports/magicrampage/magicrampage
+ports/rockmanxdive/rockmanxdive
+ports/sonic4/sonic4.arm64
+ports/pes2012/pes2012
+ports/cvgos/cvgos
+ports/tasm2/tasm2
+# bytecode / decompilacao / prefs de app (game data + tokens/privacidade)
+*.dex
+*.rzdb
+ports/*/inspect/
+ports/*/shared_prefs/
+ports/*/dex_decrypted/
+ports/*/dex_dump/
+ports/*/smali/
+AndroidManifest.xml
+# dumps de engenharia reversa (disassembly/xref do binario do jogo) + app data residual
+ports/*/rz_*.txt
+ports/*/datacenter
+ports/*/*.rz.txt
