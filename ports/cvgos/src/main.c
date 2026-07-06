@@ -2328,6 +2328,31 @@ static void patch_i2_inv0_guard(void) {
   done = 1;
   fprintf(stderr, "[INV0] thunk 0x9256a4 reescrito com null-check tail-call\n");
 }
+/* AttributeHelperEngine.GetRequiredComponents (0x19ea930) e
+   GetParentTypeDisallowingMultipleInclusion (0x19ea7fc): rodam no AddComponent/Awake
+   do Titulo e fazem reflection-invoke de metodos cujos MethodInfo vem de slots de
+   metadata-usage NAO inicializados (methodPointer no heap / invoker=throw-stub) -> crash.
+   Sao validacoes OPCIONAIS de dependencia/multiplicidade (a cena ja tem os componentes
+   serializados). Neutraliza AMBAS p/ retornar null -> o invoke quebrado nunca roda. */
+static void patch_i2_attr_scan_neutralize(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOATTRSCAN")) return;
+  static int done;
+  if (done) return;
+  uintptr_t fns[2] = { g_il2cpp_base + 0x19ea930, g_il2cpp_base + 0x19ea7fc };
+  long pgsz = sysconf(_SC_PAGESIZE);
+  for (int i = 0; i < 2; i++) {
+    uintptr_t f = fns[i];
+    mprotect((void *)(f & ~((uintptr_t)pgsz - 1)), (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+    mprotect((void *)((f + 8) & ~((uintptr_t)pgsz - 1)), (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+    uint32_t *w = (uint32_t *)f;
+    w[0] = 0xe3a00000u;   /* mov r0, #0 */
+    w[1] = 0xe12fff1eu;   /* bx lr      */
+    __builtin___clear_cache((char *)f, (char *)f + 8);
+    mprotect((void *)(f & ~((uintptr_t)pgsz - 1)), (size_t)pgsz, PROT_READ | PROT_EXEC);
+  }
+  done = 1;
+  fprintf(stderr, "[ATTRSCAN] GetRequiredComponents+GetParentTypeDisallowing -> null\n");
+}
 static void patch_i2_logres_guard(void) {
   if (!g_il2cpp_base || getenv("CVGOS_NOLOGRESGUARD")) return;
   static int done;
@@ -7625,6 +7650,7 @@ int main(int argc, char **argv) {
   patch_i2_meth_init_guard();
   patch_i2_isdefined_guard();
   patch_i2_inv0_guard();
+  patch_i2_attr_scan_neutralize();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
@@ -8110,6 +8136,7 @@ int main(int argc, char **argv) {
   patch_i2_meth_init_guard();
   patch_i2_isdefined_guard();
   patch_i2_inv0_guard();
+  patch_i2_attr_scan_neutralize();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
