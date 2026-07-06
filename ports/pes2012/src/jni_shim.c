@@ -52,6 +52,7 @@ static void *java_vm_ptr;
 static int g_next_audio_id = 1;
 extern int sonic4ep1_screen_w;
 extern int sonic4ep1_screen_h;
+extern uintptr_t pes_get_game_base_for_diag(void);
 static const char *resolve_jstring(void *jstr);
 
 /* ---- Recon: RegisterNatives ---- */
@@ -79,9 +80,60 @@ static long long freespace_stub(void *path, int unit) {
   return 0x40000000LL; /* 1 GiB */
 }
 
+static void maybe_patch_mount_count(uintptr_t dcb) {
+  if (!getenv("PES_FORCE_MOUNT_COUNT"))
+    return;
+  uintptr_t mount = dcb + 0x98880u;
+  uintptr_t br = mount + 0x3au; /* beq cleanup -> b keep+count */
+  static uintptr_t patched;
+  if (patched == br)
+    return;
+  mprotect((void *)(br & ~0xFFFUL), 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint16_t *p = (uint16_t *)br;
+  uint16_t old = *p;
+  if (old == 0xd00cu) {
+    *p = 0xe00cu;
+    __builtin___clear_cache((void *)(br & ~1u), (void *)((br & ~1u) + 4));
+    patched = br;
+    debugPrintf("MOUNTPATCH: mount=%p branch %04x->%04x (force count)\n",
+                (void *)mount, old, *p);
+  } else {
+    debugPrintf("MOUNTPATCH: mount=%p branch inesperado=%04x\n",
+                (void *)mount, old);
+  }
+}
+
+static void maybe_remount_package_raw(int state_before) {
+  if (state_before != 10 || !g_dc_native || !getenv("PES_REMOUNT_RAW"))
+    return;
+  static int done;
+  if (done)
+    return;
+  done = 1;
+
+  const char *home = getenv("HOME");
+  if (!home || !*home)
+    home = ".";
+  char abs[640];
+  char raw[640];
+  snprintf(abs, sizeof(abs), "%s/package.dz", home);
+  snprintf(raw, sizeof(raw), "raw://%s/package.dz", home);
+
+  uintptr_t mount = ((uintptr_t)g_dc_native + 0x98880u) | 1u;
+  int (*mount_package)(const char *) = (int (*)(const char *))mount;
+  const char *forms[4] = {"package.dz", abs, raw, NULL};
+  for (int i = 0; forms[i]; i++) {
+    debugPrintf("REMOUNT_RAW: mount=%p path='%s'\n", (void *)mount, forms[i]);
+    int r = mount_package(forms[i]);
+    debugPrintf("REMOUNT_RAW: path='%s' ret=%d\n", forms[i], r);
+  }
+}
+
 /* Hook de instrumentação do FSM de download (gdrm) p/ rastrear a sequência de
  * estados. g_fsm_tramp = trampoline (2 instr originais + salto p/ FSM+8). */
 static void *g_fsm_tramp;
+/* listener no-op p/ injetar em [dc_global+48] (dc chama como função) */
+void dc_noop_listener(void) { }
 static void fsm_hook(void *self) {
   static int last = -999, lastidx = -1, n = 0;
   int st = *(int *)((char *)self + 12);
@@ -119,7 +171,20 @@ static void fsm_hook(void *self) {
    * estado 9 vê "tudo instalado" -> estado 10. */
   if (st == 9 && !getenv("PES_NO_SKIPINSTALL"))
     *(int *)((char *)self + 0x928) = tot;
+  /* state 11 = download-wait (loop infinito sem DownloaderService). Finge
+   * download completo: idx=tot + bytes=grande -> transita p/ mount(10). */
+  if (st == 11 && getenv("PES_FAKE_DL")) {
+    *(int *)((char *)self + 0x928) = tot;      /* idx = tot (arquivos done) */
+    *(int *)((char *)self + 0x918) = 0x7000000; /* bytes baixados grande */
+    int dv = getenv("PES_DLSTATE") ? atoi(getenv("PES_DLSTATE")) : 5;
+    *(int *)((char *)self + 0x95c) = dv;        /* download state (5=COMPLETED?) */
+  }
+  /* [0x95c]=-1 parece "download não entregue" -> o install pula o mount real
+   * (não lê package.dz, count=0). Força =0 (sucesso) p/ o install montar. */
+  if (getenv("PES_FORCE_DLOK"))
+    *(int *)((char *)self + 0x95c) = 0;
   ((void (*)(void *))g_fsm_tramp)(self);
+  maybe_remount_package_raw(st);
 }
 
 static int g_in_os_tick = 0;
@@ -326,10 +391,13 @@ static void ep1_send_key(void *env, void *obj, int keycode, int down) {
    * gameplay touch fallbacks work, but prevented the game's own menu focus from
    * seeing real D-pad/gamepad keys.
    */
+  unsigned char ret;
   if (getenv("SONIC4EP1_KEY_LEGACY_ORDER"))
-    g_on_key_event_native(env, obj, keycode, 0, down ? 1 : 0);
+    ret = g_on_key_event_native(env, obj, keycode, 0, down ? 1 : 0);
   else
-    g_on_key_event_native(env, obj, down ? 0 : 1, 0, keycode);
+    ret = g_on_key_event_native(env, obj, down ? 0 : 1, 0, keycode);
+  if (input_log_enabled())
+    debugPrintf("ep1_input: key ret=%u kc=%d down=%d\n", ret, keycode, down);
 }
 
 static void ep1_send_key_legacy_order(void *env, void *obj, int keycode,
@@ -1096,6 +1164,10 @@ static void ep1_send_button(void *env, void *obj, int btn, int down) {
     }
     if (ep1_audio_title_music_active() || g_title_touch_held) {
       ep1_send_title_touch(env, obj, down);
+      ep1_send_key(env, obj, AKEYCODE_BUTTON_A, down);
+      ep1_send_key(env, obj, AKEYCODE_DPAD_CENTER, down);
+      if (getenv("SONIC4EP1_A_ENTER"))
+        ep1_send_key(env, obj, AKEYCODE_ENTER, down);
       break;
     }
     if (ep1_menu_state_active() && (g_menu_screen == 2 || g_menu_screen == 3)) {
@@ -1172,6 +1244,8 @@ static void ep1_send_button(void *env, void *obj, int btn, int down) {
     }
     if (ep1_audio_title_music_active() || g_title_touch_held) {
       ep1_send_title_touch(env, obj, down);
+      ep1_send_key(env, obj, AKEYCODE_BUTTON_START, down);
+      ep1_send_key(env, obj, AKEYCODE_DPAD_CENTER, down);
       break;
     }
     if (ep1_menu_state_active() && (g_menu_screen == 2 || g_menu_screen == 3)) {
@@ -1602,8 +1676,10 @@ static int jni_RegisterNatives(void *env, void *clazz, const void *methods,
      * (cond) por `b` (incondicional) p/ sempre seguir o caminho de sucesso e
      * carregar os assets já extraídos. comp = &dc - 0x52f10 (offset fixo do
      * exec; ancorado no native dc). */
-    if (name && strcmp(name, "dc") == 0)
+    if (name && strcmp(name, "dc") == 0) {
       g_dc_native = fn;
+      maybe_patch_mount_count((uintptr_t)fn);
+    }
     if (name && strcmp(name, "dc") == 0 && getenv("PES_DUMPFSM")) {
       uintptr_t dcb = (uintptr_t)fn;
       debugPrintf("jni_shim: DUMPFSM dc=%p\n", (void *)dcb);
@@ -1719,9 +1795,38 @@ static const char *id_name(void *id) {
   return info ? info->name : "?";
 }
 
+static const char *id_sig(void *id) {
+  const struct jni_id *info = id_info(id);
+  return info ? info->sig : "";
+}
+
+static int id_sig_is(void *id, const char *sig) {
+  return strcmp(id_sig(id), sig ? sig : "") == 0;
+}
+
 static int id_is(void *id, const char *name) {
   const struct jni_id *info = id_info(id);
   return info && strcmp(info->name, name) == 0;
+}
+
+static int parse_int_sequence_value(const char *seq, int index) {
+  const char *p = seq;
+  int value = 0;
+  int have = 0;
+  for (int i = 0; p && *p; i++) {
+    char *end = NULL;
+    int v = (int)strtol(p, &end, 10);
+    if (end == p)
+      break;
+    value = v;
+    have = 1;
+    if (i >= index)
+      return value;
+    p = end;
+    while (*p == ',' || *p == ':' || *p == ';' || *p == ' ')
+      p++;
+  }
+  return have ? value : 0;
 }
 
 static const char *apkexp_main_obb_path(void) {
@@ -1940,7 +2045,7 @@ static unsigned char jni_CallBooleanMethodV(void *env, void *obj,
   if (id_is(methodID, "hasMultitouch") || id_is(methodID, "chargerIsConnected") ||
       id_is(methodID, "audioIsPlaying")) {
     if (id_is(methodID, "audioIsPlaying")) {
-      int id = va_arg(ap, int);
+      int id = id_sig_is(methodID, "()Z") ? 0 : va_arg(ap, int);
       ret = ep1_audio_is_playing(id) ? 1 : 0;
     } else {
       ret = 1;
@@ -1967,6 +2072,37 @@ static unsigned char jni_CallBooleanMethodA(void *env, void *obj,
   return jni_CallBooleanMethod(env, obj, methodID);
 }
 
+static void pes_log_audio_status_stack(jint ret) {
+  uintptr_t game_base = pes_get_game_base_for_diag();
+  if (!game_base)
+    return;
+  static int stack_logs;
+  if (stack_logs >= 120)
+    return;
+
+  uintptr_t sp = 0;
+  __asm__ volatile("mov %0, sp" : "=r"(sp));
+  char hits[320];
+  int used = 0;
+  hits[0] = 0;
+  for (unsigned i = 0; i < 192; i++) {
+    uintptr_t v = ((uintptr_t *)sp)[i];
+    if (v >= game_base && v < game_base + 0x320000u) {
+      int n = snprintf(hits + used, sizeof(hits) - (size_t)used,
+                       "%s+0x%x@sp+0x%x", used ? " " : "",
+                       (unsigned)(v - game_base), i * 4);
+      if (n <= 0)
+        break;
+      used += n;
+      if (used >= (int)sizeof(hits) - 36)
+        break;
+    }
+  }
+  debugPrintf("AUDIOSTATUS_STACK: ret=%d %s\n", ret,
+              hits[0] ? hits : "no-game-ret");
+  stack_logs++;
+}
+
 /* CallIntMethod */
 static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
                                va_list ap) {
@@ -1988,8 +2124,35 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     ret = 1000005;
     debugPrintf("jni_shim: vng (expansion version) -> %d\n", ret);
   } else if (id_is(methodID, "audioGetStatus")) {
-    int id = va_arg(ap, int);
-    ret = ep1_audio_status(id);
+    const char *seq = getenv("PES_AUDIO_STATUS_SEQ");
+    const char *force = getenv("PES_AUDIO_STATUS");
+    if (seq && *seq) {
+      static int seq_calls;
+      const char *hold_env = getenv("PES_AUDIO_STATUS_SEQ_HOLD");
+      int hold = hold_env && *hold_env ? atoi(hold_env) : 30;
+      if (hold <= 0)
+        hold = 1;
+      ret = parse_int_sequence_value(seq, seq_calls / hold);
+      seq_calls++;
+    } else if (force && *force) {
+      ret = atoi(force);
+    } else {
+      /* PES2012 declares several Java audio methods as player-global calls
+       * (()I/()V/()Z). The Sonic path used explicit handles, so only consume a
+       * vararg when the registered signature says one exists. */
+      int id = id_sig_is(methodID, "()I") ? 0 : va_arg(ap, int);
+      ret = ep1_audio_status(id);
+    }
+    if (getenv("PES_AUDIO_STATUS_LOG")) {
+      static int d;
+      if (d < 80) {
+        void *ra = __builtin_return_address(0);
+        debugPrintf("jni_shim: audioGetStatus caller=%p ret=%d\n", ra, ret);
+        d++;
+      }
+    }
+    if (getenv("PES_AUDIO_STATUS_STACK"))
+      pes_log_audio_status_stack(ret);
   }
   else if (id_is(methodID, "audioGetNumChannels"))
     ret = 16;
@@ -1998,27 +2161,28 @@ static jint jni_CallIntMethodV(void *env, void *obj, void *methodID,
     int p1 = va_arg(ap, int);
     long long off = va_arg(ap, long long);
     long long size = va_arg(ap, long long);
-    int p5 = va_arg(ap, int);
+    int p5 = id_sig_is(methodID, "(Ljava/lang/String;IJJI)I") ?
+        va_arg(ap, int) : 0;
     const char *path = resolve_jstring(jpath);
     debugPrintf("jni_shim: audioPlay args path=\"%s\" p1=%d off=%lld size=%lld p5=%d\n",
                 path, p1, off, size, p5);
     ret = ep1_audio_play_apk_mp3(path, p1, off, size, p5);
   }
   else if (id_is(methodID, "audioPause")) {
-    int id = va_arg(ap, int);
+    int id = id_sig_is(methodID, "()I") ? 0 : va_arg(ap, int);
     ep1_audio_pause(id, 1);
     ret = 0;
   } else if (id_is(methodID, "audioResume")) {
-    int id = va_arg(ap, int);
+    int id = id_sig_is(methodID, "()I") ? 0 : va_arg(ap, int);
     ep1_audio_pause(id, 0);
     ret = 0;
   } else if (id_is(methodID, "audioSetPosition")) {
     ret = 0;
   } else if (id_is(methodID, "audioGetDuration")) {
-    int id = va_arg(ap, int);
+    int id = id_sig_is(methodID, "()I") ? 0 : va_arg(ap, int);
     ret = ep1_audio_duration_ms(id);
   } else if (id_is(methodID, "audioGetPosition")) {
-    int id = va_arg(ap, int);
+    int id = id_sig_is(methodID, "()I") ? 0 : va_arg(ap, int);
     ret = ep1_audio_position_ms(id);
   }
   else if (id_is(methodID, "s3eAPKExpansionGetDownloadState"))
@@ -2075,6 +2239,14 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
       if (!done && ++frames >= 15) {
         uintptr_t global = *(uintptr_t *)((uintptr_t)g_dc_native + 0x20);
         uintptr_t listener = global ? *(uintptr_t *)(global + 48) : 0;
+        /* sem DownloaderService o listener nunca é registrado -> injeta um
+         * jobject dummy (nosso jni_shim trata os métodos como no-op). */
+        if (global && !listener && getenv("PES_DC_INJECT")) {
+          extern void dc_noop_listener(void);
+          *(uintptr_t *)(global + 48) = (uintptr_t)&dc_noop_listener; /* já thumb */
+          listener = *(uintptr_t *)(global + 48);
+          debugPrintf("jni_shim: DCDONE listener no-op INJETADO=%p\n", (void *)listener);
+        }
         if (listener) {
           void (*dc)(void *, void *, int) =
               (void (*)(void *, void *, int))g_dc_native;
@@ -2100,7 +2272,7 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
     int vol = va_arg(ap, int);
     debugPrintf("jni_shim: soundSetVolume vol=%d\n", vol);
   } else if (id_is(methodID, "audioStop")) {
-    int id = va_arg(ap, int);
+    int id = id_sig_is(methodID, "()V") ? 0 : va_arg(ap, int);
     debugPrintf("jni_shim: audioStop id=%d\n", id);
     ep1_audio_stop(id);
   } else if (id_is(methodID, "videoStop")) {
@@ -2143,10 +2315,28 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
       int only = 0;
       const char *o = getenv("PES_EXPCB_ONLY");
       if (o) only = atoi(o); /* 1=eic 2=fcc 4=dc bitmask; 0=todos */
+      /* injeta listener no-op ANTES de qualquer callback (eic já pode derefar) */
+      if (g_dc_native) {
+        uintptr_t gl = *(uintptr_t *)((uintptr_t)g_dc_native + 0x20);
+        if (gl && !*(uintptr_t *)(gl + 48)) {
+          extern void dc_noop_listener(void);
+          *(uintptr_t *)(gl + 48) = (uintptr_t)&dc_noop_listener;
+          debugPrintf("jni_shim: EXPCB listener no-op injetado gl=%p\n", (void *)gl);
+        }
+      }
       if (eic && (!only || (only & 1))) {
         debugPrintf("jni_shim: EXPCB -> eic...\n");
         eic(env, obj, make_jstring(obb_name), make_jstring(obb_path), obb_size);
         debugPrintf("jni_shim: EXPCB eic OK\n");
+      }
+      /* injeta listener no-op em [dc_global+48] (senão fcc/dc dão blx null) */
+      if (g_dc_native) {
+        uintptr_t gl = *(uintptr_t *)((uintptr_t)g_dc_native + 0x20);
+        if (gl && !*(uintptr_t *)(gl + 48)) {
+          extern void dc_noop_listener(void);
+          *(uintptr_t *)(gl + 48) = (uintptr_t)&dc_noop_listener;
+          debugPrintf("jni_shim: EXPCB listener no-op injetado gl=%p\n", (void *)gl);
+        }
       }
       if (fcc && (!only || (only & 2))) {
         debugPrintf("jni_shim: EXPCB -> fcc...\n");
@@ -2160,8 +2350,14 @@ static void jni_CallVoidMethodV(void *env, void *obj, void *methodID,
       }
     }
   } else if (id_is(methodID, "audioSetVolume")) {
-    int id = va_arg(ap, int);
-    int vol = va_arg(ap, int);
+    int id = 0;
+    int vol;
+    if (id_sig_is(methodID, "(I)V")) {
+      vol = va_arg(ap, int);
+    } else {
+      id = va_arg(ap, int);
+      vol = va_arg(ap, int);
+    }
     debugPrintf("jni_shim: audioSetVolume id=%d vol=%d\n", id, vol);
     ep1_audio_set_volume(id, vol);
   }

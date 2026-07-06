@@ -391,3 +391,251 @@ DESCRIPTOGRAFIA nativa do jogo (sem Android).
    DEPOIS do índice carregar (no registro o índice ainda está vazio → Open retorna nil sem crash).
 - Default do port = OPT-IN off (PES_NATIVE_ARCHIVE): roda estável até o muro do soundMenu ("installing"
   aparece via SPACEPATCH, depois "Cannot open soundMenu" pois o asset cifrado não carrega).
+
+---
+
+## §s15 (2026-07-03) — RAIZ do "Cannot open soundMenu" ISOLADA + ponte VFS (ainda muro)
+
+Sessão longa de RE do fluxo de abertura do asset cifrado. **Descobertas definitivas:**
+
+### RAIZ do "Cannot open"
+- O jogo pede `data-gles1/sound/menu/soundMenu.group.bin` (camelCase). O worker tira `data-gles1/`
+  e passa `sound/menu/soundMenu.group.bin` ao dispatch.
+- **O índice do OBB indexa por BASENAME LOWERCASE** (`soundmenu.group.bin`) — 841 basenames + 841
+  paths-diretório backslash (`sound\commentary\en\...`) separados. Magic OBB `79 9c a8 0a`, size
+  178822265, "DTRZI" @0x800.
+- Mismatch de case/path → o `sub_open` do archive não casa → NULL → **o worker chama
+  `s3eDebugErrorShow("Cannot open ... for serialising")` (libpes2012.so+0x581d8) e crasha no
+  handler** (libpes2012.so+0x2d92d/0x2d397).
+
+### Estrutura do open (libpes2012.so, base ASLR = s3eFileOpen - 0x4753c)
+- `s3eFileOpen` (0x4753c) = **wrapper minúsculo**: `push{r3,lr}; movs r2,#0; bl 0x470b0; pop{r3,pc}`.
+- **Worker real = 0x470b0** (= s3eFileOpen - 0x48c). Faz disk + dispatch user-fs. Chamável direto
+  como `worker(fn, mode, 0)` (computado em install: `g_worker_open`).
+- **O worker RE-CHAMA s3eFileOpen internamente** na resolução → re-entra nosso hook. Por isso
+  `real_s3eFileOpen(nome)` faz LOOP com o MESMO nome (não é o trampoline quebrado — é o worker).
+
+### User-fs callbacks (cbs[], dump s3eFileAddUserFileSys) — layout Marmalade
+`[0]Open(fn,mode)` `[1]Read(buf,esz,n,h)=DESCRIPTOGRAFA` `[2]Write` `[3]Close(h)` `[4]Seek(h,off,org)`
+`[5]Tell(h)`. Dispatcher cbs[0] itera sub-filesystems chamando `sub_open(fs,fn,mode)`.
+
+### Muros dos 2 caminhos testados
+1. **Chamar cbs[0] direto (out-of-context):** crasha — pula pra função-ponteiro em DADO
+   (0x45eff18, r3==pc), vtables do archive não inicializadas fora do dispatch do runtime.
+2. **Backing package.dz NATIVO (PES_PKG_NATIVE):** o mount recursiona/estoura a stack logo após
+   registrar o user-fs (o handle nativo re-roteia pela user-fs).
+3. **Reescrever p/ basename/lowercase + real_s3eFileOpen:** o worker re-chama o hook → recursão
+   (resolvida com guard de profundidade + wrapper my_s3eFileOpen/_impl, __thread g_open_depth).
+
+### Infra pronta no código (main.c) p/ retomar
+- `g_open_depth` (wrapper/impl) quebra a recursão; guard em depth>8.
+- `g_worker_open` = worker direto (pula wrapper hookado).
+- Ponte archive-handle: `g_arch[]`, `is_arch_handle`, `arch_open(bn)` (cbs[0]), e roteamento em
+  my_s3eFileRead→cbs[1] / Seek→cbs[4] / Tell→cbs[5] / Close→cbs[3] / GetSize=seek+tell.
+- GRP branch (depth==1): lowercase full path → g_worker_open. Re-entry (depth≥2): tenta arch_open(bn).
+
+### PRÓXIMO PASSO (hipótese mais promissora)
+No RE-ENTRY (depth≥2, DENTRO do contexto do worker), o cbs[0] DEVERIA estar seguro (vtables prontas),
+mas no último teste o REENTRY não disparou (timing g_archive_ready OU run flaky). Confirmar:
+(a) g_archive_ready setado quando soundMenu abre; (b) se arch_open no depth 2 casa o basename e
+NÃO crasha (contexto do worker pronto). Se casar, rotear leituras→cbs[1] descriptografa → menu.
+Alternativa: hookar o `blx r7` do worker (0x4736e = chamada ao sub_open) e lowercasear o filename
+ali, deixando o worker achar sozinho (sem re-entrar s3eFileOpen).
+
+---
+
+## §s15b (2026-07-03) — DANGLING cbs CORRIGIDO + count=0 (OBB não montada)
+
+Sessão longa, avanços GRANDES:
+
+### BUG corrigido: g_ufs_cbs era DANGLING
+A struct passada a `s3eFileAddUserFileSys(cbs,ud)` é TEMPORÁRIA (o runtime copia). Guardar o
+ponteiro → dangling → `cbs[0]` virava lixo (0x449c2d0 heap, paridade errada) → todo arch_open/rota
+crashava, UFSLOG nunca chamado. **FIX: copiar os valores no registro** (`g_cbs_copy[8]`, `g_cbs_ok`).
+Agora cbs[0]=0xdb4a3595 (válido) e o dispatcher **roda LIMPO sem crash**.
+
+### s3eFileAddUserFileSys (0x4aebc)
+Valida 9 callbacks (offsets 0,4,8,12,16,20,24,28,32 = Open,Read,Write,Close,Seek,Tell,...) todos
+!=0, senão pula pro fail (0x4af2e). Depois registra.
+
+### RAIZ ATUAL: dispatcher da OBB-fs tem count=0 (nenhuma sub-fs montada)
+- `cbs[0]` (OBB Open, no exec decompilado) = DISPATCHER: `ldr global[pc,#0x30]; if(global[+2]!=0)ret0;
+  count=global[+4]; itera global2[count] chamando sub_open(fs,fn,mode)`. **global[+2]=0 (ok) mas
+  count[+4]=0** → itera 0 filesystems → retorna nil p/ QUALQUER filename/form (basename lower/orig,
+  backslash-full, forward-full — todos nil, SEM crash).
+- `s3eFileAddUserFileSys` NÃO muda count (pre=0, post=0, r=0) → registra em OUTRO lugar, não na
+  global2 da OBB-fs.
+- **package.dz é aberto (0x3e8 validado) mas NUNCA LIDO (0 NATIVE Read)** → o mount que lê o índice
+  do package.dz e popula global2 (adiciona a sub-fs) NUNCA RODA.
+
+### CONCLUSÃO / PRÓXIMO
+O jogo abre package.dz mas não monta (não lê o índice, count fica 0). O mount (state 10 "mount
+package.dz") ou é gateado pelo download-complete (que nosso atalho FSM só finge superficialmente —
+o mount re-verifica e pula a leitura), ou é uma função-jogo separada não disparada. **PRÓXIMO:
+desmontar o handler do estado 10 do FSM (fsm=dc-0x534e4) p/ achar a chamada de mount que lê
+package.dz+popula global2, e disparar/destravar ela.** Infra pronta: g_cbs_copy (callbacks válidas),
+arch_open (dispatcher chamável), roteamento Read→cbs[1] etc. Só falta a OBB ter as sub-fs montadas.
+
+---
+
+## §s15c (2026-07-03) — CALLBACK de download EXAURIDO = muro s13 no mount (DownloaderService obrigatório)
+
+Confirmação exaustiva de que o mount do OBB (que popula global2/count) só acontece via o fluxo de
+**download-complete callback**, que exige o **Google DownloaderService (Java) AUSENTE**:
+
+- **Fluxo do FSM:** state 9(install) → **state 11 (download-wait, LOOP infinito)**. Sem forçar idx,
+  fica em 11 pra sempre. **State 11 é CALLBACK-DRIVEN, não poll:** setar idx=tot, bytes(0x918),
+  [0x95c]=0/5 (DLSTATE) NÃO avança — o FSM espera o callback do manager.
+- **Callbacks nativos eic/fcc/dc** (registrados p/ o DownloaderService chamar): TODOS fazem `blx null`
+  (despacham pro download-manager não-inicializado, ausente). eic(name,path,size)=init, fcc(idx,size)=
+  file-complete, dc(state)=state-changed. eic e fcc crasham em `blx null` (manager null).
+- **dc(5) PARCIALMENTE funciona** com listener no-op injetado em `[*(dc+0x20)+48]` (dc chama o listener
+  como FUNÇÃO, não jobject): não crasha, o jogo reage chamando `fc` (Java, file-complete) e referencia
+  package.dz — MAS o FSM NÃO avança (fc é no-op'd; o mount real não roda).
+- Prover o OBB no nome esperado (`main.1000005.<pkg>.obb` no HOME) não muda (idx fica 0 no check).
+
+**CONCLUSÃO DEFINITIVA:** o caminho de callback é intransponível sem replicar o DownloaderService +
+download-manager nativo (grande). **Único caminho offline restante = (b) construir o fs_obj do OBB
+manualmente e popular global2** — mas `sub_open`(0xdb54bdcc) é função GRANDE (normaliza path p/
+backslash, lê fs_obj@+0x60 flag +0x74, lookup complexo). RE do formato fs_obj + handle + decrypt =
+esforço grande/incerto. Toda a infra de decrypt está pronta (g_cbs_copy, arch_open, roteamento cbs[1]);
+só falta um fs_obj válido em global2. Env de teste (opt-in, jni_shim): PES_DCDONE+PES_DC_INJECT,
+PES_EXPCB(+ONLY bitmask 1/2/4), PES_FAKE_DL+PES_DLSTATE, PES_NO_SKIPINSTALL.
+
+## §s15d — cipher do decrypt é OO (vtable/contexto), reimplementar = research-grade
+Read worker (sub_open+0x104): memcpy de handle+16 (buffer JÁ descriptografado); decrypt em bl(sub-0xacce)
+usa fs_obj+4 = OBJETO CIPHER (vtable [ctx+4], contexto com destrutor freeando +8/+12/+16/+20). O cipher
+é criado no MOUNT com a key (provável embutida build-time Marmalade s3e, mas dentro de estrutura OO).
+Handle: +0(pos/limit) +4(offset) +12(entry-ptr) +16(buffer decrypt) +20 +24(size) +28(flag).
+fs_obj: +4(cipher-obj) +12(tabela 16B entries) +0x60(substruct) +0x6c(count) +0x74(flag) +0x78(lookup) +0x80.
+Construir fs_obj + cipher-ctx offline = reverter cipher OO completo + key init = multi-sessão incerto.
+
+## §s16 — AVANÇO: assets de menu do DISCO (APK em claro) + abort do soundMenu bypassado + RENDERIZA
+DESCOBERTA: os `.group.bin` de MENU/database/string estão EM CLARO no disco (extraídos do APK) — em
+`menu/hd/menuAssetLoader.group.bin` etc. — mas o jogo pede com prefixo `data-gles1/` e não achava.
+FIX: strip de `data-gles1/` em `ep1_file_real_open` + `my_s3eFileCheckExists` (tenta o path sem o prefixo).
+Resultado: **menuAssetLoader carrega do disco, o jogo passa dele e RENDERIZA (draws=10, loading screen)**.
+Só `sound/*.group.bin` falta (não está no APK, só no OBB cifrado).
+Dummy soundMenu.group.bin (cópia de menuAssetLoader OU magic+zeros): **PASSA o abort "Cannot open"**
+(sem erro) mas CRASHA no deserializer do grupo (memcpy libc+0x7c720 via trampoline s3e +0x5815c) —
+conteúdo errado (texturas de menu como sons) OU grupo vazio inválido. **CUIDADO: runfull.sh tinha
+`rm -rf sound` que apagava o dummy — removido.**
+PRÓXIMO (tratável, ≠ decrypt do OBB): (a) construir um sound group `.group.bin` VÁLIDO VAZIO
+(formato Marmalade s3e CIwResGroup: magic 3d030606 + nome + hash + lista de recursos; deserializer no
+exec ASLR) OU (b) stubar o carregamento de sound groups (skip). Aí o menu renderiza (mudo) = IMAGEM.
+
+## §s16b — crash do sound group ISOLADO: lookup de classe de recurso com registry NULO
+Crash em `find_resource_class(r0=registry, r1=class_hash)` — função genérica de busca em lista de
+entries de 48 bytes ([r0+16]=base, [r0+20]=count, chave em [entry+4]). **r0=NULL** → deref null em
+`ldr r2,[r0,#16]`. r1=0xcf609cbe (class hash de uma textura, lido do grupo dummy=cópia do
+menuAssetLoader). O registry de classes de recurso está NULO no contexto de carga do sound group —
+o subsistema de recursos de SOM não está inicializado (provável dependência do mount do OBB, mesmo
+muro DRM). Um sound group REAL (classes de som registradas) poderia evitar, mas r0 nulo sugere
+subsistema inteiro não-init. Dois muros no som: (1) cifra do OBB, (2) registry de classes nulo.
+Gráficos/menu/database/string do disco funcionam (draws=10). Caller ASLR desalinha no objdump.
+
+## §s16c — offset da função de crash (find_resource_class) p/ retomar patch
+crash_func = sub_open + 0xce2ac (sub_open = cbs0 - 0x1577c8). Função LEAF: find(r0=registry,r1=hash)
+sobre entries de 48B ([r0+16]=base,[r0+20]=count,chave [entry+4]); crasha em `ldr r2,[r0,#16]` c/
+r0=NULL. P/ retomar: hook_arm nesse offset com check `if(r0==0) return 0` e ver se o jogo passa do
+soundMenu (registry do serialiser padrão nulo — subsistema de recurso de som não-init).
+
+## §s17 — 720p splash piscando: áudio real abre, status não destrava
+
+Estado visual atual: o jogo sai da tela preta e renderiza em 1280x720 o splash/título
+PES2012/estádio/logo. Fica piscando/parado nessa tela, com texto de copyright enorme/estourado no
+centro e "PRO EVOLUTION SOCCER" embaixo. Não parece ser ausência simples de PNG: GL desenha batches
+de UI/texto, os assets de menu carregam, e input fake/touch chega no shim sem avançar a tela.
+
+Patches/guards estáveis adicionados no caminho:
+- `resource_self1c` em `sub_open - 0xb2178`: protege leitura de `[obj+0x1c]` quando ponteiro interno
+  inválido.
+- `resource_self14` em `sub_open - 0xb2808`: protege leitura de `[obj+0x14]`.
+- Esses guards eliminaram crashes de ponteiro inválido durante dumps de registry/resource e testes
+  com input/script.
+
+Testes de classe/resource:
+- `PES_CLASS_FALLBACK_SEEN=1` recupera classes já vistas (`207e2246`, `a68776be`, `6097ed50`) e evita
+  parte dos nulos, mas não muda a tela.
+- `PES_CLASS_SYNTH=1 PES_SYNTH_CTOR_PLACEHOLDERS=1` e depois `PES_CLASS_SYNTH_ALL=1` sintetizam também
+  `b4502910`, `c8e42197`, `ba7b1ad9`; processo fica vivo, mas a tela continua igual.
+- Conclusão: o splash piscando não é resolvido apenas preenchendo `find_resource_class`.
+
+Áudio/música: achado importante corrigindo a hipótese anterior.
+- Sem `PES_SKIP_MUSIC_GROUPS` e sem `PES_FAKE_MUSIC_GROUP`, `music/menu/musicMenu00.group.bin` abre de
+  verdade pelo OBB via `GRP-ARCH`.
+- Log confirmado: `CHKEXIST grp 'data-gles1/music/menu/musicMenu00.group.bin' ... rdy=1` seguido de
+  `GRP-ARCH ... -> handle`.
+- Com `PES_SKIP_MUSIC_PLAY=1` fica vivo. Sem skip de play também fica vivo, mas não apareceu chamada
+  `audioPlay args`; aparece só `audioGetStatus` em loop.
+
+Teste específico de status de áudio:
+- Env usado: `PES_AUDIO_STATUS=1 PES_AUDIO_STATUS_LOG=1 PES_AUDIO_STATUS_STACK=1`, mantendo
+  `PES_MUSIC_REAL=1 PES_SKIP_SOUND_GROUPS=1 PES_CLASS_FALLBACK_SEEN=1`.
+- Resultado: processo vivo, `audioGetStatus -> 1` repetindo, mas continua preso. Não chamou
+  `audioPlay`.
+- Pilha repetida aponta para o mesmo trecho nativo (`caller=...`, stack com offsets como
+  `+0xe830c`, `+0x12f5fc`, `+0x2a5748`), então o status Java não é o único gate.
+
+Próximo ponto mais honesto ao retomar:
+1. Parar de tratar como "só áudio"; áudio real de menu já abre. O bloqueio atual parece ser o estado
+   de menu/splash esperando recursos/classes ainda incompletos ou algum callback interno.
+2. Investigar os hashes ainda nulos em registries reais (`b4502910`, `c8e42197`, `ba7b1ad9`) contra
+   os grupos `menu/hd/global*.group.bin` e `menuAssetLoader.group.bin`, mas sem assumir que synth
+   basta.
+3. Testar com `PES_SKIP_SOUND_GROUPS=0` agora que guards/resource-null estão melhores, para ver se o
+   sound real abre ou qual é o próximo crash concreto.
+4. Se voltar ao áudio, procurar por que o nativo consulta `audioGetStatus` antes de qualquer
+   `audioPlay`; forçar status 1 sozinho já foi descartado.
+
+## §s18 — VIRADA: os guards NULLREG (s17) CAUSAVAM os crashes; jogo renderiza limpo, muro = sound group do OBB
+
+**Descoberta principal (mudou o diagnóstico do s16/s17):** os guards `install_null_registry_guard`
+(hooks `resource_call8`, `resource_flags`, `find_resource_class`, `resource_slot`, `resource_array_find`
+etc.) NÃO consertavam nada — NEUTRALIZAVAM funções reais do carregamento de recurso. Ex.:
+`w_resource_call8` retornava **0 incondicionalmente** p/ centenas de objetos VÁLIDOS (0x498...), quebrando
+o registro do registry → depois `find_resource_class(registry=NULL)` → deref null. Ou seja, os guards
+eram a FONTE dos crashes (`addr=0xc/0x4/0x10`), não a proteção.
+
+**Prova:** com `PES_NO_NULLREG_PATCH=1` (guards OFF) → **crash=0**, jogo renderiza "Installing..."
+(logo PES2012 + barra), FSM completa 0→7→8→9→10 (mount OK), e só **trava (sem crashar)** no sound group.
+Com guards ON → crash em draws=1. Guards OFF é estritamente melhor.
+
+**Mudança de default (s18):** `install_null_registry_guard` agora é OPT-IN (`PES_NULLREG_PATCH=1`);
+OFF por padrão. `runfull.sh` atualizado p/ o config vencedor:
+`PES_NATIVE_ARCHIVE=1 PES_PKG_NATIVE=1 PES_MUSIC_REAL=1 PES_SOUND_REAL=1` (sem guards). → crash=0, 16 swaps.
+
+**Bug corrigido:** `is_pkgdisk_handle` derefava `p->magic` ANTES de checar a lista de membros — com
+handle nativo s3e não-ponteiro (ex. `0x3e8`) segfaultava. Agora checa a lista primeiro.
+
+**Arquitetura de assets CONFIRMADA (corrige confusão s16):**
+- O jogo lê os grupos de menu do **DISCO** (pré-descriptografados). menuAssetLoader HD (2.7MB) vem do
+  **APK** (`assets/menu/hd/menuassetloader.group.bin`). global/globalPES/menuLogo/menuSplash (OBB-only)
+  foram descriptografados numa sessão anterior (Jul 4) e estão no disco (magic 3d030606, nome interno
+  correto "global" etc. = descrip. VÁLIDA).
+- menuAssetLoader é pedido com `rdy=0` (PRÉ-mount) → SÓ do disco. soundMenu com `rdy=1` (pós-mount) → archive.
+- **Deletar qualquer grupo do disco → "Cannot open ... for serialising" → crash.** O archive/cifra
+  in-process NÃO reproduz os grupos de forma confiável (re-extração de menuAssetLoader/menuLogo = 0 bytes;
+  Open out-of-context via bulk `ep1_extract` = **HANG**; muro s14/s15 confirmado).
+
+**Índice do OBB é por HASH, não por nome:** varredura da memória viva do processo por "soundmenu",
+"menuassetloader", ".group.bin", "sound/" = **NENHUM** encontrado. sub_open hasheia o nome pedido e
+compara hashes. Logo não dá p/ enumerar nomes. O Open por basename falha; por **full-path backslash**
+(`sound\menu\soundmenu.group.bin`) o hash CASA (retorna handle) → soundMenu ESTÁ no índice. Mas o
+handle vem com entry-ptr apontando p/ lixo (`ffff0318...`) e **Read retorna 0** (buf não-alocado,
+size=0x4000). O `ep1_extract` do menu funcionava no jogo NORMAL (in-context, s16) mas sound sempre foi
+o holdout (s16: "Só sound/*.group.bin falta").
+
+**soundMenu é OBRIGATÓRIO:** pular (nullar o grupo via SOUNDSKIP) OU pôr um grupo de formato-válido mas
+conteúdo-errado (cópia de menuAssetLoader) → **crash** (`addr=0x10`; o jogo espera recursos de SOM, não
+texturas). Precisa do sound group REAL descriptografado, OU um sound group VAZIO estruturalmente-válido.
+
+**PRÓXIMO (2 caminhos):**
+(A) **Android/Waydroid (limpo, alta probabilidade):** rodar APK+OBB num Android real (host não tem
+   binder/waydroid; docker existe → redroid precisa de módulos de kernel; qemu Android-x86 precisa de
+   tradução ARM). Extrair TODOS os grupos descriptografados, deployar no disco → jogo lê tudo do disco
+   (comprovado que funciona p/ menu) e passa do sound → menu → gameplay.
+(B) **Sintetizar sound group VAZIO válido (in-process):** RE do formato CIwResGroup de SOM (classes de
+   recurso de som esperadas) p/ construir um `soundMenu.group.bin` com 0 recursos que o deserializer
+   aceite; pôr no disco + `PES_SOUND_DISK=1` (som lê do disco). Menu mudo mas jogável. Incerto: o jogo
+   pode referenciar sons específicos por hash e crashar em lookup vazio.

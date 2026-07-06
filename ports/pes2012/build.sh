@@ -15,7 +15,7 @@ SRCS="src/main.c src/imports.c src/imports.gen.c src/android_shim.c src/jni_shim
       src/util.c src/error.c"
 
 $CC --sysroot="$SR" -march=armv7-a -mfpu=neon -mfloat-abi=hard \
-    -D_GNU_SOURCE -I src -O2 -fPIC \
+    -D_GNU_SOURCE -I src -O2 -fPIC -fno-builtin-memcpy \
     -Wno-unused-parameter -Wno-unused-function -Wno-comment -Wno-int-to-pointer-cast \
     -Wl,--export-dynamic \
     -o pes2012 $SRCS \

@@ -98,6 +98,60 @@ static void b_google_blocking_end(void) {}
 static int b_sigsetjmp(sigjmp_buf env, int save) { return sigsetjmp(env, save); }
 static int b_atexit(void (*fn)(void)) { return atexit(fn); }
 
+typedef void *(*host_memcpy_fn)(void *, const void *, size_t);
+static host_memcpy_fn g_host_memcpy;
+static int g_host_memcpy_resolving;
+
+static void *memcpy_loop(void *dst, const void *src, size_t n) {
+  unsigned char *d = (unsigned char *)dst;
+  const unsigned char *s = (const unsigned char *)src;
+  for (size_t i = 0; i < n; i++)
+    d[i] = s[i];
+  return dst;
+}
+
+void *memcpy(void *dst, const void *src, size_t n) {
+  if (n > 0) {
+    int bad = (!dst || !src || (uintptr_t)dst < 0x10000u ||
+               (uintptr_t)src < 0x10000u);
+    if (bad) {
+      static int d = 0;
+      if (d < 80) {
+        fprintf(stderr, "[memcpy-guard] dst=%p src=%p n=%zu caller=%p -> skip\n",
+                dst, src, n, __builtin_return_address(0));
+        d++;
+      }
+      return dst;
+    }
+  }
+
+  if (!g_host_memcpy && !g_host_memcpy_resolving) {
+    g_host_memcpy_resolving = 1;
+    void *p = dlsym(RTLD_NEXT, "memcpy");
+    if (p && p != (void *)memcpy)
+      g_host_memcpy = (host_memcpy_fn)p;
+    g_host_memcpy_resolving = 0;
+  }
+  if (g_host_memcpy)
+    return g_host_memcpy(dst, src, n);
+  return memcpy_loop(dst, src, n);
+}
+
+static void *w_memcpy(void *dst, const void *src, size_t n) {
+  if (n > 0 && (!dst || !src || (uintptr_t)dst < 0x10000u ||
+                (uintptr_t)src < 0x10000u)) {
+    void *ra = __builtin_return_address(0);
+    static int d = 0;
+    if (d < 40) {
+      fprintf(stderr, "[memcpy-null] dst=%p src=%p n=%zu caller=%p\n",
+              dst, src, n, ra);
+      d++;
+    }
+    return dst;
+  }
+  return memcpy(dst, src, n);
+}
+
 /* ---- allocator isolado para a lib Android ----
  * Marmalade antigo escreve em estruturas assumindo o layout do allocator Android.
  * Deixar malloc/free cairem direto na glibc corrompe metadados e aborta em
@@ -842,6 +896,7 @@ DynLibFunction port_shims[] = {
     {"__google_potentially_blocking_region_begin", (uintptr_t)b_google_blocking_begin},
     {"__google_potentially_blocking_region_end", (uintptr_t)b_google_blocking_end},
     {"sigsetjmp", (uintptr_t)b_sigsetjmp},
+    {"memcpy", (uintptr_t)w_memcpy},
     {"malloc", (uintptr_t)w_malloc},
     {"calloc", (uintptr_t)w_calloc},
     {"realloc", (uintptr_t)w_realloc},

@@ -499,7 +499,8 @@ int ep1_audio_duration_ms(int handle) {
   int ret = 0;
   SDL_LockAudioDevice(g_audio_dev);
   for (int i = 0; i < MAX_AUDIO_VOICES; i++) {
-    if (g_voices[i].active && g_voices[i].handle == handle && g_voices[i].buf) {
+    if (g_voices[i].active && (handle == 0 || g_voices[i].handle == handle) &&
+        g_voices[i].buf) {
       ret = g_voices[i].buf->duration_ms;
       break;
     }
@@ -514,7 +515,7 @@ int ep1_audio_position_ms(int handle) {
   int ret = 0;
   SDL_LockAudioDevice(g_audio_dev);
   for (int i = 0; i < MAX_AUDIO_VOICES; i++) {
-    if (g_voices[i].active && g_voices[i].handle == handle) {
+    if (g_voices[i].active && (handle == 0 || g_voices[i].handle == handle)) {
       ret = (int)((uint64_t)g_voices[i].pos * 1000 / OUT_RATE);
       break;
     }
