@@ -151,18 +151,31 @@ static void poll_joysticks(int W, int H) {
       if (js_log && !init) debugPrintf("[js%d] type=%d num=%d val=%d\n", d, type, e.number, e.value);
       if (init) continue;   /* estado inicial, ignora */
       if (type == JS_EVENT_BUTTON) {
-        /* QUALQUER botão: press -> tap central (splash) + SELECT(23). B(idx1)=back. */
-        int kc = (e.number == 1) ? 4 : 23;
-        if (e.value) { js_tap_center(W, H); if (n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
-        else if (n_sendKey) n_sendKey(g_env, NULL, 1, kc);
+        /* Botões 4-7 (ombros/gatilhos) = TIRO: toque-segurado na "fire area"
+         * (canto inf-direito; controls_at_bottom). Posição via BC2_FIREX/Y (0..1). */
+        if (e.number >= 4 && e.number <= 7 && n_touch) {
+          float fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
+          float fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
+          static int firing;
+          if (e.value && !firing) { n_touch(g_env, NULL, 1, fx, fy, 1); firing = 1; }
+          else if (!e.value && firing) { n_touch(g_env, NULL, 2, fx, fy, 1); firing = 0; }
+        } else {
+          /* demais botões: press -> tap central (passa splash) + SELECT(23);
+           * botão 1 = back(4). */
+          int kc = (e.number == 1) ? 4 : 23;
+          if (e.value) { js_tap_center(W, H); if (n_sendKey) n_sendKey(g_env, NULL, 0, kc); }
+          else if (n_sendKey) n_sendKey(g_env, NULL, 1, kc);
+        }
       } else if (type == JS_EVENT_AXIS && e.number < 8) {
         float v = e.value / 32767.0f;
         ax[d][e.number] = v;
         switch (e.number) {
           case 0: js_stick(0, v, ax[d][1]); break;   /* stick esq X */
           case 1: js_stick(0, ax[d][0], v); break;   /* stick esq Y */
-          case 2: js_stick(1, v, ax[d][3]); break;   /* stick dir X */
-          case 3: js_stick(1, ax[d][2], v); break;   /* stick dir Y */
+          /* stick DIR = eixos Z/RZ do 0810 com X/Y TROCADOS: axis2=vertical,
+           * axis3=horizontal (senao a camera fica transposta 90 graus). */
+          case 2: js_stick(1, ax[d][3], v); break;   /* axis2 -> Y (vertical) */
+          case 3: js_stick(1, v, ax[d][2]); break;   /* axis3 -> X (horizontal) */
           case 4: case 6: {                          /* dpad X (hat) */
             int nx = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
             if (nx != dpad_x[d] && n_sendKey) {
@@ -429,10 +442,15 @@ int main(int argc, char *argv[]) {
       /* IN-GAME autopilot (frame>1100): injeta STICK DIREITO (olhar) via
        * AppOnJoystickEvent p/ provar que o gamepad move a câmera in-game. */
       else if (frame >= 1100 && n_joy) {
+        /* tap NO (~0.66,0.66) p/ NÃO pular o treino (mostra dicas de controle) */
+        if ((frame % 200) == 0 && frame < 3000) {
+          n_touch(g_env, NULL, 1, W*0.66f, H*0.66f, 0);
+          n_touch(g_env, NULL, 2, W*0.66f, H*0.66f, 0);
+        }
         unsigned long t = (frame - 1100) % 240;
-        if (t < 120) n_joy(t == 0 ? 1 : 3, 0.9f, 0.0f, 1);   /* olhar direita (stick dir) */
-        else if (t == 120) n_joy(2, 0.0f, 0.0f, 1);          /* solta */
-        else if (t < 200) n_joy(t == 121 ? 1 : 3, 0.0f, -0.9f, 0); /* andar p/ frente (stick esq) */
+        if (t < 120) n_joy(t == 0 ? 1 : 3, 0.9f, 0.0f, 1);   /* olhar direita (stick dir, TESTE do fix) */
+        else if (t == 120) n_joy(2, 0.0f, 0.0f, 1);
+        else if (t < 200) n_joy(t == 121 ? 1 : 3, 0.0f, -0.9f, 0);
         else if (t == 200) n_joy(2, 0.0f, 0.0f, 0);
         if (t == 0) debugPrintf(">> IN-GAME autopilot: stick look/move (f%lu)\n", frame);
       }
