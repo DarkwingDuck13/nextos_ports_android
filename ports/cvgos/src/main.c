@@ -1984,6 +1984,87 @@ static void logres_oad_guard(void *self, void *mi) {
   if (!keys || !values || !dict) return;
   if (g_logres_oad_orig) g_logres_oad_orig(self, mi);
 }
+/* diag: Enum.GetUnderlyingType(t) — CreateComparer entra no branch enum e a vm crasha
+   em hash(type=NULL). Loga o objeto RuntimeType (klass + [obj+8]=Il2CppType*) p/ saber
+   QUAL tipo chega aqui e se o ->type dele é NULL. */
+static void *(*g_enum_ut_orig)(void *t, void *mi);
+static void *enum_ut_guard(void *t, void *mi) {
+  static int n;
+  if (n < 12) {
+    n++;
+    const char *ns = "", *nm = "?";
+    cvgos_i2_obj_class(t, &ns, &nm);
+    uintptr_t ty = (t && cvgos_addr_readable_now((uintptr_t)t + 8)) ? *(uintptr_t *)((uintptr_t)t + 8) : 0;
+    /* nome do tipo alvo via il2cpp_type_get_name (0x79e530) + bits [type+4] */
+    const char *tynm = "?";
+    if (ty && cvgos_addr_readable_now(ty) && cvgos_addr_readable_now(ty + 7)) {
+      char *(*tgn)(void *) = (char *(*)(void *))(g_il2cpp_base + 0x79e530);
+      tynm = cvgos_safe_cstr(tgn((void *)ty));
+    }
+    uintptr_t tybits = (ty && cvgos_addr_readable_now(ty + 4)) ? *(uintptr_t *)(ty + 4) : 0;
+    fprintf(stderr, "[ENUM-UT] t=%p klass=%s.%s type=%lx('%s' bits=%lx) tid=%d\n",
+            t, ns, nm, (unsigned long)ty, tynm, (unsigned long)tybits, (int)syscall(SYS_gettid));
+    fsync(2);
+  }
+  /* 🔑 GUARD: tipos NÃO-enum chegam aqui com o bit enumtype corrompido (visto:
+     interface ICanvasElement) e a vm crasha resolvendo o underlying (hash de type
+     NULL). Checa o PARENT da klass: enum de verdade tem parent System.Enum; senão
+     devolve o próprio Type (GetTypeCode->Object => comparer default correto). */
+  if (t && g_il2cpp_base) {
+    uintptr_t ty = cvgos_addr_readable_now((uintptr_t)t + 8) ? *(uintptr_t *)((uintptr_t)t + 8) : 0;
+    if (ty) {
+      void *(*cft)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79de64);   /* il2cpp_class_from_type */
+      void *(*cgp)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79de38);   /* il2cpp_class_get_parent */
+      const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30); /* class_get_name */
+      void *k = cft((void *)ty);
+      void *par = k ? cgp(k) : NULL;
+      const char *pn = par ? cvgos_safe_cstr(cgn(par)) : "(null)";
+      if (!par || strcmp(pn, "Enum") != 0) {
+        static int m;
+        if (m++ < 12) {
+          fprintf(stderr, "[ENUM-UT] klass '%s' parent '%s' != Enum -> devolve o proprio Type (anti-corrupcao)\n",
+                  k ? cvgos_safe_cstr(cgn(k)) : "?", pn);
+          fsync(2);
+        }
+        return t;
+      }
+    }
+  }
+  return g_enum_ut_orig ? g_enum_ut_orig(t, mi) : NULL;
+}
+static void patch_i2_enum_ut_log(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOENUMUTLOG")) return;
+  static int done;
+  if (done) return;
+  g_enum_ut_orig = (void *(*)(void *, void *))arm_hook8(g_il2cpp_base + 0xbc16a0,
+                                                        (void *)enum_ut_guard);
+  done = 1;
+  fprintf(stderr, "[ENUM-UT] hook em Enum$$GetUnderlyingType (0xbc16a0)\n");
+}
+/* Exception::FromNameMsg (il2cpp 0x7a96f0): recebe (image, ns, name, info*) e lê
+   [info+4] SEM null-check. O caminho de raise de NRE via thunk (0x9256a4) chega com
+   info=NULL → SIGSEGV dentro da própria maquinaria de exceção (visto pós-SPARKGEAR).
+   Wrapper: info NULL → buffer zerado ("sem mensagem"). */
+static void *(*g_exc_fromname_orig)(void *img, void *ns, void *nm, void *info);
+static void *exc_fromname_guard(void *img, void *ns, void *nm, void *info) {
+  static uintptr_t zinfo[4];
+  if (!info) {
+    static int n;
+    if (n++ < 12) { fprintf(stderr, "[EXC-FROMNAME] info=NULL -> buffer zerado (tid=%d)\n", (int)syscall(SYS_gettid)); fsync(2); }
+    zinfo[0] = zinfo[1] = zinfo[2] = zinfo[3] = 0;
+    info = zinfo;
+  }
+  return g_exc_fromname_orig ? g_exc_fromname_orig(img, ns, nm, info) : NULL;
+}
+static void patch_i2_exc_fromname_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOEXCFROMNAMEGUARD")) return;
+  static int done;
+  if (done) return;
+  g_exc_fromname_orig = (void *(*)(void *, void *, void *, void *))arm_hook8(
+      g_il2cpp_base + 0x7a96f0, (void *)exc_fromname_guard);
+  done = 1;
+  fprintf(stderr, "[EXC-FROMNAME] guard em Exception::FromNameMsg (0x7a96f0)\n");
+}
 static void patch_i2_logres_guard(void) {
   if (!g_il2cpp_base || getenv("CVGOS_NOLOGRESGUARD")) return;
   static int done;
@@ -2285,6 +2366,16 @@ static void cvgos_rgctx_dump_state(unsigned idx) {
   uintptr_t table = (obj && addr_readable(obj + 0x3c)) ? *(uintptr_t *)(obj + 0x3c) : 0;
   fprintf(stderr, "[RGCTX-STATE] idx=%u regslot=%lx reg=%lx obj=%lx table=%lx\n",
           idx, (unsigned long)regslot, (unsigned long)reg, (unsigned long)obj, (unsigned long)table);
+  /* dump das 18 words de reg e obj: casar com g_MetadataRegistration (file 0x4707eb8:
+     genInsts=12533@+0x49c4f18, types=133637@+0x47a1370, usages=83370@+0x4823b84) */
+  for (int b = 0; b < 2; b++) {
+    uintptr_t dbase = b ? obj : reg;
+    if (!dbase || !addr_readable(dbase) || !addr_readable(dbase + 0x48)) continue;
+    fprintf(stderr, "[RGCTX-STATE] %s[0..17]:", b ? "obj" : "reg");
+    for (int i = 0; i < 18; i++)
+      fprintf(stderr, " %lx", (unsigned long)((uintptr_t *)dbase)[i]);
+    fprintf(stderr, "\n");
+  }
   if (table) {
     int nz = 0, nn = 0;
     for (unsigned i = 0; i < 32; i++) {
@@ -2299,21 +2390,50 @@ static void cvgos_rgctx_dump_state(unsigned idx) {
   }
   fsync(2);
 }
+/* ⚠️ RE 2026-07-06: 0x79f51c NÃO é rgctx — é Thread::GetThreadStaticData(slot):
+   current_thread->internal[+0x3c] = tabela; retorna tabela[slot] = PONTEIRO PRO BLOCO
+   de statics-de-thread da classe. NULL = thread atual sem o bloco (attach incompleto
+   ou classe registrada depois). O fallback antigo (&fallback[idx], 4 BYTES) fazia as
+   classes escreverem UMAS SOBRE AS OUTRAS = a corrupção downstream (EqualityComparer/
+   typeof NULL/ArrayTypeMismatch). Agora: (1) il2cpp_thread_attach da thread atual +
+   retry (caminho certo: attach aloca os blocos); (2) se ainda NULL, bloco DEDICADO de
+   4KB zerado por slot (zero = valor inicial válido de statics; GC não escaneia = refs
+   presas lá vazam, aceitável p/ destravar). */
 static void *i2_rgctx_slot_guard(unsigned idx) {
   void *slot = g_i2_rgctx_slot_orig ? g_i2_rgctx_slot_orig(idx) : NULL;
   if (!slot) {
     static int n;
-    /* CVGOS_RGCTXNULL: deixa o NULL propagar (testa se o código original faz lazy-init
-       no NULL e o guard-fallback é que corrompe). CVGOS_RGCTXDUMP: dumpa o registration. */
     if (getenv("CVGOS_RGCTXDUMP") && n < 4) cvgos_rgctx_dump_state(idx);
     if (getenv("CVGOS_RGCTXNULL")) {
-      if (n++ < 16) { fprintf(stderr, "[I2-RGCTX] slot idx=%u NULL -> propaga NULL\n", idx); fsync(2); }
+      if (n++ < 16) { fprintf(stderr, "[I2-TSTATIC] slot idx=%u NULL -> propaga NULL\n", idx); fsync(2); }
       return NULL;
     }
-    unsigned fi = idx < (sizeof g_i2_rgctx_fallback / sizeof g_i2_rgctx_fallback[0]) ? idx : 0;
-    slot = &g_i2_rgctx_fallback[fi];
+    /* (1) attach da thread atual (idempotente) e retry — exports fixos:
+       il2cpp_domain_get RVA 0x79e244, il2cpp_thread_attach RVA 0x79e4d0 */
+    if (g_il2cpp_base) {
+      void *(*i_dg)(void) = (void *(*)(void))(g_il2cpp_base + 0x79e244);
+      void *(*i_ta)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79e4d0);
+      void *dom = i_dg();
+      if (dom) i_ta(dom);
+      slot = g_i2_rgctx_slot_orig ? g_i2_rgctx_slot_orig(idx) : NULL;
+      if (slot) {
+        if (n++ < 16) { fprintf(stderr, "[I2-TSTATIC] slot idx=%u NULL -> RESOLVIDO via thread_attach (tid=%d)\n", idx, (int)syscall(SYS_gettid)); fsync(2); }
+        return slot;
+      }
+    }
+    /* (2) bloco dedicado 4KB zerado por slot */
+    static void *blocks[4096];
+    unsigned fi = idx < 4096 ? idx : 0;
+    if (!blocks[fi]) {
+      void *m = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (m == MAP_FAILED) m = &g_i2_rgctx_fallback[fi];
+      if (!__sync_bool_compare_and_swap(&blocks[fi], NULL, m) && m != (void *)&g_i2_rgctx_fallback[fi])
+        munmap(m, 4096);
+    }
+    slot = blocks[fi];
     if (n++ < 16) {
-      fprintf(stderr, "[I2-RGCTX] slot idx=%u veio NULL -> fallback[%u]=%p\n", idx, fi, slot);
+      fprintf(stderr, "[I2-TSTATIC] slot idx=%u NULL (tid=%d, pos-attach) -> bloco 4KB %p\n",
+              idx, (int)syscall(SYS_gettid), slot);
       fsync(2);
     }
   }
@@ -7236,6 +7356,8 @@ int main(int argc, char **argv) {
   patch_i2_log_resources_guard();
   patch_i2_respath_fix();
   patch_i2_logres_guard();
+  patch_i2_enum_ut_log();
+  patch_i2_exc_fromname_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
@@ -7715,6 +7837,8 @@ int main(int argc, char **argv) {
   patch_i2_log_resources_guard();
   patch_i2_respath_fix();
   patch_i2_logres_guard();
+  patch_i2_enum_ut_log();
+  patch_i2_exc_fromname_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
