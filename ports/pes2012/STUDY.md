@@ -698,3 +698,25 @@ Ambos os caminhos (Mali port c/ SPACEPATCH passou a FSM mas trava no soundMenu; 
 convergem na dependência Google Play. PRÓXIMO REALISTA: (a) microG no Waydroid (LVL p/ 2012 = incerto);
 (b) patch nativo do gdrm/FSM no APK (RE do libinject/exec); (c) device Android FÍSICO (nativo, Play real)
 = caminho mais confiável p/ decriptar tudo e extrair. Waydroid fica instalado/configurado p/ retomar.
+
+## §s20 — EMULADOR Android Studio (AVD) com GMS: a peça que faltava (config de tradução ARM pendente)
+
+Alternativa ao Waydroid p/ ter Google Play Services (o muro s19). Android Studio emulator (QEMU/KVM):
+- **cmdline-tools precisa Java 17** (`jdk17-openjdk`); o path do SDK **NÃO pode ter espaços**
+  (sdkmanager quebra: "ClassNotFoundException: CLAUDE"). Fiz bind mount: `mount --bind "<ssd c/ espaços>" /mnt/asdk`.
+- SDK grande → colocar no **SSD, não /tmp (tmpfs=RAM, encheu 26G de RAM)**.
+- **Launch do emulator quebra com ambiente poluído** ("ANDROID_AVD_HOME is defined... no pes13.ini"):
+  usar `setsid env -i HOME=/home/felipe PATH=/usr/bin ANDROID_SDK_ROOT=/mnt/asdk ./emulator @pes13 ...`.
+- **API 33 (Android 13) x86_64 google_apis TEM `com.google.android.gms` + `com.android.vending` (Play Store)**
+  = exatamente o que o Waydroid VANILLA não tinha (o muro s19). Deve destravar o download/licença.
+- **Sem tradução ARM nativa** (`INSTALL_FAILED_NO_MATCHING_ABIS` p/ armeabi; emuladores modernos não
+  traduzem armeabi 32-bit). Precisa **libndk** (push em /system: `adb root`+`adb remount`+1 reboot p/ overlayfs).
+  API 23 (Android 6) tb tem GMS+Play mas tb sem houdini.
+- **⚠️ ONDE PAREI (bug a corrigir):** setei `ro.product.cpu.abilist` no build.prop com **APPEND duplicado**
+  (já existia `=x86_64`) → quebrou adbd/boot. **FIX: `sed` p/ SUBSTITUIR as linhas abilist, não duplicar.**
+  Depois: reboot, `pm install /tmp/pesmod/pes-min.apk`, push OBB em /sdcard/Android/obb/, rodar — com GMS
+  o download deve completar → jogo carrega → decripta OBB (extrair via Frida/memória, decripta em RAM).
+
+**SDK em `/mnt/ARQUIVOS/.../99-TEMP-CLAUDE/claude-1000/android-sdk` (bind: /mnt/asdk). AVD `pes13`
+(A13 x86_64 google_apis), libndk já no /system (build.prop com abilist duplicado a corrigir).**
+Genymotion (AUR) é alternativa mais fácil p/ GApps+houdini se o AVD resistir.
