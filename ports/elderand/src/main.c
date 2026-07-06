@@ -294,6 +294,65 @@ uintptr_t ter_il2cpp_base(void) { return g_il2cpp_base; }
    seta node->next!=0 (sai da espera) + incrementa c10360 (destrava a frame 3). O TRABALHO de
    serialização em si é pulado (já era tolerado como warning "missing script"). Chamado pelo
    trampolim instalado em TER_INLINETASK. */
+/* mmap de região RWX PERTO de target (p/ trampolins alcançáveis por `b` ±128MB). Kernel 3.14
+   não tem MAP_FIXED_NOREPLACE: varre /proc/self/maps por um buraco livre dentro de ±maxdist e
+   pede o hint exato; se o kernel realocar p/ fora do alcance, desfaz e tenta o próximo buraco. */
+static void *eld_mmap_near(uintptr_t target, size_t size, long maxdist) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) return MAP_FAILED;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t lo = target > (uintptr_t)maxdist ? target - (uintptr_t)maxdist : (uintptr_t)pgsz * 16;
+  uintptr_t hi = target + (uintptr_t)maxdist - size;
+  lo = (lo + pgsz - 1) & ~((uintptr_t)pgsz - 1);
+  char line[256];
+  uintptr_t prev_end = 0;
+  void *got = MAP_FAILED;
+  while (fgets(line, sizeof line, f)) {
+    uintptr_t s, e;
+    if (sscanf(line, "%lx-%lx", &s, &e) != 2) continue;
+    if (prev_end && s > prev_end) {          /* buraco livre [prev_end, s) */
+      uintptr_t cand = prev_end < lo ? lo : prev_end;
+      cand = (cand + pgsz - 1) & ~((uintptr_t)pgsz - 1);
+      if (cand + size <= s && cand <= hi) {
+        void *p = mmap((void *)cand, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p != MAP_FAILED) {
+          long d = (long)(uintptr_t)p - (long)target;
+          if (d > -maxdist && d < maxdist) { got = p; break; }
+          munmap(p, size);
+          /* kernel ignorou o hint (sem MAP_FIXED_NOREPLACE no 3.14) e caiu fora do alcance;
+             o buraco [prev_end,s) foi confirmado LIVRE nos maps -> força MAP_FIXED nele. */
+          p = mmap((void *)cand, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+          if (p != MAP_FAILED) {
+            long d2 = (long)(uintptr_t)p - (long)target;
+            if (d2 > -maxdist && d2 < maxdist) { got = p; break; }
+            munmap(p, size);
+          }
+        }
+      }
+    }
+    prev_end = e;
+    if (prev_end > hi) break;
+  }
+  fclose(f);
+  return got;
+}
+
+/* eld_il2_tramp: bump-aloca do RABO do i2heap (região RWX já mapeada de 96MB onde o il2cpp text
+   usa só ~60MB). Trampolins aqui ficam SEMPRE no alcance ±128MB de qualquer método il2cpp e não
+   dependem de achar buraco no /proc/self/maps (que é frágil/racy). Reserva os últimos 8MB. */
+void *eld_il2_tramp(size_t size) {
+  static uintptr_t bump;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  if (!g_i2heap_base || !g_i2heap_size) return MAP_FAILED;
+  if (!bump) bump = g_i2heap_base + g_i2heap_size - 0x800000; /* últimos 8MB do i2heap RWX */
+  size = (size + pgsz - 1) & ~((size_t)pgsz - 1);
+  if (bump + size > g_i2heap_base + g_i2heap_size) return MAP_FAILED;
+  void *p = (void *)bump; bump += size;
+  return p;
+}
+
 static volatile int g_inlinetask_n = 0;
 void ter_inline_task(void *obj) {
   if (!obj) return;
@@ -693,18 +752,14 @@ static void eld_hook_probe(uintptr_t base, long off, const char *name) {
     0xa9447be8,0x910183ff,0xd503201f,0x580000d0,0xd61f0200};
   uint32_t *m = (uint32_t *)(base + off);
   long pgsz = sysconf(_SC_PAGESIZE);
-  /* trampolim deve ficar a ±128MB do método (alcance do `b`). i2heap ocupa base..base+96MB;
-     tenta hints logo após/antes dele e valida o alcance. */
-  static const long hints[] = {0x6001000, 0x6801000, 0x7001000, 0x7801000, -0x1001000, -0x2001000, -0x3001000};
-  void *tp = MAP_FAILED; long d = 0;
-  for (unsigned h = 0; h < sizeof hints / sizeof hints[0]; h++) {
-    uintptr_t hint = (base + hints[h]) & ~((uintptr_t)pgsz - 1);
-    void *p = mmap((void *)hint, pgsz, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (p == MAP_FAILED) continue;
-    long dd = (long)((uintptr_t)p - (uintptr_t)m);
-    if (dd > -0x7000000L && dd < 0x7000000L) { tp = p; d = dd; break; }
-    munmap(p, pgsz);
-  }
+  /* trampolim a ±128MB do método (alcance do `b`). Se o alvo estiver no il2cpp, usa o RABO do
+     i2heap (96MB RWX, mas il2cpp text usa só ~60MB) via bump — determinístico e sempre no alcance.
+     Senão, eld_mmap_near varre /proc/self/maps por um buraco livre. */
+  extern void *eld_il2_tramp(size_t);
+  void *tp = MAP_FAILED;
+  if (base == g_il2cpp_base) tp = eld_il2_tramp((size_t)pgsz);
+  if (tp == MAP_FAILED) tp = eld_mmap_near((uintptr_t)m, (size_t)pgsz, 0x7000000L);
+  long d = tp != MAP_FAILED ? (long)((uintptr_t)tp - (uintptr_t)m) : 0;
   if (tp == MAP_FAILED) { fprintf(stderr, "[BOOTPROBE] %s: mmap/range fail\n", name); return; }
   uint32_t *t = (uint32_t *)tp;
   memcpy(t, TMPL, sizeof TMPL);
@@ -7526,10 +7581,10 @@ int main(int argc, char **argv) {
     extern void ter_inline_task(void *);
     long pgsz = sysconf(_SC_PAGESIZE);
     uintptr_t patch = g_unity_base + 0x2f37a4;
-    /* trampolim numa página RWX PERTO da libunity (b tem alcance ±128MB) */
-    uintptr_t hint = (g_unity_base + 0x2000000) & ~((uintptr_t)pgsz - 1);
-    void *tp = mmap((void *)hint, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    /* trampolim numa página RWX PERTO do patch (b tem alcance ±128MB): eld_mmap_near varre
+       /proc/self/maps e pega um buraco LIVRE dentro do alcance (hint cego falhava conforme o
+       layout do run — era a "intermitência" do INLINETASK) */
+    void *tp = eld_mmap_near(patch, (size_t)pgsz, 0x7000000L);
     if (tp == MAP_FAILED) tp = mmap(NULL, pgsz, PROT_READ | PROT_WRITE | PROT_EXEC,
                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     long d = (long)((uintptr_t)tp) - (long)patch;

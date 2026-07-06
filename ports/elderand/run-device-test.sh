@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ELD_ALLOWED_HOST=192.168.31.90
+ELD_ALLOWED_HOST=192.168.31.92
 export ELD_HOST="${ELD_HOST:-$ELD_ALLOWED_HOST}"
 export ELD_PASS="${ELD_PASS:-nextos}"
 export ELD_USER="${ELD_USER:-root}"

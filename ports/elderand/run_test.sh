@@ -7,7 +7,7 @@
 set -u
 PORT="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$PORT/logs"; mkdir -p "$LOGS"
-ELD_ALLOWED_HOST=192.168.31.90
+ELD_ALLOWED_HOST=192.168.31.92
 ELD_HOST="${ELD_HOST:-$ELD_ALLOWED_HOST}"
 ELD_PASS="${ELD_PASS:-archr}"
 ELD_USER="${ELD_USER:-root}"
