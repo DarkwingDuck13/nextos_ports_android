@@ -13,7 +13,8 @@ cd "$GAMEDIR" || { echo "sem $GAMEDIR"; exit 1; }
 
 # instancia unica: mata por EXE-symlink (cmdline e "./megamanx" relativo, pgrep -f path absoluto NAO casa).
 mmx_exe_pids() {
-  for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null); case "$e" in */megamanx/megamanx) echo "${p##*/}";; esac; done
+  # tira " (deleted)" (binario trocado) e casa qualquer exe basename megamanx — senao orfas sobrevivem
+  for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null); e=${e% (deleted)}; case "$e" in */megamanx) echo "${p##*/}";; esac; done
 }
 for p in $(mmx_exe_pids); do kill -9 "$p" 2>/dev/null; done
 i=0; while [ -n "$(mmx_exe_pids)" ] && [ $i -lt 20 ]; do sleep 0.3; i=$((i+1)); done
