@@ -1,0 +1,26 @@
+# so entra no repo publico o codigo do loader + arquivos do engine (MIT) que
+# patchamos; assets/jogo/binarios ficam fora (backup completo = repo privado)
+assets/
+saga/
+android/
+ecdsa/
+jnius/
+logs/
+saves/
+__pycache__/
+librenpython.so
+summertimesaga
+summertimesaga-device.tar
+six.py
+main.py.orig
+renpy/*
+!renpy/config.py
+!renpy/display/
+renpy/display/*
+!renpy/display/im.py
+!renpy/display/video.py
+!renpy/display/core.py
+!renpy/display/pgrender.py
+!renpy/audio/
+renpy/audio/*
+!renpy/audio/audio.py

@@ -1,0 +1,25 @@
+# summertimesaga.gptk — mapeamento do controle (editável)
+#
+# ESQUERDA = botão FÍSICO no padrão Xbox/SDL:
+#   a = baixo  (PS ✕ / Xbox A)      b = direita (PS ○ / Xbox B)
+#   x = esquerda (PS □ / Xbox X)    y = cima    (PS △ / Xbox Y)
+#   l1 r1 l2 r2 select start l3 r3
+# DIREITA = botão que o JOGO recebe (a/b/x/y/l1/r1/l2/r2/select/start/l3/r3).
+#
+# Edite e relance o jogo (não precisa recompilar). Funciona com qualquer
+# controle (Xbox/PS/genérico). Atalho: SELECT + START = sair do jogo.
+#
+# Visual novel/point-and-click: base Xbox normal.
+# Se o menu nao aceitar gamepad direto, o loader ganha cursor virtual.
+a = a
+b = b
+x = x
+y = y
+l1 = l1
+r1 = r1
+l2 = l2
+r2 = r2
+select = select
+start = start
+l3 = l3
+r3 = r3
