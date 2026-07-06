@@ -1131,8 +1131,10 @@ static int wsem_is_worker_comm(int tid) {
   int fd = open(path, O_RDONLY); if (fd < 0) return 0;
   int n = (int)read(fd, comm, sizeof comm - 1); close(fd);
   if (n <= 0) return 0; comm[n] = 0;
-  return (!strncmp(comm, "Job.Worker", 10) || !strncmp(comm, "Background Job", 13) ||
-          !strncmp(comm, "Loading.", 8) || !strncmp(comm, "BatchDelete", 11));
+  return (!strncmp(comm, "Job.Worker", 10) || !strncmp(comm, "Worker Thread", 13) ||
+          !strncmp(comm, "Background Job", 13) || !strncmp(comm, "BackgroundWorke", 15) ||
+          !strncmp(comm, "Loading.", 8) || !strncmp(comm, "UnityPreload", 12) ||
+          !strncmp(comm, "AsyncReadManage", 15) || !strncmp(comm, "BatchDelete", 11));
 }
 /* chamado no FUTEX_WAIT: registra/atualiza o uaddr corrente da thread se for worker */
 static void wsem_record(int tid, long uaddr) {
@@ -1281,12 +1283,12 @@ static int my_pthread_kill(pthread_t t, int sig) {
      + patch do restart-wait). Neutraliza o STW inteiro sem alcançar as threads bionic-static. */
   if (getenv("TER_NOSUSPEND") && (sig == 30 || sig == 24)) return 0;
   /* 🔑 TER_FAKEACK: a thread bionic-static que o GC quer suspender bloqueia SIGPWR e nunca dá ACK.
-     O semáforo de ACK que o WaitForThreadsToSuspend espera é o NOSSO sem_shim em il2cpp+0x31666a0.
+     O semáforo de ACK que o WaitForThreadsToSuspend espera é o NOSSO sem_shim em il2cpp+0x47004d0.
      Então POSTAMOS o sem no lugar da thread (fake ACK) + ENGOLIMOS o sinal (a thread não suspende) →
      o GC conta o ACK e segue o fluxo NORMAL (≠ NOGCWAIT). Usar com CUP_GCOFF (sem scan de stack viva). */
   if (getenv("TER_FAKEACK") && (sig == 30 || sig == 24) && g_il2cpp_base) {
     extern int sh_sem_post(void *);
-    sh_sem_post((void *)(g_il2cpp_base + 0x31666a0));   /* ACK do suspend (sem do WaitForThreadsToSuspend) */
+    sh_sem_post((void *)(g_il2cpp_base + 0x47004d0));   /* ACK do suspend (sem do WaitForThreadsToSuspend) */
     return 0;
   }
   return pthread_kill(t, sig);
@@ -2028,21 +2030,30 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int b
  * (nível 1->0, 2->1, ...). Metade da dimensão = 1/4 da RAM por textura. Requer que a
  * textura TENHA mips (Unity mobile com 'Generate Mip Maps' tem); textura sem mip e grande
  * fica em branco (aceitável p/ TESTE de RAM). Só aplica acima do teto (max(w,h) > N). */
-static unsigned char ds_cdrop[DS_MAXTEXID];  /* 1 = nível-0 dropado p/ este tex id */
+static unsigned char ds_cdrop[DS_MAXTEXID];  /* qtd de níveis dropados p/ este tex id */
 static int g_ctexhalf = 0;                    /* teto N (CUP_CTEXHALF), 0 = off */
 static void my_glCompTexImage2D(unsigned tgt, int lvl, unsigned ifmt, int w, int h, int b, int sz, const void *px) {
   if (lvl == 0 && tgt == 0x0DE1) ds_rectex(w, h, "ctex");
   if (g_ctexhalf && tgt == 0x0DE1 && px && sz > 0) {
     int tid = ds_geti(0x8069);                /* GL_TEXTURE_BINDING_2D */
     if (lvl == 0) {
-      if (w > g_ctexhalf || h > g_ctexhalf) {       /* grande -> dropa o nível-0 */
-        if (tid > 0 && tid < DS_MAXTEXID) ds_cdrop[tid] = 1;
-        static int n; if (n++ < 40) { fprintf(stderr, "[CTEXHALF] tex=%d %dx%d DROP lvl0 (ifmt=0x%X)\n", tid, w, h, ifmt); fsync(2); }
-        return;                                       /* não sobe o nível-0 (o nível-1 vira a base) */
+      int drop = 0, mw = w, mh = h;
+      while ((mw > g_ctexhalf || mh > g_ctexhalf) && mw > 1 && mh > 1) {
+        mw >>= 1; mh >>= 1; drop++;
+      }
+      if (drop > 0) {                         /* grande -> níveis seguintes viram a base */
+        if (tid > 0 && tid < DS_MAXTEXID) ds_cdrop[tid] = (unsigned char)drop;
+        static int n; if (n++ < 40) {
+          fprintf(stderr, "[CTEXHALF] tex=%d %dx%d DROP %d lvls -> ~%dx%d (ifmt=0x%X)\n",
+                  tid, w, h, drop, mw, mh, ifmt); fsync(2);
+        }
+        return;
       }
       if (tid > 0 && tid < DS_MAXTEXID) ds_cdrop[tid] = 0;  /* pequena: mantém, reset */
     } else if (tid > 0 && tid < DS_MAXTEXID && ds_cdrop[tid]) {
-      ds_r_CompTexImage2D(tgt, lvl - 1, ifmt, w, h, b, sz, px);  /* mip L -> L-1 (já em half) */
+      int drop = ds_cdrop[tid];
+      if (lvl < drop) return;
+      ds_r_CompTexImage2D(tgt, lvl - drop, ifmt, w, h, b, sz, px);  /* mip L -> L-drop */
       return;
     }
   }
@@ -5837,7 +5848,7 @@ static int sh_setspecific(unsigned k, const void *v) { if ((int)k <= 0 || (int)k
 static void map_caller(const char *tag, uintptr_t ra) {
   if (g_unity_base && ra >= g_unity_base && ra < g_unity_base + 0x2000000)
     fprintf(stderr, "%s caller=libunity+0x%lx\n", tag, ra - g_unity_base);
-  else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x3000000)
+  else if (g_il2cpp_base && ra >= g_il2cpp_base && ra < g_il2cpp_base + 0x5000000)
     fprintf(stderr, "%s caller=libil2cpp+0x%lx\n", tag, ra - g_il2cpp_base);
   else fprintf(stderr, "%s caller=0x%lx (?)\n", tag, ra);
   fflush(stderr);
@@ -5847,7 +5858,18 @@ static int my_raise(int sig) { map_caller("[RAISE]", (uintptr_t)__builtin_return
 static void my_abort(void) { map_caller("[ABORT]", (uintptr_t)__builtin_return_address(0));
   if (getenv("CUP_NORAISE")) return; abort(); }
 static int my_tgkill(int tgid, int tid, int sig) { map_caller("[TGKILL]", (uintptr_t)__builtin_return_address(0));
-  fprintf(stderr, "[TGKILL] sig=%d\n", sig); if (getenv("CUP_NORAISE")) return 0; return syscall(__NR_tgkill, tgid, tid, sig); }
+  fprintf(stderr, "[TGKILL] sig=%d\n", sig);
+  if (getenv("CUP_NORAISE")) return 0;
+  if ((sig == 30 || sig == 24) && getenv("TER_FAKEACK") && g_il2cpp_base) {
+    static int n;
+    extern int sh_sem_post(void *);
+    sh_sem_post((void *)(g_il2cpp_base + 0x47004d0));
+    if (n++ < 8) fprintf(stderr, "[TGKILL] fake GC ACK sig=%d sem=il2cpp+0x47004d0\n", sig);
+    return 0;
+  }
+  if ((sig == 30 || sig == 24) && getenv("TER_NOSUSPEND")) return 0;
+  return syscall(__NR_tgkill, tgid, tid, sig);
+}
 
 /* __stack_chk_fail: o operator-new tagueado (0x3cbf2c) tem canario; numa chamada
  * do RecreateGfxState ele falha -> abort. Neutraliza p/ diagnosticar (loga caller). */
@@ -7486,6 +7508,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[SCENESPY] CUP_SCENESPY/CUP_SETACTIVE ignorados no GK; use GK_SCENESPY\n");
   /* CUP_GCEVERY=N: força il2cpp_gc_collect a cada N frames (contém heap Boehm) */
   int gcevery = getenv("CUP_GCEVERY") ? atoi(getenv("CUP_GCEVERY")) : 0;
+  int gc_only = getenv("GK_GC_ONLY") ? 1 : 0;
   int gc_pending = 0, gc_idle = 0;
   for (int f = 0; render && (max_f <= 0 || f < max_f); f++) {
     g_render_frame = f;  /* CUP_DRAWSPY: amarra os draws ao frame */
@@ -7502,8 +7525,11 @@ int main(int argc, char **argv) {
       if (f % 600 == 0 || f < verbose_until) {
         FILE *st = fopen("/proc/self/status", "r");
         if (st) { while (fgets(ln, sizeof ln, st)) sscanf(ln, "VmRSS: %ld", &rss); fclose(st); }
-        long gch = ((long (*)(void))(g_il2cpp_base + 0x1b62ad4))();  /* il2cpp_gc_get_heap_size */
-        long gcu = ((long (*)(void))(g_il2cpp_base + 0x1b62ad0))();  /* il2cpp_gc_get_used_size */
+        long gch = -1, gcu = -1;
+        if (getenv("GK_MEMLOG_GC") && f > 300) {
+          gch = ((long (*)(void))(g_il2cpp_base + 0x1b62ad4))();  /* il2cpp_gc_get_heap_size */
+          gcu = ((long (*)(void))(g_il2cpp_base + 0x1b62ad0))();  /* il2cpp_gc_get_used_size */
+        }
         fprintf(stderr, "[MEM] f=%d avail=%ldMB swfree=%ldMB rss=%ldMB gcheap=%ldMB gcused=%ldMB\n",
                 f, avail / 1024, swfree / 1024, rss / 1024, gch >> 20, gcu >> 20);
         fsync(2);
@@ -7529,8 +7555,10 @@ int main(int argc, char **argv) {
       gc_idle = idle ? gc_idle + 1 : 0;
       if (gc_idle >= (m ? 90 : 1200)) {   /* sem mgr capturado: espera ~20s */
         gc_pending = 0; gc_idle = 0;
-        fprintf(stderr, "[GCEVERY] limpeza f=%d (mgr %s)\n", f, m ? "ocioso" : "n/d");
-        ((void *(*)(void))(g_il2cpp_base + 0x178BAAC))(); /* Resources.UnloadUnusedAssets */
+        fprintf(stderr, "[GCEVERY] limpeza f=%d (mgr %s%s)\n",
+                f, m ? "ocioso" : "n/d", gc_only ? ", gc-only" : "");
+        if (!gc_only)
+          ((void *(*)(void))(g_il2cpp_base + 0x178BAAC))(); /* Resources.UnloadUnusedAssets */
         ((void (*)(void))(g_il2cpp_base + 0x73ca5c))();  /* il2cpp_gc_collect */
       }
     }

@@ -266,3 +266,151 @@ Pedido do NextOS: parar agora, salvar tudo e deixar claro onde continuar.
 - Não usar Pixel Cup como prova de runtime.
 - Referência principal continua sendo `ports/terraria`, mas com offsets recalculados para GK.
 - Próximo muro depois do áudio: spam/crash handler após `Preloader.OnSceneLoaded: scene_main_mobile`; a correção Google Play em `jni_shim.c` ainda precisa ser validada em run que chegue em `done=1` com o binário novo.
+
+---
+
+## HANDOFF 2026-07-03 - PAUSA NO DEVICE .90
+
+Pedido do NextOS: parar agora e salvar estado. O processo remoto foi encerrado e confirmado:
+
+```text
+no-gk-process
+MemAvailable: ~716MB
+SwapFree: ~483MB
+```
+
+Device ativo desta rodada: `root@192.168.31.90`. Caminho remoto:
+
+```sh
+/storage/roms/ports/graveyardkeeper
+```
+
+### Arquivos alterados nesta rodada
+
+- `run.sh`
+  - log persistente em `/storage/roms/ports/graveyardkeeper/run.out`;
+  - arquiva o log anterior em `logs/run-prev-<timestamp>.out`;
+  - watchdog com dump de `/proc/meminfo`, `/proc/$pid/status`, threads, wchan e tail do log;
+  - reset do OSD Amlogic para corrigir a regressao de zoom gigante (`free_scale=0`, axes 1280x720, `ppscaler=0`);
+  - defaults novos: `CUP_GCSIG=1`, `TER_FAKEACK=1`, `CUP_MEMLOG=1`, `GK_NOSOUNDASSERT=1`, `GK_STREAMFALLBACK=1`.
+- `src/main.c`
+  - `TER_FAKEACK` corrigido para postar o semaforo real do GC suspend ACK em `libil2cpp+0x47004d0`;
+  - `tgkill(SIGPWR/SIGXCPU)` interceptado para fake ACK;
+  - classificador de worker ampliado (`Worker Thread`, `BackgroundWorke`, `UnityPreload`, `AsyncReadManage`);
+  - `CUP_MEMLOG` ficou seguro por default: nao chama funcoes do GC sem `GK_MEMLOG_GC=1`;
+  - `CUP_GCEVERY` ganhou `GK_GC_ONLY=1`, mas o caminho foi reprovado em teste;
+  - `CUP_CTEXHALF` passou a dropar multiplos mips em vez de apenas o nivel 0.
+
+Binario local e remoto sincronizados nesta pausa:
+
+```text
+graveyardkeeper md5: 93a6cd077ca26e3d43d2f1480e1cf480
+run.sh md5: b134a41f253d08f83d4a5cd2c4ecde98
+```
+
+### Estado validado
+
+- A tela com zoom gigante foi corrigida pelo reset de OSD no `run.sh`.
+- O watchdog funciona e evita freeze do device. Quando memoria/swap passam do limite, o jogo e morto e o log fica salvo.
+- O crash/trava antigo de GC suspend foi superado com `TER_FAKEACK=1` em `libil2cpp+0x47004d0`.
+- O melhor caminho ainda usa:
+
+```sh
+PC_KICKWORKERS=2 PC_KICKWARM=0 PC_KICKMS=10 \
+CUP_TEXHALF=512 CUP_CTEXHALF=512 \
+GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1
+```
+
+### Melhor run conhecido nesta rodada
+
+Com `PC_KICKWORKERS=2` e `CUP_TEXHALF=512`, o async da cena principal avancou:
+
+```text
+LoadSceneAsync("scene_main_mobile")
+progress=0.103
+progress=0.333/0.334
+```
+
+Depois o watchdog matou por memoria antes do gameplay:
+
+```text
+rss ~= 699MB
+swap ~= 184MB
+total ~= 883MB
+run saiu rc=137
+```
+
+Ou seja: o port ja passa do boot e entra na carga real da `scene_main_mobile`, mas ainda estoura o pico de memoria antes de completar.
+
+### Testes reprovados nesta rodada
+
+- `GK_NOAUDIOLOAD=1`
+  - nao usar;
+  - causa SIGSEGV em `fault addr 0x81` logo apos `render 0`;
+  - o processo continua ate o limite de frames com spam de crash handler, mas nao e gameplay.
+- `CUP_TEXHALF=256`
+  - piorou a curva de memoria;
+  - ainda ficou em `progress=0.000` com RSS maior que o perfil 512.
+- `GK_VT11COUNT=1`
+  - mudou timing/overhead e nao capturou o caminho real desta fase;
+  - ate `f=8520`, `vt11 enter=0 exit=0`, `progress=0.000`;
+  - run encerrado manualmente a pedido do NextOS, `rc=137`.
+- `CUP_GCEVERY=900 GK_GC_ONLY=1`
+  - crashou com SIGILL em `il2cpp_gc_collect`;
+  - nao usar.
+- `GK_MEMLOG_GC=1`
+  - crashou com SIGABRT chamando `il2cpp_gc_get_*`;
+  - nao usar.
+- `CUP_SKIPRESWAIT=1`
+  - piorou memoria cedo;
+  - nao usar.
+- `CUP_LOADYIELD=5000 CUP_LOADYIELD_F=18000`
+  - nao ajudou a curva.
+- `TER_JOBINLINE`, `TER_JOBWORKERS0`, `CUP_1CORE/TER_1CPU`
+  - causaram SIGILL/travas cedo;
+  - nao usar.
+
+### Ultimo teste antes da pausa
+
+Comando:
+
+```sh
+cd /storage/roms/ports/graveyardkeeper
+env GK_RESTART_ES=0 GK_FRAMES=22000 GK_WATCH_SWAP_KB=220000 \
+    PC_KICKWORKERS=2 PC_KICKWARM=0 PC_KICKMS=10 \
+    CUP_TEXHALF=512 CUP_CTEXHALF=512 \
+    GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1 GK_VT11COUNT=1 \
+    bash ./run.sh
+```
+
+Resultado no log atual:
+
+```text
+LoadSceneAsync("scene_main_mobile") em f=23
+progress=0.000 ate f=8520
+GK_VT11COUNT: vt11 enter=0 exit=0
+MEM f=8400 avail=118MB swfree=410MB rss=588MB
+run saiu rc=137
+```
+
+Conclusao: `GK_VT11COUNT` nao e uma boa proxima linha; ele nao pegou a fase atual e deixou o teste mais pesado/lento.
+
+### Proximo passo recomendado
+
+Retomar no melhor perfil sem `GK_VT11COUNT`, com watchdog ativo:
+
+```sh
+cd /storage/roms/ports/graveyardkeeper
+env GK_RESTART_ES=0 GK_FRAMES=30000 GK_WATCH_SWAP_KB=220000 \
+    PC_KICKWORKERS=2 PC_KICKWARM=0 PC_KICKMS=10 \
+    CUP_TEXHALF=512 CUP_CTEXHALF=512 \
+    GK_LOADSPY=1 GK_NATIVELOADSPY=1 GK_ASYNCPOLL=1 \
+    bash ./run.sh
+```
+
+Se precisar cortar mais memoria, investigar antes de mexer:
+
+1. Quem aloca o pico antes de `progress=0.333` usando hooks leves de alocacao ou logs de textura, nao `GK_VT11COUNT`.
+2. Por que `CUP_CTEXHALF` nao aparece nos logs; talvez falte hook de `glCompressedTexSubImage2D`.
+3. Se os grandes objetos sao texturas CPU-side antes do upload, `gl*` downscale sozinho nao vai bastar.
+4. Evitar GC forcado; todos os caminhos de GC testados crasharam.
