@@ -742,6 +742,35 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     if ((sbn & 0x1ff) == 0) dbg_sync();
     return;  /* resume no caller */
   }
+  /* 🔑 INVOKE FIREWALL (default ON; CVGOS_NOINVOKEFW desliga): reflection-invoke de
+     MonoBehaviours no boot do título usa MethodInfos CORROMPIDOS (metadata/serializacao
+     inconsistente: "different serialization layout" espalhado) -> methodPointer/invoker
+     apontam p/ o heap rwx de metadata -> blx pula p/ dado = SIGILL/SIGSEGV com pc fora
+     de qualquer .text. Como o retorno (lr) do blx do Runtime::Invoke e' um so ponto fixo
+     (il2cpp+0x78ae70), tratamos QUALQUER crash cujo lr==esse ponto e cujo pc nao seja
+     codigo mapeado como "invoke devolveu null": pc=lr, r0=0. O boot sobrevive a todo
+     MonoBehaviour quebrado e segue p/ o render. */
+  if ((sig == SIGSEGV || sig == SIGILL) && g_il2cpp_base && !getenv("CVGOS_NOINVOKEFW")) {
+    uintptr_t inv_ret = g_il2cpp_base + 0x78ae70;
+    uintptr_t lrx = lr0 & ~(uintptr_t)1;
+    uintptr_t pcx = pc0 & ~(uintptr_t)1;
+    uintptr_t tb = (uintptr_t)text_base;
+    /* codigo REAL = .text do il2cpp ([base,base+0x4706b80)) ou da libunity. O heap de
+       metadata e' mapeado rwxp (parece executavel) mas NAO e' codigo -> nao conta. */
+    int pc_is_code =
+        (g_il2cpp_base && pcx >= g_il2cpp_base && pcx < g_il2cpp_base + 0x4706b80) ||
+        (tb && pcx >= tb && pcx < tb + text_size);
+    if (lrx == inv_ret && !pc_is_code) {
+      static volatile unsigned long ifw = 0;
+      uc0->uc_mcontext.arm_r0 = 0;
+      cvgos_return_to_lr(uc0, lr0);
+      if (ifw++ < 40 || (ifw % 500) == 0)
+        fprintf(stderr, "[INVOKEFW] #%lu invoke quebrado pc=0x%lx fault=%p -> null (lr=0x%lx)\n",
+                ifw, (unsigned long)pc0, si->si_addr, (unsigned long)lr0);
+      if ((ifw & 0x1ff) == 0) dbg_sync();
+      return;
+    }
+  }
   /* 🔑 CVGOS_CRASHSKIP: pula crashes NÃO-essenciais (SIGSEGV/SIGILL) da máquina de
      exceção/log C++ da Unity (dispara ao construir java.lang.Error no RecreateGfxState
      por causa do nosso JNIEnv fake). Retoma no caller (lr) com r0=0. Cap alto p/ evitar
@@ -832,6 +861,15 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
   fprintf(stderr, " lr=0x%lx", (unsigned long)lr);
   if (lr >= tb && lr < tb + text_size) fprintf(stderr, " (lr unity+0x%lx)", lr - tb);
   fprintf(stderr, " ===\n"); dbg_sync();
+  /* integridade do hook INV0 (thunk 0x9256a4): a chamada fatal nao passa pelo guard —
+     se as 2 words abaixo nao forem o LDR-PC do arm_hook8, algo RESTAUROU/corrompeu o hook. */
+  if (g_il2cpp_base) {
+    uint32_t *tw = (uint32_t *)(g_il2cpp_base + 0x9256a4);
+    char hb[96];
+    int hl = snprintf(hb, sizeof hb, "[CR0] thunk@9256a4: %08x %08x %08x %08x\n",
+                      tw[0], tw[1], tw[2], tw[3]);
+    write(2, hb, hl);
+  }
   /* 🔑 ASYNC-SAFE FIRST: o dump rico abaixo (fprintf) pode travar/re-faultar quando o
      pc é lixo não-mapeado (caso 0xffffbfd8). Antes de qualquer coisa, escreve com
      write(2) puro: lr classificado via maps + registradores + insns no call-site
@@ -851,6 +889,17 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
       bl += snprintf(b + bl, sizeof b - bl, " r%d=0x%lx%s", i,
                      mc_reg(&uc->uc_mcontext, i), (i % 4 == 3) ? "\n" : "");
     write(2, b, bl);
+    /* pc=0/lixo: 16 words CRUAS de sp p/ reconstruir o frame do caller exato */
+    if (!addr_readable(pc & ~(uintptr_t)3)) {
+      uintptr_t rsp = uc->uc_mcontext.arm_sp;
+      if (addr_readable(rsp) && addr_readable(rsp + 60)) {
+        bl = snprintf(b, sizeof b, "[CR0] rawsp:");
+        for (int i = 0; i < 16; i++)
+          bl += snprintf(b + bl, sizeof b - bl, " %08lx", (unsigned long)((uintptr_t *)rsp)[i]);
+        bl += snprintf(b + bl, sizeof b - bl, "\n");
+        write(2, b, bl);
+      }
+    }
     uintptr_t la = (lr - 16) & ~(uintptr_t)3;
     if (addr_readable(la) && addr_readable(la + 16)) {
       bl = snprintf(b, sizeof b, "[CR0] insns@lr-16..lr:");
@@ -2075,7 +2124,14 @@ static void *rt_invoke_guard(void *m, void *obj, void **params, void **exc) {
   if (m && cvgos_addr_readable_now((uintptr_t)m + 0xc)) {
     uintptr_t mp = *(uintptr_t *)m;
     uintptr_t inv = *(uintptr_t *)((uintptr_t)m + 4);
-    if (!mp || !inv) {
+    /* invoker/methodPointer VALIDOS tem que apontar p/ codigo executavel do il2cpp
+       (.text: base..base+0x4706b80). MethodInfo corrompido (vindo de slot de
+       metadata-usage lixo) tras invoker apontando p/ o heap rwx de metadata
+       (ee3xxxxx) -> blx pula p/ dado = SIGILL. Trata como NULL. */
+    uintptr_t txt_lo = g_il2cpp_base, txt_hi = g_il2cpp_base + 0x4706b80;
+    int bad_mp = !mp || mp < txt_lo || mp >= txt_hi;
+    int bad_inv = !inv || inv < txt_lo || inv >= txt_hi;
+    if (bad_mp || bad_inv) {
       static int n;
       if (n++ < 16) {
         const char *mn = "?";
@@ -2087,7 +2143,7 @@ static void *rt_invoke_guard(void *m, void *obj, void **params, void **exc) {
           const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
           kn = cvgos_safe_cstr(cgn((void *)kp));
         }
-        fprintf(stderr, "[RT-INVOKE] %s.%s methodPointer=%lx invoker=%lx -> SKIP (NULL)\n",
+        fprintf(stderr, "[RT-INVOKE] %s.%s methodPointer=%lx invoker=%lx -> SKIP (fora do .text)\n",
                 kn, mn, (unsigned long)mp, (unsigned long)inv);
         fsync(2);
       }
@@ -2111,7 +2167,13 @@ static void patch_i2_rt_invoke_guard(void) {
    casos conhecidos (ctors de NullReferenceException) escrevendo o RVA do dump; senao
    deixa o original lancar. */
 static void (*g_meth_init_orig)(void *m);
+static void *g_noop_invoker;   /* stub ARM: mov r0,#0; bx lr — invoker/methodPtr seguro */
 static void meth_init_guard(void *m) {
+  { static int t; if (t < 8 && m && g_il2cpp_base && cvgos_addr_readable_now((uintptr_t)m + 8)) {
+      t++;
+      uintptr_t mp=*(uintptr_t*)m, iv=*(uintptr_t*)((uintptr_t)m+4);
+      fprintf(stderr, "[METH-INIT-ENTRY] m=%p mp=%lx inv=%lx\n", m, (unsigned long)mp, (unsigned long)iv); fsync(2);
+  } }
   if (m && cvgos_addr_readable_now((uintptr_t)m + 0x10) && *(uintptr_t *)m == 0 && g_il2cpp_base) {
     const char *mn = "?";
     uintptr_t np = *(uintptr_t *)((uintptr_t)m + 8);
@@ -2140,15 +2202,52 @@ static void meth_init_guard(void *m) {
     if (n <= 24) { fprintf(stderr, " -> sem reparo (orig lanca)\n"); fsync(2); }
   }
   if (g_meth_init_orig) g_meth_init_orig(m);
+  /* POS-INIT: o Method::Init popula methodPointer/invoker a partir de slots de
+     metadata-usage. Com asset/serializacao incompativel (aviso "different
+     serialization layout" no boot) esses slots vem LIXO -> invoker aponta pro heap
+     rwx de metadata -> blx = SIGILL. Se invoker/methodPointer cairem FORA do .text
+     do il2cpp, redireciona invoker p/ um stub no-op (retorna NULL) e methodPointer
+     p/ o mesmo stub -> a chamada vira no-op em vez de crash. */
+  if (m && g_il2cpp_base && g_noop_invoker && cvgos_addr_readable_now((uintptr_t)m + 8)) {
+    uintptr_t txt_lo = g_il2cpp_base, txt_hi = g_il2cpp_base + 0x4706b80;
+    uintptr_t mp = *(uintptr_t *)m;
+    uintptr_t inv = *(uintptr_t *)((uintptr_t)m + 4);
+    /* invoker no cluster de throw-stub (0x7a8000..0x7aa000) = metodo SEM implementacao
+       (il2cpp aponta o "invoker" pro raise de NRE/NotSupported); invoca-lo constroi uma
+       excecao lendo slot de usage LIXO -> SIGILL. Trata como no-op (retorna null). */
+    int throw_stub = inv >= g_il2cpp_base + 0x7a8000 && inv < g_il2cpp_base + 0x7aa000;
+    if (inv && (inv < txt_lo || inv >= txt_hi || throw_stub)) {
+      static int nn;
+      if (nn++ < 24) {
+        const char *mn = "?"; uintptr_t np = *(uintptr_t *)((uintptr_t)m + 8);
+        if (np && cvgos_addr_readable_now(np)) mn = (const char *)np;
+        const char *kn = "?"; uintptr_t kp = *(uintptr_t *)((uintptr_t)m + 0xc);
+        if (kp) { const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30); kn = cvgos_safe_cstr(cgn((void *)kp)); }
+        fprintf(stderr, "[METH-INIT] invoker %s 0x%lx em %s.%s -> no-op stub\n", throw_stub ? "throw-stub" : "LIXO", (unsigned long)inv, kn, mn);
+        fsync(2);
+      }
+      *(uintptr_t *)((uintptr_t)m + 4) = (uintptr_t)g_noop_invoker;
+      if (mp < txt_lo || mp >= txt_hi) *(uintptr_t *)m = (uintptr_t)g_noop_invoker;
+    }
+  }
 }
 static void patch_i2_meth_init_guard(void) {
   if (!g_il2cpp_base || getenv("CVGOS_NOMETHINITGUARD")) return;
   static int done;
   if (done) return;
+  /* stub no-op p/ invoker/methodPointer corrompidos */
+  uint32_t *st = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (st != MAP_FAILED) {
+    st[0] = 0xe3a00000u;  /* mov r0, #0 */
+    st[1] = 0xe12fff1eu;  /* bx lr      */
+    __builtin___clear_cache((char *)st, (char *)st + 8);
+    g_noop_invoker = st;
+  }
   g_meth_init_orig = (void (*)(void *))arm_hook8(g_il2cpp_base + 0x78af68,
                                                  (void *)meth_init_guard);
   done = 1;
-  fprintf(stderr, "[METH-INIT] guard em Method::Init (0x78af68)\n");
+  fprintf(stderr, "[METH-INIT] guard em Method::Init (0x78af68) noop=%p\n", g_noop_invoker);
 }
 /* MonoCustomAttrs::IsDefined (0x117a4e8): quando o Type do atributo nao converte pra
    RuntimeClass (0x1179f64 -> 0; typeof NULL/objeto podre), o icall LANCA NRE — e o
@@ -2175,6 +2274,59 @@ static void patch_i2_isdefined_guard(void) {
       g_il2cpp_base + 0x117a4e8, (void *)isdef_guard);
   done = 1;
   fprintf(stderr, "[ISDEF] guard em MonoCustomAttrs::IsDefined (0x117a4e8)\n");
+}
+/* Invoker thunk il2cpp+0x9256a4 (assinatura instance-void-sem-args):
+   `mov r3,r0; mov r0,r2; blx r3` — com methodPointer(r0)=NULL pula pra pc=0.
+   E o caminho do RAISE de NRE (ctor da excecao) chega aqui com mp=NULL sem passar
+   pelo Runtime::Invoke. Guard: loga klass.metodo (method=[r1]) e PULA a chamada
+   (excecao fica default-init, sem mensagem — suficiente pro throw seguir). */
+static void *(*g_inv0_orig)(void *mp, void *method, void *obj, void **args);
+static void *inv0_guard(void *mp, void *method, void *obj, void **args) {
+  { static int t; if (t++ < 6) { fprintf(stderr, "[INV0] call mp=%p method=%p obj=%p\n", mp, method, obj); fsync(2); } }
+  if (!mp) {
+    static int n;
+    if (n++ < 24) {
+      const char *mn = "?", *kn = "?";
+      if (method && cvgos_addr_readable_now((uintptr_t)method + 0xc)) {
+        uintptr_t np = *(uintptr_t *)((uintptr_t)method + 8);
+        if (np && cvgos_addr_readable_now(np)) mn = (const char *)np;
+        uintptr_t kp = *(uintptr_t *)((uintptr_t)method + 0xc);
+        if (kp && g_il2cpp_base) {
+          const char *(*cgn)(void *) = (const char *(*)(void *))(g_il2cpp_base + 0x79de30);
+          kn = cvgos_safe_cstr(cgn((void *)kp));
+        }
+      }
+      fprintf(stderr, "[INV0] methodPointer=NULL em %s.%s (obj=%p) -> SKIP\n", kn, mn, obj);
+      fsync(2);
+    }
+    return NULL;
+  }
+  return g_inv0_orig ? g_inv0_orig(mp, method, obj, args) : NULL;
+}
+static void patch_i2_inv0_guard(void) {
+  if (!g_il2cpp_base || getenv("CVGOS_NOINV0GUARD")) return;
+  static int done;
+  if (done) return;
+  /* Reescreve o thunk instance-void-1arg (0x9256a4) IN-PLACE com null-check tail-call:
+     original = push{fp,lr};mov fp,sp;mov r3,r0;mov r0,r2;blx r3;mov r0,#0;pop{fp,pc}.
+     Novo (leaf, sem frame): cmp r0,#0; bxeq lr; mov r3,r0; mov r0,r2; bx r3.
+     Cobre a entrada normal (0x9256a4) mesmo quando o caller usa o ponteiro do thunk
+     direto — arm_hook8 deixava o blx cru no trampolim/entrada+8 e o pc=0 escapava. */
+  uintptr_t t = g_il2cpp_base + 0x9256a4;
+  long pgsz = sysconf(_SC_PAGESIZE);
+  uintptr_t pa = t & ~((uintptr_t)pgsz - 1);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_WRITE | PROT_EXEC);
+  uint32_t *w = (uint32_t *)t;
+  w[0] = 0xe3500000u;   /* cmp r0, #0        */
+  w[1] = 0x012fff1eu;   /* bxeq lr  (r0=0 = retorno null) */
+  w[2] = 0xe1a03000u;   /* mov r3, r0        */
+  w[3] = 0xe1a00002u;   /* mov r0, r2        */
+  w[4] = 0xe12fff13u;   /* bx r3   (tail-call; metodo retorna direto ao caller) */
+  __builtin___clear_cache((char *)t, (char *)t + 20);
+  mprotect((void *)pa, (size_t)pgsz, PROT_READ | PROT_EXEC);
+  (void)inv0_guard; (void)g_inv0_orig;
+  done = 1;
+  fprintf(stderr, "[INV0] thunk 0x9256a4 reescrito com null-check tail-call\n");
 }
 static void patch_i2_logres_guard(void) {
   if (!g_il2cpp_base || getenv("CVGOS_NOLOGRESGUARD")) return;
@@ -7472,6 +7624,7 @@ int main(int argc, char **argv) {
   patch_i2_rt_invoke_guard();
   patch_i2_meth_init_guard();
   patch_i2_isdefined_guard();
+  patch_i2_inv0_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
@@ -7956,6 +8109,7 @@ int main(int argc, char **argv) {
   patch_i2_rt_invoke_guard();
   patch_i2_meth_init_guard();
   patch_i2_isdefined_guard();
+  patch_i2_inv0_guard();
   patch_i2_enum_null_guard();
   patch_i2_rgctx_slot_guard();
   patch_i2_reflection_null_guard();
