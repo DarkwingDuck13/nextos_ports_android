@@ -8347,6 +8347,32 @@ int main(int argc, char **argv) {
      outUiInterFace, LogResources — GC-descriptor via I2-METAFLAG mostrou offset lixo
      0x1dbxxxx) com o ground-truth do dump (0xC..0x18). Diz se a metadata de fields
      corrompe já no init ou só depois (corrupção progressiva). */
+  /* CVGOS_SIZEPROBE: instance-size RUNTIME de tipos builtin vs dump (offline).
+     Se runtime > dump => bug de Class::SetupFields (offsets 64-bit) = nossa metadata,
+     nao skew de asset. Decide o caminho da proxima sessao. */
+  if (getenv("CVGOS_SIZEPROBE") && g_il2cpp_base) {
+    void *(*i_dg)(void) = (void *(*)(void))(g_il2cpp_base + 0x79e244);
+    void *(*i_dga)(void *, size_t *) = (void *(*)(void *, size_t *))(g_il2cpp_base + 0x79e250);
+    void *(*i_agi)(void *) = (void *(*)(void *))(g_il2cpp_base + 0x79dde0);
+    void *(*i_cfn)(void *, const char *, const char *) = (void *(*)(void *, const char *, const char *))(g_il2cpp_base + 0x79de04);
+    int (*i_cis)(void *) = (int (*)(void *))(g_il2cpp_base + 0x79de40);
+    struct { const char *ns, *nm; int want; } t[] = {
+      {"UnityEngine.UI", "Text", 0}, {"UnityEngine.UI", "Image", 0},
+      {"UnityEngine.UI", "RawImage", 0}, {"UnityEngine", "MonoBehaviour", 0},
+    };
+    void *dom = i_dg(); size_t na = 0;
+    void **as = (void **)i_dga(dom, &na);
+    for (unsigned k = 0; k < sizeof t / sizeof t[0]; k++) {
+      void *kls = NULL;
+      for (size_t a = 0; as && a < na && !kls; a++) {
+        void *img = i_agi(as[a]); if (!img) continue;
+        kls = i_cfn(img, t[k].ns, t[k].nm);
+      }
+      int sz = kls ? i_cis(kls) : -1;
+      fprintf(stderr, "[SIZEPROBE] %s.%s runtime_instance_size=%d (0x%x)\n", t[k].ns, t[k].nm, sz, sz);
+    }
+    dbg_sync();
+  }
   if (getenv("CVGOS_FIELDPROBE") && g_m_il2cpp) {
     so_module *c = so_save(); so_use(g_m_il2cpp);
     void *(*i_dg)(void) = (void *)so_find_addr_safe("il2cpp_domain_get");
