@@ -201,9 +201,24 @@ int main(int argc, char *argv[]) {
     while (SDL_PollEvent(&ev)) {
       switch (ev.type) {
       case SDL_QUIT: running = 0; break;
-      case SDL_KEYDOWN:
-        if (ev.key.keysym.sym == SDLK_ESCAPE) { if (n_backPressed) n_backPressed(g_env, NULL); else running = 0; }
-        break;
+      case SDL_KEYDOWN: case SDL_KEYUP: {
+        /* teclado -> keycodes Android p/ o menu (dpad/enter/back). O controle
+         * físico chega aqui via gptokeyb. 19=UP 20=DOWN 21=LEFT 22=RIGHT
+         * 23=CENTER(=select) 4=BACK. */
+        int kc = 0;
+        switch (ev.key.keysym.sym) {
+          case SDLK_UP: kc = 19; break;
+          case SDLK_DOWN: kc = 20; break;
+          case SDLK_LEFT: kc = 21; break;
+          case SDLK_RIGHT: kc = 22; break;
+          case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_SPACE: kc = 23; break;
+          case SDLK_ESCAPE: case SDLK_BACKSPACE:
+            if (ev.type == SDL_KEYDOWN && n_backPressed) n_backPressed(g_env, NULL);
+            kc = 0; break;
+          default: kc = 0; break;
+        }
+        if (kc && n_sendKey) n_sendKey(g_env, NULL, ev.type == SDL_KEYDOWN ? 0 : 1, kc);
+        break; }
       case SDL_FINGERDOWN: case SDL_FINGERUP: case SDL_FINGERMOTION: {
         int act = ev.type == SDL_FINGERDOWN ? 1 : ev.type == SDL_FINGERUP ? 2 : 3;
         if (n_touch) n_touch(g_env, NULL, act, ev.tfinger.x * W, ev.tfinger.y * H, (int)ev.tfinger.fingerId);
@@ -215,6 +230,30 @@ int main(int argc, char *argv[]) {
       case SDL_MOUSEMOTION:
         if ((ev.motion.state & SDL_BUTTON_LMASK) && n_touch) n_touch(g_env, NULL, 3, ev.motion.x, ev.motion.y, 0);
         break;
+      }
+    }
+    /* auto-tap de teste (BC2_AUTOTAP=1): dá um toque no centro a cada ~2s p/
+     * avançar o splash "TOUCH THE SCREEN" sem input físico. */
+    /* auto-tap (BC2_AUTOTAP=1): gesto REALISTA down + moves contínuos + up (como
+     * um dedo de verdade). Varre os 3 botões da campanha (NEW GAME/CONTINUE/SELECT). */
+    if (getenv("BC2_AUTOTAP") && n_touch) {
+      /* splash via toque; menu via TECLAS (DPAD/ENTER) — o CGuiSystem pode
+       * navegar por teclado (keycodes Android). n_sendKey(env,cls,action,keycode)
+       * action 0=down 1=up. 19=UP 20=DOWN 21=LEFT 22=RIGHT 23=CENTER 66=ENTER. */
+      if (frame == 120) { n_touch(g_env, NULL, 1, W*0.5f, H*0.5f, 0); }
+      else if (frame == 150) { n_touch(g_env, NULL, 2, W*0.5f, H*0.5f, 0); }
+      else if (frame >= 400 && n_sendKey) {
+        struct { unsigned long f; int key; } static keys[] = {
+          {400,20},{430,20},{460,23},{490,66},   /* DOWN,DOWN,CENTER,ENTER */
+          {560,19},{590,23},{620,66},            /* UP,CENTER,ENTER */
+          {700,22},{730,23},{760,66},            /* RIGHT,CENTER,ENTER */
+          {0,0}
+        };
+        for (int i = 0; keys[i].f; i++) if (keys[i].f == frame) {
+          debugPrintf(">> KEY %d down+up (f%lu)\n", keys[i].key, frame);
+          n_sendKey(g_env, NULL, 0, keys[i].key);   /* down */
+          n_sendKey(g_env, NULL, 1, keys[i].key);   /* up */
+        }
       }
     }
     if (n_render) n_render(g_env, NULL);   /* 1o frame: AppInit + AppUpdate */

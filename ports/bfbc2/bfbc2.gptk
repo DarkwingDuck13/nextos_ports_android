@@ -1,0 +1,24 @@
+# BFBC2 gptokeyb: menu navega por TECLAS (dpad/enter), in-game por mouse/toque.
+# O loader traduz teclado->keycode Android e mouse->nativeOnTouchEvent.
+back = esc
+start = enter
+a = enter
+b = esc
+x = space
+y = space
+up = up
+down = down
+left = left
+right = right
+l1 = pageup
+r1 = pagedown
+# stick esquerdo -> setas (nav de menu); direito -> mouse (mira/toque in-game)
+left_analog_up = up
+left_analog_down = down
+left_analog_left = left
+left_analog_right = right
+right_analog_up = mouse_movement_up
+right_analog_down = mouse_movement_down
+right_analog_left = mouse_movement_left
+right_analog_right = mouse_movement_right
+a = mouse_left
