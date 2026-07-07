@@ -393,8 +393,6 @@ static void refill_player(AudioPlayer *p) {
        * that is genuinely over gets stopped by the game itself anyway. */
       if (++p->empty_polls > 500) {
         p->decoder_done = 1;
-        debugPrintf("audio: player %ld decoder_done after %u dry polls\n",
-                    (long)(p - g_players), p->empty_polls);
       }
     } else {
       p->empty_polls = 0;
@@ -416,25 +414,11 @@ static void refill_player(AudioPlayer *p) {
 static pthread_t g_pump_thread;
 static volatile int g_pump_running = 0;
 
-static volatile uint32_t g_getpos_calls = 0;
-static volatile uint32_t g_last_pos_ms = 0;
-
 static void *pump_thread_main(void *arg) {
   (void)arg;
-  unsigned ticks = 0;
   while (g_pump_running) {
     for (int i = 0; i < MAX_PLAYERS; i++)
       refill_player(&g_players[i]);
-    if ((++ticks % 250) == 0) { /* ~1s heartbeat while diagnosing the feeder */
-      for (int i = 0; i < MAX_PLAYERS; i++) {
-        AudioPlayer *p = &g_players[i];
-        if (p->active && p->play_state == SL_PLAYSTATE_PLAYING && p->sample_rate == 22050)
-          debugPrintf("audio: hb p%d st=%u ring=%u q=%u enq#%u played=%llu getpos=%u/%ums\n",
-                      i, p->play_state, ring_readable(p), p->queued_count,
-                      p->enqueue_counter, (unsigned long long)p->played_bytes,
-                      g_getpos_calls, g_last_pos_ms);
-      }
-    }
     usleep(4000);
   }
   return NULL;
@@ -456,14 +440,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   /* Per-player temp buffer on stack */
   int16_t tmp[TMP_BUF_SAMPLES];
-
-  /* Per-player diagnostics for click detection */
-  float player_peak[MAX_PLAYERS];
-  float player_vol[MAX_PLAYERS];
-  int player_active_list[MAX_PLAYERS];
-  int num_active = 0;
-  memset(player_peak, 0, sizeof(player_peak));
-  memset(player_vol, 0, sizeof(player_vol));
 
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
@@ -490,8 +466,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     if (src_channels == 1) {
       vol *= 0.5f;
     }
-    player_vol[i] = vol;
-    player_active_list[num_active++] = i;
 
     uint32_t src_frames_needed;
     if (src_rate == SDL_OUTPUT_RATE) {
@@ -551,14 +525,8 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         }
         if (env < 0.0f) env = 0.0f;
         float v = vol * env;
-        float cl = (float)tmp[f * 2]     * v;
-        float cr = (float)tmp[f * 2 + 1] * v;
-        mix_buf[f * 2]     += cl;
-        mix_buf[f * 2 + 1] += cr;
-        float ap = fabsf(cl);
-        if (ap > player_peak[i]) player_peak[i] = ap;
-        ap = fabsf(cr);
-        if (ap > player_peak[i]) player_peak[i] = ap;
+        mix_buf[f * 2]     += (float)tmp[f * 2]     * v;
+        mix_buf[f * 2 + 1] += (float)tmp[f * 2 + 1] * v;
       }
       p->frames_played += n;
     } else {
@@ -600,14 +568,8 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         }
         if (env < 0.0f) env = 0.0f;
         float v = vol * env;
-        float cl = left * v;
-        float cr = right * v;
-        mix_buf[f * 2]     += cl;
-        mix_buf[f * 2 + 1] += cr;
-        float ap = fabsf(cl);
-        if (ap > player_peak[i]) player_peak[i] = ap;
-        ap = fabsf(cr);
-        if (ap > player_peak[i]) player_peak[i] = ap;
+        mix_buf[f * 2]     += left * v;
+        mix_buf[f * 2 + 1] += right * v;
         pos += step;
         mixed++;
       }
@@ -619,10 +581,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   const float master_gain = 1.0f;
   const float threshold = 28000.0f;
   const float knee = 4000.0f;  /* transition zone */
-  static int16_t prev_left = 0, prev_right = 0;
-  static uint32_t click_count = 0;
-  static uint32_t callback_count = 0;
-  callback_count++;
 
   for (int s = 0; s < out_samples; s++) {
     float x = mix_buf[s] * master_gain;
@@ -635,63 +593,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     if (x > 32767.0f) x = 32767.0f;
     if (x < -32768.0f) x = -32768.0f;
     out[s] = (int16_t)x;
-  }
-
-  /* Detect clicks: large jump between last sample of previous buffer
-   * and first sample of this buffer */
-  int32_t jump_l = abs((int32_t)out[0] - (int32_t)prev_left);
-  int32_t jump_r = abs((int32_t)out[1] - (int32_t)prev_right);
-  /* Also detect mix_buf peak */
-  float mix_peak = 0.0f;
-  for (int s = 0; s < out_samples; s++) {
-    float av = fabsf(mix_buf[s]);
-    if (av > mix_peak) mix_peak = av;
-  }
-  if (jump_l > 8000 || jump_r > 8000) {
-    click_count++;
-    debugPrintf("opensles_shim: CLICK #%u cb#%u jump L=%d R=%d prev=%d/%d new=%d/%d mixpeak=%.0f active=%d\n",
-                click_count, callback_count,
-                jump_l, jump_r,
-                (int)prev_left, (int)prev_right,
-                (int)out[0], (int)out[1],
-                mix_peak, num_active);
-    for (int a = 0; a < num_active; a++) {
-      int pi = player_active_list[a];
-      AudioPlayer *pp = &g_players[pi];
-      debugPrintf("  p%d: vol=%.3f peak=%.0f ch=%u rate=%u readable=%u\n",
-                  pi, player_vol[pi], player_peak[pi],
-                  pp->num_channels, pp->sample_rate, ring_readable(pp));
-    }
-  }
-  if (out_samples >= 2) {
-    prev_left = out[out_samples - 2];
-    prev_right = out[out_samples - 1];
-  }
-
-  /* ~1s: pico REAL entregue ao SDL -- separa "geramos silencio" (peak=0)
-   * de "sistema nao toca o que geramos" (peak>0, sem som na TV). */
-  {
-    static float sec_peak = 0.0f;
-    static uint32_t last_hb_cb = 0;
-    for (int s = 0; s < out_samples; s++) {
-      float av = fabsf((float)out[s]);
-      if (av > sec_peak) sec_peak = av;
-    }
-    if (callback_count - last_hb_cb >= 86) { /* 86 cb * 512 amostras / 44100 ~= 1s */
-      debugPrintf("audio: OUT peak=%.0f cb#%u active=%d\n",
-                  sec_peak, callback_count, num_active);
-      for (int a = 0; a < num_active; a++) {
-        int pi = player_active_list[a];
-        AudioPlayer *pp = &g_players[pi];
-        debugPrintf("  p%d vol=%.4f rawvol=%.4f peak=%.0f ch=%u rate=%u ring=%u q=%u enq#%u cb=%p pcb=%p\n",
-                    pi, player_vol[pi], pp->volume, player_peak[pi],
-                    pp->num_channels, pp->sample_rate, ring_readable(pp),
-                    pp->queued_count, pp->enqueue_counter,
-                    (void *)pp->callback, (void *)pp->play_callback);
-      }
-      last_hb_cb = callback_count;
-      sec_peak = 0.0f;
-    }
   }
 }
 
@@ -872,8 +773,6 @@ static SLresult play_GetPosition(void *self, SLmillisecond *pMsec) {
         position = (frames * 1000ULL) / sample_rate;
       }
       if ((uintptr_t)pMsec > 0x100000) *pMsec = (SLmillisecond)position;
-      g_getpos_calls++;
-      g_last_pos_ms = (uint32_t)position;
       return SL_RESULT_SUCCESS;
     }
   }
@@ -886,14 +785,6 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      {
-        static uint32_t sps_logs = 0;
-        if (sps_logs < 60) {
-          sps_logs++;
-          debugPrintf("audio: player %d SetPlayState %u -> %u (ring=%u q=%u)\n",
-                      i, p->play_state, state, ring_readable(p), p->queued_count);
-        }
-      }
       device_lock();
       if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
         p->headatend_fired = 0;
@@ -1004,11 +895,6 @@ static SLresult volume_SetVolumeLevel(void *self, SLmillibel level) {
   void **itf_ptr = (void **)self;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].volume_ptr == itf_ptr) {
-      static uint32_t svl_logs = 0;
-      if (svl_logs < 80) {
-        svl_logs++;
-        debugPrintf("audio: player %d SetVolumeLevel(%d) -> %.4f\n", i, (int)level16, linear);
-      }
       g_players[i].volume = linear;
       return SL_RESULT_SUCCESS;
     }
