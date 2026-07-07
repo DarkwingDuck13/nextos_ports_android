@@ -15,7 +15,6 @@ Tudo **BYO-data** — o repo nunca traz o jogo.
 | **GTA: San Andreas** | RenderWare (ES3, shimável) | TheFloW `gtasa_vita`, NaGaa95 `gtasa_nx` | Mesma família de Vice City + LCS (já rodam). Shim ES3 dominado. |
 | **Max Payne Mobile** | RenderWare (Rockstar) | NaGaa95 `max_nx` | Idem SA — engine irmã dos GTA. |
 | **GTA: Chinatown Wars** | RenderWare | TheFloW `gtactw_vita`, NaGaa95 `gtactw_nx` | Família GTA. |
-| **LEGO: A Força Desperta** | TT/Fusion | NaGaa95 `lswtfa_nx` | Mesma engine do nosso LEGO Batman 3 + LEGO SW (ref). |
 | **LEGO Batman 2: DC Super Heroes** | TT/Fusion | NaGaa95 `lbdcsh_nx` | Idem. |
 | **LEGO Ninjago: Shadow of Ronin** | TT/Fusion | NaGaa95 `lnsor_nx` | Idem. |
 | **FF III / IV (3D), FF IV: The After Years, FF Dimensions 1 e 2** | Square mobile (nativa/Unity) | Rinne `ff4_vita`/`ff4a_vita`, NaGaa `ff3_3d/ff4_3d/ffd/ffd2` | Bagagem de FF7/FF9. FF4 = GLES1 fixed-function. |

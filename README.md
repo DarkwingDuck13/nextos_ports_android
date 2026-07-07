@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
-  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-28-brightgreen?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-29-brightgreen?style=for-the-badge">
   <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-21-orange?style=for-the-badge">
 </p>
 <p>
@@ -68,6 +68,7 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Magic Rampage** (FMOD) | so-loader | Jogável (Mali-450) | [`ports/magicrampage`](ports/magicrampage/) |
 | **Battlefield: Bad Company 2** (Karisma, GLES1) | so-loader (armeabi) | Jogável (Mali-450) — FPS 1ª pessoa, mundo 3D+NPC+HUD, gamepad nativo (AppOnKeyEvent/Joystick) | [`ports/bfbc2`](ports/bfbc2/) |
 | **Castle of Illusion** (Sega "oz") | so-loader (NativeActivity+FMOD, arm64) | Jogável (Mali-450) — render+controle+áudio | [`ports/castleofillusion`](ports/castleofillusion/) |
+| **LEGO Star Wars: A Força Desperta** (Fusion/WB) | so-loader (arm64, base lswtcs) | Jogável (Mali-450) — menu + mundo + controles + gameplay; áudio em validação final | [`ports/lswtfa`](ports/lswtfa/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
