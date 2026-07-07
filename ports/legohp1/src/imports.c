@@ -181,6 +181,33 @@ static void *dlopen_fake(const char *n, int f) { (void)f; debugPrintf("dlopen(%s
 static void *dlsym_fake(void *h, const char *n) { (void)h; debugPrintf("dlsym(%s) -> NULL\n", n?n:"?"); return 0; }
 static int dlclose_fake(void *h) { (void)h; return 0; }
 
+// texture upload: the OBB carries Adreno ATC textures (0x8C92/93/0x87EE) that
+// the Mali rejects (the black 3D world) -- decode them on the CPU (atc.c).
+#include "atc.h"
+static void glCompressedTexImage2D_diag(GLenum target, GLint level, GLenum ifmt,
+    GLsizei w, GLsizei h, GLint border, GLsizei size, const void *data) {
+  if (atc_upload(target, level, ifmt, w, h, size, data)) return;
+  glCompressedTexImage2D(target, level, ifmt, w, h, border, size, data);
+  GLenum e = glGetError();
+  static int n = 0;
+  if (e || n < 40) {
+    debugPrintf("TEX: compressed fmt=0x%x %dx%d lvl=%d size=%d err=0x%x\n",
+                ifmt, (int)w, (int)h, (int)level, (int)size, e);
+    n++;
+  }
+}
+static void glTexImage2D_diag(GLenum target, GLint level, GLint ifmt, GLsizei w,
+    GLsizei h, GLint border, GLenum fmt, GLenum type, const void *data) {
+  glTexImage2D(target, level, ifmt, w, h, border, fmt, type, data);
+  GLenum e = glGetError();
+  static int n = 0;
+  if (e || n < 40) {
+    debugPrintf("TEX: image ifmt=0x%x fmt=0x%x type=0x%x %dx%d lvl=%d err=0x%x\n",
+                (unsigned)ifmt, fmt, type, (int)w, (int)h, (int)level, e);
+    n++;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // import table
 // ---------------------------------------------------------------------------
@@ -307,7 +334,7 @@ DynLibFunction dynlib_functions[] = {
   { "glClear", (uintptr_t)&glClear },
   { "glClientActiveTexture", (uintptr_t)&glClientActiveTexture },
   { "glColorPointer", (uintptr_t)&glColorPointer },
-  { "glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D },
+  { "glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D_diag },
   { "glDeleteBuffers", (uintptr_t)&glDeleteBuffers },
   { "glDeleteTextures", (uintptr_t)&glDeleteTextures },
   { "glDepthFunc", (uintptr_t)&glDepthFunc },
@@ -336,7 +363,7 @@ DynLibFunction dynlib_functions[] = {
   { "glTexCoordPointer", (uintptr_t)&glTexCoordPointer },
   { "glTexEnvfv", (uintptr_t)&glTexEnvfv },
   { "glTexEnvi", (uintptr_t)&glTexEnvi },
-  { "glTexImage2D", (uintptr_t)&glTexImage2D },
+  { "glTexImage2D", (uintptr_t)&glTexImage2D_diag },
   { "glTexParameteri", (uintptr_t)&glTexParameteri },
   { "glVertexPointer", (uintptr_t)&glVertexPointer },
   { "glViewport", (uintptr_t)&glViewport },
