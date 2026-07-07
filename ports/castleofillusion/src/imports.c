@@ -1927,7 +1927,9 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
    * reprovam no depth -> so o base ambient (escuro) aparece.
    * "invariant gl_Position;" força Z invariante (fix da spec p/ multi-pass).
    * COI_NO_INVARIANT=1 desliga. */
-  if (!getenv("COI_NO_INVARIANT") && count == 1 && str[0] &&
+  /* (s3) DEFAULT OFF: a raiz do Mickey preto era o npot_fix (wrap CLAMP), não Z
+   * multi-pass; invariant custa otimização do GP. Religar: COI_INVARIANT=1. */
+  if (getenv("COI_INVARIANT") && count == 1 && str[0] &&
       strstr(str[0], "gl_Position") && !strstr(str[0], "invariant")) {
     static char ivb[32768];
     size_t Li = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
@@ -1950,7 +1952,9 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
    * quase colinear com a luz (Mickey sob a lanterna do nível 1) -> NaN ->
    * NaN*0=NaN -> pixel PRETO. Embrulhamos TODO argumento de sqrt() em abs()
    * (inofensivo p/ args já positivos). COI_NO_SQRTABS=1 desliga. */
-  if (!getenv("COI_NO_SQRTABS") && count == 1 && str[0] && strstr(str[0], "sqrt(")) {
+  /* (s3) DEFAULT OFF: NaN de sqrt nunca foi a raiz (Switch/Android rodam sem);
+   * evita op extra por sqrt no GP. Religar se piscar preto: COI_SQRTABS=1. */
+  if (getenv("COI_SQRTABS") && count == 1 && str[0] && strstr(str[0], "sqrt(")) {
     static char sq[32768];
     size_t L0 = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
     if (L0 < sizeof(sq) / 2) {
