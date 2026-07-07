@@ -266,7 +266,7 @@ int ungetc_fake(int c, FILE *f) { if (is_fake_file(f)) return -1; return ungetc(
 // AAsset emulation + game-archive fopen
 // ---------------------------------------------------------------------------
 
-typedef struct { FILE *f; long size; } Asset;
+typedef struct { FILE *f; long size; int is_music; unsigned long total_read; unsigned reads; } Asset;
 
 void *AAssetManager_fromJava_fake(void *env, void *mgr) { (void)env; (void)mgr; return (void *)1; }
 
@@ -308,8 +308,9 @@ void *AAssetManager_open_fake(void *mgr, const char *path, int mode) {
   debugPrintf("AAsset: open(%s) -> %s\n", path, f ? "ok" : "MISSING");
   if (!f) return NULL;
   setvbuf(f, NULL, _IOFBF, 16 * 1024);
-  Asset *a = malloc(sizeof(*a));
+  Asset *a = calloc(1, sizeof(*a));
   a->f = f;
+  a->is_music = strstr(path, "music/") != NULL;
   fseek(f, 0, SEEK_END); a->size = ftell(f); fseek(f, 0, SEEK_SET);
   return a;
 }
@@ -317,6 +318,7 @@ void *AAssetManager_open_fake(void *mgr, const char *path, int mode) {
 int AAsset_openFileDescriptor_fake(void *asset, long *outStart, long *outLength) {
   Asset *a = asset;
   if (!a) return -1;
+  if (a->is_music) debugPrintf("AAsset: openFileDescriptor on music asset (size=%ld)\n", a->size);
   fflush(a->f);
   int fd = dup(fileno(a->f));
   if (fd < 0) return -1;
@@ -326,11 +328,23 @@ int AAsset_openFileDescriptor_fake(void *asset, long *outStart, long *outLength)
 }
 void AAsset_close_fake(void *asset) { Asset *a = asset; if (a) { fclose(a->f); free(a); } }
 int AAsset_read_fake(void *asset, void *buf, size_t count) {
-  Asset *a = asset; return a ? (int)fread(buf, 1, count, a->f) : -1;
+  Asset *a = asset;
+  if (!a) return -1;
+  int got = (int)fread(buf, 1, count, a->f);
+  if (a->is_music) {
+    a->total_read += (got > 0) ? (unsigned long)got : 0;
+    a->reads++;
+    if (a->reads <= 8 || (a->reads % 32) == 0 || got <= 0)
+      debugPrintf("AAsset: music read #%u want=%zu got=%d total=%lu/%ld\n",
+                  a->reads, count, got, a->total_read, a->size);
+  }
+  return got;
 }
 long AAsset_seek_fake(void *asset, long off, int whence) {
   Asset *a = asset;
   if (!a || fseek(a->f, off, whence) < 0) return -1;
+  if (a->is_music)
+    debugPrintf("AAsset: music seek off=%ld whence=%d -> %ld\n", off, whence, ftell(a->f));
   return ftell(a->f);
 }
 long AAsset_getLength_fake(void *asset) { Asset *a = asset; return a ? a->size : 0; }
