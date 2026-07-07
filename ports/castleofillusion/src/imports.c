@@ -1859,7 +1859,13 @@ static void *my_dlopen(const char *name, int flag) {
   }
   return dlopen(name, flag);
 }
-static int   my_dlclose(void *h) { return dlclose(h); }
+/* 🔑 FIX crash de áudio: FMOD_OS_Output_GetDefault faz dlopen("libOpenSLES.so")
+ * (recebe nosso SL_MAGIC) e dlclose logo em seguida (só sonda existência).
+ * Repassar o handle FAKE pro dlclose real explode no ld-linux (memcpy NULL). */
+static int   my_dlclose(void *h) {
+  if (h == SL_MAGIC) { fprintf(stderr, "[sl] dlclose(shim) -> 0\n"); return 0; }
+  return dlclose(h);
+}
 
 /* ---- GL wrappers com LOG (pinpoint do stack-smash no renderer init) ---- */
 static void rgl(const char *n, void **slot) {
