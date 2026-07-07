@@ -452,10 +452,16 @@ static void hp_fna_poll(void *dev) {
   EV(E_LX) =  lx; EV(E_LY) = -ly;   // engine wants up-positive Y
   EV(E_RX) =  rx; EV(E_RY) = -ry;
   EV(E_DUP) = d_up; EV(E_DDOWN) = d_dn; EV(E_DLEFT) = d_lf; EV(E_DRIGHT) = d_rt;
-  EV(E_ENG_X) = a;  // A(south) -> elem14 = menu Confirm / engine X
-  EV(E_ENG_A) = b;  // B(east)  -> elem15 = menu Cancel / engine A
-  EV(E_ENG_B) = x;  // X(west)  -> elem16 = engine B
-  EV(E_ENG_Y) = y;
+  // engine buttons 1:1, IN-LEVEL ONLY (A=15 is the engine's jump/interact
+  // "A"). In menus elem14/15 double as widget Confirm/Cancel, which made the
+  // A that opened a submenu instantly cancel it -- menu confirm/cancel go
+  // through the UIMenu_Update hook + backButtonPressed instead.
+  if (*(void **)((uint8_t *)game_mod.load_virtbase + 0x2d12cc)) {  // GOPlayer_Active
+    EV(E_ENG_A) = a;  // A(south) -> elem15 = engine A (jump/interact)
+    EV(E_ENG_X) = x;  // X(west)  -> elem14 = engine X
+    EV(E_ENG_B) = b;  // B(east)  -> elem16 = engine B
+    EV(E_ENG_Y) = y;  // Y(north) -> elem17 = engine Y
+  }
   EV(E_L1) = l1; EV(E_R1) = r1; EV(E_L2) = l2; EV(E_R2) = r2;
   EV(E_START) = start; EV(E_SELECT) = sel;
 
@@ -546,11 +552,24 @@ static void hp_controls_mode_update(void) {
     hp_controls_set_mode(1);
   }
 
-  // experiment: /dev/shm/hp_cm0 forces GOPlayer_CurrentControlMode=0 (console
-  // control scheme?) -- candidate for making A/B/X/Y act in gameplay
-  if (access("/dev/shm/hp_cm0", F_OK) == 0) {
-    int *pcm = (int *)(b + 0x2256a8);
-    if (*pcm != 0) { debugPrintf("player: ControlMode %d -> 0\n", *pcm); *pcm = 0; }
+  // GOPlayer control scheme = 2 (pad/console): GOPlayer_UpdateControls switches
+  // on (mode-1) with 5 cases -- mode 1 = touch tap-to-move (action buttons
+  // dead), mode 2 = GOCharacterAI_UpdateControls (the classic pad reader:
+  // movement + A/B/X/Y actions), mode 3 = no-op, 4/5 = touch variants, mode 0
+  // = INVALID (falls off the jump table: movement dies). BOTH bytes must be
+  // forced: GOPlayer_UpdateControls reloads Current from GOPlayer_NewControlMode
+  // every frame (this is why the old Current-only experiment kept reverting).
+  // They are 1-BYTE globals -- a 4-byte write clobbers the neighbours.
+  // /dev/shm/hp_cm1 restores the touch scheme (debug).
+  if (access("/dev/shm/hp_cm1", F_OK) != 0) {
+    uint8_t *cm_cur = (uint8_t *)so_try_find_addr(&game_mod, "GOPlayer_CurrentControlMode");
+    uint8_t *cm_new = (uint8_t *)so_try_find_addr(&game_mod, "GOPlayer_NewControlMode");
+    if (cm_cur && cm_new && (*cm_cur != 2 || *cm_new != 2)) {
+      static int logged = 0;
+      if (!logged) { debugPrintf("player: ControlMode cur=%d new=%d -> 2/2 (pad scheme)\n", *cm_cur, *cm_new); logged = 1; }
+      *cm_cur = 2;
+      *cm_new = 2;
+    }
   }
 
   if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
@@ -686,7 +705,9 @@ static void update_gamepad(void) {
     uint64_t bt = gc_btn(SDL_CONTROLLER_BUTTON_B) ? 1 : 0;
     uint64_t st = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1 : 0;
     if (a && !a_prev) {
-      if (dialog) hp_queue_tap(screen_width * 0.5f, screen_height * 0.86f);
+      // the dialog pointer can dangle (non-NULL) after leaving a level, which
+      // would silently turn menu-A into a useless tap -- only honor it in-level
+      if (dialog && in_level) hp_queue_tap(screen_width * 0.5f, screen_height * 0.86f);
       else g_fe_confirm = 8;                  // consumed by hp_uimenu_update
     } else if (g_fe_confirm > 0) {
       g_fe_confirm--;
