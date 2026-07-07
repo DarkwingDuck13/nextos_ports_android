@@ -126,6 +126,139 @@ int egl_bringup(void) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Cursor overlay: seta desenhada POR NOS em GLES2 (mesma do legomovie). main.c
+// seta a posicao e um contador de frames de visibilidade; a seta so aparece
+// enquanto o stick direito esta sendo empurrado (fallback de toque p/ menus,
+// start/pause e gameplay). Estado GL salvo e restaurado a cada draw.
+// ---------------------------------------------------------------------------
+float g_cursor_overlay_x = -1.0f, g_cursor_overlay_y = -1.0f;
+volatile int g_cursor_overlay_show = 0;   // frames restantes (main decrementa)
+
+static GLuint cur_prog = 0;
+static GLint  cur_uni_color = -1;
+
+static GLuint cur_compile(GLenum type, const char *src) {
+  GLuint sh = glCreateShader(type);
+  glShaderSource(sh, 1, &src, NULL);
+  glCompileShader(sh);
+  GLint ok = 0;
+  glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+  if (!ok) { glDeleteShader(sh); return 0; }
+  return sh;
+}
+
+static void cursor_overlay_init(void) {
+  if (cur_prog) return;
+  const char *vs =
+      "attribute vec2 aPos;\n"
+      "void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+  const char *fs =
+      "precision mediump float;\n"
+      "uniform vec4 uColor;\n"
+      "void main(){ gl_FragColor = uColor; }\n";
+  GLuint v = cur_compile(GL_VERTEX_SHADER, vs);
+  GLuint f = cur_compile(GL_FRAGMENT_SHADER, fs);
+  if (!v || !f) return;
+  cur_prog = glCreateProgram();
+  glAttachShader(cur_prog, v);
+  glAttachShader(cur_prog, f);
+  glBindAttribLocation(cur_prog, 0, "aPos");
+  glLinkProgram(cur_prog);
+  glDeleteShader(v);
+  glDeleteShader(f);
+  GLint ok = 0;
+  glGetProgramiv(cur_prog, GL_LINK_STATUS, &ok);
+  if (!ok) { glDeleteProgram(cur_prog); cur_prog = 0; return; }
+  cur_uni_color = glGetUniformLocation(cur_prog, "uColor");
+  debugPrintf("cursor overlay: programa GLES2 pronto\n");
+}
+
+static void cursor_overlay_draw(void) {
+  if (g_cursor_overlay_show <= 0 || g_cursor_overlay_x < 0.0f)
+    return;
+  cursor_overlay_init();
+  if (!cur_prog) return;
+
+  GLint prev_prog = 0, prev_ab = 0, prev_vp[4];
+  glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
+  glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_ab);
+  glGetIntegerv(GL_VIEWPORT, prev_vp);
+  GLboolean was_blend = glIsEnabled(GL_BLEND);
+  GLboolean was_depth = glIsEnabled(GL_DEPTH_TEST);
+  GLboolean was_scis  = glIsEnabled(GL_SCISSOR_TEST);
+  GLboolean was_cull  = glIsEnabled(GL_CULL_FACE);
+  GLboolean was_sten  = glIsEnabled(GL_STENCIL_TEST);
+  GLint a0_enabled = 0, a0_size = 4, a0_type = GL_FLOAT, a0_norm = 0, a0_stride = 0, a0_buf = 0;
+  void *a0_ptr = NULL;
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &a0_enabled);
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_SIZE, &a0_size);
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_TYPE, &a0_type);
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &a0_norm);
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &a0_stride);
+  glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &a0_buf);
+  glGetVertexAttribPointerv(0, GL_VERTEX_ATTRIB_ARRAY_POINTER, &a0_ptr);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, screen_width, screen_height);
+  glDisable(GL_BLEND);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_STENCIL_TEST);
+  glDepthMask(GL_FALSE);
+  glUseProgram(cur_prog);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+  const float px = g_cursor_overlay_x, py = g_cursor_overlay_y;
+  const float W = (float)screen_width, H = (float)screen_height;
+#define NDCX(X) (2.0f * (X) / W - 1.0f)
+#define NDCY(Y) (1.0f - 2.0f * (Y) / H)
+  float base[6][2] = {
+    { px,          py          },
+    { px,          py + 26.0f  },
+    { px + 18.0f,  py + 18.0f  },
+    { px + 6.0f,   py + 17.0f  },
+    { px + 11.0f,  py + 28.0f  },
+    { px + 15.0f,  py + 26.0f  },
+  };
+  float verts[6][2];
+  for (int pass = 0; pass < 2; pass++) {
+    for (int i = 0; i < 6; i++) {
+      verts[i][0] = NDCX(base[i][0]);
+      verts[i][1] = NDCY(base[i][1]);
+    }
+    if (pass == 0) {
+      for (int i = 1; i < 6; i++) {
+        verts[i][0] = NDCX(base[i][0] + (base[i][0] - base[0][0]) * 0.22f);
+        verts[i][1] = NDCY(base[i][1] + (base[i][1] - base[0][1]) * 0.22f);
+      }
+    }
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, verts);
+    glEnableVertexAttribArray(0);
+    if (cur_uni_color >= 0) {
+      if (pass == 0) glUniform4f(cur_uni_color, 0.0f, 0.0f, 0.0f, 1.0f);
+      else           glUniform4f(cur_uni_color, 1.0f, 0.85f, 0.1f, 1.0f);
+    }
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+  }
+#undef NDCX
+#undef NDCY
+
+  glBindBuffer(GL_ARRAY_BUFFER, a0_buf);
+  glVertexAttribPointer(0, a0_size, a0_type, (GLboolean)a0_norm, a0_stride, a0_ptr);
+  if (!a0_enabled) glDisableVertexAttribArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, prev_ab);
+  glUseProgram(prev_prog);
+  if (was_blend) glEnable(GL_BLEND);
+  if (was_depth) glEnable(GL_DEPTH_TEST);
+  if (was_scis)  glEnable(GL_SCISSOR_TEST);
+  if (was_cull)  glEnable(GL_CULL_FACE);
+  if (was_sten)  glEnable(GL_STENCIL_TEST);
+  glDepthMask(GL_TRUE);
+  glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+}
+
 void egl_present(void) {
   gl_acquire();
   if (config.show_fps)
@@ -146,6 +279,7 @@ void egl_present(void) {
     glClearColor(cc[0], cc[1], cc[2], cc[3]);
     if (scis) glEnable(GL_SCISSOR_TEST);
   }
+  cursor_overlay_draw();
   SDL_GL_SwapWindow(g_window);
   ++egl_swap_count;
   gl_release_if_wanted();

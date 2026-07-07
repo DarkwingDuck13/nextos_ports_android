@@ -53,6 +53,11 @@ size_t text_size = 0;
 // default; flip to 1 to chase a controller-mapping issue).
 int g_padlog = 0;
 
+// cursor overlay (hooks/egl.c): seta desenhada por nos, aparece so enquanto o
+// stick direito e' empurrado — fallback de toque nos menus/start/gameplay.
+extern float g_cursor_overlay_x, g_cursor_overlay_y;
+extern volatile int g_cursor_overlay_show;
+
 #define FUSION_OBJ    ((void *)0x46555331)
 #define GLSV_OBJ      ((void *)0x474c5631)
 #define ACTIVITY_OBJ  ((void *)0x41435431)
@@ -113,6 +118,24 @@ static struct {
 
 static void lotr_fna_poll(void *dev);  // native joypad feeder (defined below)
 static void ninjago_get_fd_len_off(void *h, int *fd, uint64_t *len, uint64_t *off);
+
+// --- diagnostic: log every lePadEvents_Query the game does and its result -----
+// lePadEvents_Query(obj, mask, type) dispatches through *lePadEvents_Data (a
+// table of {a,b,c} fn-ptrs per type); it calls entry[type].fp[1](obj, mask).
+// We replicate the dispatch and log so a live injection maps element -> mask
+// -> action. Gated by g_padqlog so it costs nothing when off.
+int g_padqlog = 0;
+static void **g_padevents_data = NULL;   // &lePadEvents_Data (holds table ptr)
+static int lego_padq_hook(void *obj, unsigned mask, unsigned type) {
+  void *table = g_padevents_data ? *g_padevents_data : NULL;
+  if (!table) return 0;
+  int (*cb)(void *, unsigned) =
+      ((int (**)(void *, unsigned))((char *)table + (size_t)type * 12))[1];
+  int r = cb(obj, mask);
+  if (g_padqlog && r)
+    debugPrintf("PADQ mask=0x%x type=%u -> %d\n", mask, type, r);
+  return r;
+}
 
 static void *exit_deadline_thread(void *arg) {
   (void)arg;
@@ -195,6 +218,19 @@ static void resolve_entry_points(void) {
   if (gfd) {
     hook_arm(gfd, (uintptr_t)&ninjago_get_fd_len_off);
     debugPrintf("audio: hooked fnaFile_GetFDLengthAndOffset @%p\n", (void *)gfd);
+  }
+
+  // diagnostic pad-query hook (SO com g_padqlog): replica o dispatch de
+  // lePadEvents_Query e loga (mask,type,result) pra mapear botao->acao no
+  // combate. Desligado no release -> sem hook, o engine roda o Query original.
+  g_padevents_data = (void **)so_try_find_addr(&game_mod, "lePadEvents_Data");
+  if (g_padqlog) {
+    uintptr_t q = so_try_find_addr(&game_mod, "_Z17lePadEvents_QueryP12GEGAMEOBJECTjj");
+    if (q && g_padevents_data) {
+      hook_arm(q, (uintptr_t)&lego_padq_hook);
+      debugPrintf("padq: hooked lePadEvents_Query @%p (data=%p)\n",
+                  (void *)q, (void *)g_padevents_data);
+    }
   }
 
   g_goplayer_active = (uint32_t *)so_try_find_addr(&game_mod, "GOPlayer_Active");
@@ -401,6 +437,9 @@ static void open_controller(void) {
       g_pad = SDL_GameControllerOpen(i);
       if (g_pad) {
         debugPrintf("input: opened controller '%s'\n", SDL_GameControllerName(g_pad));
+        { char *m = SDL_GameControllerMapping(g_pad);
+          debugPrintf("input: mapping = %s\n", m ? m : "(null)");
+          SDL_free(m); }
         return;
       }
     }
@@ -529,6 +568,16 @@ static void lotr_fna_poll(void *dev) {
   if (d_rt) lx =  1.f;
   if (d_up) ly = -1.f;
   if (d_dn) ly =  1.f;
+  // O personagem no gameplay le os ELEMENTOS de DPad do device (nao o eixo do
+  // stick): um empurrao puro no analogico deixava o ninja parado. Espelhamos o
+  // stick -> dpad acima de um limiar (mesmo fix do LOTR/legohp1; o proprio
+  // geControls_DPadFromAnalogStick do engine usa 0.6, mas so roda nos menus).
+  // O E_LX/E_LY continua com o valor analogico para o que le o eixo (camera/mira).
+  {
+    const float DZ = 0.5f;
+    if (lx < -DZ) d_lf = 1; else if (lx > DZ) d_rt = 1;
+    if (ly < -DZ) d_up = 1; else if (ly > DZ) d_dn = 1;
+  }
 
   int a = gc_btn(SDL_CONTROLLER_BUTTON_A), b = gc_btn(SDL_CONTROLLER_BUTTON_B);
   int x = gc_btn(SDL_CONTROLLER_BUTTON_X), y = gc_btn(SDL_CONTROLLER_BUTTON_Y);
@@ -546,6 +595,23 @@ static void lotr_fna_poll(void *dev) {
   // headless test inject: /dev/shm/ninjagot_dir "lx ly", /dev/shm/ninjagot_btn "<elem> <0|1>"
   { FILE *df = fopen("/dev/shm/ninjagot_dir", "r");
     if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
+
+  // DIAGNOSTIC (g_padqlog): log which physical face/shoulder button EDGED this
+  // frame, so the PADQ mask lines that follow map button -> combat action.
+  {
+    extern int g_padqlog;
+    if (g_padqlog) {
+      static int pa,pb,px,py,pl,pr,ps;
+      if (a&&!pa) debugPrintf(">>> BTN A (south)\n");
+      if (b&&!pb) debugPrintf(">>> BTN B (east)\n");
+      if (x&&!px) debugPrintf(">>> BTN X (west)\n");
+      if (y&&!py) debugPrintf(">>> BTN Y (north)\n");
+      if (l1&&!pl) debugPrintf(">>> BTN L1\n");
+      if (r1&&!pr) debugPrintf(">>> BTN R1\n");
+      if (start&&!ps) debugPrintf(">>> BTN START\n");
+      pa=a;pb=b;px=x;py=y;pl=l1;pr=r1;ps=start;
+    }
+  }
 
   // DIAGNOSTIC: dump raw pad state so a stuck axis/button is visible in debug.log.
   // Throttled; only when something is active (or every ~3s to catch a resting drift).
@@ -765,43 +831,51 @@ int main(int argc, char *argv[]) {
         cy = screen_height * (625.0f / 720.0f);
       }
 
-      // FE/menu é NATIVO neste build (a seleção anda pelo joypad device e o
-      // Confirm=elem18 é alimentado pelo A no lotr_fna_poll). O tap sintético
-      // no A/B/START (herança do Marvel, FE touch-only) clicava em cima de
-      // qualquer coisa na posição fixa/cursor — removido. O cursor do stick
-      // direito vira fallback SILENCIOSO: mira sem tocar, R3 dá o tap (para
-      // alguma tela eventualmente touch-only).
-      if (frontend_or_pause && g_pad) {
+      // CURSOR universal (fallback de toque, modelo legomovie): o stick DIREITO
+      // move a seta (overlay em hooks/egl.c) em QUALQUER contexto — menu, start/
+      // pause e gameplay. A seta so APARECE enquanto o stick e' empurrado
+      // (qualquer direcao) e some ~0.5s depois de soltar; se nao mexer, nao
+      // aparece. Serve pra tocar em elementos touch-only (opcoes de menu, pontos
+      // de montar/tocar no gameplay) sem atrapalhar os botoes normais.
+      (void)cursor_down;
+      if (g_pad) {
         const float scale = 1.f / 32767.0f;
         int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
         int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
         { FILE *rf = fopen("/dev/shm/ninjagot_rstick", "r");
           if (rf) { int fx, fy; if (fscanf(rf, "%d %d", &fx, &fy) == 2) { raw_rx = fx; raw_ry = fy; } fclose(rf); } }
-        int active = (abs(raw_rx) > STICK_DEADZONE || abs(raw_ry) > STICK_DEADZONE);
-        if (active) {
+        // deadzone GRANDE: o adaptador USB tem drift no analogico direito parado.
+        const int CURSOR_DZ = 12000;
+        if (abs(raw_rx) > CURSOR_DZ || abs(raw_ry) > CURSOR_DZ) {
           const float speed = 14.0f;
-          cx += raw_rx * scale * speed;
-          cy += raw_ry * scale * speed;
+          if (abs(raw_rx) > CURSOR_DZ) cx += raw_rx * scale * speed;
+          if (abs(raw_ry) > CURSOR_DZ) cy += raw_ry * scale * speed;
           if (cx < 0.0f) cx = 0.0f; else if (cx > screen_width) cx = screen_width;
           if (cy < 0.0f) cy = 0.0f; else if (cy > screen_height) cy = screen_height;
           cursor_used = 1;
+          g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
+          g_cursor_overlay_show = 120;         // some ~4s depois do ultimo movimento (30fps)
+        } else if (g_cursor_overlay_show > 0) {
+          g_cursor_overlay_show--;
         }
-        (void)cursor_down;
       }
 
-      // A = tap: no cursor se o jogador mirou com o stick direito, senão na
-      // posição do PLAY desta tela-título (centro-inferior 640x640 de 1280x720
-      // — screenshot; o (1190,625) herdado do Marvel caía nos TERMOS aqui).
-      int press = gc_btn(SDL_CONTROLLER_BUTTON_A) ||
-                  gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+      // TAP no cursor: no menu/pause = A (la' A e' confirmar); no gameplay = R3
+      // (clique do stick direito — A no jogo e' pulo). Injeta um toque na seta.
+      int press = frontend_or_pause ? gc_btn(SDL_CONTROLLER_BUTTON_A)
+                                    : gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
       { FILE *af = fopen("/dev/shm/ninjagot_a", "r");
         if (af) { press = 1; fclose(af); remove("/dev/shm/ninjagot_a"); } }
-      if (press && !press_prev && !in_level) {
-        want_tap = 1;
-        wx = cursor_used ? cx : screen_width  * (640.0f / 1280.0f);
-        wy = cursor_used ? cy : screen_height * (640.0f / 720.0f);
-        debugPrintf("frontend: pad -> tap (%.0f,%.0f) game_mode=%d\n",
-                    wx, wy, p_game_mode ? *p_game_mode : -1);
+      if (press && !press_prev) {
+        if (cursor_used) { want_tap = 1; wx = cx; wy = cy; }
+        else if (!in_level) {   // title sem cursor: A cai no PLAY (centro-inferior)
+          want_tap = 1;
+          wx = screen_width * (640.0f / 1280.0f);
+          wy = screen_height * (640.0f / 720.0f);
+        }
+        if (want_tap)
+          debugPrintf("cursor: tap (%.0f,%.0f) ctx=%s\n", wx, wy,
+                      frontend_or_pause ? "menu" : "game");
       }
       press_prev = press;
 
