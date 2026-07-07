@@ -866,9 +866,19 @@ int main(int argc, char *argv[]) {
                                     : gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
       { FILE *af = fopen("/dev/shm/ninjagot_a", "r");
         if (af) { press = 1; fclose(af); remove("/dev/shm/ninjagot_a"); } }
+      // R3 no gameplay (fallback de toque dentro da fase): tapa SEMPRE na posicao
+      // atual da seta e a pisca, mesmo que o jogador ainda nao tenha mexido o
+      // stick nesta fase. No menu mantem o comportamento antigo (A + cursor_used).
+      { FILE *rf = fopen("/dev/shm/ninjagot_r3", "r");
+        if (rf) { press = 1; fclose(rf); remove("/dev/shm/ninjagot_r3"); } }
       if (press && !press_prev) {
-        if (cursor_used) { want_tap = 1; wx = cx; wy = cy; }
-        else if (!in_level) {   // title sem cursor: A cai no PLAY (centro-inferior)
+        if (!frontend_or_pause) {          // GAMEPLAY: R3 sempre tapa na seta
+          want_tap = 1; wx = cx; wy = cy;
+          g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
+          g_cursor_overlay_show = 60;      // pisca a seta ~2s no clique
+        } else if (cursor_used) {          // menu/pause com cursor: tapa na seta
+          want_tap = 1; wx = cx; wy = cy;
+        } else if (!in_level) {            // title sem cursor: A cai no PLAY
           want_tap = 1;
           wx = screen_width * (640.0f / 1280.0f);
           wy = screen_height * (640.0f / 720.0f);
