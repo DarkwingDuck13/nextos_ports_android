@@ -1,1450 +1,338 @@
-/*
- * imports.c -- .so import resolution for LSWTCS ARM64
+/* imports.c -- libProject_Douglas_HH.so import resolution (Linux/SDL port)
  *
- * Maps all 286 undefined symbols from libTTapp.so to real
- * libc/GL/EGL functions or our shim implementations.
+ * Binds every undefined dynamic symbol of TFA's libProject_Douglas_HH.so. GL
+ * goes through the serialized hooks (hooks/egl.c); audio to the SDL-backed
+ * OpenSL ES bridge (opensles_shim.c); threads/fs/locale through the bionic
+ * shims; the rest to glibc.
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
  */
 
 #define _GNU_SOURCE
 
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <locale.h>
-#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
-#include <signal.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <syslog.h>
+#include <ctype.h>
+#include <math.h>
 #include <time.h>
-#include <unistd.h>
-#include <wchar.h>
-#include <wctype.h>
-
-#include <SDL2/SDL.h>
+#include <sys/time.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
-#include "android_shim.h"
-#include "egl_shim.h"
-#include "opensles_shim.h"
+#include "config.h"
 #include "so_util.h"
 #include "util.h"
+#include "libc_shim.h"
+#include "pthr.h"
+#include "hooks.h"
+#include "opensles_shim.h"
 
-extern uintptr_t __cxa_atexit;
-extern uintptr_t __cxa_finalize;
+// glibc-provided; bound by address
+extern int __cxa_atexit(void (*)(void *), void *, void *);
 
-FILE *stderr_fake = (FILE *)0x1337;
+// ---------------------------------------------------------------------------
+// small local shims
+// ---------------------------------------------------------------------------
 
-static uint8_t fake_sF[3][0x100];
-static uint64_t __stack_chk_guard_fake = 0x4242424242424242;
+static int *errno_fake(void) { return __errno_location(); }
 
-typedef struct HostMutexEntry {
-  void *guest_addr;
-  pthread_mutex_t mutex;
-  struct HostMutexEntry *next;
-} HostMutexEntry;
-
-typedef struct HostCondEntry {
-  void *guest_addr;
-  pthread_cond_t cond;
-  struct HostCondEntry *next;
-} HostCondEntry;
-
-static HostMutexEntry *g_mutex_entries = NULL;
-static HostCondEntry *g_cond_entries = NULL;
-static pthread_mutex_t g_mutex_registry_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t g_cond_registry_lock = PTHREAD_MUTEX_INITIALIZER;
-/* Vita-style: just log and return — no abort, no loop */
-static void __stack_chk_fail_stub(void) {
-  uintptr_t ra = (uintptr_t)__builtin_return_address(0);
-  if (text_base && ra >= (uintptr_t)text_base &&
-      ra < (uintptr_t)text_base + text_size) {
-    debugPrintf("__stack_chk_fail called from %p (libTTapp.so+0x%lx)\n",
-                (void *)ra, (unsigned long)(ra - (uintptr_t)text_base));
-  } else if (data_base && ra >= (uintptr_t)data_base &&
-             ra < (uintptr_t)data_base + data_size) {
-    debugPrintf("__stack_chk_fail called from %p (libTTapp.so[data]+0x%lx)\n",
-                (void *)ra, (unsigned long)(ra - (uintptr_t)data_base));
-  } else {
-    debugPrintf("__stack_chk_fail called from %p\n", (void *)ra);
-  }
+static void stack_chk_fail_fake(void) {
+  // the false-positive canary branches are NOP'd in main.c; this should never
+  // run. Log rather than abort if it somehow does.
+  debugPrintf("!!! __stack_chk_fail reached (ignored)\n");
 }
 
-/* errno compat */
-static int *__errno_fake(void) { return &errno; }
-
-static pthread_mutex_t *lookup_host_mutex(void *guest_addr, int create) {
-  if (!guest_addr)
-    return NULL;
-
-  pthread_mutex_lock(&g_mutex_registry_lock);
-  for (HostMutexEntry *entry = g_mutex_entries; entry; entry = entry->next) {
-    if (entry->guest_addr == guest_addr) {
-      pthread_mutex_unlock(&g_mutex_registry_lock);
-      return &entry->mutex;
-    }
-  }
-
-  if (!create) {
-    pthread_mutex_unlock(&g_mutex_registry_lock);
-    return NULL;
-  }
-
-  HostMutexEntry *entry = calloc(1, sizeof(*entry));
-  if (!entry) {
-    pthread_mutex_unlock(&g_mutex_registry_lock);
-    return NULL;
-  }
-
-  pthread_mutexattr_t attr;
-  pthread_mutexattr_init(&attr);
-  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-  pthread_mutex_init(&entry->mutex, &attr);
-  pthread_mutexattr_destroy(&attr);
-
-  entry->guest_addr = guest_addr;
-  entry->next = g_mutex_entries;
-  g_mutex_entries = entry;
-  pthread_mutex_unlock(&g_mutex_registry_lock);
-  return &entry->mutex;
+static unsigned usleep_park(useconds_t usec) {
+  extern void egl_gl_ownership_park(void);
+  extern void egl_gl_service_handover(void);
+  egl_gl_ownership_park();
+  struct timespec ts = { (time_t)(usec / 1000000), (long)(usec % 1000000) * 1000 };
+  nanosleep(&ts, NULL);
+  egl_gl_service_handover();
+  return 0;
 }
-
-static int destroy_host_mutex(void *guest_addr) {
-  if (!guest_addr)
-    return 0;
-
-  pthread_mutex_lock(&g_mutex_registry_lock);
-  HostMutexEntry **link = &g_mutex_entries;
-  while (*link) {
-    HostMutexEntry *entry = *link;
-    if (entry->guest_addr == guest_addr) {
-      *link = entry->next;
-      pthread_mutex_unlock(&g_mutex_registry_lock);
-      pthread_mutex_destroy(&entry->mutex);
-      free(entry);
-      return 0;
-    }
-    link = &entry->next;
-  }
-  pthread_mutex_unlock(&g_mutex_registry_lock);
+static unsigned sleep_park(unsigned sec) {
+  extern void egl_gl_ownership_park(void);
+  extern void egl_gl_service_handover(void);
+  egl_gl_ownership_park();
+  struct timespec ts = { (time_t)sec, 0 };
+  nanosleep(&ts, NULL);
+  egl_gl_service_handover();
   return 0;
 }
 
-static pthread_cond_t *lookup_host_cond(void *guest_addr, int create) {
-  if (!guest_addr)
-    return NULL;
+static void abort_log(void) { debugPrintf("!!! game called abort()\n"); abort(); }
+
+// fortified (_chk) libc variants: the trailing dst-size guard arg is ignored
+static void  *memcpy_chk_fake(void *d, const void *s, size_t n, size_t dl){(void)dl;return memcpy(d,s,n);}
+static void  *memmove_chk_fake(void *d, const void *s, size_t n, size_t dl){(void)dl;return memmove(d,s,n);}
+static void  *memset_chk_fake(void *d, int c, size_t n, size_t dl){(void)dl;return memset(d,c,n);}
+static char  *strcpy_chk_fake(char *d, const char *s, size_t dl){(void)dl;return strcpy(d,s);}
+static char  *strncpy_chk_fake(char *d, const char *s, size_t n, size_t dl){(void)dl;return strncpy(d,s,n);}
+static char  *strcat_chk_fake(char *d, const char *s, size_t dl){(void)dl;return strcat(d,s);}
+static size_t strlen_chk_fake(const char *s, size_t ml){(void)ml;return strlen(s);}
+static char  *strchr_chk_fake(const char *s, int c, size_t ml){(void)ml;return strchr(s,c);}
+static char  *strrchr_chk_fake(const char *s, int c, size_t ml){(void)ml;return strrchr(s,c);}
+static int    vsnprintf_chk_fake(char *d, size_t n, int fl, size_t dl, const char *fmt, va_list ap){(void)fl;(void)dl;return vsnprintf(d,n,fmt,ap);}
+static int    vsprintf_chk_fake(char *d, int fl, size_t dl, const char *fmt, va_list ap){(void)fl;(void)dl;return vsprintf(d,fmt,ap);}
+static char  *strncpy_chk2_fake(char *d, const char *s, size_t n, size_t dl, size_t sl){(void)dl;(void)sl;return strncpy(d,s,n);}
+
+static int android_log_print_fake(int prio, const char *tag, const char *fmt, ...) {
+  (void)prio; char buf[512]; va_list ap; va_start(ap, fmt);
+  vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+  debugPrintf("[alog:%s] %s\n", tag ? tag : "?", buf); return 0;
+}
+
+// ---------------------------------------------------------------------------
+// import table
+// ---------------------------------------------------------------------------
 
-  pthread_mutex_lock(&g_cond_registry_lock);
-  for (HostCondEntry *entry = g_cond_entries; entry; entry = entry->next) {
-    if (entry->guest_addr == guest_addr) {
-      pthread_mutex_unlock(&g_cond_registry_lock);
-      return &entry->cond;
-    }
-  }
-
-  if (!create) {
-    pthread_mutex_unlock(&g_cond_registry_lock);
-    return NULL;
-  }
-
-  HostCondEntry *entry = calloc(1, sizeof(*entry));
-  if (!entry) {
-    pthread_mutex_unlock(&g_cond_registry_lock);
-    return NULL;
-  }
-
-  pthread_cond_init(&entry->cond, NULL);
-  entry->guest_addr = guest_addr;
-  entry->next = g_cond_entries;
-  g_cond_entries = entry;
-  pthread_mutex_unlock(&g_cond_registry_lock);
-  return &entry->cond;
-}
-
-static int destroy_host_cond(void *guest_addr) {
-  if (!guest_addr)
-    return 0;
-
-  pthread_mutex_lock(&g_cond_registry_lock);
-  HostCondEntry **link = &g_cond_entries;
-  while (*link) {
-    HostCondEntry *entry = *link;
-    if (entry->guest_addr == guest_addr) {
-      *link = entry->next;
-      pthread_mutex_unlock(&g_cond_registry_lock);
-      pthread_cond_destroy(&entry->cond);
-      free(entry);
-      return 0;
-    }
-    link = &entry->next;
-  }
-  pthread_mutex_unlock(&g_cond_registry_lock);
-  return 0;
-}
-
-/* __android_log */
-int __android_log_print_fake(int prio, const char *tag, const char *fmt, ...) {
-  (void)prio;
-  va_list list;
-  static char string[0x1000];
-  va_start(list, fmt);
-  vsnprintf(string, sizeof(string), fmt, list);
-  va_end(list);
-  debugPrintf("LOG [%s]: %s\n", tag, string);
-  return 0;
-}
-
-/* fortified libc stubs */
-void *__memcpy_chk(void *dst, const void *src, size_t n, size_t dst_len) {
-  (void)dst_len;
-  return memcpy(dst, src, n);
-}
-
-void *__memmove_chk(void *dst, const void *src, size_t n, size_t dst_len) {
-  (void)dst_len;
-  return memmove(dst, src, n);
-}
-
-void *__memset_chk(void *dst, int c, size_t n, size_t dst_len) {
-  (void)dst_len;
-  return memset(dst, c, n);
-}
-
-char *__strcat_chk(char *dst, const char *src, size_t dst_buf_size) {
-  (void)dst_buf_size;
-  return strcat(dst, src);
-}
-
-char *__strcpy_chk(char *dst, const char *src, size_t dst_len) {
-  (void)dst_len;
-  return strcpy(dst, src);
-}
-
-size_t __strlen_chk(const char *s, size_t max_len) {
-  (void)max_len;
-  return strlen(s);
-}
-
-char *__strrchr_chk(const char *s, int c, size_t n) {
-  (void)n;
-  return strrchr(s, c);
-}
-
-/* bionic-only fortify helpers (glibc has no equivalent) */
-char *__strchr_chk(const char *s, int c, size_t s_len) {
-  (void)s_len;
-  return strchr(s, c);
-}
-
-char *__strncpy_chk2(char *dst, const char *src, size_t n,
-                     size_t dst_len, size_t src_len) {
-  (void)dst_len; (void)src_len;
-  return strncpy(dst, src, n);
-}
-
-int __vsprintf_chk(char *dst, int flags, size_t dst_len_from_compiler,
-                    const char *fmt, va_list ap) {
-  (void)flags;
-  (void)dst_len_from_compiler;
-  return vsprintf(dst, fmt, ap);
-}
-
-int __vsnprintf_chk(char *dst, size_t supplied_size, int flags,
-                     size_t dst_len_from_compiler, const char *fmt,
-                     va_list ap) {
-  (void)flags;
-  (void)dst_len_from_compiler;
-  return vsnprintf(dst, supplied_size, fmt, ap);
-}
-
-ssize_t __read_chk(int fd, void *buf, size_t count, size_t buf_size) {
-  (void)buf_size;
-  return read(fd, buf, count);
-}
-
-int __open_2(const char *pathname, int flags) {
-  const char *resolved = resolve_android_path(pathname);
-  int fd = open(resolved, flags);
-  if (strncmp(pathname, "/dev/", 5) != 0) {
-    debugPrintf("open(\"%s\" -> \"%s\", 0x%x) = %d\n", pathname, resolved, flags, fd);
-  }
-  return fd;
-}
-
-/* open() wrapper for debugging — skip /dev/ spam */
-int open_fake(const char *pathname, int flags, ...) {
-  const char *resolved = resolve_android_path(pathname);
-  int fd;
-  mode_t mode = 0;
-  int has_mode = 0;
-  if (flags & O_CREAT) {
-    va_list ap;
-    va_start(ap, flags);
-    mode = (mode_t)va_arg(ap, int);
-    va_end(ap);
-    has_mode = 1;
-    fd = open(resolved, flags, mode);
-  } else {
-    fd = open(resolved, flags);
-  }
-  if (strncmp(pathname, "/dev/", 5) != 0) {
-    if (fd >= 0) {
-      if (has_mode)
-        debugPrintf("open(\"%s\" -> \"%s\", 0x%x, 0%o) = %d\n",
-                    pathname, resolved, flags, (unsigned)mode, fd);
-      else
-        debugPrintf("open(\"%s\" -> \"%s\", 0x%x) = %d\n",
-                    pathname, resolved, flags, fd);
-    } else {
-      if (has_mode)
-        debugPrintf("open(\"%s\" -> \"%s\", 0x%x, 0%o) = %d (errno=%d: %s)\n",
-                    pathname, resolved, flags, (unsigned)mode, fd, errno, strerror(errno));
-      else
-        debugPrintf("open(\"%s\" -> \"%s\", 0x%x) = %d (errno=%d: %s)\n",
-                    pathname, resolved, flags, fd, errno, strerror(errno));
-    }
-  }
-  return fd;
-}
-
-static int mkdir_fake(const char *pathname, mode_t mode) {
-  const char *resolved = resolve_android_path(pathname);
-  int ret = mkdir(resolved, mode);
-  if (ret == 0)
-    debugPrintf("mkdir(\"%s\" -> \"%s\", 0%o) = 0\n",
-                pathname, resolved, (unsigned)mode);
-  else
-    debugPrintf("mkdir(\"%s\" -> \"%s\", 0%o) = -1 (errno=%d: %s)\n",
-                pathname, resolved, (unsigned)mode, errno, strerror(errno));
-  return ret;
-}
-
-static int remove_fake(const char *pathname) {
-  const char *resolved = resolve_android_path(pathname);
-  int ret = remove(resolved);
-  if (ret == 0)
-    debugPrintf("remove(\"%s\" -> \"%s\") = 0\n", pathname, resolved);
-  else
-    debugPrintf("remove(\"%s\" -> \"%s\") = -1 (errno=%d: %s)\n",
-                pathname, resolved, errno, strerror(errno));
-  return ret;
-}
-
-static int rename_fake(const char *oldpath, const char *newpath) {
-  char resolved_old[2048];
-  char resolved_new[2048];
-  const char *resolved_old_src = resolve_android_path(oldpath);
-  const char *resolved_new_src;
-  int ret;
-
-  SDL_strlcpy(resolved_old, resolved_old_src, sizeof(resolved_old));
-  resolved_new_src = resolve_android_path(newpath);
-  SDL_strlcpy(resolved_new, resolved_new_src, sizeof(resolved_new));
-  ret = rename(resolved_old, resolved_new);
-  if (ret == 0) {
-    debugPrintf("rename(\"%s\" -> \"%s\", \"%s\" -> \"%s\") = 0\n",
-                oldpath, resolved_old, newpath, resolved_new);
-  } else {
-    debugPrintf("rename(\"%s\" -> \"%s\", \"%s\" -> \"%s\") = -1 (errno=%d: %s)\n",
-                oldpath, resolved_old, newpath, resolved_new, errno, strerror(errno));
-  }
-  return ret;
-}
-
-/* ctype compat */
-size_t __ctype_get_mb_cur_max_fake(void) { return 4; }
-
-/* dl_iterate_phdr stub */
-int dl_iterate_phdr_fake(void *callback, void *data) {
-  (void)callback;
-  (void)data;
-  return 0;
-}
-
-/* android_set_abort_message stub */
-void android_set_abort_message_fake(const char *msg) {
-  debugPrintf("android_set_abort_message: %s\n", msg ? msg : "(null)");
-}
-
-/* dlopen/dlsym stubs — game may dynamically load libGLESv2.so etc. */
-void *dlopen_fake(const char *filename, int flags) {
-  debugPrintf("dlopen(\"%s\", %d)\n", filename ? filename : "(null)", flags);
-  return (void *)0xDEAD0001; /* non-NULL dummy handle */
-}
-
-void *dlsym_fake(void *handle, const char *symbol) {
-  debugPrintf("dlsym(%p, \"%s\")\n", handle, symbol);
-  /* Try SDL GL proc address first (covers GL/EGL extensions) */
-  void *ptr = SDL_GL_GetProcAddress(symbol);
-  if (ptr) return ptr;
-  debugPrintf("dlsym: NOT FOUND: %s\n", symbol);
-  return NULL;
-}
-
-int dlclose_fake(void *handle) { (void)handle; return 0; }
-char *dlerror_fake(void) { return NULL; }
-int dladdr_fake(void *addr, void *info) { (void)addr; (void)info; return 0; }
-
-/* getenv/setenv stubs */
-char *getenv_fake(const char *name) {
-  debugPrintf("getenv(\"%s\") -> NULL\n", name);
-  return NULL;
-}
-
-int setenv_fake(const char *name, const char *value, int overwrite) {
-  (void)name; (void)value; (void)overwrite;
-  return 0;
-}
-
-/* __system_property_get stub */
-int __system_property_get_fake(const char *name, char *value) {
-  debugPrintf("__system_property_get(\"%s\")\n", name);
-  value[0] = '\0';
-  return 0;
-}
-
-/* Vita-style: log then call real function */
-void abort_fake(void) {
-  debugPrintf("abort() called from %p\n", __builtin_return_address(0));
-  abort();
-}
-
-void exit_fake(int status) {
-  debugPrintf("exit(%d) called from %p\n", status, __builtin_return_address(0));
-  _exit(status);
-}
-
-/* Vita-style: stub sigaction — game shouldn't install signal handlers */
-int sigaction_fake(int signum, const void *act, void *oldact) {
-  (void)signum; (void)act; (void)oldact;
-  return 0;
-}
-
-/* fopen wrapper for debugging */
-FILE *fopen_fake(const char *filename, const char *mode) {
-  const char *resolved = resolve_android_path(filename);
-  FILE *f;
-
-  f = fopen(resolved, mode);
-  if (!f) {
-    debugPrintf("fopen(\"%s\" -> \"%s\", \"%s\") = NULL (errno=%d: %s)\n",
-                filename, resolved, mode, errno, strerror(errno));
-  } else {
-    debugPrintf("fopen(\"%s\" -> \"%s\", \"%s\") = %p\n",
-                filename, resolved, mode, f);
-  }
-
-  return f;
-}
-
-/* pthread wrappers: guest code passes inline bionic objects by address. */
-int pthread_mutex_init_fake(pthread_mutex_t *uid, const int *mutexattr) {
-  (void)mutexattr;
-  return lookup_host_mutex(uid, 1) ? 0 : -1;
-}
-
-int pthread_mutex_destroy_fake(pthread_mutex_t *uid) {
-  return destroy_host_mutex(uid);
-}
-
-int pthread_mutex_lock_fake(pthread_mutex_t *uid) {
-  pthread_mutex_t *host = lookup_host_mutex(uid, 1);
-  if (!host)
-    return -1;
-  int ret = pthread_mutex_lock(host);
-  if (ret == 0) egl_shim_on_mutex_post_lock(uid);
-  return ret;
-}
-
-int pthread_mutex_trylock_fake(pthread_mutex_t *uid) {
-  pthread_mutex_t *host = lookup_host_mutex(uid, 1);
-  if (!host)
-    return -1;
-  int ret = pthread_mutex_trylock(host);
-  if (ret == 0) egl_shim_on_mutex_post_lock(uid);
-  return ret;
-}
-
-int pthread_mutex_unlock_fake(pthread_mutex_t *uid) {
-  pthread_mutex_t *host = lookup_host_mutex(uid, 1);
-  if (!host)
-    return -1;
-  egl_shim_on_mutex_pre_unlock(uid);
-  return pthread_mutex_unlock(host);
-}
-
-int pthread_cond_init_fake(pthread_cond_t *cnd, const int *condattr) {
-  (void)condattr;
-  return lookup_host_cond(cnd, 1) ? 0 : -1;
-}
-
-int pthread_cond_destroy_fake(pthread_cond_t *cnd) {
-  return destroy_host_cond(cnd);
-}
-
-int pthread_cond_wait_fake(pthread_cond_t *cnd, pthread_mutex_t *mtx) {
-  pthread_cond_t *host_cnd = lookup_host_cond(cnd, 1);
-  pthread_mutex_t *host_mtx = lookup_host_mutex(mtx, 1);
-  if (!host_cnd || !host_mtx)
-    return -1;
-  return pthread_cond_wait(host_cnd, host_mtx);
-}
-
-int pthread_cond_timedwait_fake(pthread_cond_t *cnd, pthread_mutex_t *mtx,
-                                 const struct timespec *t) {
-  pthread_cond_t *host_cnd = lookup_host_cond(cnd, 1);
-  pthread_mutex_t *host_mtx = lookup_host_mutex(mtx, 1);
-  if (!host_cnd || !host_mtx)
-    return -1;
-  return pthread_cond_timedwait(host_cnd, host_mtx, t);
-}
-
-int pthread_cond_signal_fake(pthread_cond_t *cnd) {
-  pthread_cond_t *host_cnd = lookup_host_cond(cnd, 1);
-  if (!host_cnd)
-    return -1;
-  return pthread_cond_signal(host_cnd);
-}
-
-int pthread_cond_broadcast_fake(pthread_cond_t *cnd) {
-  pthread_cond_t *host_cnd = lookup_host_cond(cnd, 1);
-  if (!host_cnd)
-    return -1;
-  return pthread_cond_broadcast(host_cnd);
-}
-
-typedef struct {
-  void *(*entry)(void *);
-  void *arg;
-} ThreadWrapper;
-
-static void *thread_wrapper_func(void *data) {
-  ThreadWrapper *w = (ThreadWrapper *)data;
-  void *(*entry)(void *) = w->entry;
-  void *arg = w->arg;
-  free(w);
-  debugPrintf("[thread %lx] starting entry=%p arg=%p\n",
-              (unsigned long)pthread_self(), (void *)entry, arg);
-  void *ret = entry(arg);
-  debugPrintf("[thread %lx] entry returned %p\n",
-              (unsigned long)pthread_self(), ret);
-  return ret;
-}
-
-int pthread_create_fake(pthread_t *thread, const void *attr, void *entry,
-                         void *arg) {
-  debugPrintf("pthread_create_fake(entry=%p, arg=%p)\n", entry, arg);
-  ThreadWrapper *w = malloc(sizeof(ThreadWrapper));
-  w->entry = entry;
-  w->arg = arg;
-  pthread_attr_t real_attr;
-  pthread_attr_init(&real_attr);
-  pthread_attr_setstacksize(&real_attr, 2 * 1024 * 1024); // 2MB stack
-  int ret = pthread_create(thread, &real_attr, thread_wrapper_func, w);
-  pthread_attr_destroy(&real_attr);
-  if (ret != 0) free(w);
-  return ret;
-}
-
-static void *pthread_getspecific_fake(pthread_key_t key) {
-  (void)key;
-  return pthread_getspecific(key);
-}
-
-static int pthread_setspecific_fake(pthread_key_t key, const void *value) {
-  return pthread_setspecific(key, value);
-}
-
-int pthread_once_fake(volatile int *once_control, void (*init_routine)(void)) {
-  return pthread_once((pthread_once_t *)once_control, init_routine);
-}
-
-/* GL logging wrappers — diagnose if game makes any GL calls after MakeCurrent */
-typedef const GLubyte *(*PFNGLGETSTRINGIPROC)(GLenum name, GLuint index);
-
-static const GLubyte *glGetString_wrap(GLenum name) {
-  switch (name) {
-  case 0x1f00: /* GL_VENDOR */
-  case 0x1f01: /* GL_RENDERER */
-  case 0x1f02: /* GL_VERSION */
-  case 0x8b8c: /* GL_SHADING_LANGUAGE_VERSION */ {
-    const GLubyte *s = glGetString(name);
-    /* debugPrintf("GL: glGetString(0x%x) = \"%s\"\n", name,
-                s ? (const char *)s : "(null)")); */
-    if (s)
-      return s;
-
-    switch (name) {
-    case 0x1f00:
-      return (const GLubyte *)"Imagination Technologies";
-    case 0x1f01:
-      return (const GLubyte *)"PowerVR Rogue GE8300";
-    case 0x1f02:
-      return (const GLubyte *)"OpenGL ES 2.0";
-    default:
-      return (const GLubyte *)"OpenGL ES GLSL ES 1.00";
-    }
-  }
-  case 0x1f03: { /* GL_EXTENSIONS */
-    static const GLubyte fallback_ext[] =
-        "GL_OES_depth_texture "
-        "GL_OES_depth24 "
-        "GL_OES_packed_depth_stencil "
-        "GL_OES_element_index_uint "
-        "GL_OES_texture_npot "
-        "GL_OES_rgb8_rgba8 "
-        "GL_OES_vertex_array_object "
-        "GL_OES_mapbuffer "
-        "GL_EXT_texture_format_BGRA8888 "
-        "GL_IMG_texture_compression_pvrtc "
-        "GL_OES_compressed_ETC1_RGB8_texture";
-    static GLubyte *ext_cache = NULL;
-    static size_t ext_cache_size = 0;
-
-    const GLubyte *ext = glGetString(name);
-    if (ext && ext[0] != '\0') {
-      /* debugPrintf("GL: glGetString(GL_EXTENSIONS) -> driver string (%zu bytes)\n",
-                  strlen((const char *)ext)); */
-      return ext;
-    }
-
-    PFNGLGETSTRINGIPROC glGetStringiProc =
-        (PFNGLGETSTRINGIPROC)SDL_GL_GetProcAddress("glGetStringi");
-    if (glGetStringiProc) {
-      GLint ext_count = 0;
-      glGetIntegerv(0x821D, &ext_count); /* GL_NUM_EXTENSIONS */
-      if (ext_count > 0) {
-        size_t needed = 1;
-        for (GLint i = 0; i < ext_count; i++) {
-          const GLubyte *item = glGetStringiProc(name, (GLuint)i);
-          if (item && item[0] != '\0')
-            needed += strlen((const char *)item) + 1;
-        }
-        if (needed > 1) {
-          GLubyte *buf = realloc(ext_cache, needed);
-          if (buf) {
-            ext_cache = buf;
-            ext_cache_size = needed;
-            size_t pos = 0;
-            ext_cache[0] = '\0';
-            for (GLint i = 0; i < ext_count; i++) {
-              const GLubyte *item = glGetStringiProc(name, (GLuint)i);
-              if (!item || item[0] == '\0')
-                continue;
-              size_t len = strlen((const char *)item);
-              if (pos + len + 1 >= ext_cache_size)
-                break;
-              memcpy(ext_cache + pos, item, len);
-              pos += len;
-              ext_cache[pos++] = ' ';
-            }
-            if (pos > 0)
-              pos--;
-            ext_cache[pos] = '\0';
-            debugPrintf(
-                "GL: glGetString(GL_EXTENSIONS) -> rebuilt from glGetStringi (%d entries, %zu bytes)\n",
-                ext_count, pos);
-            return ext_cache;
-          }
-        }
-      }
-    }
-
-    /* debugPrintf("GL: glGetString(GL_EXTENSIONS) -> fallback list (%zu bytes)\n",
-                sizeof(fallback_ext) - 1); */
-    return fallback_ext;
-  }
-  default: {
-    const GLubyte *s = glGetString(name);
-    /* debugPrintf("GL: glGetString(0x%x) = \"%s\"\n", name, s ? (const char *)s : "(null)"); */
-    return s;
-  }
-  }
-}
-
-static void glGetIntegerv_wrap(GLenum pname, GLint *data) {
-  glGetIntegerv(pname, data);
-  debugPrintf("GL: glGetIntegerv(0x%x) = %d\n", pname, data ? *data : -1);
-}
-
-static void glFrontFace_wrap(GLenum mode) {
-  egl_shim_ensure_current();
-  /* debugPrintf("GL: glFrontFace(0x%x)\n", mode); */
-  glFrontFace(mode);
-}
-
-static GLenum g_shader_type[512];
-static char g_shader_src[512][2048];
-static GLuint g_prog_attached[256][4];
-static int g_prog_nattached[256];
-
-static int g_createshader_fail = 0, g_createshader_ok = 0;
-static GLuint glCreateShader_wrap(GLenum type) {
-  int got = egl_shim_ensure_current();
-  GLuint s = glCreateShader(type);
-  if (s == 0) {
-    if (g_createshader_fail++ < 6)
-      debugPrintf("GL: CreateShader FAIL tid=%lx ensure=%d ok=%d fail=%d\n",
-                  (unsigned long)pthread_self(), got, g_createshader_ok, g_createshader_fail);
-  } else {
-    g_createshader_ok++;
-    static int once = 0;
-    if (!once) { once = 1;
-      debugPrintf("GL: CreateShader first-OK tid=%lx\n", (unsigned long)pthread_self()); }
-  }
-  if (s < 512) g_shader_type[s] = type;
-  return s;
-}
-
-static GLuint glCreateProgram_wrap(void) {
-  egl_shim_ensure_current();
-  GLuint p = glCreateProgram();
-  /* debugPrintf("GL: glCreateProgram() = %u\n", p); */
-  return p;
-}
-
-static void glGenTextures_wrap(GLsizei n, GLuint *textures) {
-  egl_shim_ensure_current();
-  glGenTextures(n, textures);
-  /* debugPrintf("GL: glGenTextures(%d) = %u\n", n, textures ? textures[0] : 0); */
-}
-
-static void glGenFramebuffers_wrap(GLsizei n, GLuint *framebuffers) {
-  egl_shim_ensure_current();
-  glGenFramebuffers(n, framebuffers);
-  debugPrintf("GL: glGenFramebuffers(%d) = %u\n", n, framebuffers ? framebuffers[0] : 0);
-}
-
-static void glGenBuffers_wrap(GLsizei n, GLuint *buffers) {
-  egl_shim_ensure_current();
-  glGenBuffers(n, buffers);
-  /* debugPrintf("GL: glGenBuffers(%d) = %u\n", n, buffers ? buffers[0] : 0); */
-}
-
-/* Track the currently-bound framebuffer so we can detect when the engine is
-   about to clear the on-screen (default, FBO 0) framebuffer -- that marks the
-   start of a new on-screen frame, and the engine never calls eglSwapBuffers
-   itself (GLSurfaceView model). We present the previous frame at that point,
-   on the render thread that owns the GL context. */
-__thread GLuint g_current_fbo = 0;
-
-static void glBindFramebuffer_wrap(GLenum target, GLuint framebuffer) {
-  egl_shim_ensure_current();
-  if (target == 0x8D40 /* GL_FRAMEBUFFER */ || target == 0x8CA9 /* DRAW */)
-    g_current_fbo = framebuffer;
-  glBindFramebuffer(target, framebuffer);
-}
-
-static void glShaderSource_wrap(GLuint shader, GLsizei count,
-                                const GLchar *const *string,
-                                const GLint *length) {
-  egl_shim_ensure_current();
-  glShaderSource(shader, count, string, length);
-  if (shader < 512) {
-    size_t off = 0;
-    g_shader_src[shader][0] = 0;
-    for (GLsizei i = 0; i < count && off < sizeof(g_shader_src[0]) - 1; i++) {
-      if (!string[i]) continue;
-      size_t l = (length && length[i] >= 0) ? (size_t)length[i] : strlen(string[i]);
-      if (off + l >= sizeof(g_shader_src[0])) l = sizeof(g_shader_src[0]) - 1 - off;
-      memcpy(g_shader_src[shader] + off, string[i], l);
-      off += l;
-    }
-    g_shader_src[shader][off] = 0;
-  }
-}
-
-static void glCompileShader_wrap(GLuint shader) {
-  egl_shim_ensure_current();
-  glCompileShader(shader);
-  GLint ok = 0;
-  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-  if (!ok) {
-    GLchar log[1024];
-    GLsizei len = 0;
-    glGetShaderInfoLog(shader, sizeof(log), &len, log);
-    debugPrintf("GL: glCompileShader(%u) FAILED: %.*s\n", shader, (int)len, log);
-  }
-}
-
-static int g_attach_count[256];
-static void glAttachShader_wrap(GLuint program, GLuint shader) {
-  egl_shim_ensure_current();
-  if (program < 256) {
-    g_attach_count[program]++;
-    if (g_prog_nattached[program] < 4)
-      g_prog_attached[program][g_prog_nattached[program]++] = shader;
-  }
-  glAttachShader(program, shader);
-}
-
-static int g_link_ok = 0, g_link_fail = 0;
-static void glLinkProgram_wrap(GLuint program) {
-  egl_shim_ensure_current();
-  glLinkProgram(program);
-  GLint ok = 0;
-  glGetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (ok) g_link_ok++; else g_link_fail++;
-  if (!ok) {
-    GLchar log[1024];
-    GLsizei len = 0;
-    glGetProgramInfoLog(program, sizeof(log), &len, log);
-    debugPrintf("GL: link FAIL prog=%u attaches=%d ok=%d fail=%d: %.*s\n",
-                program, program < 256 ? g_attach_count[program] : -1,
-                g_link_ok, g_link_fail, (int)len, log);
-    if (program < 256) {
-      for (int i = 0; i < g_prog_nattached[program]; i++) {
-        GLuint sh = g_prog_attached[program][i];
-        debugPrintf("  >> shader %u type=0x%x src[0..200]=<<%.200s>>\n",
-                    sh, sh < 512 ? g_shader_type[sh] : 0,
-                    sh < 512 ? g_shader_src[sh] : "");
-      }
-    }
-  } else if (g_link_ok <= 4 && program < 256) {
-    /* Dump the full shader pair for the first few programs so we can inspect
-       them for Mali-ES2 incompatibilities (highp in fragment, etc.). */
-    for (int i = 0; i < g_prog_nattached[program]; i++) {
-      GLuint sh = g_prog_attached[program][i];
-      if (sh < 512)
-        debugPrintf("SHADERDUMP prog=%u shader=%u type=0x%x\n<<<\n%s\n>>>\n",
-                    program, sh, g_shader_type[sh], g_shader_src[sh]);
-    }
-  }
-}
-
-static void glBindBuffer_wrap(GLenum target, GLuint buffer) {
-  egl_shim_ensure_current();
-  glBindBuffer(target, buffer);
-}
-
-static void glBufferData_wrap(GLenum target, GLsizeiptr size, const void *data,
-                              GLenum usage) {
-  egl_shim_ensure_current();
-  glBufferData(target, size, data, usage);
-}
-
-static void glBufferSubData_wrap(GLenum target, GLintptr offset, GLsizeiptr size,
-                                 const void *data) {
-  egl_shim_ensure_current();
-  glBufferSubData(target, offset, size, data);
-}
-
-static void glBindTexture_wrap(GLenum target, GLuint texture) {
-  egl_shim_ensure_current();
-  glBindTexture(target, texture);
-}
-
-static void glTexImage2D_wrap(GLenum target, GLint level, GLint internalformat,
-                              GLsizei width, GLsizei height, GLint border,
-                              GLenum format, GLenum type, const void *pixels) {
-  egl_shim_ensure_current();
-  glTexImage2D(target, level, internalformat, width, height, border, format, type,
-               pixels);
-  if (level == 0) {
-    static int n = 0;
-    if (n++ < 30) {
-      GLenum e = glGetError();
-      debugPrintf("GL: TexImage2D ifmt=0x%x %dx%d fmt=0x%x type=0x%x err=0x%x\n",
-                  internalformat, width, height, format, type, e);
-    }
-  }
-}
-
-typedef void (*compressed_tex_fn)(GLenum, GLint, GLenum, GLsizei, GLsizei,
-                                  GLint, GLsizei, const void *);
-static compressed_tex_fn p_glCompressedTexImage2D;
-static void glCompressedTexImage2D_wrap(GLenum target, GLint level,
-    GLenum internalformat, GLsizei width, GLsizei height, GLint border,
-    GLsizei imageSize, const void *data) {
-  egl_shim_ensure_current();
-  if (!p_glCompressedTexImage2D)
-    p_glCompressedTexImage2D = (compressed_tex_fn)
-        SDL_GL_GetProcAddress("glCompressedTexImage2D");
-  if (p_glCompressedTexImage2D)
-    p_glCompressedTexImage2D(target, level, internalformat, width, height, border,
-                             imageSize, data);
-  if (level == 0) {
-    static int n = 0;
-    if (n++ < 40) {
-      GLenum e = glGetError();
-      debugPrintf("GL: CompressedTexImage2D ifmt=0x%x %dx%d size=%d err=0x%x\n",
-                  internalformat, width, height, imageSize, e);
-    }
-  }
-}
-
-static void glTexParameteri_wrap(GLenum target, GLenum pname, GLint param) {
-  egl_shim_ensure_current();
-  /* Experiment: force LINEAR filtering. If the engine (or our path) ends up
-     with GL_NEAREST on the upscaled scene/logo textures, everything looks
-     heavily blocked/pixelated. LBBG_NOLINEAR disables this. */
-  if (!getenv("LBBG_NOLINEAR")) {
-    if (pname == 0x2800 /* MAG_FILTER */ && param == 0x2600 /* NEAREST */)
-      param = 0x2601; /* LINEAR */
-    else if (pname == 0x2801 /* MIN_FILTER */ && param == 0x2600 /* NEAREST */)
-      param = 0x2601; /* LINEAR */
-  }
-  glTexParameteri(target, pname, param);
-}
-
-static void glUseProgram_wrap(GLuint program) {
-  egl_shim_ensure_current();
-  static _Thread_local GLuint last_program = UINT32_MAX;
-  if (program != last_program) {
-    /* debugPrintf("GL: glUseProgram(%u)\n", program); */
-  }
-  last_program = program;
-  glUseProgram(program);
-}
-
-static void glUniform1f_wrap(GLint location, GLfloat v0) {
-  egl_shim_ensure_current();
-  glUniform1f(location, v0);
-}
-
-static void glUniform2f_wrap(GLint location, GLfloat v0, GLfloat v1) {
-  egl_shim_ensure_current();
-  glUniform2f(location, v0, v1);
-}
-
-static void glUniform3f_wrap(GLint location, GLfloat v0, GLfloat v1,
-                             GLfloat v2) {
-  egl_shim_ensure_current();
-  glUniform3f(location, v0, v1, v2);
-}
-
-static void glUniform4f_wrap(GLint location, GLfloat v0, GLfloat v1,
-                             GLfloat v2, GLfloat v3) {
-  egl_shim_ensure_current();
-  glUniform4f(location, v0, v1, v2, v3);
-}
-
-static void glUniform1i_wrap(GLint location, GLint v0) {
-  egl_shim_ensure_current();
-  glUniform1i(location, v0);
-}
-
-void glUniform1fv_wrap(GLint location, GLsizei count,
-                       const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniform1fv(location, count, value);
-}
-
-void glUniform2fv_wrap(GLint location, GLsizei count,
-                       const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniform2fv(location, count, value);
-}
-
-void glUniform3fv_wrap(GLint location, GLsizei count,
-                       const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniform3fv(location, count, value);
-}
-
-void glUniform4fv_wrap(GLint location, GLsizei count,
-                       const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniform4fv(location, count, value);
-}
-
-static void glUniform1iv_wrap(GLint location, GLsizei count,
-                              const GLint *value) {
-  egl_shim_ensure_current();
-  glUniform1iv(location, count, value);
-}
-
-static void glUniform2iv_wrap(GLint location, GLsizei count,
-                              const GLint *value) {
-  egl_shim_ensure_current();
-  glUniform2iv(location, count, value);
-}
-
-static void glUniform3iv_wrap(GLint location, GLsizei count,
-                              const GLint *value) {
-  egl_shim_ensure_current();
-  glUniform3iv(location, count, value);
-}
-
-static void glUniform4iv_wrap(GLint location, GLsizei count,
-                              const GLint *value) {
-  egl_shim_ensure_current();
-  glUniform4iv(location, count, value);
-}
-
-static void glUniformMatrix2fv_wrap(GLint location, GLsizei count,
-                                    GLboolean transpose,
-                                    const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniformMatrix2fv(location, count, transpose, value);
-}
-
-static void glUniformMatrix3fv_wrap(GLint location, GLsizei count,
-                                    GLboolean transpose,
-                                    const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniformMatrix3fv(location, count, transpose, value);
-}
-
-static void glUniformMatrix4fv_wrap(GLint location, GLsizei count,
-                                    GLboolean transpose,
-                                    const GLfloat *value) {
-  egl_shim_ensure_current();
-  glUniformMatrix4fv(location, count, transpose, value);
-}
-
-static GLenum glCheckFramebufferStatus_wrap(GLenum target) {
-  egl_shim_ensure_current();
-  GLenum status = glCheckFramebufferStatus(target);
-  static _Thread_local int fb_log_count = 0;
-  if (status != GL_FRAMEBUFFER_COMPLETE || fb_log_count < 12) {
-    debugPrintf("GL: glCheckFramebufferStatus(0x%x) = 0x%x\n", target, status);
-    fb_log_count++;
-  }
-  return status;
-}
-
-static void glClearColor_wrap(GLfloat red, GLfloat green, GLfloat blue,
-                              GLfloat alpha) {
-  egl_shim_ensure_current();
-  static _Thread_local int clear_color_log_count = 0;
-  if (clear_color_log_count < 12) {
-    debugPrintf("GL: glClearColor(%.3f, %.3f, %.3f, %.3f)\n",
-                red, green, blue, alpha);
-    clear_color_log_count++;
-  }
-  glClearColor(red, green, blue, alpha);
-}
-
-static void glClear_wrap(GLbitfield mask) {
-  egl_shim_ensure_current();
-  /* Clearing the default framebuffer => start of an on-screen frame. Present
-     the previously-rendered frame first (skip the very first to avoid showing
-     uninitialised contents). Runs on the engine's render thread, which holds
-     the GL context, so the swap is valid. */
-  if (g_current_fbo == 0) {
-    static __thread int first = 1;
-    if (!first && getenv("LBBG_NOFBCOPY")) egl_shim_present();
-    /* 🔴 The forced full COLOR+DEPTH clear here was WIPING the 3D background:
-       the engine clears DEPTH-only (mask=0x100) between the 3D scene pass and
-       the UI pass, expecting the rendered scene colour to survive. Forcing a
-       COLOR clear erased the scene, leaving only the UI over black. By default
-       now we respect the engine's mask (pass-through). LBBG_FORCECLEAR restores
-       the old behaviour (force full black clear) for debugging garbage. */
-    if (getenv("LBBG_FORCECLEAR") && first) {
-      GLboolean sc = glIsEnabled(0x0C11 /* GL_SCISSOR_TEST */);
-      if (sc) glDisable(0x0C11);
-      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-      glClear(mask | 0x00004000 /* COLOR */ | 0x00000100 /* DEPTH */);
-      if (sc) glEnable(0x0C11);
-      first = 0;
-      return;
-    }
-    first = 0;
-  }
-  glClear(mask);
-}
-
-static void glDrawArrays_wrap(GLenum mode, GLint first, GLsizei count) {
-  egl_shim_ensure_current();
-  static _Thread_local int draw_log_count = 0;
-  if (draw_log_count < 40 || draw_log_count % 200 == 0) {
-    //debugPrintf("GL: glDrawArrays(0x%x, first=%d, count=%d)\n",
-    //            mode, first, count);
-  }
-  draw_log_count++;
-  glDrawArrays(mode, first, count);
-}
-
-static void glDrawElements_wrap(GLenum mode, GLsizei count, GLenum type,
-                                const void *indices) {
-  egl_shim_ensure_current();
-  glDrawElements(mode, count, type, indices);
-}
-
-static void glViewport_wrap(GLint x, GLint y, GLsizei width, GLsizei height) {
-  egl_shim_ensure_current();
-  static int viewport_log_count = 0;
-  if (viewport_log_count < 30) {
-    debugPrintf("GL: glViewport(%d,%d,%d,%d) fbo=%u\n", x, y, width, height, g_current_fbo);
-    viewport_log_count++;
-  }
-  glViewport(x, y, width, height);
-}
-
-/* Import table */
 DynLibFunction dynlib_functions[] = {
-    /* Android stubs */
-    {"__sF", (uintptr_t)&fake_sF},
-    {"__errno", (uintptr_t)&__errno_fake},
-    {"__stack_chk_fail", (uintptr_t)&__stack_chk_fail_stub},
-    {"__stack_chk_guard", (uintptr_t)&__stack_chk_guard_fake},
-    {"__cxa_atexit", (uintptr_t)&__cxa_atexit},
-    {"__cxa_finalize", (uintptr_t)&__cxa_finalize},
-    {"__android_log_print", (uintptr_t)&__android_log_print_fake},
-    {"android_set_abort_message", (uintptr_t)&android_set_abort_message_fake},
-    {"__ctype_get_mb_cur_max", (uintptr_t)&__ctype_get_mb_cur_max_fake},
-    {"dl_iterate_phdr", (uintptr_t)&dl_iterate_phdr_fake},
-    {"__system_property_get", (uintptr_t)&__system_property_get_fake},
+  // runtime / fortify
+  { "__cxa_atexit", (uintptr_t)&__cxa_atexit },
+  { "__cxa_finalize", (uintptr_t)&ret0 },
+  { "__errno", (uintptr_t)&errno_fake },
+  { "__sF", (uintptr_t)&fake_sF },
+  { "__stack_chk_fail", (uintptr_t)&stack_chk_fail_fake },
+  { "android_set_abort_message", (uintptr_t)&android_set_abort_message_fake },
 
-    /* libdl */
-    {"dlopen", (uintptr_t)&dlopen_fake},
-    {"dlsym", (uintptr_t)&dlsym_fake},
-    {"dlclose", (uintptr_t)&dlclose_fake},
-    {"dlerror", (uintptr_t)&dlerror_fake},
-    {"dladdr", (uintptr_t)&dladdr_fake},
+  { "AAssetManager_fromJava", (uintptr_t)&AAssetManager_fromJava_fake },
+  { "AAssetManager_open", (uintptr_t)&AAssetManager_open_fake },
+  { "AAsset_openFileDescriptor", (uintptr_t)&AAsset_openFileDescriptor_fake },
 
-    /* Fortified libc */
-    {"__memcpy_chk", (uintptr_t)&__memcpy_chk},
-    {"__memmove_chk", (uintptr_t)&__memmove_chk},
-    {"__memset_chk", (uintptr_t)&__memset_chk},
-    {"__strcat_chk", (uintptr_t)&__strcat_chk},
-    {"__strcpy_chk", (uintptr_t)&__strcpy_chk},
-    {"__strlen_chk", (uintptr_t)&__strlen_chk},
-    {"__strrchr_chk", (uintptr_t)&__strrchr_chk},
-    {"__strchr_chk", (uintptr_t)&__strchr_chk},
-    {"__strncpy_chk2", (uintptr_t)&__strncpy_chk2},
-    {"__vsprintf_chk", (uintptr_t)&__vsprintf_chk},
-    {"__vsnprintf_chk", (uintptr_t)&__vsnprintf_chk},
-    {"__read_chk", (uintptr_t)&__read_chk},
-    {"__open_2", (uintptr_t)&__open_2},
+  // math
+  { "acosf", (uintptr_t)&acosf }, { "asinf", (uintptr_t)&asinf },
+  { "atan2f", (uintptr_t)&atan2f }, { "atanf", (uintptr_t)&atanf },
+  { "ceill", (uintptr_t)&ceill }, { "cosf", (uintptr_t)&cosf },
+  { "expf", (uintptr_t)&expf }, { "floorl", (uintptr_t)&floorl },
+  { "fmodl", (uintptr_t)&fmodl }, { "log10f", (uintptr_t)&log10f },
+  { "log10l", (uintptr_t)&log10l }, { "logf", (uintptr_t)&logf },
+  { "powf", (uintptr_t)&powf }, { "powl", (uintptr_t)&powl },
+  { "sincosf", (uintptr_t)&sincosf_fake }, { "sinf", (uintptr_t)&sinf },
 
-    /* pthread (wrapped for bionic compat) */
-    {"pthread_mutex_init", (uintptr_t)&pthread_mutex_init_fake},
-    {"pthread_mutex_destroy", (uintptr_t)&pthread_mutex_destroy_fake},
-    {"pthread_mutex_lock", (uintptr_t)&pthread_mutex_lock_fake},
-    {"pthread_mutex_trylock", (uintptr_t)&pthread_mutex_trylock_fake},
-    {"pthread_mutex_unlock", (uintptr_t)&pthread_mutex_unlock_fake},
-    {"pthread_mutexattr_init", (uintptr_t)&ret0},
-    {"pthread_mutexattr_settype", (uintptr_t)&ret0},
-    {"pthread_mutexattr_destroy", (uintptr_t)&ret0},
-    {"pthread_cond_init", (uintptr_t)&pthread_cond_init_fake},
-    {"pthread_cond_destroy", (uintptr_t)&pthread_cond_destroy_fake},
-    {"pthread_cond_wait", (uintptr_t)&pthread_cond_wait_fake},
-    {"pthread_cond_timedwait", (uintptr_t)&pthread_cond_timedwait_fake},
-    {"pthread_cond_signal", (uintptr_t)&pthread_cond_signal_fake},
-    {"pthread_cond_broadcast", (uintptr_t)&pthread_cond_broadcast_fake},
-    {"pthread_create", (uintptr_t)&pthread_create_fake},
-    {"pthread_join", (uintptr_t)&pthread_join},
-    {"pthread_self", (uintptr_t)&pthread_self},
-    {"pthread_equal", (uintptr_t)&pthread_equal},
-    {"pthread_detach", (uintptr_t)&pthread_detach},
-    {"pthread_exit", (uintptr_t)&pthread_exit},
-    {"pthread_once", (uintptr_t)&pthread_once_fake},
-    {"pthread_attr_init", (uintptr_t)&ret0},
-    {"pthread_attr_destroy", (uintptr_t)&ret0},
-    {"pthread_attr_setdetachstate", (uintptr_t)&ret0},
-    {"pthread_attr_setstacksize", (uintptr_t)&ret0},
-    {"pthread_attr_setschedparam", (uintptr_t)&ret0},
-    {"pthread_getschedparam", (uintptr_t)&ret0},
-    {"pthread_key_create", (uintptr_t)&pthread_key_create},
-    {"pthread_key_delete", (uintptr_t)&pthread_key_delete},
-    {"pthread_getspecific", (uintptr_t)&pthread_getspecific_fake},
-    {"pthread_setspecific", (uintptr_t)&pthread_setspecific_fake},
-    {"sched_yield", (uintptr_t)&sched_yield},
+  // memory / stdlib
+  { "abort", (uintptr_t)&abort_log }, { "atof", (uintptr_t)&atof },
+  { "atoi", (uintptr_t)&atoi }, { "atol", (uintptr_t)&atol }, { "bsearch", (uintptr_t)&bsearch },
+  { "free", (uintptr_t)&free }, { "malloc", (uintptr_t)&malloc },
+  { "calloc", (uintptr_t)&calloc }, { "realloc", (uintptr_t)&realloc },
+  { "memcmp", (uintptr_t)&memcmp }, { "memcpy", (uintptr_t)&memcpy },
+  { "memmove", (uintptr_t)&memmove }, { "memset", (uintptr_t)&memset },
+  { "qsort", (uintptr_t)&qsort }, { "posix_memalign", (uintptr_t)&posix_memalign_fake },
+  { "strtol", (uintptr_t)&strtol }, { "strtoll", (uintptr_t)&strtoll },
+  { "strtoul", (uintptr_t)&strtoul },
 
-    /* Memory */
-    {"malloc", (uintptr_t)&malloc},
-    {"calloc", (uintptr_t)&calloc},
-    {"realloc", (uintptr_t)&realloc},
-    {"free", (uintptr_t)&free},
-    {"posix_memalign", (uintptr_t)&posix_memalign},
+  // strings
+  { "strcasecmp", (uintptr_t)&strcasecmp }, { "strcat", (uintptr_t)&strcat },
+  { "strchr", (uintptr_t)&strchr }, { "strcmp", (uintptr_t)&strcmp },
+  { "strcpy", (uintptr_t)&strcpy }, { "strerror", (uintptr_t)&strerror },
+  { "strlen", (uintptr_t)&strlen }, { "strncasecmp", (uintptr_t)&strncasecmp },
+  { "strncat", (uintptr_t)&strncat }, { "strncmp", (uintptr_t)&strncmp },
+  { "strncpy", (uintptr_t)&strncpy }, { "strrchr", (uintptr_t)&strrchr },
+  { "strstr", (uintptr_t)&strstr }, { "strtok", (uintptr_t)&strtok },
+  { "strerror_r", (uintptr_t)&strerror_r_fake },
 
-    /* String/memory */
-    {"memcmp", (uintptr_t)&memcmp},
-    {"memcpy", (uintptr_t)&memcpy},
-    {"memmove", (uintptr_t)&memmove},
-    {"memset", (uintptr_t)&memset},
-    {"memchr", (uintptr_t)&memchr},
-    {"strcmp", (uintptr_t)&strcmp},
-    {"strncpy", (uintptr_t)&strncpy},
-    {"strcat", (uintptr_t)&strcat},
-    {"strchr", (uintptr_t)&strchr},
-    {"strrchr", (uintptr_t)&strrchr},
-    {"strlen", (uintptr_t)&strlen},
-    {"strncmp", (uintptr_t)&strncmp},
-    {"strerror_r", (uintptr_t)&strerror_r},
-    {"strcoll", (uintptr_t)&strcoll},
-    {"strxfrm", (uintptr_t)&strxfrm},
-    {"strcpy", (uintptr_t)&strcpy},
-    {"strtod", (uintptr_t)&strtod},
-    {"strtof", (uintptr_t)&strtof},
-    {"strtol", (uintptr_t)&strtol},
-    {"strtoul", (uintptr_t)&strtoul},
-    {"strtoll", (uintptr_t)&strtoll},
-    {"strtoull", (uintptr_t)&strtoull},
-    {"strtold", (uintptr_t)&strtold},
-    {"strtold_l", (uintptr_t)&strtold},
-    {"strtoll_l", (uintptr_t)&strtoll},
-    {"strtoull_l", (uintptr_t)&strtoull},
-    {"strftime", (uintptr_t)&strftime},
+  // ctype
+  { "isalnum", (uintptr_t)&isalnum }, { "isalpha", (uintptr_t)&isalpha },
+  { "iscntrl", (uintptr_t)&iscntrl }, { "isgraph", (uintptr_t)&isgraph },
+  { "islower", (uintptr_t)&islower }, { "isprint", (uintptr_t)&isprint },
+  { "ispunct", (uintptr_t)&ispunct }, { "isspace", (uintptr_t)&isspace },
+  { "isupper", (uintptr_t)&isupper }, { "isxdigit", (uintptr_t)&isxdigit },
+  { "tolower", (uintptr_t)&tolower }, { "toupper", (uintptr_t)&toupper },
 
-    /* ctype */
-    {"islower", (uintptr_t)&islower},
-    {"isupper", (uintptr_t)&isupper},
-    {"isxdigit", (uintptr_t)&isxdigit},
-    {"tolower", (uintptr_t)&tolower},
-    {"toupper", (uintptr_t)&toupper},
+  // stdio
+  { "fclose", (uintptr_t)&fclose_fake }, { "ferror", (uintptr_t)&ferror_fake },
+  { "fflush", (uintptr_t)&fflush_fake }, { "fgetc", (uintptr_t)&fgetc },
+  { "fileno", (uintptr_t)&fileno_fake }, { "fopen", (uintptr_t)&fopen_fake },
+  { "fputc", (uintptr_t)&fputc_fake }, { "fputs", (uintptr_t)&fputs_fake },
+  { "fread", (uintptr_t)&fread_fake }, { "fseek", (uintptr_t)&fseek_fake },
+  { "ftell", (uintptr_t)&ftell }, { "fwrite", (uintptr_t)&fwrite_fake },
+  { "rewind", (uintptr_t)&rewind }, { "snprintf", (uintptr_t)&snprintf },
+  { "sprintf", (uintptr_t)&sprintf }, { "sscanf", (uintptr_t)&sscanf },
+  { "ungetc", (uintptr_t)&ungetc_fake }, { "vasprintf", (uintptr_t)&vasprintf },
+  { "vfprintf", (uintptr_t)&vfprintf_fake }, { "vsnprintf", (uintptr_t)&vsnprintf },
+  { "fdopen", (uintptr_t)&fdopen },
 
-    /* wctype / wchar */
-    {"towlower", (uintptr_t)&towlower},
-    {"towupper", (uintptr_t)&towupper},
-    {"iswalpha", (uintptr_t)&iswalpha},
-    {"iswblank", (uintptr_t)&iswblank},
-    {"iswcntrl", (uintptr_t)&iswcntrl},
-    {"iswdigit", (uintptr_t)&iswdigit},
-    {"iswlower", (uintptr_t)&iswlower},
-    {"iswprint", (uintptr_t)&iswprint},
-    {"iswpunct", (uintptr_t)&iswpunct},
-    {"iswspace", (uintptr_t)&iswspace},
-    {"iswupper", (uintptr_t)&iswupper},
-    {"iswxdigit", (uintptr_t)&iswxdigit},
-    {"wctob", (uintptr_t)&wctob},
-    {"btowc", (uintptr_t)&btowc},
-    {"wcstol", (uintptr_t)&wcstol},
-    {"wcstoul", (uintptr_t)&wcstoul},
-    {"wcstoll", (uintptr_t)&wcstoll},
-    {"wcstoull", (uintptr_t)&wcstoull},
-    {"wcstod", (uintptr_t)&wcstod},
-    {"wcstof", (uintptr_t)&wcstof},
-    {"wcstold", (uintptr_t)&wcstold},
-    {"wcslen", (uintptr_t)&wcslen},
-    {"wcscoll", (uintptr_t)&wcscoll},
-    {"wcsxfrm", (uintptr_t)&wcsxfrm},
-    {"wmemcmp", (uintptr_t)&wmemcmp},
-    {"wmemcpy", (uintptr_t)&wmemcpy},
-    {"wmemmove", (uintptr_t)&wmemmove},
-    {"wmemset", (uintptr_t)&wmemset},
-    {"wmemchr", (uintptr_t)&wmemchr},
-    {"mbrtowc", (uintptr_t)&mbrtowc},
-    {"wcrtomb", (uintptr_t)&wcrtomb},
-    {"mbrlen", (uintptr_t)&mbrlen},
-    {"mbtowc", (uintptr_t)&mbtowc},
-    {"mbsrtowcs", (uintptr_t)&mbsrtowcs},
-    {"mbsnrtowcs", (uintptr_t)&mbsnrtowcs},
-    {"wcsnrtombs", (uintptr_t)&wcsnrtombs},
-    {"swprintf", (uintptr_t)&swprintf},
+  // filesystem
+  { "close", (uintptr_t)&close }, { "mkdir", (uintptr_t)&mkdir_fake },
+  { "open", (uintptr_t)&open_fake }, { "__open_2", (uintptr_t)&open2_fake },
+  { "remove", (uintptr_t)&remove_fake }, { "stat", (uintptr_t)&stat_fake },
 
-    /* stdio */
-    {"printf", (uintptr_t)&printf},
-    {"fprintf", (uintptr_t)&fprintf},
-    {"snprintf", (uintptr_t)&snprintf},
-    {"vfprintf", (uintptr_t)&vfprintf},
-    {"vsprintf", (uintptr_t)&vsprintf},
-    {"vsnprintf", (uintptr_t)&vsnprintf},
-    {"vasprintf", (uintptr_t)&vasprintf},
-    {"sscanf", (uintptr_t)&sscanf},
-    {"vsscanf", (uintptr_t)&vsscanf},
-    {"fopen", (uintptr_t)&fopen_fake},
-    {"fclose", (uintptr_t)&fclose},
-    {"fflush", (uintptr_t)&fflush},
-    {"fread", (uintptr_t)&fread},
-    {"fwrite", (uintptr_t)&fwrite},
-    {"fputc", (uintptr_t)&fputc},
-    {"fseek", (uintptr_t)&fseek},
-    {"ftell", (uintptr_t)&ftell},
-    {"getc", (uintptr_t)&getc},
-    {"putc", (uintptr_t)&putc},
-    {"putchar", (uintptr_t)&putchar},
-    {"puts", (uintptr_t)&puts},
-    {"ungetc", (uintptr_t)&ungetc},
+  // syslog (no-op)
+  { "closelog", (uintptr_t)&ret0 }, { "openlog", (uintptr_t)&ret0 }, { "syslog", (uintptr_t)&ret0 },
 
-    /* POSIX I/O */
-    {"open", (uintptr_t)&open_fake},
-    {"close", (uintptr_t)&close},
-    {"read", (uintptr_t)&read},
-    {"write", (uintptr_t)&write},
-    {"mkdir", (uintptr_t)&mkdir_fake},
-    {"chdir", (uintptr_t)&chdir},
-    {"remove", (uintptr_t)&remove_fake},
-    {"rename", (uintptr_t)&rename_fake},
+  // time / sched / sleep
+  { "gettimeofday", (uintptr_t)&gettimeofday },
+  { "sched_get_priority_max", (uintptr_t)&sched_get_priority_max_fake },
+  { "sched_get_priority_min", (uintptr_t)&sched_get_priority_min_fake },
+  { "sched_yield", (uintptr_t)&sched_yield },
+  { "sleep", (uintptr_t)&sleep_park }, { "usleep", (uintptr_t)&usleep_park },
+  { "nanosleep", (uintptr_t)&nanosleep }, { "strftime", (uintptr_t)&strftime },
+  { "sysconf", (uintptr_t)&sysconf_fake }, { "syscall", (uintptr_t)&syscall_fake },
+  { "dl_iterate_phdr", (uintptr_t)&so_dl_iterate_phdr },
+  { "__android_log_print", (uintptr_t)&android_log_print_fake },
 
-    /* stdlib */
-    {"abort", (uintptr_t)&abort_fake},
-    {"exit", (uintptr_t)&exit_fake},
-    {"getenv", (uintptr_t)&getenv_fake},
-    {"setenv", (uintptr_t)&setenv_fake},
-    {"qsort", (uintptr_t)&qsort},
-    {"rand", (uintptr_t)&rand},
-    {"srand", (uintptr_t)&srand},
-    {"lrand48", (uintptr_t)&lrand48},
-    {"srand48", (uintptr_t)&srand48},
+  // EGL (wrapper owns display/ctx/surface; these query + tweak)
+  { "eglBindAPI", (uintptr_t)&eglBindAPIHook },
+  { "eglChooseConfig", (uintptr_t)&eglChooseConfigHook },
+  { "eglCreateContext", (uintptr_t)&eglCreateContextHook },
+  { "eglCreatePbufferSurface", (uintptr_t)&eglCreatePbufferSurfaceHook },
+  { "eglGetCurrentContext", (uintptr_t)&eglGetCurrentContext },
+  { "eglGetCurrentDisplay", (uintptr_t)&eglGetCurrentDisplay },
+  { "eglGetCurrentSurface", (uintptr_t)&eglGetCurrentSurface },
+  { "eglGetError", (uintptr_t)&eglGetError },
+  { "eglGetProcAddress", (uintptr_t)&eglGetProcAddressHook },
+  { "eglMakeCurrent", (uintptr_t)&eglMakeCurrentHook },
+  { "eglQuerySurface", (uintptr_t)&eglQuerySurfaceHook },
+  { "eglSwapInterval", (uintptr_t)&eglSwapIntervalHook },
 
-    /* math */
-    {"acosf", (uintptr_t)&acosf},
-    {"asinf", (uintptr_t)&asinf},
-    {"atanf", (uintptr_t)&atanf},
-    {"atan2f", (uintptr_t)&atan2f},
-    {"cosf", (uintptr_t)&cosf},
-    {"sinf", (uintptr_t)&sinf},
-    {"sin", (uintptr_t)&sin},
-    {"sincos", (uintptr_t)&sincos},
-    {"sincosf", (uintptr_t)&sincosf},
-    {"exp", (uintptr_t)&exp},
-    {"expf", (uintptr_t)&expf},
-    {"log", (uintptr_t)&log},
-    {"log10f", (uintptr_t)&log10f},
-    {"logf", (uintptr_t)&logf},
-    {"pow", (uintptr_t)&pow},
-    {"powf", (uintptr_t)&powf},
-    {"sqrtf", (uintptr_t)&sqrtf},
-    {"ldexp", (uintptr_t)&ldexp},
-    {"ldexpf", (uintptr_t)&ldexpf},
+  // GLES2 (serialized through hooks/egl.c)
+  { "glActiveTexture", (uintptr_t)&glActiveTextureHook },
+  { "glAttachShader", (uintptr_t)&glAttachShaderHook },
+  { "glBindBuffer", (uintptr_t)&glBindBufferHook },
+  { "glBindFramebuffer", (uintptr_t)&glBindFramebufferHook },
+  { "glBindRenderbuffer", (uintptr_t)&glBindRenderbufferHook },
+  { "glBindTexture", (uintptr_t)&glBindTextureHook },
+  { "glBlendEquation", (uintptr_t)&glBlendEquationHook },
+  { "glBlendFunc", (uintptr_t)&glBlendFuncHook },
+  { "glBufferData", (uintptr_t)&glBufferDataHook },
+  { "glClear", (uintptr_t)&glClearHook },
+  { "glClearColor", (uintptr_t)&glClearColorHook },
+  { "glClearDepthf", (uintptr_t)&glClearDepthfHook },
+  { "glClearStencil", (uintptr_t)&glClearStencilHook },
+  { "glColorMask", (uintptr_t)&glColorMaskHook },
+  { "glCompileShader", (uintptr_t)&glCompileShaderHook },
+  { "glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2DHook },
+  { "glCreateProgram", (uintptr_t)&glCreateProgramHook },
+  { "glCreateShader", (uintptr_t)&glCreateShaderHook },
+  { "glDeleteBuffers", (uintptr_t)&glDeleteBuffersHook },
+  { "glDeleteFramebuffers", (uintptr_t)&glDeleteFramebuffersHook },
+  { "glDeleteProgram", (uintptr_t)&glDeleteProgramHook },
+  { "glDeleteRenderbuffers", (uintptr_t)&glDeleteRenderbuffersHook },
+  { "glDeleteShader", (uintptr_t)&glDeleteShaderHook },
+  { "glDeleteTextures", (uintptr_t)&glDeleteTexturesHook },
+  { "glDepthFunc", (uintptr_t)&glDepthFuncHook },
+  { "glDepthMask", (uintptr_t)&glDepthMaskHook },
+  { "glDepthRangef", (uintptr_t)&glDepthRangefHook },
+  { "glDisable", (uintptr_t)&glDisableHook },
+  { "glDisableVertexAttribArray", (uintptr_t)&glDisableVertexAttribArrayHook },
+  { "glDrawArrays", (uintptr_t)&glDrawArraysHook },
+  { "glDrawElements", (uintptr_t)&glDrawElementsHook },
+  { "glEnable", (uintptr_t)&glEnableHook },
+  { "glEnableVertexAttribArray", (uintptr_t)&glEnableVertexAttribArrayHook },
+  { "glFinish", (uintptr_t)&glFinishHook },
+  { "glFlush", (uintptr_t)&glFlushHook },
+  { "glFramebufferRenderbuffer", (uintptr_t)&glFramebufferRenderbufferHook },
+  { "glFramebufferTexture2D", (uintptr_t)&glFramebufferTexture2DHook },
+  { "glFrontFace", (uintptr_t)&glFrontFaceHook },
+  { "glGenBuffers", (uintptr_t)&glGenBuffersHook },
+  { "glGenFramebuffers", (uintptr_t)&glGenFramebuffersHook },
+  { "glGenRenderbuffers", (uintptr_t)&glGenRenderbuffersHook },
+  { "glGenTextures", (uintptr_t)&glGenTexturesHook },
+  { "glGetActiveAttrib", (uintptr_t)&glGetActiveAttribHook },
+  { "glGetActiveUniform", (uintptr_t)&glGetActiveUniformHook },
+  { "glGetAttribLocation", (uintptr_t)&glGetAttribLocationHook },
+  { "glGetBufferParameteriv", (uintptr_t)&glGetBufferParameterivHook },
+  { "glGetError", (uintptr_t)&glGetErrorHook },
+  { "glGetIntegerv", (uintptr_t)&glGetIntegervHook },
+  { "glGetProgramInfoLog", (uintptr_t)&glGetProgramInfoLogHook },
+  { "glGetProgramiv", (uintptr_t)&glGetProgramivHook },
+  { "glGetShaderInfoLog", (uintptr_t)&glGetShaderInfoLogHook },
+  { "glGetShaderiv", (uintptr_t)&glGetShaderivHook },
+  { "glGetString", (uintptr_t)&glGetStringHook },
+  { "glGetUniformLocation", (uintptr_t)&glGetUniformLocationHook },
+  { "glLinkProgram", (uintptr_t)&glLinkProgramHook },
+  { "glPolygonOffset", (uintptr_t)&glPolygonOffsetHook },
+  { "glRenderbufferStorage", (uintptr_t)&glRenderbufferStorageHook },
+  { "glScissor", (uintptr_t)&glScissorHook },
+  { "glShaderSource", (uintptr_t)&glShaderSourceHook },
+  { "glStencilFunc", (uintptr_t)&glStencilFuncHook },
+  { "glStencilMask", (uintptr_t)&glStencilMaskHook },
+  { "glStencilOp", (uintptr_t)&glStencilOpHook },
+  { "glTexImage2D", (uintptr_t)&glTexImage2DHook },
+  { "glTexParameteri", (uintptr_t)&glTexParameteriHook },
+  { "glUniform1fv", (uintptr_t)&glUniform1fvHook },
+  { "glUniform1i", (uintptr_t)&glUniform1iHook },
+  { "glUniform2fv", (uintptr_t)&glUniform2fvHook },
+  { "glUniform3fv", (uintptr_t)&glUniform3fvHook },
+  { "glUniform4fv", (uintptr_t)&glUniform4fvHook },
+  { "glUniformMatrix2fv", (uintptr_t)&glUniformMatrix2fvHook },
+  { "glUniformMatrix3fv", (uintptr_t)&glUniformMatrix3fvHook },
+  { "glUniformMatrix4fv", (uintptr_t)&glUniformMatrix4fvHook },
+  { "glUseProgram", (uintptr_t)&glUseProgramHook },
+  { "glVertexAttribPointer", (uintptr_t)&glVertexAttribPointerHook },
+  { "glViewport", (uintptr_t)&glViewportHook },
 
-    /* time */
-    {"clock_gettime", (uintptr_t)&clock_gettime},
-    {"nanosleep", (uintptr_t)&nanosleep},
+  // OpenSL ES (SDL-backed bridge)
+  { "SL_IID_ANDROIDSIMPLEBUFFERQUEUE", (uintptr_t)&sl_IID_BUFFERQUEUE },
+  { "SL_IID_ENGINE", (uintptr_t)&sl_IID_ENGINE },
+  { "SL_IID_PLAY", (uintptr_t)&sl_IID_PLAY },
+  { "SL_IID_PLAYBACKRATE", (uintptr_t)&sl_IID_PLAYBACKRATE },
+  { "SL_IID_SEEK", (uintptr_t)&sl_IID_SEEK },
+  { "SL_IID_VOLUME", (uintptr_t)&sl_IID_VOLUME },
+  { "slCreateEngine", (uintptr_t)&slCreateEngine_shim },
 
-    /* locale */
-    {"setlocale", (uintptr_t)&setlocale},
-    {"localeconv", (uintptr_t)&localeconv},
-    {"newlocale", (uintptr_t)&newlocale},
-    {"uselocale", (uintptr_t)&uselocale},
-    {"freelocale", (uintptr_t)&freelocale},
+  // pthread (pthr.c soloader wrappers)
+  { "pthread_attr_destroy", (uintptr_t)&pthread_attr_destroy_soloader },
+  { "pthread_attr_init", (uintptr_t)&pthread_attr_init_soloader },
+  { "pthread_attr_setdetachstate", (uintptr_t)&pthread_attr_setdetachstate_soloader },
+  { "pthread_cond_broadcast", (uintptr_t)&pthread_cond_broadcast_soloader },
+  { "pthread_cond_destroy", (uintptr_t)&pthread_cond_destroy_soloader },
+  { "pthread_cond_init", (uintptr_t)&pthread_cond_init_soloader },
+  { "pthread_cond_signal", (uintptr_t)&pthread_cond_signal_soloader },
+  { "pthread_cond_wait", (uintptr_t)&pthread_cond_wait_soloader },
+  { "pthread_cond_timedwait", (uintptr_t)&pthread_cond_timedwait_soloader },
+  { "pthread_create", (uintptr_t)&pthread_create_soloader },
+  { "pthread_detach", (uintptr_t)&pthread_detach_soloader },
+  { "pthread_equal", (uintptr_t)&pthread_equal_soloader },
+  { "pthread_getschedparam", (uintptr_t)&pthread_getschedparam_soloader },
+  { "pthread_join", (uintptr_t)&pthread_join_soloader },
+  { "pthread_mutex_destroy", (uintptr_t)&pthread_mutex_destroy_soloader },
+  { "pthread_mutex_init", (uintptr_t)&pthread_mutex_init_soloader },
+  { "pthread_mutex_lock", (uintptr_t)&pthread_mutex_lock_soloader },
+  { "pthread_mutex_trylock", (uintptr_t)&pthread_mutex_trylock_soloader },
+  { "pthread_mutex_unlock", (uintptr_t)&pthread_mutex_unlock_soloader },
+  { "pthread_mutexattr_init", (uintptr_t)&pthread_mutexattr_init_soloader },
+  { "pthread_mutexattr_settype", (uintptr_t)&pthread_mutexattr_settype_soloader },
+  { "pthread_mutexattr_destroy", (uintptr_t)&pthread_mutexattr_destroy_soloader },
+  { "pthread_once", (uintptr_t)&pthread_once_soloader },
+  { "pthread_self", (uintptr_t)&pthread_self_soloader },
+  { "pthread_setname_np", (uintptr_t)&pthread_setname_np_fake },
+  { "pthread_setschedparam", (uintptr_t)&pthread_setschedparam_fake },
+  { "pthread_key_create", (uintptr_t)&pthread_key_create },
+  { "pthread_setspecific", (uintptr_t)&pthread_setspecific },
+  { "pthread_getspecific", (uintptr_t)&pthread_getspecific },
 
-    /* syslog */
-    {"openlog", (uintptr_t)&openlog},
-    {"closelog", (uintptr_t)&closelog},
-    {"syslog", (uintptr_t)&syslog},
+  // semaphores (void**-indirection)
+  { "sem_init", (uintptr_t)&sem_init_fake },
+  { "sem_destroy", (uintptr_t)&sem_destroy_fake },
+  { "sem_post", (uintptr_t)&sem_post_fake },
+  { "sem_wait", (uintptr_t)&sem_wait_fake },
 
-    /* signals */
-    {"raise", (uintptr_t)&ret0},
-    {"sigaction", (uintptr_t)&sigaction_fake},
-
-    /* syscall */
-    {"syscall", (uintptr_t)&syscall},
-    {"sysconf", (uintptr_t)&sysconf},
-
-    /* EGL (our shim) */
-    {"eglGetDisplay", (uintptr_t)&egl_shim_GetDisplay},
-    {"eglInitialize", (uintptr_t)&egl_shim_Initialize},
-    {"eglChooseConfig", (uintptr_t)&egl_shim_ChooseConfig},
-    {"eglCreateWindowSurface", (uintptr_t)&egl_shim_CreateWindowSurface},
-    {"eglCreatePbufferSurface", (uintptr_t)&egl_shim_CreatePbufferSurface},
-    {"eglCreateContext", (uintptr_t)&egl_shim_CreateContext},
-    {"eglMakeCurrent", (uintptr_t)&egl_shim_MakeCurrent},
-    {"eglSwapBuffers", (uintptr_t)&egl_shim_SwapBuffers},
-    {"eglDestroySurface", (uintptr_t)&egl_shim_DestroySurface},
-    {"eglDestroyContext", (uintptr_t)&egl_shim_DestroyContext},
-    {"eglTerminate", (uintptr_t)&egl_shim_Terminate},
-    {"eglQuerySurface", (uintptr_t)&egl_shim_QuerySurface},
-    {"eglGetConfigAttrib", (uintptr_t)&egl_shim_GetConfigAttrib},
-    {"eglGetError", (uintptr_t)&egl_shim_GetError},
-    {"eglGetProcAddress", (uintptr_t)&egl_shim_GetProcAddress},
-    {"eglBindAPI", (uintptr_t)&egl_shim_BindAPI},
-
-    /* OpenGL ES 2.0 (direct passthrough) */
-    {"glActiveTexture", (uintptr_t)&glActiveTexture},
-    {"glAttachShader", (uintptr_t)&glAttachShader_wrap},
-    {"glBindAttribLocation", (uintptr_t)&glBindAttribLocation},
-    {"glBindBuffer", (uintptr_t)&glBindBuffer_wrap},
-    {"glBindFramebuffer", (uintptr_t)&glBindFramebuffer_wrap},
-    {"glBindTexture", (uintptr_t)&glBindTexture_wrap},
-    {"glBlendEquationSeparate", (uintptr_t)&glBlendEquationSeparate},
-    {"glBlendFuncSeparate", (uintptr_t)&glBlendFuncSeparate},
-    {"glBufferData", (uintptr_t)&glBufferData_wrap},
-    {"glBufferSubData", (uintptr_t)&glBufferSubData_wrap},
-    {"glCheckFramebufferStatus", (uintptr_t)&glCheckFramebufferStatus_wrap},
-    {"glClear", (uintptr_t)&glClear_wrap},
-    {"glClearColor", (uintptr_t)&glClearColor_wrap},
-    {"glCompileShader", (uintptr_t)&glCompileShader_wrap},
-    {"glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D_wrap},
-    {"glCopyTexImage2D", (uintptr_t)&glCopyTexImage2D},
-    {"glCreateProgram", (uintptr_t)&glCreateProgram_wrap},
-    {"glCreateShader", (uintptr_t)&glCreateShader_wrap},
-    {"glCullFace", (uintptr_t)&glCullFace},
-    {"glDeleteBuffers", (uintptr_t)&glDeleteBuffers},
-    {"glDeleteFramebuffers", (uintptr_t)&glDeleteFramebuffers},
-    {"glDeleteProgram", (uintptr_t)&glDeleteProgram},
-    {"glDeleteRenderbuffers", (uintptr_t)&glDeleteRenderbuffers},
-    {"glDeleteShader", (uintptr_t)&glDeleteShader},
-    {"glDeleteTextures", (uintptr_t)&glDeleteTextures},
-    {"glDepthFunc", (uintptr_t)&glDepthFunc},
-    {"glDepthMask", (uintptr_t)&glDepthMask},
-    {"glDisable", (uintptr_t)&glDisable},
-    {"glDisableVertexAttribArray", (uintptr_t)&glDisableVertexAttribArray},
-    {"glDrawArrays", (uintptr_t)&glDrawArrays_wrap},
-    {"glDrawElements", (uintptr_t)&glDrawElements_wrap},
-    {"glEnable", (uintptr_t)&glEnable},
-    {"glEnableVertexAttribArray", (uintptr_t)&glEnableVertexAttribArray},
-    {"glFinish", (uintptr_t)&glFinish},
-    {"glFlush", (uintptr_t)&glFlush},
-    {"glFrontFace", (uintptr_t)&glFrontFace_wrap},
-    {"glGenBuffers", (uintptr_t)&glGenBuffers_wrap},
-    {"glGenFramebuffers", (uintptr_t)&glGenFramebuffers_wrap},
-    {"glGenTextures", (uintptr_t)&glGenTextures_wrap},
-    {"glGenerateMipmap", (uintptr_t)&glGenerateMipmap},
-    {"glGetActiveAttrib", (uintptr_t)&glGetActiveAttrib},
-    {"glGetActiveUniform", (uintptr_t)&glGetActiveUniform},
-    {"glGetAttachedShaders", (uintptr_t)&glGetAttachedShaders},
-    {"glGetAttribLocation", (uintptr_t)&glGetAttribLocation},
-    {"glGetError", (uintptr_t)&glGetError},
-    {"glGetIntegerv", (uintptr_t)&glGetIntegerv_wrap},
-    {"glGetProgramInfoLog", (uintptr_t)&glGetProgramInfoLog},
-    {"glGetProgramiv", (uintptr_t)&glGetProgramiv},
-    {"glGetShaderSource", (uintptr_t)&glGetShaderSource},
-    {"glGetShaderiv", (uintptr_t)&glGetShaderiv},
-    {"glGetString", (uintptr_t)&glGetString_wrap},
-    {"glGetUniformLocation", (uintptr_t)&glGetUniformLocation},
-    {"glGetVertexAttribPointerv", (uintptr_t)&glGetVertexAttribPointerv},
-    {"glGetVertexAttribiv", (uintptr_t)&glGetVertexAttribiv},
-    {"glLinkProgram", (uintptr_t)&glLinkProgram_wrap},
-    {"glReleaseShaderCompiler", (uintptr_t)&glReleaseShaderCompiler},
-    {"glShaderSource", (uintptr_t)&glShaderSource_wrap},
-    {"glTexImage2D", (uintptr_t)&glTexImage2D_wrap},
-    {"glTexParameteri", (uintptr_t)&glTexParameteri_wrap},
-    {"glUniform1f", (uintptr_t)&glUniform1f_wrap},
-    {"glUniform1fv", (uintptr_t)&glUniform1fv_wrap},
-    {"glUniform1i", (uintptr_t)&glUniform1i_wrap},
-    {"glUniform1iv", (uintptr_t)&glUniform1iv_wrap},
-    {"glUniform2f", (uintptr_t)&glUniform2f_wrap},
-    {"glUniform2fv", (uintptr_t)&glUniform2fv_wrap},
-    {"glUniform2iv", (uintptr_t)&glUniform2iv_wrap},
-    {"glUniform3f", (uintptr_t)&glUniform3f_wrap},
-    {"glUniform3fv", (uintptr_t)&glUniform3fv_wrap},
-    {"glUniform3iv", (uintptr_t)&glUniform3iv_wrap},
-    {"glUniform4f", (uintptr_t)&glUniform4f_wrap},
-    {"glUniform4fv", (uintptr_t)&glUniform4fv_wrap},
-    {"glUniform4iv", (uintptr_t)&glUniform4iv_wrap},
-    {"glUniformMatrix2fv", (uintptr_t)&glUniformMatrix2fv_wrap},
-    {"glUniformMatrix3fv", (uintptr_t)&glUniformMatrix3fv_wrap},
-    {"glUniformMatrix4fv", (uintptr_t)&glUniformMatrix4fv_wrap},
-    {"glUseProgram", (uintptr_t)&glUseProgram_wrap},
-    {"glValidateProgram", (uintptr_t)&ret0},
-    {"glVertexAttribPointer", (uintptr_t)&glVertexAttribPointer},
-    {"glViewport", (uintptr_t)&glViewport_wrap},
-
-    /* OpenSL ES (our shim) */
-    {"slCreateEngine", (uintptr_t)&slCreateEngine_shim},
-    {"SL_IID_ENGINE", (uintptr_t)&sl_IID_ENGINE},
-    {"SL_IID_PLAY", (uintptr_t)&sl_IID_PLAY},
-    {"SL_IID_VOLUME", (uintptr_t)&sl_IID_VOLUME},
-    {"SL_IID_ANDROIDSIMPLEBUFFERQUEUE", (uintptr_t)&sl_IID_BUFFERQUEUE},
-    {"SL_IID_ENGINECAPABILITIES", (uintptr_t)&sl_IID_ENGINECAPABILITIES},
-    {"SL_IID_ENVIRONMENTALREVERB", (uintptr_t)&sl_IID_ENVIRONMENTALREVERB},
-    {"SL_IID_PLAYBACKRATE", (uintptr_t)&sl_IID_PLAYBACKRATE},
-    {"SL_IID_SEEK", (uintptr_t)&sl_IID_SEEK},
-
-    /* Android NDK (our shim) */
-    {"AAssetManager_fromJava", (uintptr_t)&ret1},
-    {"AAssetManager_open", (uintptr_t)&AAssetManager_open_fake},
-    {"AAsset_close", (uintptr_t)&AAsset_close_fake},
-    {"AAsset_read", (uintptr_t)&AAsset_read_fake},
-    {"AAsset_getLength", (uintptr_t)&AAsset_getLength_fake},
-    {"AAsset_seek", (uintptr_t)&AAsset_seek_fake},
-    {"AAsset_openFileDescriptor", (uintptr_t)&AAsset_openFileDescriptor_fake},
-    {"ANativeWindow_fromSurface", (uintptr_t)&ANativeWindow_fromSurface_fake},
-    {"ANativeWindow_getWidth", (uintptr_t)&ANativeWindow_getWidth_fake},
-    {"ANativeWindow_getHeight", (uintptr_t)&ANativeWindow_getHeight_fake},
-    {"ANativeWindow_setBuffersGeometry", (uintptr_t)&ANativeWindow_setBuffersGeometry_fake},
+  // fortified (_chk) libc variants
+  { "__memcpy_chk", (uintptr_t)&memcpy_chk_fake },
+  { "__memmove_chk", (uintptr_t)&memmove_chk_fake },
+  { "__memset_chk", (uintptr_t)&memset_chk_fake },
+  { "__strcpy_chk", (uintptr_t)&strcpy_chk_fake },
+  { "__strncpy_chk", (uintptr_t)&strncpy_chk_fake },
+  { "__strncpy_chk2", (uintptr_t)&strncpy_chk2_fake },
+  { "__strcat_chk", (uintptr_t)&strcat_chk_fake },
+  { "__strlen_chk", (uintptr_t)&strlen_chk_fake },
+  { "__strchr_chk", (uintptr_t)&strchr_chk_fake },
+  { "__strrchr_chk", (uintptr_t)&strrchr_chk_fake },
+  { "__vsnprintf_chk", (uintptr_t)&vsnprintf_chk_fake },
+  { "__vsprintf_chk", (uintptr_t)&vsprintf_chk_fake },
 };
 
-size_t dynlib_numfunctions =
-    sizeof(dynlib_functions) / sizeof(*dynlib_functions);
+size_t dynlib_numfunctions = sizeof(dynlib_functions) / sizeof(*dynlib_functions);
+
+void update_imports(void) {}

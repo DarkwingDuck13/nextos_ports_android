@@ -1,20 +1,20 @@
-/*
- * imports.h -- .so import resolution for LSWTCS
+/* imports.h -- .so import resolution
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
  */
 
 #ifndef __IMPORTS_H__
 #define __IMPORTS_H__
 
-#include "so_util.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include "so_util.h"
 
 extern FILE *stderr_fake;
 extern DynLibFunction dynlib_functions[];
 extern size_t dynlib_numfunctions;
 
-void glUniform1fv_wrap(int location, int count, const float *value);
-void glUniform2fv_wrap(int location, int count, const float *value);
-void glUniform3fv_wrap(int location, int count, const float *value);
-void glUniform4fv_wrap(int location, int count, const float *value);
+void update_imports(void);
 
 #endif

@@ -1,19 +1,18 @@
-/*
- * error.c -- error handler
- */
+/* error.c -- fatal error handler (Linux port) */
 
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #include "error.h"
 
 void fatal_error(const char *fmt, ...) {
-  va_list list;
-  va_start(list, fmt);
-  fprintf(stderr, "FATAL ERROR: ");
-  vfprintf(stderr, fmt, list);
-  va_end(list);
-  fprintf(stderr, "\n");
+  va_list ap;
+  va_start(ap, fmt);
+  fprintf(stderr, "\n=== FATAL ===\n");
+  vfprintf(stderr, fmt, ap);
+  fprintf(stderr, "\n=============\n");
+  va_end(ap);
+  fflush(stderr);
   exit(1);
 }

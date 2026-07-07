@@ -11,15 +11,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "opensles_shim.h"
 #include "so_util.h"
 #include "util.h"
 
-#define MAX_PLAYERS 16
-#define RING_BUFFER_SIZE (4 * 1024 * 1024)
+/* musica do jogo = MP3 via SL_DATALOCATOR_ANDROIDFD + MIME (o OpenSL real
+ * decodifica sozinho); decodificamos com minimp3 no pump thread. */
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3_ex.h"
+#include <fcntl.h>
+#include <sys/stat.h>
+
+/* fnaSound cria 32 vozes no init; com 16 slots as vozes 17..32 reciclavam o
+ * slot 0 (varias vozes do jogo apontando pro MESMO player = SFX corrompido). */
+#define MAX_PLAYERS 48
+/* 512KB por player: streams chegam em buffers de ~256B e SFX one-shot em
+ * dezenas de KB; 4MB x 48 players tocaria ~190MB de RSS conforme o ring
+ * circula (device de 1GB). Truncamento loga WARNING. */
+#define RING_BUFFER_SIZE (512 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-#define SDL_AUDIO_SAMPLES 4096
+/* Must stay SMALL: the game feeds streams as 4 in-flight buffers of ~256 bytes
+ * (23ms of mono 22kHz audio); if one SDL mixing burst needs more than that
+ * window, every callback underruns no matter how fast we pump. 512 frames =
+ * 11.6ms bursts. */
+#define SDL_AUDIO_SAMPLES 512
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -94,12 +111,15 @@ typedef struct {
   SLuint32 play_event_mask;
 
   uint32_t enqueue_counter;
+  volatile uint32_t buffers_completed; /* cumulative fully-consumed buffers (mixer) */
+  volatile uint32_t callbacks_fired;   /* completion callbacks delivered (pump)  */
   uint32_t debug_enqueue_logs;
   uint32_t debug_callback_logs;
   uint32_t debug_play_callback_logs;
   int ever_enqueued;
   int headatend_fired;
   int decoder_done;
+  volatile uint32_t empty_polls; /* consecutive dry callback polls (refill thread) */
   volatile uint32_t underrun_count;
   volatile uint32_t fadeout_count;
   volatile uint32_t frames_played;  /* total output frames mixed, for fade-in */
@@ -113,6 +133,17 @@ typedef struct {
   SLuint32 sample_rate;
   SLuint32 bits_per_sample;
 
+  /* player FD+MIME (musica mp3) */
+  int is_fd;
+  int fd;                    /* dup() do fd do jogo */
+  uint64_t fd_off, fd_len;   /* janela do arquivo */
+  uint64_t fd_pos;           /* posicao de leitura dentro da janela */
+  mp3dec_ex_t *mp3;
+  mp3dec_io_t mp3io;
+  int mp3_open_failed;
+  volatile int loop_enabled;
+  volatile int fd_restart;   /* STOPPED->PLAYING: pump faz seek(0) */
+
   void *obj_vtable[8];
   void *obj_ptr;
   void *play_vtable[8];
@@ -123,12 +154,19 @@ typedef struct {
   void *bq_ptr;
   void *effectsend_vtable[8];
   void *effectsend_ptr;
+  void *seek_vtable[8];
+  void *seek_ptr;
 } AudioPlayer;
 
 static AudioPlayer g_players[MAX_PLAYERS];
 static pthread_mutex_t g_players_lock = PTHREAD_MUTEX_INITIALIZER;
 static SDL_AudioDeviceID g_audio_dev = 0;
 static int g_audio_initialized = 0;
+/* serializes ring writers: game threads (priming) vs audio thread (refill) */
+static SDL_SpinLock g_enqueue_lock = 0;
+/* serializa acesso ao estado mp3 dos players FD (pump decodifica; game thread
+ * reseta/destroi) */
+static pthread_mutex_t g_fd_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void queue_reset(AudioPlayer *p) {
   memset(p->queued_sizes, 0, sizeof(p->queued_sizes));
@@ -137,6 +175,8 @@ static void queue_reset(AudioPlayer *p) {
   p->queued_count = 0;
   p->queued_front_offset = 0;
   p->played_bytes = 0;
+  p->buffers_completed = 0;
+  p->callbacks_fired = 0;
 }
 
 static void queue_push(AudioPlayer *p, uint32_t size) {
@@ -173,6 +213,7 @@ static void queue_consume(AudioPlayer *p, uint32_t bytes) {
     p->queued_head_index++;
     p->queued_count--;
     p->queued_front_offset = 0;
+    p->buffers_completed++; /* drives one completion callback (refill thread) */
   }
 }
 
@@ -223,16 +264,173 @@ static uint32_t ring_read(AudioPlayer *p, void *data, uint32_t len) {
 #define SDL_OUTPUT_RATE 44100
 #define TMP_BUF_SAMPLES (SDL_AUDIO_SAMPLES * 2)
 
+/* Buffer-queue refill runs on the SDL audio thread (matching real OpenSL ES,
+ * whose callbacks fire from the system audio thread). The device lock is
+ * already held inside the callback, so shim entry points reached from the
+ * game's callback must not re-take it. */
+static SDL_threadID g_audio_cb_tid = 0;
+static int on_audio_thread(void) {
+  return g_audio_cb_tid != 0 && g_audio_cb_tid == SDL_ThreadID();
+}
+static void device_lock(void)   { if (g_audio_dev && !on_audio_thread()) SDL_LockAudioDevice(g_audio_dev); }
+static void device_unlock(void) { if (g_audio_dev && !on_audio_thread()) SDL_UnlockAudioDevice(g_audio_dev); }
+
+static size_t fd_read_cb(void *buf, size_t size, void *user) {
+  AudioPlayer *p = (AudioPlayer *)user;
+  uint64_t remain = p->fd_len - p->fd_pos;
+  if (size > remain) size = (size_t)remain;
+  if (size == 0) return 0;
+  ssize_t r = pread(p->fd, buf, size, (off_t)(p->fd_off + p->fd_pos));
+  if (r <= 0) return 0;
+  p->fd_pos += (uint64_t)r;
+  return (size_t)r;
+}
+
+static int fd_seek_cb(uint64_t position, void *user) {
+  AudioPlayer *p = (AudioPlayer *)user;
+  if (position > p->fd_len) return -1;
+  p->fd_pos = position;
+  return 0;
+}
+
+/* decodifica mp3 pro ring ate ~0.5s de folga; roda no pump thread */
+static void fd_refill(AudioPlayer *p) {
+  pthread_mutex_lock(&g_fd_lock);
+  if (!p->active || p->mp3_open_failed || p->fd < 0) goto out;
+
+  if (!p->mp3) {
+    p->mp3 = (mp3dec_ex_t *)calloc(1, sizeof(mp3dec_ex_t));
+    if (!p->mp3) { p->mp3_open_failed = 1; goto out; }
+    p->mp3io.read = fd_read_cb;
+    p->mp3io.read_data = p;
+    p->mp3io.seek = fd_seek_cb;
+    p->mp3io.seek_data = p;
+    p->fd_pos = 0;
+    if (mp3dec_ex_open_cb(p->mp3, &p->mp3io, MP3D_SEEK_TO_SAMPLE)) {
+      debugPrintf("audio: fdplayer %ld mp3 open FALHOU (len=%llu)\n",
+                  (long)(p - g_players), (unsigned long long)p->fd_len);
+      free(p->mp3); p->mp3 = NULL; p->mp3_open_failed = 1;
+      goto out;
+    }
+    p->sample_rate = p->mp3->info.hz;
+    p->num_channels = p->mp3->info.channels;
+    p->bits_per_sample = 16;
+    debugPrintf("audio: fdplayer %ld mp3 aberto: %uHz %uch samples=%llu loop=%d\n",
+                (long)(p - g_players), p->sample_rate, p->num_channels,
+                (unsigned long long)p->mp3->samples, p->loop_enabled);
+  }
+
+  if (p->fd_restart) {
+    mp3dec_ex_seek(p->mp3, 0);
+    p->fd_restart = 0;
+  }
+
+  uint32_t frame_bytes = (p->num_channels ? p->num_channels : 2) * 2;
+  uint32_t high = (p->sample_rate ? p->sample_rate : 44100) * frame_bytes / 2; /* ~0.5s */
+  if (high > RING_BUFFER_SIZE / 2) high = RING_BUFFER_SIZE / 2;
+
+  int guard = 8, dry = 0;
+  while (ring_readable(p) < high && guard-- > 0 &&
+         p->play_state == SL_PLAYSTATE_PLAYING) {
+    int16_t buf[4608];
+    size_t got = mp3dec_ex_read(p->mp3, buf, 4608);
+    if (got > 0) {
+      SDL_AtomicLock(&g_enqueue_lock);
+      ring_write(p, buf, (uint32_t)(got * sizeof(int16_t)));
+      SDL_AtomicUnlock(&g_enqueue_lock);
+    }
+    if (got < 4608) { /* EOF (ou erro) */
+      /* SEMPRE dar loop: música de menu/mundo (maintitle) é feita pra repetir.
+       * NUNCA marcar decoder_done num FD player -> o jogo nunca vê o stream
+       * "acabar" naturalmente, então nunca dispara o fnaStream_Destroy que
+       * crasha (deref de vtable NULL, ~86s = fim do maintitle). Trocas de
+       * faixa continuam via STOP/Destroy explícito do jogo (caminhos tratados). */
+      mp3dec_ex_seek(p->mp3, 0);
+      if (got == 0 && ++dry > 2) break; /* arquivo vazio: não spinnar */
+    } else {
+      dry = 0;
+    }
+  }
+out:
+  pthread_mutex_unlock(&g_fd_lock);
+}
+
+static void refill_player(AudioPlayer *p) {
+  if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) return;
+
+  if (p->is_fd) { fd_refill(p); return; }
+
+  /* Completion-driven, like real OpenSL ES: the buffer-queue callback fires
+   * exactly once per fully-consumed buffer -- that's the signal the game's
+   * feeder uses to decode + enqueue the next chunk. */
+  int guard = 64;
+  while (p->callback && p->callbacks_fired != p->buffers_completed && guard-- > 0) {
+    p->callbacks_fired++;
+    uint32_t counter_before = p->enqueue_counter;
+    p->callback(&p->bq_ptr, p->callback_context);
+    if (p->enqueue_counter != counter_before)
+      p->empty_polls = 0;
+  }
+
+  /* Bootstrap: o jogo poe o player em PLAYING com a fila VAZIA e espera ser
+   * POLLADO pra entregar os primeiros buffers (comportamento do pump do
+   * lswtcs, que funciona). Sem isso a musica (p27) nunca recebe um byte:
+   * completion nunca ocorre e o starvation poll exigia ever_enqueued. */
+  if (p->callback && !p->ever_enqueued) {
+    p->callback(&p->bq_ptr, p->callback_context);
+    return; /* sem EOS antes do primeiro enqueue */
+  }
+
+  /* Starvation poll: queue drained and no completions pending -> ask anyway at
+   * pump rate; ~200ms of consecutive dry asks with an empty queue = EOS. */
+  if (p->callback && p->queued_count == 0 && ring_readable(p) == 0 &&
+      p->ever_enqueued && !p->decoder_done) {
+    uint32_t counter_before = p->enqueue_counter;
+    p->callback(&p->bq_ptr, p->callback_context);
+    if (p->enqueue_counter == counter_before) {
+      /* ~2s: menu/level transitions stall the game-side decoder for hundreds
+       * of ms; killing the stream on those gaps chopped the music. A stream
+       * that is genuinely over gets stopped by the game itself anyway. */
+      if (++p->empty_polls > 500) {
+        p->decoder_done = 1;
+      }
+    } else {
+      p->empty_polls = 0;
+    }
+  }
+
+  if (!p->callback && p->ever_enqueued && !p->decoder_done &&
+      p->queued_count == 0 && ring_readable(p) == 0) {
+    p->decoder_done = 1;
+  }
+}
+
+/* Dedicated refill thread: calling the game's buffer-queue callbacks from
+ * inside the SDL audio callback deadlocks (SDL holds the device lock there,
+ * the game callback takes engine mutexes, and game threads take those same
+ * mutexes around SL calls that need the device lock). This thread invokes the
+ * callbacks holding NO device lock, every ~4ms -- like the real OpenSL ES
+ * notification thread. */
+static pthread_t g_pump_thread;
+static volatile int g_pump_running = 0;
+
+static void *pump_thread_main(void *arg) {
+  (void)arg;
+  while (g_pump_running) {
+    for (int i = 0; i < MAX_PLAYERS; i++)
+      refill_player(&g_players[i]);
+    usleep(4000);
+  }
+  return NULL;
+}
+
 static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   (void)userdata;
+  g_audio_cb_tid = SDL_ThreadID();
   memset(stream, 0, len);
 
   int16_t *out = (int16_t *)stream;
   int out_samples = len / (int)sizeof(int16_t);
-  { static int cb = 0; if (cb++ % 200 == 0) {
-      int active = 0; for (int i=0;i<MAX_PLAYERS;i++) if (g_players[i].active && g_players[i].play_state==3) active++;
-      debugPrintf("AUDIO: callback #%d len=%d activePlayers=%d\n", cb, len, active);
-  } }
 
   static float mix_buf[SDL_AUDIO_SAMPLES * 2];
   if (out_samples > SDL_AUDIO_SAMPLES * 2) out_samples = SDL_AUDIO_SAMPLES * 2;
@@ -242,14 +440,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
 
   /* Per-player temp buffer on stack */
   int16_t tmp[TMP_BUF_SAMPLES];
-
-  /* Per-player diagnostics for click detection */
-  float player_peak[MAX_PLAYERS];
-  float player_vol[MAX_PLAYERS];
-  int player_active_list[MAX_PLAYERS];
-  int num_active = 0;
-  memset(player_peak, 0, sizeof(player_peak));
-  memset(player_vol, 0, sizeof(player_vol));
 
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
@@ -271,13 +461,11 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
       }
       vol = 0.0f; /* mute corrupted player */
     }
+    /* ganhos altos: NextOS na TV ficava inaudivel com 0.35/0.8 + master 0.30
+     * (OUT peak ~2400/32768); o soft-clip limiter segura os estouros. */
     if (src_channels == 1) {
-      vol *= 0.35f;
-    } else {
-      vol *= 0.8f;
+      vol *= 0.5f;
     }
-    player_vol[i] = vol;
-    player_active_list[num_active++] = i;
 
     uint32_t src_frames_needed;
     if (src_rate == SDL_OUTPUT_RATE) {
@@ -294,7 +482,12 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     got = (got / frame_size) * frame_size;
     uint32_t src_frames_got = got / frame_size;
     if (src_frames_got == 0) continue;
+    /* queued_count feeds bq_GetState, which the game's stream feeder uses to
+     * decide whether the queue is full; an unsynchronized decrement here races
+     * queue_push and drifts the count up until the feeder starves the music. */
+    SDL_AtomicLock(&g_enqueue_lock);
     queue_consume(p, got);
+    SDL_AtomicUnlock(&g_enqueue_lock);
     p->played_bytes += got;
 
     /* Detect underrun: got less than requested = fade out last frames to avoid click */
@@ -332,14 +525,8 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         }
         if (env < 0.0f) env = 0.0f;
         float v = vol * env;
-        float cl = (float)tmp[f * 2]     * v;
-        float cr = (float)tmp[f * 2 + 1] * v;
-        mix_buf[f * 2]     += cl;
-        mix_buf[f * 2 + 1] += cr;
-        float ap = fabsf(cl);
-        if (ap > player_peak[i]) player_peak[i] = ap;
-        ap = fabsf(cr);
-        if (ap > player_peak[i]) player_peak[i] = ap;
+        mix_buf[f * 2]     += (float)tmp[f * 2]     * v;
+        mix_buf[f * 2 + 1] += (float)tmp[f * 2 + 1] * v;
       }
       p->frames_played += n;
     } else {
@@ -381,14 +568,8 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
         }
         if (env < 0.0f) env = 0.0f;
         float v = vol * env;
-        float cl = left * v;
-        float cr = right * v;
-        mix_buf[f * 2]     += cl;
-        mix_buf[f * 2 + 1] += cr;
-        float ap = fabsf(cl);
-        if (ap > player_peak[i]) player_peak[i] = ap;
-        ap = fabsf(cr);
-        if (ap > player_peak[i]) player_peak[i] = ap;
+        mix_buf[f * 2]     += left * v;
+        mix_buf[f * 2 + 1] += right * v;
         pos += step;
         mixed++;
       }
@@ -397,13 +578,9 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   }
 
   /* Soft-clip using tanh-style limiter - smooth, no discontinuities */
-  const float master_gain = 0.30f;
+  const float master_gain = 1.0f;
   const float threshold = 28000.0f;
   const float knee = 4000.0f;  /* transition zone */
-  static int16_t prev_left = 0, prev_right = 0;
-  static uint32_t click_count = 0;
-  static uint32_t callback_count = 0;
-  callback_count++;
 
   for (int s = 0; s < out_samples; s++) {
     float x = mix_buf[s] * master_gain;
@@ -416,37 +593,6 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     if (x > 32767.0f) x = 32767.0f;
     if (x < -32768.0f) x = -32768.0f;
     out[s] = (int16_t)x;
-  }
-
-  /* Detect clicks: large jump between last sample of previous buffer
-   * and first sample of this buffer */
-  int32_t jump_l = abs((int32_t)out[0] - (int32_t)prev_left);
-  int32_t jump_r = abs((int32_t)out[1] - (int32_t)prev_right);
-  /* Also detect mix_buf peak */
-  float mix_peak = 0.0f;
-  for (int s = 0; s < out_samples; s++) {
-    float av = fabsf(mix_buf[s]);
-    if (av > mix_peak) mix_peak = av;
-  }
-  if (jump_l > 8000 || jump_r > 8000) {
-    click_count++;
-    debugPrintf("opensles_shim: CLICK #%u cb#%u jump L=%d R=%d prev=%d/%d new=%d/%d mixpeak=%.0f active=%d\n",
-                click_count, callback_count,
-                jump_l, jump_r,
-                (int)prev_left, (int)prev_right,
-                (int)out[0], (int)out[1],
-                mix_peak, num_active);
-    for (int a = 0; a < num_active; a++) {
-      int pi = player_active_list[a];
-      AudioPlayer *pp = &g_players[pi];
-      debugPrintf("  p%d: vol=%.3f peak=%.0f ch=%u rate=%u readable=%u\n",
-                  pi, player_vol[pi], player_peak[pi],
-                  pp->num_channels, pp->sample_rate, ring_readable(pp));
-    }
-  }
-  if (out_samples >= 2) {
-    prev_left = out[out_samples - 2];
-    prev_right = out[out_samples - 1];
   }
 }
 
@@ -470,15 +616,30 @@ static void ensure_audio_initialized(void) {
     return;
   }
 
-  debugPrintf("opensles_shim: SDL audio opened: %dHz %dch %d samples\n",
-              have.freq, have.channels, have.samples);
+  debugPrintf("opensles_shim: SDL audio opened: driver=%s %dHz %dch fmt=0x%x %d samples\n",
+              SDL_GetCurrentAudioDriver(), have.freq, have.channels,
+              (unsigned)have.format, have.samples);
   SDL_PauseAudioDevice(g_audio_dev, 0);
+  g_pump_running = 1;
+  pthread_create(&g_pump_thread, NULL, pump_thread_main, NULL);
   g_audio_initialized = 1;
 }
 
 /* Reset player metadata without touching the 4MB ring buffer.
  * The ring head/tail tracking ensures we never read unwritten data. */
 static void player_reset_meta(AudioPlayer *p) {
+  /* limpar estado FD do ocupante anterior do slot */
+  pthread_mutex_lock(&g_fd_lock);
+  if (p->mp3) { mp3dec_ex_close(p->mp3); free(p->mp3); p->mp3 = NULL; }
+  if (p->is_fd && p->fd >= 0) close(p->fd);
+  p->is_fd = 0;
+  p->fd = -1;
+  p->fd_off = p->fd_len = p->fd_pos = 0;
+  p->mp3_open_failed = 0;
+  p->loop_enabled = 0;
+  p->fd_restart = 0;
+  pthread_mutex_unlock(&g_fd_lock);
+
   p->ring_head = 0;
   p->ring_tail = 0;
   memset(p->queued_sizes, 0, sizeof(p->queued_sizes));
@@ -501,6 +662,7 @@ static void player_reset_meta(AudioPlayer *p) {
   p->ever_enqueued = 0;
   p->headatend_fired = 0;
   p->decoder_done = 0;
+  p->empty_polls = 0;
   p->underrun_count = 0;
   p->fadeout_count = 0;
   p->frames_played = 0;
@@ -542,9 +704,9 @@ static AudioPlayer *alloc_player(void) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (p->play_state == SL_PLAYSTATE_STOPPED) {
-      if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
+      device_lock();
       player_reset_meta(p);
-      if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      device_unlock();
       pthread_mutex_unlock(&g_players_lock);
       /* debugPrintf("opensles_shim: force-recycled stopped player %d\n", i); */
       return p;
@@ -565,10 +727,10 @@ static AudioPlayer *alloc_player(void) {
       AudioPlayer *p = &g_players[oldest];
       debugPrintf("opensles_shim: WARNING: force-killing player %d (state=%u played=%llu)\n",
                   oldest, p->play_state, (unsigned long long)p->played_bytes);
-      if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
+      device_lock();
       p->play_state = SL_PLAYSTATE_STOPPED;
       player_reset_meta(p);
-      if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      device_unlock();
       pthread_mutex_unlock(&g_players_lock);
       return p;
     }
@@ -580,8 +742,20 @@ static AudioPlayer *alloc_player(void) {
 
 /* SLPlayItf methods */
 static SLresult play_GetDuration(void *self, SLmillisecond *pMsec) {
-  (void)self;
-  if (pMsec) *pMsec = SL_TIME_UNKNOWN;
+  void **itf_ptr = (void **)self;
+  for (int i = 0; i < MAX_PLAYERS; i++) {
+    if (&g_players[i].play_ptr == itf_ptr) {
+      AudioPlayer *p = &g_players[i];
+      if (p->is_fd && p->mp3 && p->sample_rate && p->num_channels) {
+        uint64_t frames = p->mp3->samples / p->num_channels;
+        if ((uintptr_t)pMsec > 0x100000)
+          *pMsec = (SLmillisecond)(frames * 1000ULL / p->sample_rate);
+        return SL_RESULT_SUCCESS;
+      }
+      break;
+    }
+  }
+  if ((uintptr_t)pMsec > 0x100000) *pMsec = SL_TIME_UNKNOWN;
   return SL_RESULT_SUCCESS;
 }
 
@@ -598,11 +772,11 @@ static SLresult play_GetPosition(void *self, SLmillisecond *pMsec) {
         uint64_t frames = p->played_bytes / bytes_per_frame;
         position = (frames * 1000ULL) / sample_rate;
       }
-      if (pMsec) *pMsec = (SLmillisecond)position;
+      if ((uintptr_t)pMsec > 0x100000) *pMsec = (SLmillisecond)position;
       return SL_RESULT_SUCCESS;
     }
   }
-  if (pMsec) *pMsec = 0;
+  if ((uintptr_t)pMsec > 0x100000) *pMsec = 0;
   return SL_RESULT_SUCCESS;
 }
 
@@ -611,23 +785,37 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      /* debugPrintf("opensles_shim: player %d SetPlayState(%u -> %u)\n",
-                  i, p->play_state, state); */
-      if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
+      device_lock();
       if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
         p->headatend_fired = 0;
         p->decoder_done = 0;
+        p->empty_polls = 0;
+        if (p->is_fd) p->fd_restart = 1; /* proximo PLAY recomeca o mp3 do zero */
+        SDL_AtomicLock(&g_enqueue_lock);
         p->ring_head = 0;
         p->ring_tail = 0;
         queue_reset(p);
+        SDL_AtomicUnlock(&g_enqueue_lock);
       }
       if (state == SL_PLAYSTATE_PLAYING && p->play_state != SL_PLAYSTATE_PLAYING) {
         p->frames_played = 0;
         p->underrun_count = 0;
         p->fadeout_count = 0;
       }
+      /* FD player: PLAY de novo apos fim-de-faixa (mesmo sem STOPPED antes)
+       * = re-tocar do inicio */
+      if (p->is_fd && state == SL_PLAYSTATE_PLAYING && p->decoder_done) {
+        SDL_AtomicLock(&g_enqueue_lock);
+        p->ring_head = 0;
+        p->ring_tail = 0;
+        queue_reset(p);
+        SDL_AtomicUnlock(&g_enqueue_lock);
+        p->decoder_done = 0;
+        p->headatend_fired = 0;
+        p->fd_restart = 1;
+      }
       p->play_state = state;
-      if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      device_unlock();
       return SL_RESULT_SUCCESS;
     }
   }
@@ -638,11 +826,20 @@ static SLresult play_GetPlayState(void *self, SLuint32 *pState) {
   void **itf_ptr = (void **)self;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
-      if (pState) *pState = g_players[i].play_state;
+      AudioPlayer *p = &g_players[i];
+      SLuint32 st = p->play_state;
+      /* FD player em fim-de-faixa: REPORTAR stopped (o jogo polla isso pra
+       * saber que a musica acabou e re-tocar), sem mutar estado interno nem
+       * posicao -- mutacao assincrona daqui do shim causava SIGSEGV no
+       * handler de fim-de-faixa do jogo. */
+      if (p->is_fd && p->decoder_done && p->headatend_fired &&
+          ring_readable(p) == 0)
+        st = SL_PLAYSTATE_STOPPED;
+      if ((uintptr_t)pState > 0x100000) *pState = st;
       return SL_RESULT_SUCCESS;
     }
   }
-  if (pState) *pState = SL_PLAYSTATE_STOPPED;
+  if ((uintptr_t)pState > 0x100000) *pState = SL_PLAYSTATE_STOPPED;
   return SL_RESULT_SUCCESS;
 }
 
@@ -681,21 +878,23 @@ static SLresult play_SetCallbackEventsMask(void *self, SLuint32 eventFlags) {
 
 /* SLVolumeItf methods */
 static SLresult volume_SetVolumeLevel(void *self, SLmillibel level) {
+  /* SLmillibel is 16-bit on the wire: 0x8000 is SL_MILLIBEL_MIN (mute),
+   * not +32768. Sign-extend from 16 bits before converting. */
+  int16_t level16 = (int16_t)(level & 0xFFFF);
   float linear;
-  if (level <= -9600) linear = 0.0f;
-  else linear = powf(10.0f, level / 2000.0f);
+  if (level16 <= -9600) linear = 0.0f;
+  else linear = powf(10.0f, level16 / 2000.0f);
 
   /* Clamp insane values */
   if (linear > 2.0f) {
     debugPrintf("opensles_shim: WARNING: SetVolumeLevel level=%d -> linear=%f, clamping to 1.0\n",
-                (int)level, linear);
+                (int)level16, linear);
     linear = 1.0f;
   }
 
   void **itf_ptr = (void **)self;
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].volume_ptr == itf_ptr) {
-      /* debugPrintf("opensles_shim: player %d SetVolumeLevel(%d) -> %f\n", i, (int)level, linear); */
       g_players[i].volume = linear;
       return SL_RESULT_SUCCESS;
     }
@@ -706,23 +905,23 @@ static SLresult volume_SetVolumeLevel(void *self, SLmillibel level) {
 
 static SLresult volume_GetVolumeLevel(void *self, SLmillibel *pLevel) {
   (void)self;
-  if (pLevel) *pLevel = 0;
+  if ((uintptr_t)pLevel > 0x100000) *pLevel = 0;
   return SL_RESULT_SUCCESS;
 }
 
 static SLresult volume_GetMaxVolumeLevel(void *self, SLmillibel *pMaxLevel) {
   (void)self;
-  if (pMaxLevel) *pMaxLevel = 0;
+  if ((uintptr_t)pMaxLevel > 0x100000) *pMaxLevel = 0;
   return SL_RESULT_SUCCESS;
 }
 
 /* SLBufferQueueItf methods */
 static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
   void **itf_ptr = (void **)self;
-  { static int en = 0; if (en++ % 200 == 0) debugPrintf("AUDIO: bq_Enqueue #%d size=%u\n", en, size); }
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
+      SDL_AtomicLock(&g_enqueue_lock);
       uint32_t written = ring_write(p, pBuffer, size);
       if (written != size) {
         debugPrintf("opensles_shim: WARNING: truncated enqueue for player %d (%u/%u bytes)\n",
@@ -734,12 +933,8 @@ static SLresult bq_Enqueue(void *self, const void *pBuffer, SLuint32 size) {
         p->last_enqueue_size = written;
         p->enqueue_counter++;
         p->ever_enqueued = 1;
-        /* if (p->debug_enqueue_logs < 16 || p->enqueue_counter % 64 == 0) {
-          debugPrintf("opensles_shim: player %d enqueue size=%u written=%u readable=%u counter=%u\n",
-                      i, size, written, ring_readable(p), p->enqueue_counter);
-          p->debug_enqueue_logs++;
-        } */
       }
+      SDL_AtomicUnlock(&g_enqueue_lock);
       return SL_RESULT_SUCCESS;
     }
   }
@@ -752,16 +947,19 @@ static SLresult bq_Clear(void *self) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
       /* debugPrintf("opensles_shim: player %d BufferQueue Clear\n", i); */
-      if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
+      device_lock();
+      SDL_AtomicLock(&g_enqueue_lock);
       p->ring_head = 0;
       p->ring_tail = 0;
       queue_reset(p);
       p->enqueued_since_cb = 0;
       p->enqueue_counter = 0;
       p->ever_enqueued = 0;
+      SDL_AtomicUnlock(&g_enqueue_lock);
       p->headatend_fired = 0;
       p->decoder_done = 0;
-      if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      p->empty_polls = 0;
+      device_unlock();
       return SL_RESULT_SUCCESS;
     }
   }
@@ -773,15 +971,21 @@ static SLresult bq_GetState(void *self, void *pState) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].bq_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      if (pState) {
+      if ((uintptr_t)pState > 0x100000) {
         SLuint32 *state = (SLuint32 *)pState;
-        uint32_t play_index = 0;
-        uint32_t capacity = p->queue_capacity ? p->queue_capacity : 1;
-        if (p->queued_count > 0) {
-          play_index = p->queued_head_index % capacity;
-        }
         state[0] = p->queued_count;
-        state[1] = play_index;
+        /* spec: playIndex is CUMULATIVE (increments once per buffer played),
+         * not modulo capacity -- feeders diff it to count completions. */
+        state[1] = p->queued_head_index;
+        if (p->queue_capacity && p->queued_count >= p->queue_capacity) {
+          static uint32_t full_logs = 0;
+          if (full_logs < 12) {
+            full_logs++;
+            debugPrintf("audio: player %d GetState FULL count=%u cap=%u ring=%u state=%u rate=%u ch=%u lastenq=%u\n",
+                        i, p->queued_count, p->queue_capacity, ring_readable(p),
+                        p->play_state, p->sample_rate, p->num_channels, p->last_enqueue_size);
+          }
+        }
       }
       return SL_RESULT_SUCCESS;
     }
@@ -825,6 +1029,102 @@ static SLresult bq_GetState_or_RegisterCallback(void *self, void *arg1, void *ar
 /* Stub for unused interfaces */
 static SLresult stub_success(void) { return SL_RESULT_SUCCESS; }
 
+/* SLPlaybackRateItf -- fnaSound_Init enumerates GetRateRange(index++) until it
+ * finds a range covering 1000 permille or the call fails; a stub that returns
+ * success without writing the out-params spins that loop forever. */
+static SLresult pbrate_SetRate(void *self, SLpermille rate) {
+  (void)self; (void)rate;
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult pbrate_GetRate(void *self, SLpermille *pRate) {
+  (void)self;
+  if ((uintptr_t)pRate > 0x100000) *pRate = 1000;
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult pbrate_GetProperties(void *self, SLuint32 *pProperties) {
+  (void)self;
+  if ((uintptr_t)pProperties > 0x100000) *pProperties = 1; /* SL_RATEPROP_NOPITCHCORAUDIO */
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult pbrate_GetCapabilitiesOfRate(void *self, SLpermille rate, SLuint32 *pCapabilities) {
+  (void)self; (void)rate;
+  if ((uintptr_t)pCapabilities > 0x100000) *pCapabilities = 1;
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult pbrate_GetRateRange(void *self, SLuint8 index, SLpermille *pMinRate,
+                                     SLpermille *pMaxRate, SLpermille *pStepSize,
+                                     SLuint32 *pCapabilities) {
+  (void)self;
+  if (index > 0) return SL_RESULT_PARAMETER_INVALID;
+  if ((uintptr_t)pMinRate > 0x100000) *pMinRate = 500;
+  if ((uintptr_t)pMaxRate > 0x100000) *pMaxRate = 2000;
+  if ((uintptr_t)pStepSize > 0x100000) *pStepSize = 0;
+  if ((uintptr_t)pCapabilities > 0x100000) *pCapabilities = 1;
+  return SL_RESULT_SUCCESS;
+}
+
+static void *g_pbrate_vtable[8];
+static void *g_pbrate_ptr;
+
+/* SLSeekItf: por player. Nos FD players (mp3) o loop importa de verdade --
+ * musica de menu usa SetLoop(true). BufferQueue players ignoram (loop vem do
+ * jogo re-enfileirando). */
+static AudioPlayer *player_from_seek_itf(void *self) {
+  void **itf_ptr = (void **)self;
+  for (int i = 0; i < MAX_PLAYERS; i++)
+    if (&g_players[i].seek_ptr == itf_ptr) return &g_players[i];
+  return NULL;
+}
+
+static SLresult seek_SetPosition(void *self, SLmillisecond pos, SLuint32 seekMode) {
+  (void)seekMode;
+  AudioPlayer *p = player_from_seek_itf(self);
+  if (p && p->is_fd && pos == 0) p->fd_restart = 1; /* caso comum: rewind */
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult seek_SetLoop(void *self, SLBoolean loopEnable,
+                              SLmillisecond startPos, SLmillisecond endPos) {
+  (void)startPos; (void)endPos;
+  AudioPlayer *p = player_from_seek_itf(self);
+  if (p) {
+    p->loop_enabled = (loopEnable != 0);
+    debugPrintf("audio: player %ld SetLoop(%d)\n", (long)(p - g_players),
+                (int)(loopEnable != 0));
+  }
+  return SL_RESULT_SUCCESS;
+}
+
+static SLresult seek_GetLoop(void *self, SLBoolean *pLoopEnabled,
+                              SLmillisecond *pStartPos, SLmillisecond *pEndPos) {
+  AudioPlayer *p = player_from_seek_itf(self);
+  if ((uintptr_t)pLoopEnabled > 0x100000)
+    *pLoopEnabled = (p && p->loop_enabled) ? SL_BOOLEAN_TRUE : SL_BOOLEAN_FALSE;
+  if ((uintptr_t)pStartPos > 0x100000) *pStartPos = 0;
+  if ((uintptr_t)pEndPos > 0x100000) *pEndPos = SL_TIME_UNKNOWN;
+  return SL_RESULT_SUCCESS;
+}
+
+static void init_static_player_itfs(void) {
+  static int inited = 0;
+  if (inited) return;
+  inited = 1;
+
+  for (int i = 0; i < 8; i++) g_pbrate_vtable[i] = (void *)stub_success;
+  g_pbrate_vtable[0] = (void *)pbrate_SetRate;
+  g_pbrate_vtable[1] = (void *)pbrate_GetRate;
+  /* [2] SetPropertyConstraints: accept anything */
+  g_pbrate_vtable[3] = (void *)pbrate_GetProperties;
+  g_pbrate_vtable[4] = (void *)pbrate_GetCapabilitiesOfRate;
+  g_pbrate_vtable[5] = (void *)pbrate_GetRateRange;
+  g_pbrate_ptr = g_pbrate_vtable;
+
+}
+
 /* Player object methods */
 static SLresult player_Realize(void *self, SLBoolean async) {
   (void)self; (void)async;
@@ -848,13 +1148,16 @@ static SLresult player_GetInterface(void *self, SLInterfaceID iid, void **pInter
       } else if (iid == sl_IID_EFFECTSEND) {
         /* debugPrintf("opensles_shim: player %d GetInterface(EFFECTSEND)\n", i); */
         *pInterface = &p->effectsend_ptr;
+      } else if (iid == sl_IID_PLAYBACKRATE) {
+        debugPrintf("opensles_shim: player %d GetInterface(PLAYBACKRATE)\n", i);
+        init_static_player_itfs();
+        *pInterface = &g_pbrate_ptr;
+      } else if (iid == sl_IID_SEEK) {
+        debugPrintf("opensles_shim: player %d GetInterface(SEEK)\n", i);
+        *pInterface = &p->seek_ptr;
       } else {
-        /* Unimplemented interface (e.g. PLAYBACKRATE/SEEK): report it as
-           unavailable instead of handing back an all-stub interface. Returning
-           a stub that always succeeds makes the Fusion sound-resource loader
-           treat its enumeration method as "infinite entries" and spin forever. */
-        if (pInterface) *pInterface = NULL;
-        return SL_RESULT_RESOURCE_ERROR; /* non-zero: interface unavailable */
+        /* debugPrintf("opensles_shim: player %d GetInterface(unknown=%p)\n", i, iid); */
+        *pInterface = &p->effectsend_ptr;
       }
       return SL_RESULT_SUCCESS;
     }
@@ -867,10 +1170,10 @@ static void player_Destroy(void *self) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].obj_ptr == obj_ptr) {
       AudioPlayer *p = &g_players[i];
-      if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
+      device_lock();
       p->play_state = SL_PLAYSTATE_STOPPED;
       p->active = 0;
-      if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+      device_unlock();
       return;
     }
   }
@@ -908,6 +1211,12 @@ static void setup_player_vtables(AudioPlayer *p) {
 
   for (int i = 0; i < 8; i++) p->effectsend_vtable[i] = (void *)stub_success;
   p->effectsend_ptr = p->effectsend_vtable;
+
+  for (int i = 0; i < 8; i++) p->seek_vtable[i] = (void *)stub_success;
+  p->seek_vtable[0] = (void *)seek_SetPosition;
+  p->seek_vtable[1] = (void *)seek_SetLoop;
+  p->seek_vtable[2] = (void *)seek_GetLoop;
+  p->seek_ptr = p->seek_vtable;
 }
 
 /* Output mix */
@@ -949,7 +1258,7 @@ static SLresult engine_CreateOutputMix(void *self, void **pMix,
                                         const SLInterfaceID *pInterfaceIds,
                                         const SLBoolean *pInterfaceRequired) {
   (void)self; (void)numInterfaces; (void)pInterfaceIds; (void)pInterfaceRequired;
-  /* debugPrintf("opensles_shim: CreateOutputMix\n"); */
+  debugPrintf("SL: CreateOutputMix(self=%p pMix=%p)\n", self, (void *)pMix);
   init_outmix();
   if (pMix) *pMix = &g_outmix_ptr;
   return SL_RESULT_SUCCESS;
@@ -963,7 +1272,8 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
   (void)self; (void)pAudioSnk; (void)numInterfaces;
   (void)pInterfaceIds; (void)pInterfaceRequired;
 
-  { static int cap = 0; debugPrintf("AUDIO: CreateAudioPlayer #%d numItf=%u\n", ++cap, numInterfaces); }
+  debugPrintf("SL: CreateAudioPlayer(self=%p pPlayer=%p pSrc=%p pSnk=%p)\n",
+              self, (void *)pPlayer, pAudioSrc, pAudioSnk);
   ensure_audio_initialized();
 
   AudioPlayer *p = alloc_player();
@@ -973,22 +1283,47 @@ static SLresult engine_CreateAudioPlayer(void *self, void **pPlayer,
     return SL_RESULT_RESOURCE_ERROR;
   }
 
-  if (pAudioSrc) {
+  if ((uintptr_t)pAudioSrc > 0x100000) {
     SLDataSource *src = (SLDataSource *)pAudioSrc;
-    if (src->pLocator) {
-      SLDataLocator_BufferQueue *loc = (SLDataLocator_BufferQueue *)src->pLocator;
+    void *ploc = src->pLocator, *pfmt = src->pFormat;
+    debugPrintf("SL: audioSrc pLocator=%p pFormat=%p\n", ploc, pfmt);
+    if ((uintptr_t)ploc > 0x100000) {
+      SLDataLocator_BufferQueue *loc = (SLDataLocator_BufferQueue *)ploc;
       if (loc->locatorType == SL_DATALOCATOR_BUFFERQUEUE) {
         p->queue_capacity = loc->numBuffers;
+      } else if (loc->locatorType == 0x800007bc /* SL_DATALOCATOR_ANDROIDFD */) {
+        /* { SLuint32 type; SLint32 fd; SLAint64 offset; SLAint64 length; } */
+        typedef struct { SLuint32 t; int32_t fd; int64_t off; int64_t len; } AndroidFDLoc;
+        AndroidFDLoc *fdloc = (AndroidFDLoc *)ploc;
+        int nfd = dup(fdloc->fd);
+        if (nfd >= 0) {
+          uint64_t len = (uint64_t)fdloc->len;
+          if (fdloc->len <= 0) { /* USE_FILE_SIZE */
+            struct stat st;
+            len = (fstat(nfd, &st) == 0) ? (uint64_t)st.st_size : 0;
+          }
+          p->is_fd = 1;
+          p->fd = nfd;
+          p->fd_off = (uint64_t)(fdloc->off > 0 ? fdloc->off : 0);
+          p->fd_len = len;
+          debugPrintf("audio: fdplayer %ld ANDROIDFD fd=%d(dup=%d) off=%llu len=%llu\n",
+                      (long)(p - g_players), fdloc->fd, nfd,
+                      (unsigned long long)p->fd_off, (unsigned long long)p->fd_len);
+        } else {
+          debugPrintf("audio: ANDROIDFD dup(%d) FALHOU\n", fdloc->fd);
+        }
       }
     }
-    if (src->pFormat) {
-      SLDataFormat_PCM *fmt = (SLDataFormat_PCM *)src->pFormat;
+    if ((uintptr_t)pfmt > 0x100000) {
+      SLDataFormat_PCM *fmt = (SLDataFormat_PCM *)pfmt;
       if (fmt->formatType == SL_DATAFORMAT_PCM) {
         p->num_channels = fmt->numChannels;
         p->sample_rate = fmt->samplesPerSec / 1000;
         p->bits_per_sample = fmt->bitsPerSample;
-        /* debugPrintf("opensles_shim: format: %u ch, %u Hz, %u bit\n",
-                    p->num_channels, p->sample_rate, p->bits_per_sample); */
+      } else if (fmt->formatType == 0x1 /* SL_DATAFORMAT_MIME */) {
+        const char *mime = ((const char **)pfmt)[1];
+        if ((uintptr_t)mime > 0x100000)
+          debugPrintf("audio: fdplayer %ld MIME=\"%s\"\n", (long)(p - g_players), mime);
       }
     }
   }
@@ -1014,6 +1349,8 @@ static SLresult engine_obj_Realize(void *self, SLBoolean async) { (void)self; (v
 
 static SLresult engine_obj_GetInterface(void *self, SLInterfaceID iid, void **pInterface) {
   (void)self;
+  debugPrintf("SL: engineObj.GetInterface(iid=%p ENGINE=%p pIf=%p)\n",
+              (void *)iid, (void *)sl_IID_ENGINE, (void *)pInterface);
   if (iid == sl_IID_ENGINE) {
     if (pInterface) *pInterface = &g_engine_itf_ptr;
   } else {
@@ -1058,46 +1395,22 @@ static void init_engine(void) {
 
 /* Public API */
 void opensles_shim_pump_callbacks(void) {
+  static unsigned pump_calls = 0;
+  if ((++pump_calls % 900) == 0) { /* ~30s @30fps: underrun visibility */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      AudioPlayer *p = &g_players[i];
+      if (p->active && p->underrun_count)
+        debugPrintf("audio: player %d underruns=%u (ring=%u)\n",
+                    i, p->underrun_count, ring_readable(p));
+    }
+  }
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
 
-    uint32_t readable = ring_readable(p);
-    uint32_t callback_threshold = p->last_enqueue_size;
-    if (callback_threshold == 0 || callback_threshold > (RING_BUFFER_SIZE / 2)) {
-      callback_threshold = RING_BUFFER_SIZE / 4;
-    }
-    /* Request data earlier: use 2x threshold to keep buffer fuller */
-    uint32_t refill_threshold = callback_threshold * 2;
-    if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
-
-    /* Call callback multiple times to fill buffer ahead */
-    int max_calls = 4;
-    while (p->callback && readable <= refill_threshold && max_calls > 0) {
-      uint32_t counter_before = p->enqueue_counter;
-      /* if (p->debug_callback_logs < 16 || counter_before % 64 == 0) {
-        debugPrintf("opensles_shim: player %d callback readable=%u threshold=%u counter=%u\n",
-                    i, readable, refill_threshold, counter_before);
-        p->debug_callback_logs++;
-      } */
-      p->callback(&p->bq_ptr, p->callback_context);
-
-      if (p->ever_enqueued && !p->decoder_done &&
-          p->enqueue_counter == counter_before) {
-        p->decoder_done = 1;
-        /* debugPrintf("opensles_shim: player %d decoder_done after callback readable=%u counter=%u\n",
-                    i, ring_readable(p), p->enqueue_counter); */
-        break;
-      }
-      readable = ring_readable(p);
-      max_calls--;
-    }
-
-    if (!p->callback && p->ever_enqueued && !p->decoder_done &&
-        p->queued_count == 0 && readable == 0) {
-      p->decoder_done = 1;
-      /* debugPrintf("opensles_shim: player %d decoder_done after queue drain\n", i); */
-    }
+    /* ring refill now happens on the SDL audio thread (refill_player);
+     * here we only run end-of-stream housekeeping that must not execute
+     * inside the audio callback. */
 
     // HEADATEND: fire play callback when decoder done and ring drained
     if (p->decoder_done && !p->headatend_fired) {
@@ -1105,13 +1418,21 @@ void opensles_shim_pump_callbacks(void) {
         p->headatend_fired = 1;
         if (p->play_callback && (p->play_event_mask & SL_PLAYEVENT_HEADATEND)) {
           p->play_callback(&p->play_ptr, p->play_callback_context, SL_PLAYEVENT_HEADATEND);
-          /* debugPrintf("opensles_shim: player %d HEADATEND fired (underruns=%u fadeouts=%u)\n",
-                      i, p->underrun_count, p->fadeout_count); */
         }
-        if (g_audio_dev) SDL_LockAudioDevice(g_audio_dev);
-        p->play_state = SL_PLAYSTATE_STOPPED;
-        queue_reset(p);
-        if (g_audio_dev) SDL_UnlockAudioDevice(g_audio_dev);
+        /* FD players (musica mp3): OpenSL REAL fica em PLAYING com o head
+         * parado no fim -- e a posicao CONGELA. Forcar STOPPED + reset aqui
+         * zerava GetPosition e mudava o estado sob os pes do jogo -> SIGSEGV
+         * no handler de fim-de-faixa (~86s, fim do maintitle.mp3). Quem para/
+         * recomeca e o JOGO. BufferQueue players mantem o comportamento do
+         * lswtcs (fnaStream depende do STOPPED pra reciclar o stream). */
+        if (!p->is_fd) {
+          device_lock();
+          p->play_state = SL_PLAYSTATE_STOPPED;
+          SDL_AtomicLock(&g_enqueue_lock);
+          queue_reset(p);
+          SDL_AtomicUnlock(&g_enqueue_lock);
+          device_unlock();
+        }
       }
     }
   }
@@ -1125,7 +1446,7 @@ SLresult slCreateEngine_shim(void **pEngine, SLuint32 numOptions,
   (void)numOptions; (void)pEngineOptions; (void)numInterfaces;
   (void)pInterfaceIds; (void)pInterfaceRequired;
 
-  /* debugPrintf("opensles_shim: slCreateEngine\n"); */
+  debugPrintf("SL: slCreateEngine(pEngine=%p)\n", (void *)pEngine);
   init_engine();
   if (pEngine) *pEngine = &g_engine_obj_ptr;
   return SL_RESULT_SUCCESS;
