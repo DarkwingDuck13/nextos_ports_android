@@ -546,6 +546,13 @@ static void hp_controls_mode_update(void) {
     hp_controls_set_mode(1);
   }
 
+  // experiment: /dev/shm/hp_cm0 forces GOPlayer_CurrentControlMode=0 (console
+  // control scheme?) -- candidate for making A/B/X/Y act in gameplay
+  if (access("/dev/shm/hp_cm0", F_OK) == 0) {
+    int *pcm = (int *)(b + 0x2256a8);
+    if (*pcm != 0) { debugPrintf("player: ControlMode %d -> 0\n", *pcm); *pcm = 0; }
+  }
+
   if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
   if (access("/dev/shm/hp_back", F_OK) == 0) {
     remove("/dev/shm/hp_back");
@@ -563,6 +570,14 @@ static void hp_controls_mode_update(void) {
 // ---------------------------------------------------------------------------
 int (*uimenu_orig)(void *menu, int b) = NULL;
 static volatile int g_fe_confirm = 0;   // frames left to honor an A press
+
+// queued synthetic tap (touchDown -> few frames -> touchUp), driven per-frame
+// from the main loop; used by /dev/shm/hp_tap and by A on dialog balloons
+static float g_tap_x = 0, g_tap_y = 0;
+static int g_tap_phase = 0;
+static void hp_queue_tap(float x, float y) {
+  if (g_tap_phase == 0) { g_tap_x = x; g_tap_y = y; g_tap_phase = 1; }
+}
 
 static int hp_uimenu_update(void *menu, int b) {
   int r = uimenu_orig(menu, b);
@@ -659,16 +674,23 @@ static void update_gamepad(void) {
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
   // Menu pad keys: A confirms the d-pad-selected item (UIMenu_Update hook,
-  // also covers the pause menu); outside of a level B = Android back and
-  // START = center tap (passes the touch-only "Touch the screen to begin").
+  // also covers the pause menu) or advances an active in-game dialog (tap on
+  // the balloon); outside of a level B = Android back and START = center tap
+  // (passes the touch-only "Touch the screen to begin").
   {
-    int in_level = *(void **)((uint8_t *)game_mod.load_virtbase + 0x2d12cc) != NULL;
+    uintptr_t base = (uintptr_t)game_mod.load_virtbase;
+    int in_level = *(void **)(base + 0x2d12cc) != NULL;   // GOPlayer_Active
+    void *dialog = *(void **)(base + 0x21e598);           // pInGameDialogModel
     static uint64_t a_prev = 0, b_prev = 0, st_prev = 0;
     uint64_t a = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1 : 0;
     uint64_t bt = gc_btn(SDL_CONTROLLER_BUTTON_B) ? 1 : 0;
     uint64_t st = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1 : 0;
-    if (a && !a_prev) g_fe_confirm = 8;           // consumed by hp_uimenu_update
-    else if (g_fe_confirm > 0) g_fe_confirm--;
+    if (a && !a_prev) {
+      if (dialog) hp_queue_tap(screen_width * 0.5f, screen_height * 0.86f);
+      else g_fe_confirm = 8;                  // consumed by hp_uimenu_update
+    } else if (g_fe_confirm > 0) {
+      g_fe_confirm--;
+    }
     if (!in_level) {
       if (bt && !b_prev) g.backButtonPressed(fake_env, FUSION_OBJ);
       if (st && !st_prev) {
@@ -772,25 +794,25 @@ int main(int argc, char *argv[]) {
 
     hp_controls_mode_update();
 
-    // headless tap inject: echo "x y" > /dev/shm/hp_tap (down 1 frame, then up)
+    // queued tap pump: /dev/shm/hp_tap "x y" (headless) or hp_queue_tap()
     {
-      static float px = -1, py = -1; static int phase = 0;
-      if (phase == 0) {
+      if (g_tap_phase == 0) {
         FILE *tf = fopen("/dev/shm/hp_tap", "r");
         if (tf) {
-          if (fscanf(tf, "%f %f", &px, &py) == 2) phase = 1;
+          float fx, fy;
+          if (fscanf(tf, "%f %f", &fx, &fy) == 2) hp_queue_tap(fx, fy);
           fclose(tf); remove("/dev/shm/hp_tap");
         }
-      } else if (phase == 1) {
-        g.touchDown(fake_env, FUSION_OBJ, 0, px, py, 1.0f);
-        debugPrintf("tap: down %.0f,%.0f\n", px, py);
-        phase = 2;
-      } else if (phase >= 2 && phase < 5) {
-        phase++;
-      } else if (phase == 5) {
-        g.touchUp(fake_env, FUSION_OBJ, 0, px, py, 0.0f);
-        debugPrintf("tap: up %.0f,%.0f\n", px, py);
-        phase = 0;
+      } else if (g_tap_phase == 1) {
+        g.touchDown(fake_env, FUSION_OBJ, 0, g_tap_x, g_tap_y, 1.0f);
+        debugPrintf("tap: down %.0f,%.0f\n", g_tap_x, g_tap_y);
+        g_tap_phase = 2;
+      } else if (g_tap_phase >= 2 && g_tap_phase < 5) {
+        g_tap_phase++;
+      } else if (g_tap_phase == 5) {
+        g.touchUp(fake_env, FUSION_OBJ, 0, g_tap_x, g_tap_y, 0.0f);
+        debugPrintf("tap: up %.0f,%.0f\n", g_tap_x, g_tap_y);
+        g_tap_phase = 0;
       }
     }
 
