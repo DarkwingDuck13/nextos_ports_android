@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
-  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-26-brightgreen?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-28-brightgreen?style=for-the-badge">
   <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-21-orange?style=for-the-badge">
 </p>
 <p>
@@ -66,6 +66,8 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Summertime Saga** (Ren'Py→Android) | so-loader | Jogável (Mali-450) — conversas destravadas (ETC1 dupla-camada runtime) | [`ports/summertimesaga`](ports/summertimesaga/) |
 | **BADLAND** (Cocos2d-x, FMOD) | so-loader | Jogável (Mali-450) — render GLES2, áudio FMOD, texturas ETC2→ETC1 | [`ports/badland`](ports/badland/) |
 | **Magic Rampage** (FMOD) | so-loader | Jogável (Mali-450) | [`ports/magicrampage`](ports/magicrampage/) |
+| **Battlefield: Bad Company 2** (Karisma, GLES1) | so-loader (armeabi) | Jogável (Mali-450) — FPS 1ª pessoa, mundo 3D+NPC+HUD, gamepad nativo (AppOnKeyEvent/Joystick) | [`ports/bfbc2`](ports/bfbc2/) |
+| **Castle of Illusion** (Sega "oz") | so-loader (NativeActivity+FMOD, arm64) | Jogável (Mali-450) — render+controle+áudio | [`ports/castleofillusion`](ports/castleofillusion/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |

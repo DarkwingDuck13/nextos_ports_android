@@ -21,9 +21,7 @@ Tudo **BYO-data** — o repo nunca traz o jogo.
 | **FF III / IV (3D), FF IV: The After Years, FF Dimensions 1 e 2** | Square mobile (nativa/Unity) | Rinne `ff4_vita`/`ff4a_vita`, NaGaa `ff3_3d/ff4_3d/ffd/ffd2` | Bagagem de FF7/FF9. FF4 = GLES1 fixed-function. |
 | **Catálogo GameMaker/YYC** (dezenas) | GameMaker | Rinne `yoyoloader` + [compat list](https://github.com/Rinnegatamante/YoYo-Loader-Vita-Compatibility) | Com o loader genérico (receita 15): largar o APK. |
 
-> **Já em andamento (saíram de candidato):**
-> **Battlefield: Bad Company 2** (Karisma GLES1, FPS jogável no Mali-450) — ref [TheFloW/bc2_vita](https://github.com/TheOfficialFloW/bc2_vita).
-> **Castle of Illusion** (Sega "oz", NativeActivity+FMOD, tela de título rodando) — refs [Rinnegatamante/coi_vita](https://github.com/Rinnegatamante/coi_vita) · [NaGaa95/coi_nx](https://github.com/NaGaa95/coi_nx).
+> **Já concluídos (jogáveis, ver README):** Battlefield: Bad Company 2, Castle of Illusion.
 
 ## 🟡 Médio / grande (viável, mais trabalho)
 
