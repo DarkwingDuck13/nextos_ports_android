@@ -782,7 +782,6 @@ int main(int argc, char *argv[]) {
       static int touch_hold = 0;
       static float tx = 0.0f, ty = 0.0f;
       static float cx = -1.0f, cy = -1.0f;
-      static int cursor_down = 0;
       static int a_prev = 0, b_prev = 0, start_prev_fe = 0;
       static int dl_prev = 0, dr_prev = 0;
       static int swipe_frames = 0;
@@ -841,47 +840,27 @@ int main(int argc, char *argv[]) {
       }
 
 
+      // CURSOR: o stick direito SO MOVE a seta (overlay) — NAO toca a tela.
+      // O clique e' EXPLICITO no A (modelo LEGO Harry Potter): mover pra opcao,
+      // apertar A pra clicar. Assim mover nao arrasta/ativa nada sem querer.
       if (frontend_or_pause && g_pad) {
         const float scale = 1.f / 32767.0f;
         int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
         int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
         { FILE *rf = fopen("/dev/shm/legomovie_rstick", "r");
           if (rf) { int fx, fy; if (fscanf(rf, "%d %d", &fx, &fy) == 2) { raw_rx = fx; raw_ry = fy; } fclose(rf); } }
-        // deadzone GRANDE pro cursor: o adaptador USB barato tem DRIFT no
-        // analogico direito em repouso; o deadzone normal (8000) deixava o
-        // drift injetar toque SEM PARAR em gameplay se o shadow-pause ficasse
-        // presa. Exigir deflexao CLARA mata o "clica sozinho".
-        const int CURSOR_DEADZONE = 14000;
-        int active = (abs(raw_rx) > CURSOR_DEADZONE || abs(raw_ry) > CURSOR_DEADZONE);
-        if (active) {
+        // deadzone GRANDE: o adaptador USB barato tem DRIFT no analogico direito
+        // em repouso; o deadzone normal (8000) deixava a seta andar sozinha.
+        const int CURSOR_DEADZONE = 12000;
+        if (abs(raw_rx) > CURSOR_DEADZONE || abs(raw_ry) > CURSOR_DEADZONE) {
           const float speed = 14.0f;
-          cx += raw_rx * scale * speed;
-          cy += raw_ry * scale * speed;
+          if (abs(raw_rx) > CURSOR_DEADZONE) cx += raw_rx * scale * speed;
+          if (abs(raw_ry) > CURSOR_DEADZONE) cy += raw_ry * scale * speed;
           if (cx < 0.0f) cx = 0.0f; else if (cx > screen_width) cx = screen_width;
           if (cy < 0.0f) cy = 0.0f; else if (cy > screen_height) cy = screen_height;
-          g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
-          g_cursor_overlay_show = 150;
-          if (!cursor_down) {
-            if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f);
-            cursor_down = 1;
-          } else {
-            if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f);
-          }
-        } else if (cursor_down) {
-          if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
-          cursor_down = 0;
-          debugPrintf("touch: cursor click (%.0f,%.0f)\n", cx, cy);
-          // clicou no icone RESUME (topo-esquerda da coluna) -> engine resume;
-          // zera o shadow pro cursor nao vazar pro gameplay.
-          if (shadow_paused && cx < screen_width * 0.18f &&
-              cy < screen_height * 0.14f) {
-            shadow_paused = 0;
-            debugPrintf("shadow pause -> 0 (resume clicado)\n");
-          }
         }
-      } else if (cursor_down) {
-        if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
-        cursor_down = 0;
+        g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
+        g_cursor_overlay_show = 150;   // seta sempre visivel enquanto no menu
       }
 
       // swipe sintetizado do carrossel (dedo id 0, ~8 frames de arrasto)
@@ -930,9 +909,15 @@ int main(int argc, char *argv[]) {
         int st = gc_btn(SDL_CONTROLLER_BUTTON_START);
         { FILE *af = fopen("/dev/shm/legomovie_a", "r");
           if (af) { a = 1; fclose(af); remove("/dev/shm/legomovie_a"); } }
-        if (a && !a_prev && swipe_frames == 0 && !cursor_down) {
+        if (a && !a_prev && swipe_frames == 0) {
           want_tap = 1; wx = cx; wy = cy;
           debugPrintf("frontend: A -> tap cursor (%.0f,%.0f)\n", wx, wy);
+          // clicou no icone RESUME (topo-esq da coluna de pause) -> some do pause
+          if (shadow_paused && cx < screen_width * 0.18f &&
+              cy < screen_height * 0.14f) {
+            shadow_paused = 0;
+            debugPrintf("shadow pause -> 0 (resume clicado)\n");
+          }
         }
         if (b && !b_prev && swipe_frames == 0) {
           want_tap = 1;
