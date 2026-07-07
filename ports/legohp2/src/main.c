@@ -83,6 +83,7 @@ static struct {
   void (*touchDown)(void *, void *, int, float, float, float);
   void (*touchMove)(void *, void *, int, float, float, float);
   void (*touchUp)(void *, void *, int, float, float, float);
+  void (*pollTouchPoint)(void);  // fnaController_PollTouchPoint (touch device fill)
 
   void (*nativeInit)(void *, void *, void *, void *);
   void (*nativeResize)(void *, void *, int, int);
@@ -134,21 +135,22 @@ static void resolve_entry_points(void) {
   g.nativeColdBoot = (void *)so_try_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeColdBoot");
   g.nativeDone     = (void *)so_try_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeDone");
 
+  g.pollTouchPoint  = (void *)so_try_find_addr_rx(&game_mod, "_Z28fnaController_PollTouchPointv");
   g.obbAddFile      = (void *)so_find_addr_rx(&game_mod, "_Z21fnOBBPackages_AddFilePKcb");
   g.obbAddFileEntry = (void *)so_find_addr_rx(&game_mod, "_Z26fnOBBPackages_AddFileEntryjPKcyy");
   g.threadInit      = (void *)so_find_addr_rx(&game_mod, "_Z14fnaThread_Initv");
   debugPrintf("obb syms: AddFile=%p AddFileEntry=%p threadInit=%p\n",
               (void *)g.obbAddFile, (void *)g.obbAddFileEntry, (void *)g.threadInit);
 
-  // native joypad: only when this build lacks the JNI controller path
-  // (nativeControllerSetData). HP2 HAS it, so we drive input through JNI and skip
-  // the native hook (whose fnINPUTDEVICE layout is not guaranteed to match).
+  // native joypad: this HP GLES1 engine drives the joypad fnINPUTDEVICE through
+  // the native fnaController_Poll (empty for the pad on Android), same as HP 1-4 --
+  // NOT the JNI path, even though nativeControllerSetData exists. Install the hook.
   uintptr_t poll = so_try_find_addr(&game_mod, "_Z18fnaController_PollP13fnINPUTDEVICE");
-  if (poll && !g.controllerSetData) {
+  if (poll) {
     hook_arm(poll, (uintptr_t)&lotr_fna_poll);
-    debugPrintf("pad: hooked fnaController_Poll @%p -> lotr_fna_poll\n", (void *)poll);
+    debugPrintf("pad: hooked fnaController_Poll @%p -> hp2_fna_poll\n", (void *)poll);
   } else {
-    debugPrintf("pad: using JNI nativeControllerSetData path (native poll skipped)\n");
+    debugPrintf("pad: fnaController_Poll not found!\n");
   }
 }
 
@@ -286,16 +288,18 @@ enum {
   TFA_L3 = 0x0800, TFA_R3 = 0x0400, TFA_START = 0x0200,
 };
 
-// Native joypad element indices (geControls_Init on this build maps Start=6,
-// Select=7, DPad=12..15 -- the same Fusion convention as LEGO Batman 2). The
-// fnINPUTDEVICE runtime element array lives at dev+0x14, 23 elements of stride
-// 0x14, the float value at element+0; dev+0 bit0 = connected.
+// Native joypad element indices -- THIS engine's map (LEGO Harry Potter GLES1,
+// shared with HP 1-4/legohp1), which DIFFERS from LOTR/Batman2: Start=4, Select=5,
+// L1=6, R1=8, DPad=10..13, Confirm/X=14 (menu A/south), Cancel/A=15 (menu B/east),
+// B=16, Y=17, stick=0/1. fnINPUTDEVICE runtime element array at dev+0x14, stride
+// 0x14, float value at element+0; dev+0 bit0 = connected, dev+4 = type (1=joypad,
+// 16=touch).
 enum {
   E_LX = 0, E_LY = 1, E_RX = 2, E_RY = 3,
-  E_START = 6, E_SELECT = 7,
-  E_L1 = 8, E_L2 = 9, E_R1 = 10, E_R2 = 11,
-  E_DUP = 12, E_DDOWN = 13, E_DLEFT = 14, E_DRIGHT = 15,
-  E_ENG_X = 16, E_ENG_A = 17, E_ENG_B = 18, E_ENG_Y = 19,
+  E_START = 4, E_SELECT = 5,
+  E_L1 = 6, E_L2 = 7, E_R1 = 8, E_R2 = 9,
+  E_DUP = 10, E_DDOWN = 11, E_DLEFT = 12, E_DRIGHT = 13,
+  E_ENG_X = 14, E_ENG_A = 15, E_ENG_B = 16, E_ENG_Y = 17,
 };
 
 #define STICK_DEADZONE    8000
@@ -372,12 +376,15 @@ static void update_gamepad(void) {
   g_back_prev = back;
 }
 
-// Native poll hook: fnaController_Poll is an empty `bx lr` stub on this build
-// (the Android input layer used to fill the device). fnInput_Poll zeroes the
-// elements then calls this each frame; we write the SDL pad state into them.
+// Native poll hook: the original fnaController_Poll fills the TOUCH device (type
+// 0x40) via fnaController_PollTouchPoint and is a no-op for the joypad (type 1,
+// which Android used to fill). We reproduce both: touch device -> call the real
+// PollTouchPoint (processes the JNI touch events); joypad -> SDL pad state.
 static void lotr_fna_poll(void *dev) {
   uint8_t *d = (uint8_t *)dev;
-  if (*(uint32_t *)(d + 4) != 1) return;          // joypad device only (type 1)
+  uint32_t type = *(uint32_t *)(d + 4);
+  if (type == 0x40) { if (g.pollTouchPoint) g.pollTouchPoint(); return; }  // touch device
+  if (type != 1) return;                          // joypad device only (type 1)
   uint32_t n = *(uint32_t *)(d + 0x10);
   uint8_t *elems = *(uint8_t **)(d + 0x14);
   if (!elems || n < 20) return;
@@ -419,8 +426,8 @@ static void lotr_fna_poll(void *dev) {
   float l2 = rl2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
   float r2 = rr2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
 
-  // headless test inject: /dev/shm/lotr_dir "lx ly", /dev/shm/lotr_btn "<elem> <0|1>"
-  { FILE *df = fopen("/dev/shm/lotr_dir", "r");
+  // headless test inject: /dev/shm/hp2_dir "lx ly", /dev/shm/hp2_btn "<elem> <0|1>"
+  { FILE *df = fopen("/dev/shm/hp2_dir", "r");
     if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
 
   // DIAGNOSTIC: dump raw pad state so a stuck axis/button is visible in debug.log.
@@ -438,17 +445,20 @@ static void lotr_fna_poll(void *dev) {
     }
   }
 
+  int sel = gc_btn(SDL_CONTROLLER_BUTTON_BACK);
   EV(E_LX) =  lx; EV(E_LY) = -ly;   // engine wants up-positive Y
   EV(E_RX) =  rx; EV(E_RY) = -ry;
   EV(E_DUP) = d_up; EV(E_DDOWN) = d_dn; EV(E_DLEFT) = d_lf; EV(E_DRIGHT) = d_rt;
-  EV(E_ENG_B) = a;  // A(south) = Confirm/jump
-  EV(E_ENG_A) = b;  // B(east)  = Cancel
-  EV(E_ENG_Y) = x;
-  EV(E_ENG_X) = y;
+  // HP GLES1 map (from legohp1): A(south)->elem14 = menu Confirm; B(east)->elem15
+  // = menu Cancel; X(west)->elem16; Y->elem17.
+  EV(E_ENG_X) = a;
+  EV(E_ENG_A) = b;
+  EV(E_ENG_B) = x;
+  EV(E_ENG_Y) = y;
   EV(E_L1) = l1; EV(E_R1) = r1; EV(E_L2) = l2; EV(E_R2) = r2;
-  EV(E_START) = start;
+  EV(E_START) = start; EV(E_SELECT) = sel;
 
-  { FILE *bf = fopen("/dev/shm/lotr_btn", "r");
+  { FILE *bf = fopen("/dev/shm/hp2_btn", "r");
     int be, bv;
     if (bf) { if (fscanf(bf, "%d %d", &be, &bv) == 2 && be >= 0 && (uint32_t)be < n) EV(be) = (float)bv; fclose(bf); } }
 
@@ -578,9 +588,42 @@ int main(int argc, char *argv[]) {
       g_alert_pending = 0;
     }
 
+    // headless tap inject: echo "x y" > /dev/shm/hp2_tap (pixel coords) -> a
+    // touch down for a few frames then up, to hit touch-only UI (e.g. the
+    // "New Touch Controls" prompt arrows). Used to drive the frontend over SSH.
+    {
+      static float px = -1, py = -1; static int phase = 0;
+      if (phase == 0) {
+        FILE *tf = fopen("/dev/shm/hp2_tap", "r");
+        if (tf) {
+          if (fscanf(tf, "%f %f", &px, &py) == 2) phase = 1;
+          fclose(tf); remove("/dev/shm/hp2_tap");
+        }
+      } else if (phase == 1) {
+        if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, px, py, 1.0f);
+        debugPrintf("tap: down %.0f,%.0f\n", px, py);
+        phase = 2;
+      } else if (phase >= 2 && phase < 6) {
+        if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 0, px, py, 1.0f);
+        phase++;
+      } else if (phase == 6) {
+        if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 0, px, py, 0.0f);
+        debugPrintf("tap: up %.0f,%.0f\n", px, py);
+        phase = 0;
+      }
+    }
+
     g.nativeRender(fake_env, GLSV_OBJ);   // 1st call runs Fusion_OnceInit
     if (frame < 8 || (frame % 600) == 0)
       debugPrintf("render: frame %u (swaps=%d)\n", frame, egl_swap_count);
+    // one-shot: dump the frontend control->element indices after geControls_Init
+    if (frame == 120) {
+      int *cc = (int *)so_try_find_addr(&game_mod, "Controls_Confirm");
+      int *cs = (int *)so_try_find_addr(&game_mod, "Controls_Select");
+      int *cb = (int *)so_try_find_addr(&game_mod, "Controls_Back");
+      debugPrintf("FE controls: Confirm=%d Select=%d Back=%d\n",
+                  cc ? *cc : -99, cs ? *cs : -99, cb ? *cb : -99);
+    }
     egl_fbo_frame_summary(frame);
     frame++;
     egl_present();
