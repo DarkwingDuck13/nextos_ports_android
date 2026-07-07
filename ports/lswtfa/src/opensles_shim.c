@@ -99,6 +99,8 @@ typedef struct {
   SLuint32 play_event_mask;
 
   uint32_t enqueue_counter;
+  volatile uint32_t buffers_completed; /* cumulative fully-consumed buffers (mixer) */
+  volatile uint32_t callbacks_fired;   /* completion callbacks delivered (pump)  */
   uint32_t debug_enqueue_logs;
   uint32_t debug_callback_logs;
   uint32_t debug_play_callback_logs;
@@ -145,6 +147,8 @@ static void queue_reset(AudioPlayer *p) {
   p->queued_count = 0;
   p->queued_front_offset = 0;
   p->played_bytes = 0;
+  p->buffers_completed = 0;
+  p->callbacks_fired = 0;
 }
 
 static void queue_push(AudioPlayer *p, uint32_t size) {
@@ -181,6 +185,7 @@ static void queue_consume(AudioPlayer *p, uint32_t bytes) {
     p->queued_head_index++;
     p->queued_count--;
     p->queued_front_offset = 0;
+    p->buffers_completed++; /* drives one completion callback (refill thread) */
   }
 }
 
@@ -245,43 +250,40 @@ static void device_unlock(void) { if (g_audio_dev && !on_audio_thread()) SDL_Unl
 static void refill_player(AudioPlayer *p) {
   if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) return;
 
-  uint32_t readable = ring_readable(p);
-  uint32_t callback_threshold = p->last_enqueue_size;
-  if (callback_threshold == 0 || callback_threshold > (RING_BUFFER_SIZE / 2)) {
-    callback_threshold = RING_BUFFER_SIZE / 4;
+  /* Completion-driven, like real OpenSL ES: the buffer-queue callback fires
+   * exactly once per fully-consumed buffer -- that's the signal the game's
+   * feeder uses to decode + enqueue the next chunk. */
+  int guard = 64;
+  while (p->callback && p->callbacks_fired != p->buffers_completed && guard-- > 0) {
+    p->callbacks_fired++;
+    uint32_t counter_before = p->enqueue_counter;
+    p->callback(&p->bq_ptr, p->callback_context);
+    if (p->enqueue_counter != counter_before)
+      p->empty_polls = 0;
   }
-  uint32_t refill_threshold = callback_threshold * 2;
-  uint32_t sdl_period_bytes = SDL_AUDIO_SAMPLES * 2 /*ch*/ * 2 /*s16*/;
-  if (refill_threshold < sdl_period_bytes * 3) refill_threshold = sdl_period_bytes * 3;
-  if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
 
-  int max_calls = 16;
-  while (p->callback && readable <= refill_threshold && max_calls > 0) {
+  /* Starvation poll: queue drained and no completions pending -> ask anyway at
+   * pump rate; ~200ms of consecutive dry asks with an empty queue = EOS. */
+  if (p->callback && p->queued_count == 0 && ring_readable(p) == 0 &&
+      p->ever_enqueued && !p->decoder_done) {
     uint32_t counter_before = p->enqueue_counter;
     p->callback(&p->bq_ptr, p->callback_context);
     if (p->enqueue_counter == counter_before) {
-      /* Dry poll. If the queue still holds buffers this is BACKPRESSURE (the
-       * feeder declines because it sees the queue full) -- never end-of-stream.
-       * Only count towards EOS when the queue is fully drained, and even then
-       * require ~200ms of consecutive dry polls (transiently-dry decoders). */
-      if (p->queued_count > 0) {
-        p->empty_polls = 0;
-      } else if (p->ever_enqueued && !p->decoder_done) {
-        if (++p->empty_polls > 50) {
-          p->decoder_done = 1;
-          debugPrintf("audio: player %ld decoder_done after %u dry polls\n",
-                      (long)(p - g_players), p->empty_polls);
-        }
+      /* ~2s: menu/level transitions stall the game-side decoder for hundreds
+       * of ms; killing the stream on those gaps chopped the music. A stream
+       * that is genuinely over gets stopped by the game itself anyway. */
+      if (++p->empty_polls > 500) {
+        p->decoder_done = 1;
+        debugPrintf("audio: player %ld decoder_done after %u dry polls\n",
+                    (long)(p - g_players), p->empty_polls);
       }
-      break;
+    } else {
+      p->empty_polls = 0;
     }
-    p->empty_polls = 0;
-    readable = ring_readable(p);
-    max_calls--;
   }
 
   if (!p->callback && p->ever_enqueued && !p->decoder_done &&
-      p->queued_count == 0 && readable == 0) {
+      p->queued_count == 0 && ring_readable(p) == 0) {
     p->decoder_done = 1;
   }
 }
@@ -295,11 +297,25 @@ static void refill_player(AudioPlayer *p) {
 static pthread_t g_pump_thread;
 static volatile int g_pump_running = 0;
 
+static volatile uint32_t g_getpos_calls = 0;
+static volatile uint32_t g_last_pos_ms = 0;
+
 static void *pump_thread_main(void *arg) {
   (void)arg;
+  unsigned ticks = 0;
   while (g_pump_running) {
     for (int i = 0; i < MAX_PLAYERS; i++)
       refill_player(&g_players[i]);
+    if ((++ticks % 250) == 0) { /* ~1s heartbeat while diagnosing the feeder */
+      for (int i = 0; i < MAX_PLAYERS; i++) {
+        AudioPlayer *p = &g_players[i];
+        if (p->active && p->play_state == SL_PLAYSTATE_PLAYING && p->sample_rate == 22050)
+          debugPrintf("audio: hb p%d st=%u ring=%u q=%u enq#%u played=%llu getpos=%u/%ums\n",
+                      i, p->play_state, ring_readable(p), p->queued_count,
+                      p->enqueue_counter, (unsigned long long)p->played_bytes,
+                      g_getpos_calls, g_last_pos_ms);
+      }
+    }
     usleep(4000);
   }
   return NULL;
@@ -686,6 +702,8 @@ static SLresult play_GetPosition(void *self, SLmillisecond *pMsec) {
         position = (frames * 1000ULL) / sample_rate;
       }
       if ((uintptr_t)pMsec > 0x100000) *pMsec = (SLmillisecond)position;
+      g_getpos_calls++;
+      g_last_pos_ms = (uint32_t)position;
       return SL_RESULT_SUCCESS;
     }
   }
@@ -873,13 +891,10 @@ static SLresult bq_GetState(void *self, void *pState) {
       AudioPlayer *p = &g_players[i];
       if ((uintptr_t)pState > 0x100000) {
         SLuint32 *state = (SLuint32 *)pState;
-        uint32_t play_index = 0;
-        uint32_t capacity = p->queue_capacity ? p->queue_capacity : 1;
-        if (p->queued_count > 0) {
-          play_index = p->queued_head_index % capacity;
-        }
         state[0] = p->queued_count;
-        state[1] = play_index;
+        /* spec: playIndex is CUMULATIVE (increments once per buffer played),
+         * not modulo capacity -- feeders diff it to count completions. */
+        state[1] = p->queued_head_index;
         if (p->queue_capacity && p->queued_count >= p->queue_capacity) {
           static uint32_t full_logs = 0;
           if (full_logs < 12) {
