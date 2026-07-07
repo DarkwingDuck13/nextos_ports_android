@@ -552,6 +552,17 @@ static void controls_install_native_pad(so_module *mod) {
   debugPrintf("pad: native hook installed (GOT +0x%lx -> mvl_fna_poll)\n", (unsigned long)slot);
 }
 
+// Disable the touch-gesture tutorials that pause the world until the player
+// performs the taught touch action (the intro level is otherwise unplayable by
+// gamepad). g_bTutorialsEnabled gates all tutorial script triggers; the level
+// script can re-enable it on load, so we keep it forced 0 every frame.
+static uint8_t *p_tutorials_enabled = NULL;
+static void disable_tutorials(so_module *mod) {
+  p_tutorials_enabled = (uint8_t *)so_find_addr(mod, "g_bTutorialsEnabled");
+  if (p_tutorials_enabled) { *p_tutorials_enabled = 0; debugPrintf("tutorials: g_bTutorialsEnabled -> 0\n"); }
+  else debugPrintf("tutorials: g_bTutorialsEnabled not found\n");
+}
+
 static void update_gamepad(void) {
   if (!g_pad) return;
 
@@ -643,6 +654,7 @@ int main(int argc, char *argv[]) {
   patch_game();
   resolve_entry_points();
   controls_install_native_pad(&game_mod);
+  disable_tutorials(&game_mod);
   obb_install_logging(&game_mod);
 
   so_finalize(&game_mod);
@@ -703,6 +715,36 @@ int main(int argc, char *argv[]) {
       running = 0;
 
     update_gamepad();
+    if (p_tutorials_enabled) *p_tutorials_enabled = 0;  // keep tutorials off
+
+    // Touch injection: the LEGO title/menu front-end is touch-driven (the engine
+    // ignores the joypad device there). We synthesize a tap. Remote test hook:
+    // /dev/shm/mvl_touch "x y" queues a down-then-up tap at pixel (x,y).
+    {
+      static int touch_hold = 0;    // frames remaining with finger down
+      static float tx = 0, ty = 0;
+      if (touch_hold > 0) {
+        touch_hold--;
+        if (touch_hold == 0) {
+          if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 0, tx, ty, 0.0f);
+        } else {
+          if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
+        }
+      } else {
+        FILE *tf = fopen("/dev/shm/mvl_touch", "r");
+        if (tf) {
+          float x, y;
+          if (fscanf(tf, "%f %f", &x, &y) == 2) {
+            tx = x; ty = y;
+            if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
+            touch_hold = 6;
+            debugPrintf("touch: tap (%.0f,%.0f)\n", tx, ty);
+          }
+          fclose(tf);
+          remove("/dev/shm/mvl_touch");
+        }
+      }
+    }
 
     // Answer any modal dialog the frontend raised (see jni_fake ShowAlertDialog).
     // Feed the positive button so sign-in/consent prompts dismiss and New Game

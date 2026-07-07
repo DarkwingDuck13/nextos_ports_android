@@ -161,6 +161,10 @@ DynLibFunction dynlib_functions[] = {
   { "ungetc", (uintptr_t)&ungetc_fake }, { "vasprintf", (uintptr_t)&vasprintf },
   { "vfprintf", (uintptr_t)&vfprintf_fake }, { "vsnprintf", (uintptr_t)&vsnprintf },
   { "fdopen", (uintptr_t)&fdopen },
+  { "printf", (uintptr_t)&printf }, { "vsprintf", (uintptr_t)&vsprintf },
+  { "rand", (uintptr_t)&rand },
+  { "sqrtf", (uintptr_t)&sqrtf }, { "fmodf", (uintptr_t)&fmodf },
+  { "exp2f", (uintptr_t)&exp2f },
 
   // filesystem
   { "close", (uintptr_t)&close }, { "mkdir", (uintptr_t)&mkdir_fake },
