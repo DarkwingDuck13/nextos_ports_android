@@ -264,6 +264,28 @@ static void update_gamepad(void) {
 
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
+  // The frontend ("Touch the screen to begin" + touch-driven menus) is not driven
+  // by controllerSetData -- it needs real touch events. Drive a virtual touch
+  // cursor with the left stick / d-pad and tap with A (down on press, up on
+  // release). Gameplay still gets the button via controllerSetData above.
+  static float tx = -1.f, ty = -1.f;
+  if (tx < 0) { tx = screen_width * 0.5f; ty = screen_height * 0.5f; }
+  const float cur_speed = 14.0f;
+  tx += lx * cur_speed; ty += ly * cur_speed;
+  if (tx < 0) tx = 0; else if (tx > screen_width - 1) tx = screen_width - 1;
+  if (ty < 0) ty = 0; else if (ty > screen_height - 1) ty = screen_height - 1;
+
+  static uint64_t a_prev = 0;
+  uint64_t a = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1 : 0;
+  if (a && !a_prev) {
+    if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
+  } else if (a && a_prev) {
+    if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
+  } else if (!a && a_prev) {
+    if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 0, tx, ty, 0.0f);
+  }
+  a_prev = a;
+
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
   if (back && !g_back_prev) g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
