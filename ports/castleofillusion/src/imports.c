@@ -396,6 +396,14 @@ static void my_glCompressedTexImage3D(unsigned, int, unsigned, int, int, int,
 static void my_glCompressedTexImage2D(unsigned, int, unsigned, int, int, int,
                                       int, const void *);
 static void my_glTexStorage2D(unsigned, int, unsigned, int, int);
+static void my_glUniform4fv(int, int, const float *);
+static void my_glUniformMatrix4fv(int, int, unsigned char, const float *);
+static void my_glUniform3fv(int, int, const float *);
+static void my_glUniform1f(int, float);
+static void my_glUniform4i(int, int, int, int, int);
+static void my_glUniform1i(int, int);
+static void my_glUseProgram(unsigned);
+static int my_glGetUniformLocation(unsigned, const char *);
 void *dysmantle_gl_proc_override(const char *name) {
   if (name && strcmp(name, "glGetString") == 0) return (void *)my_glGetString;
   if (name && strcmp(name, "glShaderSource") == 0) return (void *)my_glShaderSource;
@@ -408,6 +416,16 @@ void *dysmantle_gl_proc_override(const char *name) {
   if (name && strcmp(name, "glCompressedTexImage2D") == 0) return (void *)my_glCompressedTexImage2D;
   if (name && strcmp(name, "glTexStorage2D") == 0) return (void *)my_glTexStorage2D;
   if (name && strcmp(name, "glViewport") == 0) return (void *)my_glViewport;
+  /* COI diag Mickey preto: uniforms de luz podem ser resolvidos via
+   * eglGetProcAddress/dlsym (bypass da tabela) — rotear pros wrappers */
+  if (name && strcmp(name, "glUniformMatrix4fv") == 0) return (void *)my_glUniformMatrix4fv;
+  if (name && strcmp(name, "glUniform4fv") == 0) return (void *)my_glUniform4fv;
+  if (name && strcmp(name, "glUniform3fv") == 0) return (void *)my_glUniform3fv;
+  if (name && strcmp(name, "glUniform1f") == 0) return (void *)my_glUniform1f;
+  if (name && strcmp(name, "glUniform4i") == 0) return (void *)my_glUniform4i;
+  if (name && strcmp(name, "glUniform1i") == 0) return (void *)my_glUniform1i;
+  if (name && strcmp(name, "glUseProgram") == 0) return (void *)my_glUseProgram;
+  if (name && strcmp(name, "glGetUniformLocation") == 0) return (void *)my_glGetUniformLocation;
   return NULL;
 }
 /* 🧊 ETC2 → RGBA na CPU (GLES2-universal, até Utgard): com FORCE_ETC2 a engine
@@ -418,6 +436,8 @@ extern unsigned char *etc2_decode_rgba(unsigned fmt, int w, int h,
                                        const void *data, int size);
 static void my_glTexImage2D(unsigned, int, int, int, int, int, unsigned,
                             unsigned, const void *);
+static unsigned g_active_unit;      /* def. real mais abaixo (tracker de bind) */
+static unsigned g_bound_tex[8];
 static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
                                       int w, int h, int border, int sz,
                                       const void *px) {
@@ -481,6 +501,22 @@ static void my_glCompressedTexImage2D(unsigned tgt, int lvl, unsigned ifmt,
             ifmt, w, h, sz, lvl, e);
     n++;
   }
+  /* COI_TEXID: rastreia TODO upload comprimido com o id bindado (correlacionar
+   * com o tex0 do draw do personagem) */
+  if (getenv("COI_TEXID"))
+    fprintf(stderr, "[TEXID] C id=%u lvl=%d ifmt=0x%x %dx%d sz=%d err=0x%x\n",
+            g_bound_tex[g_active_unit < 8 ? g_active_unit : 0], lvl, ifmt, w, h, sz, e);
+  /* COI_TEXDUMP: salva payload ETC1 lvl0 256x256 p/ decodificar no host */
+  if (px && lvl == 0 && w == 256 && h == 256 && getenv("COI_TEXDUMP")) {
+    static int td = 0;
+    if (td < 400) {
+      char nm[64];
+      snprintf(nm, sizeof(nm), "texetc_%u.bin",
+               g_bound_tex[g_active_unit < 8 ? g_active_unit : 0]);
+      FILE *tf = fopen(nm, "wb");
+      if (tf) { fwrite(px, 1, (size_t)sz, tf); fclose(tf); td++; }
+    }
+  }
 }
 static void my_glTexStorage2D(unsigned tgt, int lvls, unsigned ifmt, int w,
                               int h) {
@@ -501,6 +537,16 @@ static void my_glTexStorage2D(unsigned tgt, int lvls, unsigned ifmt, int w,
  * glVertexAttribPointer, se o buffer ligado tem stride maior, usamos o dele
  * (os offsets pos@0/cor@12/uv@16 valem nos dois formatos). */
 static unsigned g_cur_array_buf = 0;
+typedef struct {
+  int en, size, norm, stride;
+  unsigned type, buf;
+  long off;
+} CoiAttr;
+static CoiAttr g_coi_attr[16];
+/* estado GL rastreado p/ [DRAWATTR] (diag passes do Mickey) */
+static unsigned g_st_depthfunc = 0x0201, g_st_bsrc = 1, g_st_bdst = 0;
+static int g_st_depthmask = 1, g_st_blend = 0, g_st_depth = 0, g_st_cull = 0,
+           g_st_stencil = 0, g_st_cmask = 0xf;
 static int g_buf_stride[4096];        /* id -> stride real do buffer */
 static long g_buf_size[4096];         /* id -> tamanho do buffer (p/ divisibilidade) */
 /* tabela (tamanho do buffer de vértice -> stride), preenchida pelo createvb
@@ -820,10 +866,19 @@ static void my_glDeleteTextures(int n, const unsigned *ids) {
   if (dysmantle_paging() && ids) for (int i = 0; i < n; i++) if (ids[i] < DYSP_MAX) dysp_unpage(ids[i]);
   if (real) real(n, ids);
 }
+
+/* gate do UNIF_LOG: com DYSMANTLE_UNIF_GATE=1 so loga enquanto
+ * /dev/shm/dys_uniflog existir (liga na gameplay, caps preservados) */
+static int unif_log_on(void) {
+  if (!getenv("DYSMANTLE_UNIF_LOG")) return 0;
+  if (getenv("DYSMANTLE_UNIF_GATE") && access("/dev/shm/dys_uniflog", F_OK) != 0)
+    return 0;
+  return 1;
+}
 static void my_glUniform1i(int loc, int v) {
   static void (*real)(int, int) = NULL; rgl("glUniform1i", (void **)&real);
   static int n = 0;
-  if (getenv("DYSMANTLE_UNIF_LOG") && n < 50) {
+  if (unif_log_on() && n < 50) {
     fprintf(stderr, "[UNIF1i] loc=%d val=%d\n", loc, v); n++;
   }
   if (real) real(loc, v);
@@ -833,12 +888,63 @@ static int my_glGetUniformLocation(unsigned prog, const char *nm) {
   rgl("glGetUniformLocation", (void **)&real);
   int r = real ? real(prog, nm) : -1;
   static int n = 0;
-  if (getenv("DYSMANTLE_UNIF_LOG") && n < 50 && nm && strstr(nm, "tex")) {
+  if (getenv("DYSMANTLE_UNIF_LOG") && n < 2500 && nm) { /* sem gate: locs vem no link, pre-gameplay */
     fprintf(stderr, "[UNIFLOC] %s -> loc %d (prog %u)\n", nm, r, prog); n++;
   }
   return r;
 }
-static unsigned g_cur_prog = 0;
+/* COI diag Mickey preto: valores dos uniforms vetoriais (luz do personagem).
+ * DYSMANTLE_UNIF_LOG=1 -> loga primeiros N glUniform3fv/4fv com prog/loc/v */
+static unsigned g_cur_prog; /* fwd (setado em my_glUseProgram abaixo) */
+static void my_glUniform4fv(int loc, int cnt, const float *v) {
+  static void (*real)(int, int, const float *) = NULL;
+  rgl("glUniform4fv", (void **)&real);
+  static int n = 0;
+  if (unif_log_on() && n < 300 && v) {
+    fprintf(stderr, "[UNIF4fv] prog=%u loc=%d cnt=%d v0=%.3f,%.3f,%.3f,%.3f\n",
+            g_cur_prog, loc, cnt, v[0], v[1], v[2], v[3]); n++;
+  }
+  if (real) real(loc, cnt, v);
+}
+static void my_glUniform3fv(int loc, int cnt, const float *v) {
+  static void (*real)(int, int, const float *) = NULL;
+  rgl("glUniform3fv", (void **)&real);
+  static int n = 0;
+  if (unif_log_on() && n < 300 && v) {
+    fprintf(stderr, "[UNIF3fv] prog=%u loc=%d cnt=%d v0=%.3f,%.3f,%.3f\n",
+            g_cur_prog, loc, cnt, v[0], v[1], v[2]); n++;
+  }
+  if (real) real(loc, cnt, v);
+}
+static void my_glUniform1f(int loc, float v) {
+  static void (*real)(int, float) = NULL;
+  rgl("glUniform1f", (void **)&real);
+  static int n = 0;
+  if (unif_log_on() && n < 200) {
+    fprintf(stderr, "[UNIF1f] prog=%u loc=%d v=%.3f\n", g_cur_prog, loc, v); n++;
+  }
+  if (real) real(loc, v);
+}
+static void my_glUniform4i(int loc, int a, int b, int c, int d) {
+  static void (*real)(int, int, int, int, int) = NULL;
+  rgl("glUniform4i", (void **)&real);
+  static int n = 0;
+  if (unif_log_on() && n < 200) {
+    fprintf(stderr, "[UNIF4i] prog=%u loc=%d %d,%d,%d,%d\n", g_cur_prog, loc, a, b, c, d); n++;
+  }
+  if (real) real(loc, a, b, c, d);
+}
+static void my_glUniformMatrix4fv(int loc, int cnt, unsigned char transpose,
+                                  const float *v) {
+  static void (*real)(int, int, unsigned char, const float *) = NULL;
+  rgl("glUniformMatrix4fv", (void **)&real);
+  static int n = 0;
+  if (unif_log_on() && n < 600 && v) {
+    fprintf(stderr, "[UNIFM4] prog=%u loc=%d cnt=%d t=%d v0=%.3f,%.3f,%.3f,%.3f\n",
+            g_cur_prog, loc, cnt, transpose, v[0], v[1], v[2], v[3]); n++;
+  }
+  if (real) real(loc, cnt, transpose, v);
+}
 static void my_glUseProgram(unsigned p) {
   static void (*real)(unsigned) = NULL; rgl("glUseProgram", (void **)&real);
   g_cur_prog = p;
@@ -859,6 +965,11 @@ static void my_glVertexAttribPointer(unsigned idx, int sz, unsigned typ,
                                      unsigned char norm, int stride, const void *ptr) {
   static void (*real)(unsigned, int, unsigned, unsigned char, int, const void *) = NULL;
   rgl("glVertexAttribPointer", (void **)&real);
+  if (idx < 16) { /* rastro p/ [DRAWATTR] */
+    g_coi_attr[idx].size = sz; g_coi_attr[idx].type = typ;
+    g_coi_attr[idx].norm = norm; g_coi_attr[idx].stride = stride;
+    g_coi_attr[idx].off = (long)(uintptr_t)ptr; g_coi_attr[idx].buf = g_cur_array_buf;
+  }
   static int n = 0;
   if (getenv("DYSMANTLE_ATTR_LOG") && n < 40) {
     fprintf(stderr, "[ATTR] idx=%u size=%d type=0x%x norm=%d stride=%d off=%ld\n",
@@ -943,9 +1054,68 @@ static void my_glBindFramebuffer(unsigned tgt, unsigned fb) {
   g_cur_fbo = fb;
   if (real) real(tgt, fb);
 }
+/* ---- COI: rastro do ESTADO DE ATRIBUTOS por draw (diag Mickey preto) ----
+ * Tabela idx->config; com gate /dev/shm/dys_uniflog ligado, loga UMA VEZ por
+ * programa o layout completo no primeiro draw. */
+static void coi_attr_dump_once(unsigned prog, int cnt) {
+  static unsigned seen[128];
+  static int sn = 0;
+  if (!getenv("DYSMANTLE_UNIF_LOG") || access("/dev/shm/dys_uniflog", F_OK) != 0)
+    return;
+  for (int i = 0; i < sn; i++)
+    if (seen[i] == prog) return;
+  if (sn < 128) seen[sn++] = prog;
+  fprintf(stderr, "[DRAWATTR] prog=%u cnt=%d tex0=%u tex1=%u tex2=%u "
+          "depth=%d/0x%x dmask=%d blend=%d(0x%x,0x%x) cull=%d sten=%d cmask=0x%x\n",
+          prog, cnt, g_bound_tex[0], g_bound_tex[1], g_bound_tex[2],
+          g_st_depth, g_st_depthfunc, g_st_depthmask, g_st_blend, g_st_bsrc,
+          g_st_bdst, g_st_cull, g_st_stencil, g_st_cmask);
+  { /* leitura DIRETA dos uniforms de luz do programa no momento do draw */
+    static int (*gul)(unsigned, const char *) = NULL;
+    static void (*guf)(unsigned, int, float *) = NULL;
+    rgl("glGetUniformLocation", (void **)&gul);
+    rgl("glGetUniformfv", (void **)&guf);
+    if (gul && guf) {
+      const char *nm[] = {"g_CharacterLightColour", "g_Ambient", "_Color",
+                          "g_RimLightColour", "lightsCol_Dir[0]",
+                          "lightsPos_Dir[0]", "lightsAtt_Dir[0]",
+                          "lightsCol_Omni[0]", "lightsPos_Omni[0]",
+                          "lightsAtt_Omni[0]", "u_bone_matrices[0]"};
+      for (unsigned q = 0; q < sizeof(nm) / sizeof(nm[0]); q++) {
+        int L = gul(prog, nm[q]);
+        if (L >= 0) {
+          float v[4] = {0, 0, 0, 0};
+          guf(prog, L, v);
+          fprintf(stderr, "[DRAWUNIF] prog=%u %s(loc%d)=%.3f,%.3f,%.3f,%.3f\n",
+                  prog, nm[q], L, v[0], v[1], v[2], v[3]);
+        }
+      }
+    }
+  }
+  for (int i = 0; i < 16; i++)
+    if (g_coi_attr[i].en || g_coi_attr[i].stride)
+      fprintf(stderr,
+              "[DRAWATTR]   idx=%d en=%d size=%d type=0x%x norm=%d stride=%d off=%ld buf=%u\n",
+              i, g_coi_attr[i].en, g_coi_attr[i].size, g_coi_attr[i].type,
+              g_coi_attr[i].norm, g_coi_attr[i].stride, g_coi_attr[i].off,
+              g_coi_attr[i].buf);
+}
+static void my_glEnableVertexAttribArray(unsigned i) {
+  static void (*real)(unsigned) = NULL;
+  rgl("glEnableVertexAttribArray", (void **)&real);
+  if (i < 16) g_coi_attr[i].en = 1;
+  if (real) real(i);
+}
+static void my_glDisableVertexAttribArray(unsigned i) {
+  static void (*real)(unsigned) = NULL;
+  rgl("glDisableVertexAttribArray", (void **)&real);
+  if (i < 16) g_coi_attr[i].en = 0;
+  if (real) real(i);
+}
 static void my_glDrawElements(unsigned mode, int cnt, unsigned typ, const void *idx) {
   static void (*real)(unsigned, int, unsigned, const void *) = NULL;
   rgl("glDrawElements", (void **)&real);
+  coi_attr_dump_once(g_cur_prog, cnt);
   if (g_cur_fbo) g_draws_fbo++; else g_draws_screen++;
   static unsigned long t = 0;
   if ((++t % 3000) == 0)
@@ -1058,6 +1228,22 @@ static void my_glBufferData(unsigned tgt, long size, const void *data, unsigned 
    * vértices. Escolhe o MENOR stride com >85% de UVs válidas. */
   /* registra o TAMANHO do buffer (p/ deduzir stride por divisibilidade no draw) */
   if (tgt == 0x8892 && g_cur_array_buf < 4096) g_buf_size[g_cur_array_buf] = size;
+  /* COI diag Mickey: dump hex dos 2 primeiros vertices dos buffers stride-44
+   * (mesh skinned; cor ubyte4 deveria estar no off 40..43) */
+  if (getenv("DYSMANTLE_UNIF_LOG") && tgt == 0x8892 && data && size > 20000 &&
+      (size % 44) == 0) {
+    static int vn = 0;
+    if (vn < 6) {
+      vn++;
+      const unsigned char *b = (const unsigned char *)data;
+      char hx[3 * 48 + 8];
+      for (int v = 0; v < 2; v++) {
+        int off = v * 44, hp = 0;
+        for (int k = 0; k < 44; k++) hp += sprintf(hx + hp, "%02x", b[off + k]);
+        fprintf(stderr, "[VB44] buf=%u size=%ld v%d=%s\n", g_cur_array_buf, size, v, hx);
+      }
+    }
+  }
   /* TESTE: tinge a cor-de-vértice (rgba8 @12) dos buffers GRANDES (terreno,
    * stride 40) de verde — se o chão ficar verde, vary_color branco é o muro. */
   if (tgt == 0x8892 && data && getenv("DYSMANTLE_TINT_GREEN") && size > 2000 &&
@@ -1099,6 +1285,7 @@ static void my_glBufferData(unsigned tgt, long size, const void *data, unsigned 
 /* DIAG luz/sol: loga blends usados + permite forçar/desligar passes aditivos
  * (luz do player/sol estourada lavando o terreno de branco). */
 static void my_glBlendFunc(unsigned sf, unsigned df) {
+  g_st_bsrc = sf; g_st_bdst = df;
   static void (*real)(unsigned, unsigned) = NULL; rgl("glBlendFunc", (void **)&real);
   static int seen[64]; static int sn = 0;
   if (getenv("DYSMANTLE_BLEND_LOG")) {
@@ -1113,6 +1300,7 @@ static void my_glBlendFunc(unsigned sf, unsigned df) {
   if (real) real(sf, df);
 }
 static void my_glBlendFuncSeparate(unsigned sf, unsigned df, unsigned sa, unsigned da) {
+  g_st_bsrc = sf; g_st_bdst = df;
   static void (*real)(unsigned, unsigned, unsigned, unsigned) = NULL;
   rgl("glBlendFuncSeparate", (void **)&real);
   static int seen[64]; static int sn = 0;
@@ -1130,11 +1318,44 @@ static void my_glBlendFuncSeparate(unsigned sf, unsigned df, unsigned sa, unsign
  * → mundo culado). DYSMANTLE_DEPTH_ALWAYS=1. =2 desliga depth test inteiro. */
 static void my_glDepthFunc(unsigned f) {
   static void (*real)(unsigned) = NULL; rgl("glDepthFunc", (void **)&real);
+  g_st_depthfunc = f;
   if (getenv("DYSMANTLE_DEPTH_ALWAYS")) f = 0x0207; /* GL_ALWAYS */
+  /* 🔑 COI Mickey preto: multi-pass de luz do personagem usa GL_EQUAL; no
+   * Mali-450 o GP arredonda o Z de cada VS diferente -> EQUAL falha -> os
+   * passes ADITIVOS de luz somem (fica so o base ambient escuro).
+   * EQUAL -> LEQUAL (workaround classico). COI_NO_DEPTHEQ=1 desliga. */
+  if (f == 0x0202 && !getenv("COI_NO_DEPTHEQ")) {
+    static int dn = 0;
+    if (dn < 4) { fprintf(stderr, "[DEPTHEQ] GL_EQUAL -> GL_LEQUAL\n"); dn++; }
+    f = 0x0203;
+  }
   if (real) real(f);
+}
+static void coi_track_cap(unsigned cap, int v) {
+  if (cap == 0x0BE2) g_st_blend = v;        /* BLEND */
+  if (cap == 0x0B71) g_st_depth = v;        /* DEPTH_TEST */
+  if (cap == 0x0B44) g_st_cull = v;         /* CULL_FACE */
+  if (cap == 0x0B90) g_st_stencil = v;      /* STENCIL_TEST */
+}
+static void my_glDisable(unsigned cap) {
+  static void (*real)(unsigned) = NULL; rgl("glDisable", (void **)&real);
+  coi_track_cap(cap, 0);
+  if (real) real(cap);
+}
+static void my_glDepthMask(unsigned char m) {
+  static void (*real)(unsigned char) = NULL; rgl("glDepthMask", (void **)&real);
+  g_st_depthmask = m ? 1 : 0;
+  if (real) real(m);
+}
+static void my_glColorMask(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {
+  static void (*real)(unsigned char, unsigned char, unsigned char, unsigned char) = NULL;
+  rgl("glColorMask", (void **)&real);
+  g_st_cmask = (r ? 1 : 0) | (g ? 2 : 0) | (b ? 4 : 0) | (a ? 8 : 0);
+  if (real) real(r, g, b, a);
 }
 static void my_glEnable(unsigned cap) {
   static void (*real)(unsigned) = NULL; rgl("glEnable", (void **)&real);
+  coi_track_cap(cap, 1);
   const char *d = getenv("DYSMANTLE_DEPTH_ALWAYS");
   if (d && atoi(d) == 2 && cap == 0x0B71 /*DEPTH_TEST*/) return; /* não habilita */
   if (real) real(cap);
@@ -1161,7 +1382,12 @@ static int g_npot_fix = -1;
 static void my_glTexParameteri(unsigned tgt, unsigned pname, int param) {
   static void (*real)(unsigned, unsigned, int) = NULL;
   rgl("glTexParameteri", (void **)&real);
-  if (g_npot_fix < 0) g_npot_fix = getenv("DYSMANTLE_NPOT_OFF") ? 0 : 1;
+  /* 🔑 RAIZ DO MICKEY/PORTA PRETOS: o npot_fix (herdado do Dysmantle) forçava
+   * WRAP=CLAMP_TO_EDGE em toda textura; materiais do COI com UV espelhado/
+   * repetido (personagem, portas mirror_plane, plumas) grudavam na borda do
+   * atlas -> albedo errado/escuro. O COI usa POT+mips completos do OBB e o
+   * Mali-450 tem OES_texture_npot real -> default OFF (ligar: DYSMANTLE_NPOT_FIX=1). */
+  if (g_npot_fix < 0) g_npot_fix = getenv("DYSMANTLE_NPOT_FIX") ? 1 : 0;
   static int n = 0;
   if (getenv("DYSMANTLE_TEXPARAM_LOG") && n < 40) {
     fprintf(stderr, "[TEXPARAM] pname=0x%x param=0x%x\n", pname, param); n++;
@@ -1505,6 +1731,9 @@ static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h,
     if (_bpp > 0) dysp_note_upload(dysp_tid, ifmt, w, h, fmt, typ, px, (unsigned)((long)w * h * _bpp));
   }
   unsigned e = gerr ? gerr() : 0;
+  if (getenv("COI_TEXID"))
+    fprintf(stderr, "[TEXID] U id=%u lvl=%d ifmt=0x%x fmt=0x%x typ=0x%x %dx%d err=0x%x\n",
+            dysp_tid, lvl, ifmt, fmt, typ, w, h, e);
   if (g_tex_log) {
     /* histograma de (fmt,typ) distintos — pega LUMINANCE/ALPHA escondidos */
     static unsigned seen_fmt[32]; static int nf = 0;
@@ -1682,14 +1911,162 @@ static void my_glShaderSource(unsigned sh, int count, const char *const *str,
   if (shader_dump_on()) {
     fprintf(stderr, "[SHADER src #%u] count=%d:\n", sh, count);
     for (int i = 0; i < count && i < 8; i++)
-      fprintf(stderr, "%.*s", len && len[i] > 0 ? len[i] : 2000, str[i]);
+      fprintf(stderr, "%.*s", len && len[i] > 0 ? len[i] : 20000, str[i]);
     fprintf(stderr, "\n[/SHADER src #%u]\n", sh);
   }
   store_shader_src(sh, str[0], len ? len[0] : -1);
+  /* 🔑 COI FIX Mickey preto (multi-pass): os passes de luz do personagem
+   * dependem de Z IDENTICO entre programas (depth LEQUAL repass). O compilador
+   * do Mali GP arredonda gl_Position diferente por shader -> passes aditivos
+   * reprovam no depth -> so o base ambient (escuro) aparece.
+   * "invariant gl_Position;" força Z invariante (fix da spec p/ multi-pass).
+   * COI_NO_INVARIANT=1 desliga. */
+  if (!getenv("COI_NO_INVARIANT") && count == 1 && str[0] &&
+      strstr(str[0], "gl_Position") && !strstr(str[0], "invariant")) {
+    static char ivb[32768];
+    size_t Li = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
+    const char *pre = "invariant gl_Position;\n";
+    size_t pl0 = strlen(pre);
+    if (Li + pl0 < sizeof(ivb) - 4) {
+      memcpy(ivb, pre, pl0);
+      memcpy(ivb + pl0, str[0], Li);
+      ivb[pl0 + Li] = 0;
+      static int ivn = 0;
+      if (ivn < 6) { fprintf(stderr, "[INVAR] shader #%u gl_Position invariant\n", sh); ivn++; }
+      /* segue o fluxo com o fonte prefixado (inclusive sqrt-abs abaixo) */
+      static const char *ps2; static int pl2;
+      ps2 = ivb; pl2 = (int)(pl0 + Li);
+      str = &ps2; len = &pl2;
+    }
+  }
+  /* 🔑 COI FIX Mickey preto: no Mali-450 (fp reduzido), sqrt(d*d - t*t) do
+   * termo cookie/radial das luzes dá NEGATIVO por precisão quando o alvo está
+   * quase colinear com a luz (Mickey sob a lanterna do nível 1) -> NaN ->
+   * NaN*0=NaN -> pixel PRETO. Embrulhamos TODO argumento de sqrt() em abs()
+   * (inofensivo p/ args já positivos). COI_NO_SQRTABS=1 desliga. */
+  if (!getenv("COI_NO_SQRTABS") && count == 1 && str[0] && strstr(str[0], "sqrt(")) {
+    static char sq[32768];
+    size_t L0 = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
+    if (L0 < sizeof(sq) / 2) {
+      size_t oi = 0; int wrapped = 0, depth = 0, sp = 0;
+      int close_at[64];
+      const char *src0 = str[0];
+      for (size_t i = 0; i < L0 && oi + 12 < sizeof(sq); i++) {
+        if (i + 5 <= L0 && strncmp(src0 + i, "sqrt(", 5) == 0) {
+          memcpy(sq + oi, "sqrt(abs(", 9); oi += 9;
+          i += 4;
+          depth++;
+          if (sp < 64) close_at[sp++] = depth;
+          wrapped++;
+          continue;
+        }
+        char c = src0[i];
+        if (c == '(') depth++;
+        if (c == ')') {
+          if (sp > 0 && close_at[sp - 1] == depth) { sq[oi++] = ')'; sp--; }
+          depth--;
+        }
+        sq[oi++] = c;
+      }
+      sq[oi] = 0;
+      if (wrapped > 0 && sp == 0) {
+        static int sqn = 0;
+        if (sqn < 10) { fprintf(stderr, "[SQRTABS] shader #%u: %d sqrt() -> abs\n", sh, wrapped); sqn++; }
+        const char *ps = sq; int pl = (int)oi;
+        if (real) real(sh, 1, &ps, &pl);
+        return;
+      }
+    }
+  }
   /* DIAG: reescreve o fim do fragment shader. RED=vermelho sólido (localiza
    * geometria). TEX=só a textura (sem _vary_color, p/ ver se a cor lava). */
   /* DYSMANTLE_NOCOL: troca "_vary_color * diffuse_sample" por "diffuse_sample"
    * no shader básico — testa se a cor de vértice (luz assada) lava branco. */
+  /* COI_PROBE: sondas do Mickey preto (shader skinned+lit do nivel)
+   * 1 = selfillum sem a_color (a_color morta?)  2 = int_color = a_color (viz)
+   * 3 = int_color = normal*0.5+0.5 (viz da normal skinned) */
+  {
+    const char *pv = getenv("COI_PROBE");
+    if (pv && count == 1 && str[0] && strstr(str[0], "u_bone_matrices") &&
+        strstr(str[0], "int_self_illum_color")) {
+      static char pb[32768];
+      size_t L = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
+      if (L < sizeof(pb) - 256) {
+        memcpy(pb, str[0], L); pb[L] = 0;
+        char *hit = strstr(pb, "int_self_illum_color = (g_CharacterLightColour.xyz * a_color.yyy);");
+        if (hit) {
+          const char *rep = NULL;
+          if (pv[0] == '1') rep = "int_self_illum_color = (g_CharacterLightColour.xyz * vec3(1.0)  );";
+          if (pv[0] == '2') rep = "int_self_illum_color = (a_color.xyz*vec3(4.0)                   );";
+          if (rep && strlen(rep) == strlen("int_self_illum_color = (g_CharacterLightColour.xyz * a_color.yyy);")) {
+            memcpy(hit, rep, strlen(rep));
+            static int pn = 0;
+            if (pn < 8) { fprintf(stderr, "[PROBE%c] shader #%u patchado\n", pv[0], sh); pn++; }
+            const char *ps = pb; int pl = (int)L;
+            if (real) real(sh, 1, &ps, &pl);
+            return;
+          }
+          /* probe 3: int_color constante no fim do VS (varying vs matematica) */
+          if (pv[0] == '3') {
+            char *ic = strstr(pb, "int_color.xyz = (((");
+            if (ic) {
+              const char *ins = "int_color.xyz = vec3(0.7);vec3 dumy_c = (((";
+              size_t oldpfx = strlen("int_color.xyz = (((");
+              size_t newpfx = strlen(ins);
+              size_t rest = strlen(ic + oldpfx);
+              if (L + (newpfx - oldpfx) < sizeof(pb) - 8) {
+                memmove(ic + newpfx, ic + oldpfx, rest + 1);
+                memcpy(ic, ins, newpfx);
+                static int p3 = 0;
+                if (p3 < 8) { fprintf(stderr, "[PROBE3] shader #%u patchado\n", sh); p3++; }
+                const char *ps = pb; int pl = (int)strlen(pb);
+                if (real) real(sh, 1, &ps, &pl);
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  /* COI_CHARFS: probe decisivo do Mickey/porta preta — visualiza TERMOS da luz
+   * no fragment de TODOS os materiais de personagem/objeto dinamico (fragment
+   * contem int_self_illum_color; identico em todas as variantes).
+   *   light = int_color + int_self_illum (total de luz que chega do VS)
+   *   self  = so int_self_illum (charLight * a_color.y)
+   *   amb   = so int_color (ambient + luzes dinamicas do VS)
+   *   tex   = so texture2D(s_diffuse) (albedo puro) */
+  {
+    const char *cm = getenv("COI_CHARFS");
+    if (cm && count == 1 && str[0] && strstr(str[0], "int_self_illum_color") &&
+        strstr(str[0], "gl_FragColor = f_5;")) {
+      const char *newl = NULL;
+      if (!strcmp(cm, "light")) newl = "gl_FragColor = vec4(int_color.xyz + int_self_illum_color, 1.0);";
+      else if (!strcmp(cm, "self")) newl = "gl_FragColor = vec4(int_self_illum_color, 1.0);";
+      else if (!strcmp(cm, "amb"))  newl = "gl_FragColor = vec4(int_color.xyz, 1.0);";
+      else if (!strcmp(cm, "tex"))  newl = "gl_FragColor = texture2D(s_diffuse, int_uv);";
+      else if (!strcmp(cm, "texamp")) newl = "gl_FragColor = texture2D(s_diffuse, int_uv) * 3.0;";
+      if (newl) {
+        static char cb[32768];
+        size_t L = (len && len[0] > 0) ? (size_t)len[0] : strlen(str[0]);
+        if (L + strlen(newl) < sizeof(cb) - 8) {
+          memcpy(cb, str[0], L); cb[L] = 0;
+          char *hit = strstr(cb, "gl_FragColor = f_5;");
+          if (hit) {
+            size_t oldn = strlen("gl_FragColor = f_5;");
+            size_t newn = strlen(newl);
+            memmove(hit + newn, hit + oldn, strlen(hit + oldn) + 1);
+            memcpy(hit, newl, newn);
+            static int cn = 0;
+            if (cn < 10) { fprintf(stderr, "[CHARFS:%s] shader #%u patchado\n", cm, sh); cn++; }
+            const char *ps = cb; int pl = (int)strlen(cb);
+            if (real) real(sh, 1, &ps, &pl);
+            return;
+          }
+        }
+      }
+    }
+  }
   const char *repl = NULL;
   if (getenv("DYSMANTLE_NOCOL")) repl = "(vec4(1.0)) * diffuse_sample"; /* 28, branco */
   else if (getenv("DYSMANTLE_GREEN")) repl = "vec4(0,1,0,1)*diffuse_sample"; /* 28, verde */
@@ -1777,6 +2154,42 @@ static void my_glLinkProgram(unsigned pr) {
   if (real) real(pr);
   if (giv && plog) {
     int ok = 1; giv(pr, 0x8B82 /*LINK_STATUS*/, &ok);
+    { /* par VS/FS de cada programa (achar o FS REAL do Mickey) */
+      static void (*gas)(unsigned, int, int *, unsigned *) = NULL;
+      rgl("glGetAttachedShaders", (void **)&gas);
+      if (gas && getenv("DYSMANTLE_UNIF_LOG")) {
+        unsigned shs[4] = {0, 0, 0, 0};
+        int n2 = 0;
+        gas(pr, 4, &n2, shs);
+        static int lp = 0;
+        if (lp < 400) {
+          fprintf(stderr, "[LINKPAIR] prog=%u shaders=%u,%u\n", pr, shs[0], shs[1]);
+          lp++;
+        }
+      }
+    }
+    /* COI diag: locations REAIS dos elementos de array de luz no Mali
+     * (engine assume base+i — spec NAO garante; Mali pode divergir) */
+    if (getenv("DYSMANTLE_UNIF_LOG")) {
+      static int an = 0;
+      static int (*gul)(unsigned, const char *) = NULL;
+      rgl("glGetUniformLocation", (void **)&gul);
+      if (gul && an < 6) {
+        int b = gul(pr, "u_bone_matrices");
+        if (b >= 0) { /* so os programas skinned */
+          an++;
+          const char *nm[] = {"lightsCol_Dir[0]","lightsCol_Dir[1]",
+            "lightsPos_Dir[0]","lightsPos_Dir[1]","lightsAtt_Dir[0]",
+            "lightsDat_Dir[0]","lightsCol_Omni[0]","lightsPos_Omni[0]",
+            "lightsAtt_Omni[0]","g_CharacterLightColour","g_Ambient",
+            "u_bone_matrices[0]","u_bone_matrices[1]","u_bone_matrices[89]",
+            "lightsCol_Dir","lightsPos_Dir","g_CamDir","g_mWorld"};
+          for (unsigned q = 0; q < sizeof(nm)/sizeof(nm[0]); q++)
+            fprintf(stderr, "[ARRLOC] prog=%u %s -> %d\n", pr, nm[q], gul(pr, nm[q]));
+        }
+      }
+    }
+
     if (!ok) {
       char buf[1024]; int n = 0; plog(pr, sizeof(buf) - 1, &n, buf);
       buf[n > 0 ? n : 0] = 0;
@@ -1898,14 +2311,24 @@ DynLibFunction coi_overrides[] = {
   {"glUseProgram", (uintptr_t)my_glUseProgram},
   {"glBufferData", (uintptr_t)my_glBufferData},
   {"glEnable", (uintptr_t)my_glEnable},
+  {"glDisable", (uintptr_t)my_glDisable},
+  {"glDepthMask", (uintptr_t)my_glDepthMask},
+  {"glColorMask", (uintptr_t)my_glColorMask},
   {"glDepthFunc", (uintptr_t)my_glDepthFunc},
   {"glGetUniformLocation", (uintptr_t)my_glGetUniformLocation},
   {"glUniform1i", (uintptr_t)my_glUniform1i},
+  {"glUniform4fv", (uintptr_t)my_glUniform4fv},
+  {"glUniform3fv", (uintptr_t)my_glUniform3fv},
+  {"glUniform1f", (uintptr_t)my_glUniform1f},
+  {"glUniform4i", (uintptr_t)my_glUniform4i},
+  {"glUniformMatrix4fv", (uintptr_t)my_glUniformMatrix4fv},
   {"glBindAttribLocation", (uintptr_t)my_glBindAttribLocation},
   {"glBindTexture", (uintptr_t)my_glBindTexture},
   {"glActiveTexture", (uintptr_t)my_glActiveTexture},
   {"glGetAttribLocation", (uintptr_t)my_glGetAttribLocation},
   {"glVertexAttribPointer", (uintptr_t)my_glVertexAttribPointer},
+  {"glEnableVertexAttribArray", (uintptr_t)my_glEnableVertexAttribArray},
+  {"glDisableVertexAttribArray", (uintptr_t)my_glDisableVertexAttribArray},
   {"glDrawArrays", (uintptr_t)my_glDrawArrays},
   {"glDrawElements", (uintptr_t)my_glDrawElements},
   {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},

@@ -367,6 +367,10 @@ int so_resolve(DynLibFunction *funcs, int num_funcs,
             }
             if (resolved) {
               *ptr = resolved + rels[j].r_addend;
+              if (strncmp(name, "glUniform", 9) == 0)
+                fprintf(stderr, "[RESOLVE] %s -> 0x%lx (custom=%d)\n", name,
+                        (unsigned long)resolved,
+                        resolved != (uintptr_t)dlsym(RTLD_DEFAULT, name));
             } else {
               if (taint_missing_imports)
                 *ptr = rels[j].r_offset;
