@@ -470,6 +470,16 @@ static void controls_install_native_pad(so_module *mod) {
   p_TutLoaded = (uint32_t *)so_find_addr(mod, "TutorialModule_IsLoaded");
   p_TutData   = (void **)so_find_addr(mod, "pTutorialModeData");
   p_SaveOptions = (uint8_t *)so_find_addr(mod, "SaveGame_Options");
+
+  /* mata TODO tutorial touch na raiz: TutorialModule_Start(void, uint) vira
+   * `ret`. Cobre script (ShowTutorialPage) E os disparos por C (ex: pagina
+   * "tap to jump" ao andar). SaveGame_Options[5]=0 sozinho perde a corrida
+   * do load do save no frame do script da fase. */
+  uint32_t *tut_start = (uint32_t *)so_find_addr_rx(mod, "_Z20TutorialModule_Startj");
+  if (tut_start) {
+    *tut_start = 0xd65f03c0u; /* ret */
+    debugPrintf("tut: TutorialModule_Start -> ret (tutoriais touch OFF)\n");
+  }
 }
 
 /* estado do esquema de controle a cada ~2s enquanto /dev/shm/lb2_padlog existir */
