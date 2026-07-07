@@ -170,6 +170,15 @@ static void *call_object(const char *name, va_list va) {
     debugPrintf("JNI: %s -> %s\n", name, country_code());
     return jni_make_string(country_code());
   }
+  // LB2: idioma SEMPRE ingles (regra #5) + regiao
+  if (!strcmp(name, "GetCurrentLanguageAsISO3Letter")) {
+    debugPrintf("JNI: %s -> eng\n", name);
+    return jni_make_string("eng");
+  }
+  if (!strcmp(name, "GetDeviceRegion")) {
+    debugPrintf("JNI: %s -> USA\n", name);
+    return jni_make_string("USA");
+  }
   // The engine's JNI bootstrap does activity.getClassLoader().loadClass(...) and
   // dereferences the results (and caches the method IDs it derives from the
   // returned class). Returning NULL yielded a null class and left a cached

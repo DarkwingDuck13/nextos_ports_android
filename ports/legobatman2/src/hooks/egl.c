@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <SDL2/SDL.h>
 #include <GLES2/gl2.h>
 
@@ -144,6 +145,20 @@ void egl_present(void) {
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(cc[0], cc[1], cc[2], cc[3]);
     if (scis) glEnable(GL_SCISSOR_TEST);
+  }
+  /* screenshot sob demanda p/ auto-teste: `touch /dev/shm/lb2_shot` -> RGBA cru
+   * do backbuffer em /dev/shm/lb2_shot.raw (flip-V na conversao no host). */
+  if (access("/dev/shm/lb2_shot", F_OK) == 0) {
+    unlink("/dev/shm/lb2_shot");
+    int w = screen_width, h = screen_height;
+    unsigned char *buf = malloc((size_t)w * h * 4);
+    if (buf) {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+      FILE *o = fopen("/dev/shm/lb2_shot.raw", "wb");
+      if (o) { fwrite(buf, 1, (size_t)w * h * 4, o); fclose(o); }
+      free(buf);
+    }
   }
   SDL_GL_SwapWindow(g_window);
   ++egl_swap_count;

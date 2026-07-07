@@ -322,6 +322,88 @@ static int gc_btn(SDL_GameControllerButton b) {
   return g_pad && SDL_GameControllerGetButton(g_pad, b);
 }
 
+/* 🔑 LB2 é TOUCH-ONLY: nativeControllerSetData no libLEGO_SH1.so é um `ret`
+ * VAZIO (stub). O engine usa geControls (joystick+botoes VIRTUAIS). Dirigimos
+ * DIRETO nas globais do engine (sem simular toque = sem drift):
+ *   MOVIMENTO: geControls_SetIsUsingVirtualJoystick(1, &centro, &atual) — a
+ *   direcao do personagem = (atual - centro), escala = geVirtualControlsJoystickSize.
+ *   TAP (A/START): touchDown/Up no centro (title "touch to start"/menu). */
+static void (*p_setVJoy)(int, const float *, const float *) = NULL;
+static float *p_joySize = NULL;      /* geVirtualControlsJoystickSize (f32vec2) */
+static float *p_joyPos  = NULL;      /* geVirtualControlsJoystickPosition (f32vec2) */
+static int   syn_tap_frames = 0;
+static float syn_tap_x, syn_tap_y;
+
+static void controls_resolve(void) {
+  p_setVJoy = (void *)so_find_addr_rx(&game_mod,
+      "_Z36geControls_SetIsUsingVirtualJoystickbPK7f32vec2S1_");
+  p_joySize = (float *)so_find_addr(&game_mod, "geVirtualControlsJoystickSize");
+  p_joyPos  = (float *)so_find_addr(&game_mod, "geVirtualControlsJoystickPosition");
+  debugPrintf("controls: setVJoy=%p joySize=%p joyPos=%p\n",
+              (void *)p_setVJoy, (void *)p_joySize, (void *)p_joyPos);
+}
+
+/* LB2 (2012) tem nativeControllerSetData=STUB (4 bytes, ret) — NAO ha caminho de
+ * gamepad no binario (ao contrario do Ninjago/TFA 2016). Todo input de gameplay
+ * e' TOUCH (joystick+botoes virtuais). Fazemos a ponte pad->touch: o usuario joga
+ * 100% no controle, nunca toca a tela.
+ *
+ *  MOVIMENTO: joystick FLUTUANTE — DOWN uma vez numa ancora fixa da metade
+ *  esquerda, MOVE todo frame p/ ancora+vetor, UP so no neutro. Nunca re-toca
+ *  enquanto segura (era o "esquerda precisava dar toques").
+ *  A / START: tap central (confirma title "touch to start" e menus). */
+#define VJOY_ANCHOR_X 340.0f   /* metade esquerda, zona do joystick flutuante */
+#define VJOY_ANCHOR_Y 430.0f
+#define VJOY_RADIUS   140.0f   /* deflexao total > deadzone do stick virtual */
+
+static void update_touch_synth(void) {
+  if (!g_pad) return;
+
+  /* tap A/START no centro (edge-triggered, pointer 0) */
+  static int prev_a = 0;
+  int a = gc_btn(SDL_CONTROLLER_BUTTON_A) || gc_btn(SDL_CONTROLLER_BUTTON_START);
+  if (a && !prev_a && syn_tap_frames == 0) {
+    syn_tap_x = 640.0f; syn_tap_y = 360.0f;
+    g.touchDown(fake_env, FUSION_OBJ, 0, syn_tap_x, syn_tap_y, 1.0f);
+    syn_tap_frames = 4;
+  }
+  prev_a = a;
+  if (syn_tap_frames > 0 && --syn_tap_frames == 0)
+    g.touchUp(fake_env, FUSION_OBJ, 0, syn_tap_x, syn_tap_y, 0.0f);
+
+  /* MOVIMENTO: joystick flutuante (pointer 1) */
+  const float scale = 1.f / 32767.0f;
+  int rlx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
+  int rly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
+  float lx = (rlx > STICK_DEADZONE || rlx < -STICK_DEADZONE) ? rlx * scale : 0.0f;
+  float ly = (rly > STICK_DEADZONE || rly < -STICK_DEADZONE) ? rly * scale : 0.0f;
+  /* AUTO-TESTE: /dev/shm/lb2_dir "lx ly" forca a direcao (sem pad fisico) */
+  { FILE *df = fopen("/dev/shm/lb2_dir", "r");
+    if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))  lx = -1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) lx =  1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP))    ly = -1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  ly =  1.0f;
+  /* clamp do vetor a raio 1 (diagonais nao estouram) */
+  float mag = sqrtf(lx * lx + ly * ly);
+  if (mag > 1.0f) { lx /= mag; ly /= mag; }
+
+  static int stick_down = 0;
+  if (lx != 0.0f || ly != 0.0f) {
+    float tx = VJOY_ANCHOR_X + lx * VJOY_RADIUS;
+    float ty = VJOY_ANCHOR_Y + ly * VJOY_RADIUS;
+    if (!stick_down) {
+      g.touchDown(fake_env, FUSION_OBJ, 1, VJOY_ANCHOR_X, VJOY_ANCHOR_Y, 1.0f);
+      stick_down = 1;
+    }
+    g.touchMove(fake_env, FUSION_OBJ, 1, tx, ty, 1.0f);
+  } else if (stick_down) {
+    g.touchUp(fake_env, FUSION_OBJ, 1, VJOY_ANCHOR_X, VJOY_ANCHOR_Y, 0.0f);
+    stick_down = 0;
+  }
+  (void)p_setVJoy; (void)p_joySize; (void)p_joyPos;
+}
+
 static void update_gamepad(void) {
   if (!g_pad) return;
 
@@ -359,7 +441,8 @@ static void update_gamepad(void) {
 
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
-  // Back/Select -> back button (rising edge)
+  // PAUSE = SELECT/BACK (edge) -> backButtonPressed. Funciona como TOGGLE limpo
+  // (usuario confirmou); START pausava bugado (precisava 2x e nao saia).
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
   if (back && !g_back_prev)
     g.backButtonPressed(fake_env, FUSION_OBJ);
@@ -407,6 +490,7 @@ int main(int argc, char *argv[]) {
   patch_all_stack_chk_branches(&game_mod);
   patch_game();
   resolve_entry_points();
+  controls_resolve();
 
   so_finalize(&game_mod);
   so_flush_caches(&game_mod);
@@ -465,6 +549,7 @@ int main(int argc, char *argv[]) {
       running = 0;
 
     update_gamepad();
+    update_touch_synth();  /* LB2 touch-only: pad -> taps/joystick virtual */
 
     g.nativeRender(fake_env, GLSV_OBJ);   // 1st call runs Fusion_OnceInit
     if (frame < 8 || (frame % 600) == 0)
