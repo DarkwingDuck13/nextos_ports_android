@@ -765,6 +765,12 @@ int main(int argc, char *argv[]) {
         cy = screen_height * (625.0f / 720.0f);
       }
 
+      // FE/menu é NATIVO neste build (a seleção anda pelo joypad device e o
+      // Confirm=elem18 é alimentado pelo A no lotr_fna_poll). O tap sintético
+      // no A/B/START (herança do Marvel, FE touch-only) clicava em cima de
+      // qualquer coisa na posição fixa/cursor — removido. O cursor do stick
+      // direito vira fallback SILENCIOSO: mira sem tocar, R3 dá o tap (para
+      // alguma tela eventualmente touch-only).
       if (frontend_or_pause && g_pad) {
         const float scale = 1.f / 32767.0f;
         int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
@@ -779,31 +785,21 @@ int main(int argc, char *argv[]) {
           if (cx < 0.0f) cx = 0.0f; else if (cx > screen_width) cx = screen_width;
           if (cy < 0.0f) cy = 0.0f; else if (cy > screen_height) cy = screen_height;
           cursor_used = 1;
-          if (!cursor_down) {
-            if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f);
-            cursor_down = 1;
-          } else {
-            if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f);
-          }
-        } else if (cursor_down) {
-          if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
-          cursor_down = 0;
-          debugPrintf("touch: cursor click (%.0f,%.0f)\n", cx, cy);
         }
-      } else if (cursor_down) {
-        if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
-        cursor_down = 0;
+        (void)cursor_down;
       }
 
+      // A = tap: no cursor se o jogador mirou com o stick direito, senão na
+      // posição do PLAY desta tela-título (centro-inferior 640x640 de 1280x720
+      // — screenshot; o (1190,625) herdado do Marvel caía nos TERMOS aqui).
       int press = gc_btn(SDL_CONTROLLER_BUTTON_A) ||
-                  gc_btn(SDL_CONTROLLER_BUTTON_B) ||
-                  gc_btn(SDL_CONTROLLER_BUTTON_START);
+                  gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
       { FILE *af = fopen("/dev/shm/ninjagot_a", "r");
         if (af) { press = 1; fclose(af); remove("/dev/shm/ninjagot_a"); } }
       if (press && !press_prev && !in_level) {
         want_tap = 1;
-        wx = cursor_used ? cx : screen_width  * (1190.0f / 1280.0f);
-        wy = cursor_used ? cy : screen_height * (625.0f / 720.0f);
+        wx = cursor_used ? cx : screen_width  * (640.0f / 1280.0f);
+        wy = cursor_used ? cy : screen_height * (640.0f / 720.0f);
         debugPrintf("frontend: pad -> tap (%.0f,%.0f) game_mode=%d\n",
                     wx, wy, p_game_mode ? *p_game_mode : -1);
       }
