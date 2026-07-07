@@ -28,6 +28,7 @@ void patch_game(void);
 int  egl_bringup(void);
 // Present the current frame (optionally draws the FPS counter first).
 void egl_present(void);
+void egl_fbo_frame_summary(unsigned frame);
 // Recreate the window surface at a new size (dock/undock) and re-make-current.
 void egl_resize_surface(int w, int h);
 // The display the wrapper brought up.

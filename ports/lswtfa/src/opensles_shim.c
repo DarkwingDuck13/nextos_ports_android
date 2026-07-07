@@ -19,7 +19,7 @@
 #define MAX_PLAYERS 16
 #define RING_BUFFER_SIZE (4 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-#define SDL_AUDIO_SAMPLES 4096
+#define SDL_AUDIO_SAMPLES 2048
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -677,14 +677,17 @@ static SLresult play_SetCallbackEventsMask(void *self, SLuint32 eventFlags) {
 
 /* SLVolumeItf methods */
 static SLresult volume_SetVolumeLevel(void *self, SLmillibel level) {
+  /* SLmillibel is 16-bit on the wire: 0x8000 is SL_MILLIBEL_MIN (mute),
+   * not +32768. Sign-extend from 16 bits before converting. */
+  int16_t level16 = (int16_t)(level & 0xFFFF);
   float linear;
-  if (level <= -9600) linear = 0.0f;
-  else linear = powf(10.0f, level / 2000.0f);
+  if (level16 <= -9600) linear = 0.0f;
+  else linear = powf(10.0f, level16 / 2000.0f);
 
   /* Clamp insane values */
   if (linear > 2.0f) {
     debugPrintf("opensles_shim: WARNING: SetVolumeLevel level=%d -> linear=%f, clamping to 1.0\n",
-                (int)level, linear);
+                (int)level16, linear);
     linear = 1.0f;
   }
 
@@ -1146,6 +1149,15 @@ static void init_engine(void) {
 
 /* Public API */
 void opensles_shim_pump_callbacks(void) {
+  static unsigned pump_calls = 0;
+  if ((++pump_calls % 900) == 0) { /* ~30s @30fps: underrun visibility */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+      AudioPlayer *p = &g_players[i];
+      if (p->active && p->underrun_count)
+        debugPrintf("audio: player %d underruns=%u (ring=%u)\n",
+                    i, p->underrun_count, ring_readable(p));
+    }
+  }
   for (int i = 0; i < MAX_PLAYERS; i++) {
     AudioPlayer *p = &g_players[i];
     if (!p->active || p->play_state != SL_PLAYSTATE_PLAYING) continue;
@@ -1155,12 +1167,17 @@ void opensles_shim_pump_callbacks(void) {
     if (callback_threshold == 0 || callback_threshold > (RING_BUFFER_SIZE / 2)) {
       callback_threshold = RING_BUFFER_SIZE / 4;
     }
-    /* Request data earlier: use 2x threshold to keep buffer fuller */
+    /* Request data earlier: use 2x threshold to keep buffer fuller.
+     * Floor: the pump runs once per 33ms game frame while the SDL callback
+     * drains SDL_AUDIO_SAMPLES frames per period; anything below two SDL
+     * periods' worth of bytes means a guaranteed underrun on small enqueues. */
     uint32_t refill_threshold = callback_threshold * 2;
+    uint32_t sdl_period_bytes = SDL_AUDIO_SAMPLES * 2 /*ch*/ * 2 /*s16*/;
+    if (refill_threshold < sdl_period_bytes * 3) refill_threshold = sdl_period_bytes * 3;
     if (refill_threshold > RING_BUFFER_SIZE / 2) refill_threshold = RING_BUFFER_SIZE / 2;
 
     /* Call callback multiple times to fill buffer ahead */
-    int max_calls = 4;
+    int max_calls = 16;
     while (p->callback && readable <= refill_threshold && max_calls > 0) {
       uint32_t counter_before = p->enqueue_counter;
       /* if (p->debug_callback_logs < 16 || counter_before % 64 == 0) {

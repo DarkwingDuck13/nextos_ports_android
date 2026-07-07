@@ -456,6 +456,7 @@ int main(int argc, char *argv[]) {
     g.nativeRender(fake_env, GLSV_OBJ);   // 1st call runs Fusion_OnceInit
     if (frame < 8 || (frame % 600) == 0)
       debugPrintf("render: frame %u (swaps=%d)\n", frame, egl_swap_count);
+    egl_fbo_frame_summary(frame);
     frame++;
     egl_present();
 
