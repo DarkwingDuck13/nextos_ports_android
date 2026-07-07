@@ -109,6 +109,11 @@ static struct {
 
 static void lotr_fna_poll(void *dev);  // native joypad feeder (defined below)
 
+// game-state globals (resolved below; drive the context-sensitive button map)
+static uint32_t *g_goplayer_active = NULL;  // GOPlayer_Active: != 0 while in a level
+static uint8_t  *g_paused_flag = NULL;      // gdv_fnInput_bGamePaused: pause menu up
+extern int fe_page_active(void);            // hooks/game.c: widget FE page active?
+
 static void resolve_entry_points(void) {
   RESOLVE(setWritePath,             "Java_com_wbgames_LEGOgame_Fusion_nativeSetWritePath");
   RESOLVE(setSavePath,              "Java_com_wbgames_LEGOgame_Fusion_nativeSetSavePath");
@@ -152,6 +157,17 @@ static void resolve_entry_points(void) {
   } else {
     debugPrintf("pad: fnaController_Poll not found!\n");
   }
+  // Drive input ONLY through the native poll above. Feeding the JNI
+  // nativeControllerSetData path in parallel makes the frontend nav shortcuts
+  // (FENavShortcuts_Update) fire a selected-callback on a stale widget -> crash.
+  g.controllerSetData = NULL;
+
+  // game-state globals for the context-sensitive button map (menu vs gameplay):
+  // GOPlayer_Active != 0 -> in a level; gdv_fnInput_bGamePaused -> pause menu up.
+  g_goplayer_active = (uint32_t *)so_try_find_addr(&game_mod, "GOPlayer_Active");
+  g_paused_flag     = (uint8_t *)so_try_find_addr(&game_mod, "gdv_fnInput_bGamePaused");
+  debugPrintf("pad: state globals GOPlayer_Active=%p bGamePaused=%p\n",
+              (void *)g_goplayer_active, (void *)g_paused_flag);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,12 +304,13 @@ enum {
   TFA_L3 = 0x0800, TFA_R3 = 0x0400, TFA_START = 0x0200,
 };
 
-// Native joypad element indices -- THIS engine's map (LEGO Harry Potter GLES1,
-// shared with HP 1-4/legohp1), which DIFFERS from LOTR/Batman2: Start=4, Select=5,
-// L1=6, R1=8, DPad=10..13, Confirm/X=14 (menu A/south), Cancel/A=15 (menu B/east),
-// B=16, Y=17, stick=0/1. fnINPUTDEVICE runtime element array at dev+0x14, stride
-// 0x14, float value at element+0; dev+0 bit0 = connected, dev+4 = type (1=joypad,
-// 16=touch).
+// Native joypad element indices -- confirmed by live-reading this build's
+// Controls_* binding globals (Controls_A=15, Controls_B=16, Controls_X=14,
+// Controls_Y=17, Confirm=15, Cancel=16, Start=4, Select=5, L1=6, R1=8,
+// DPad=10..13, sticks=0..3). fnINPUTDEVICE runtime element array at dev+0x14,
+// stride 0x14, float value at element+0; dev+0 bit0 = connected, dev+4 = type
+// (1=joypad, 0x40=touch). NOTE: the E_ENG_* names below follow the engine's
+// element naming, NOT the physical pad.
 enum {
   E_LX = 0, E_LY = 1, E_RX = 2, E_RY = 3,
   E_START = 4, E_SELECT = 5,
@@ -307,6 +324,11 @@ enum {
 
 static SDL_GameController *g_pad = NULL;
 static uint64_t g_back_prev = 0;
+
+static int hp2_in_level(void) { return g_goplayer_active && *g_goplayer_active != 0; }
+static int hp2_paused(void)   { return g_paused_flag && *g_paused_flag != 0; }
+// menu mode = frontend, or the pause/HUD menu over a level
+static int hp2_menu_mode(void) { return !hp2_in_level() || hp2_paused(); }
 
 static void open_controller(void) {
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -374,6 +396,24 @@ static void update_gamepad(void) {
   if (back && !g_back_prev)
     g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
+
+  // START pauses in-level: this mobile build's pause path listens to the Android
+  // back button (Hud_UpdateIOSPauseButton reads fnInput_bBackButtonPressed), not
+  // to the Start element. Fire back on START's edge while playing unpaused.
+  {
+    static uint64_t st_prev = 0;
+    uint64_t st = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1 : 0;
+    if (st && !st_prev && hp2_in_level() && !hp2_paused())
+      g.backButtonPressed(fake_env, FUSION_OBJ);
+    st_prev = st;
+  }
+
+  // headless test inject: touch /dev/shm/hp2_back -> one backButtonPressed
+  if (access("/dev/shm/hp2_back", F_OK) == 0) {
+    remove("/dev/shm/hp2_back");
+    g.backButtonPressed(fake_env, FUSION_OBJ);
+    debugPrintf("inject: backButtonPressed\n");
+  }
 }
 
 // Native poll hook: the original fnaController_Poll fills the TOUCH device (type
@@ -449,14 +489,56 @@ static void lotr_fna_poll(void *dev) {
   EV(E_LX) =  lx; EV(E_LY) = -ly;   // engine wants up-positive Y
   EV(E_RX) =  rx; EV(E_RY) = -ry;
   EV(E_DUP) = d_up; EV(E_DDOWN) = d_dn; EV(E_DLEFT) = d_lf; EV(E_DRIGHT) = d_rt;
-  // HP GLES1 map (from legohp1): A(south)->elem14 = menu Confirm; B(east)->elem15
-  // = menu Cancel; X(west)->elem16; Y->elem17.
-  EV(E_ENG_X) = a;
-  EV(E_ENG_A) = b;
-  EV(E_ENG_B) = x;
-  EV(E_ENG_Y) = y;
+  // Context-sensitive face-button map. Engine element names (live-read from the
+  // Controls_* binding globals): A=15, B=16, X=14, Y=17; the FE reads
+  // Controls_Confirm=15 (engine A) and Controls_Cancel=16 (engine B). So in
+  // MENUS (frontend or pause) feed the natural map: A(south)->15 = Confirm,
+  // B(east)->16 = Cancel. In GAMEPLAY keep the approved layout: A=jump(elem16),
+  // X=attack(elem17), Y=switch character(elem14), B=elem15.
+  {
+    static int prev_menu = -1;
+    int menu = hp2_menu_mode();
+    if (menu != prev_menu) {
+      debugPrintf("pad: map -> %s (in_level=%d paused=%d)\n",
+                  menu ? "MENU" : "GAMEPLAY", hp2_in_level(), hp2_paused());
+      prev_menu = menu;
+    }
+    if (menu) {
+      EV(E_ENG_A) = a;  // A(south) -> elem15 = CONFIRMA (Controls_Confirm)
+      EV(E_ENG_B) = b;  // B(east)  -> elem16 = CANCELA  (Controls_Cancel)
+      EV(E_ENG_X) = x;
+      EV(E_ENG_Y) = y;
+    } else {
+      EV(E_ENG_B) = a;  // A(south) -> elem16 = PULO
+      EV(E_ENG_Y) = x;  // X(west)  -> elem17 = ATAQUE
+      EV(E_ENG_X) = y;  // Y(north) -> elem14 = TROCA PERSONAGEM
+      EV(E_ENG_A) = b;  // B(east)  -> elem15
+    }
+  }
   EV(E_L1) = l1; EV(E_R1) = r1; EV(E_L2) = l2; EV(E_R2) = r2;
   EV(E_START) = start; EV(E_SELECT) = sel;
+
+  // START edge -> latch the element's "pressed" EVENT halfword (+0x10). The
+  // in-level pause doesn't read the float value: the HUD pause path
+  // (Hud_UpdateIOSPauseButton @0x13e354) fires pause by writing exactly
+  // elems[Controls_Start]*0x14 + 0x10 = 1 on the current input device.
+  {
+    static int start_prev = 0;
+    if (start && !start_prev) {
+      *(uint16_t *)(elems + (size_t)E_START * 0x14 + 0x10) = 1;
+      debugPrintf("pad: START edge -> latched elem4 event (+0x10)\n");
+    }
+    start_prev = start;
+  }
+
+  // headless test inject: echo "<elem>" > /dev/shm/hp2_evt -> one-shot event latch
+  { FILE *ef = fopen("/dev/shm/hp2_evt", "r");
+    if (ef) { int ee;
+      if (fscanf(ef, "%d", &ee) == 1 && ee >= 0 && (uint32_t)ee < n) {
+        *(uint16_t *)(elems + (size_t)ee * 0x14 + 0x10) = 1;
+        debugPrintf("inject: elem %d event latch\n", ee);
+      }
+      fclose(ef); remove("/dev/shm/hp2_evt"); } }
 
   { FILE *bf = fopen("/dev/shm/hp2_btn", "r");
     int be, bv;
@@ -593,6 +675,16 @@ int main(int argc, char *argv[]) {
     // "New Touch Controls" prompt arrows). Used to drive the frontend over SSH.
     {
       static float px = -1, py = -1; static int phase = 0;
+      // physical pad: A center-taps the screen ONLY on touch-only prompt screens
+      // ("Touch the Screen to begin") -- i.e. when no widget FE page is active and
+      // we're not in a level. Inside real menus A confirms natively (elem14) and a
+      // tap here would double-act on whatever sits at the screen center.
+      static int a_prev = 0;
+      int a_now = gc_btn(SDL_CONTROLLER_BUTTON_A);
+      if (phase == 0 && !fe_page_active() && !hp2_in_level()) {
+        if (a_now && !a_prev) { px = screen_width * 0.5f; py = screen_height * 0.5f; phase = 1; }
+      }
+      a_prev = a_now;
       if (phase == 0) {
         FILE *tf = fopen("/dev/shm/hp2_tap", "r");
         if (tf) {

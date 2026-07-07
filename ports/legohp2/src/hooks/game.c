@@ -32,6 +32,38 @@ static int  replay_isreplaying_stub(void) { return 0; }
 static void replay_update_stub(float dt) { (void)dt; }
 static void *replay_loadreplay_stub(const char *name) { (void)name; return 0; }
 
+// FEMenuWidgetBasedPage_SelectedCallback(j): FENavShortcuts_Update fires this when
+// a menu widget is focused/activated. Mid-transition the current-page global can be
+// NULL and the original blindly deref's it (page->vtable) -> crash (seen when the
+// gamepad navigates "back" in the frontend). Reimplement with a NULL guard; when
+// the page is valid, replicate the original vtable call: method = page->vtbl[0x38],
+// method(page, j, j + *(pageMgr2 + 0x358)). GOT slots straight from the original's
+// literal pool: ldr@0xbcdd0 -> 0xbcdd8+0x1a0644 = 0x25d41c, ldr@0xbcdd4 ->
+// 0xbcddc+0x1a0644 = 0x25d420 (R_ARM_RELATIVE, valid after so_relocate).
+static void fe_selected_cb(unsigned j) {
+  uintptr_t base = (uintptr_t)game_mod.load_base;
+  void **p1 = *(void ***)(base + 0x25d41c);
+  void **p2 = *(void ***)(base + 0x25d420);
+  if (!p1 || !p2) return;
+  void *page = *p1;
+  if (!page) return;                       // GUARD: no active page -> skip
+  void *mgr2 = *p2;
+  if (!mgr2) return;
+  uintptr_t data = *(uintptr_t *)((uint8_t *)mgr2 + 0x358);
+  uintptr_t vtbl = *(uintptr_t *)page;
+  void (*method)(void *, unsigned, unsigned) = *(void **)(vtbl + 0x38);
+  debugPrintf("FE: selected_cb j=%u page=%p\n", j, page);
+  method(page, j, (unsigned)(j + data));
+}
+
+// current widget-based FE page active? (same global the selected-callback uses);
+// main.c gates the A center-tap on this so a tap never fires inside a real menu.
+int fe_page_active(void) {
+  uintptr_t base = (uintptr_t)game_mod.load_base;
+  void **p1 = *(void ***)(base + 0x25d41c);
+  return p1 && *p1 != NULL;
+}
+
 void patch_game(void) {
   // cutscene stubs: redirect the engine's fnaFMV_* to our skip player (fmv.c)
   hook_arm(so_try_find_addr(&game_mod, "_Z11fnaFMV_OpenPKcbPK18fnaFMVTRACKCHANNELjS0_"),
@@ -53,5 +85,9 @@ void patch_game(void) {
   hook_arm(so_try_find_addr(&game_mod, "_Z19geReplay_LoadReplayPKc"),
            (uintptr_t)&replay_loadreplay_stub);
 
-  debugPrintf("patch_game: hooked fnaFMV_* + TutorialModule_Start + geReplay (kill attract demo)\n");
+  // null-guard the frontend menu focus callback (crashes on gamepad back-nav)
+  hook_arm(so_try_find_addr(&game_mod, "_Z38FEMenuWidgetBasedPage_SelectedCallbackj"),
+           (uintptr_t)&fe_selected_cb);
+
+  debugPrintf("patch_game: hooked fnaFMV_* + geReplay + FE SelectedCallback guard\n");
 }
