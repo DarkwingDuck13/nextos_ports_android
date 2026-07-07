@@ -166,8 +166,10 @@ static void poll_joysticks(int W, int H) {
             fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
             pid = 1;
           } else {
-            fx = W * (getenv("BC2_FIRE2X") ? atof(getenv("BC2_FIRE2X")) : 0.5f);
-            fy = H * (getenv("BC2_FIRE2Y") ? atof(getenv("BC2_FIRE2Y")) : 0.5f);
+            /* L2 = TIRO DO VEÍCULO/TORRE: botão ⊕ no canto inf-ESQUERDO (0.05,0.90).
+             * CONFIRMADO: dispara a HMG Kord do Vodnik (som 'Vodnik_HMG_Kord'). */
+            fx = W * (getenv("BC2_FIRE2X") ? atof(getenv("BC2_FIRE2X")) : 0.05f);
+            fy = H * (getenv("BC2_FIRE2Y") ? atof(getenv("BC2_FIRE2Y")) : 0.90f);
             pid = 2;
           }
           static int firing[2];
@@ -487,6 +489,13 @@ int main(int argc, char *argv[]) {
           unsigned long t = (frame - 1100) % 240;
           if (t < 120) n_joy(3, 0.9f, 0.0f, 1);
           else if (t == 120) n_joy(3, 0.0f, 0.0f, 1);
+        }
+        /* FIRE-TEST: segura um toque em (BC2_FTX,BC2_FTY) p/ achar o botão de tiro
+         * do veículo (vê fumaça/munição no screenshot). id 3. */
+        if (getenv("BC2_FTX")) {
+          static int held; float fx = W*atof(getenv("BC2_FTX")), fy = H*atof(getenv("BC2_FTY"));
+          if (!held) { n_touch(g_env, NULL, 1, fx, fy, 3); held = 1; debugPrintf(">> FIRE-TEST hold %.0f,%.0f\n", fx, fy); }
+          else n_touch(g_env, NULL, 3, fx, fy, 3);   /* move p/ manter vivo */
         }
       }
     }
