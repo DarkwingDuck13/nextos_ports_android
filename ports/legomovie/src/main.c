@@ -68,6 +68,10 @@ int g_padlog = 0;
 
 extern void pthr_mark_render_thread(void);
 
+// cursor overlay (hooks/egl.c): seta desenhada por nos, visivel nos menus
+extern float g_cursor_overlay_x, g_cursor_overlay_y;
+extern volatile int g_cursor_overlay_show;
+
 // softfp (aapcs) pointers for Android armeabi-v7a natives that take float args.
 typedef void (*fusion_ctrl_fn)(void *, void *, int, int, float, float) __attribute__((pcs("aapcs")));
 typedef void (*fusion_touch_fn)(void *, void *, int, float, float, float) __attribute__((pcs("aapcs")));
@@ -126,6 +130,7 @@ static void *exit_deadline_thread(void *arg) {
 // hook writes through these when available and falls back to the known layout.
 static uint32_t *g_goplayer_active = NULL;
 static uint8_t  *g_paused_flag = NULL;
+static uint32_t *g_lemain_paused = NULL;  // leMain_Paused: flag REAL de pause deste build
 static int *ctl_lx = NULL, *ctl_ly = NULL, *ctl_rx = NULL, *ctl_ry = NULL;
 static int *ctl_start = NULL, *ctl_select = NULL;
 static int *ctl_l1 = NULL, *ctl_r1 = NULL;
@@ -199,6 +204,7 @@ static void resolve_entry_points(void) {
 
   g_goplayer_active = (uint32_t *)so_try_find_addr(&game_mod, "GOPlayer_Active");
   g_paused_flag     = (uint8_t *)so_try_find_addr(&game_mod, "gdv_fnInput_bGamePaused");
+  g_lemain_paused   = (uint32_t *)so_try_find_addr(&game_mod, "leMain_Paused");
   ctl_lx      = (int *)so_try_find_addr(&game_mod, "Controls_LeftStickX");
   ctl_ly      = (int *)so_try_find_addr(&game_mod, "Controls_LeftStickY");
   ctl_rx      = (int *)so_try_find_addr(&game_mod, "Controls_RightStickX");
@@ -384,7 +390,12 @@ static SDL_GameController *g_pad = NULL;
 static uint64_t g_back_prev = 0;
 
 static int legomovie_in_level(void) { return g_goplayer_active && *g_goplayer_active != 0; }
-static int legomovie_paused(void)   { return g_paused_flag && *g_paused_flag != 0; }
+static int legomovie_paused(void) {
+  // gdv_fnInput_bGamePaused NUNCA vira neste build (testado ao vivo);
+  // leMain_Paused e' o flag real do loop principal.
+  if (g_lemain_paused && *g_lemain_paused) return 1;
+  return g_paused_flag && *g_paused_flag != 0;
+}
 
 static int ctl_idx(int *p, int fallback, uint32_t n) {
   int v = p ? *p : fallback;
@@ -780,12 +791,55 @@ int main(int argc, char *argv[]) {
       int want_tap = 0;
       float wx = 0.0f, wy = 0.0f;
       int in_level = legomovie_in_level();
-      int frontend_or_pause = !in_level || legomovie_paused();
+      // Nenhum flag do engine sinaliza o pause deste build (leMain_Paused/
+      // gdv_fnInput_bGamePaused/geMain_CurrentUpdateModule TODOS ficam 0 com o
+      // menu de pause na tela — testado ao vivo). Rastreamos o pause NOS: o
+      // START (fisico) dispara o pause nativo E alterna este shadow; some ao
+      // sair da fase. Assim o cursor liga no pause igual no menu inicial.
+      static int shadow_paused = 0;
+      {
+        static int start_edge_prev = 0;
+        int start_now = gc_btn(SDL_CONTROLLER_BUTTON_START);
+        if (in_level) {
+          if (start_now && !start_edge_prev) {
+            shadow_paused = !shadow_paused;
+            debugPrintf("shadow pause -> %d\n", shadow_paused);
+          }
+        } else {
+          shadow_paused = 0;
+        }
+        start_edge_prev = start_now;
+        // teste headless: /dev/shm/legomovie_shadow "0|1"
+        { FILE *sf = fopen("/dev/shm/legomovie_shadow", "r");
+          if (sf) { int v; if (fscanf(sf, "%d", &v) == 1) shadow_paused = v;
+                    fclose(sf); remove("/dev/shm/legomovie_shadow"); } }
+      }
+      int frontend_or_pause = !in_level || shadow_paused || legomovie_paused();
 
       if (cx < 0.0f) {                 // nasce no CENTRO (nunca em cima da loja)
         cx = screen_width  * 0.5f;
         cy = screen_height * 0.5f;
       }
+
+      // blip do cursor ao ENTRAR no menu/pause (mostra onde ele esta)
+      {
+        static int fe_prev = -1;
+        if (frontend_or_pause != fe_prev) {
+          if (frontend_or_pause) {
+            cx = screen_width * 0.5f; cy = screen_height * 0.5f;  // nasce no centro
+            g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
+            g_cursor_overlay_show = 150;
+          } else {
+            g_cursor_overlay_show = 0;
+          }
+          debugPrintf("ctx: %s (in_level=%d paused=%d)\n",
+                      frontend_or_pause ? "MENU/PAUSE" : "GAMEPLAY",
+                      in_level, legomovie_paused());
+          fe_prev = frontend_or_pause;
+        }
+        if (g_cursor_overlay_show > 0) g_cursor_overlay_show--;
+      }
+
 
       if (frontend_or_pause && g_pad) {
         const float scale = 1.f / 32767.0f;
@@ -793,13 +847,20 @@ int main(int argc, char *argv[]) {
         int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
         { FILE *rf = fopen("/dev/shm/legomovie_rstick", "r");
           if (rf) { int fx, fy; if (fscanf(rf, "%d %d", &fx, &fy) == 2) { raw_rx = fx; raw_ry = fy; } fclose(rf); } }
-        int active = (abs(raw_rx) > STICK_DEADZONE || abs(raw_ry) > STICK_DEADZONE);
+        // deadzone GRANDE pro cursor: o adaptador USB barato tem DRIFT no
+        // analogico direito em repouso; o deadzone normal (8000) deixava o
+        // drift injetar toque SEM PARAR em gameplay se o shadow-pause ficasse
+        // presa. Exigir deflexao CLARA mata o "clica sozinho".
+        const int CURSOR_DEADZONE = 14000;
+        int active = (abs(raw_rx) > CURSOR_DEADZONE || abs(raw_ry) > CURSOR_DEADZONE);
         if (active) {
           const float speed = 14.0f;
           cx += raw_rx * scale * speed;
           cy += raw_ry * scale * speed;
           if (cx < 0.0f) cx = 0.0f; else if (cx > screen_width) cx = screen_width;
           if (cy < 0.0f) cy = 0.0f; else if (cy > screen_height) cy = screen_height;
+          g_cursor_overlay_x = cx; g_cursor_overlay_y = cy;
+          g_cursor_overlay_show = 150;
           if (!cursor_down) {
             if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f);
             cursor_down = 1;
@@ -810,6 +871,13 @@ int main(int argc, char *argv[]) {
           if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
           cursor_down = 0;
           debugPrintf("touch: cursor click (%.0f,%.0f)\n", cx, cy);
+          // clicou no icone RESUME (topo-esquerda da coluna) -> engine resume;
+          // zera o shadow pro cursor nao vazar pro gameplay.
+          if (shadow_paused && cx < screen_width * 0.18f &&
+              cy < screen_height * 0.14f) {
+            shadow_paused = 0;
+            debugPrintf("shadow pause -> 0 (resume clicado)\n");
+          }
         }
       } else if (cursor_down) {
         if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);
@@ -817,7 +885,7 @@ int main(int argc, char *argv[]) {
       }
 
       // swipe sintetizado do carrossel (dedo id 0, ~8 frames de arrasto)
-      if (frontend_or_pause && swipe_frames == 0) {
+      if (!in_level && swipe_frames == 0) {
         int dl = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
         int dr = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
         { FILE *sf = fopen("/dev/shm/legomovie_swipe", "r");
@@ -868,9 +936,16 @@ int main(int argc, char *argv[]) {
         }
         if (b && !b_prev && swipe_frames == 0) {
           want_tap = 1;
-          wx = screen_width  * (85.0f  / 1280.0f);
-          wy = screen_height * (625.0f / 720.0f);
-          debugPrintf("frontend: B -> tap voltar (%.0f,%.0f)\n", wx, wy);
+          if (in_level) {   // pause: B = RESUME (botao play no topo da coluna)
+            wx = screen_width  * (127.0f / 1280.0f);
+            wy = screen_height * (52.0f  / 720.0f);
+          } else {          // frontend: B = seta VOLTAR
+            wx = screen_width  * (85.0f  / 1280.0f);
+            wy = screen_height * (625.0f / 720.0f);
+          }
+          debugPrintf("frontend: B -> tap %s (%.0f,%.0f)\n",
+                      in_level ? "resume" : "voltar", wx, wy);
+          if (in_level) { shadow_paused = 0; }  // B resume -> sai do modo pause
         }
         if (st && !start_prev_fe && swipe_frames == 0 && !in_level) {
           want_tap = 1;
