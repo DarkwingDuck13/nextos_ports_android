@@ -73,6 +73,51 @@ static unsigned sleep_park(unsigned sec) {
 
 static void abort_log(void) { debugPrintf("!!! game called abort()\n"); abort(); }
 
+/* gettimeofday com CLAMP de picos de delta, POR-THREAD.
+ *
+ * O engine Fusion deriva o delta-time do frame de gettimeofday. Uma carga de
+ * fase é SÍNCRONA na thread de update (bloqueia dezenas de segundos lendo os
+ * .fib); o real gettimeofday então salta ~N s no 1º frame de gameplay -> a
+ * lógica da fase (timers/scripts/objetivos) avança tudo de uma vez e a fase
+ * "completa" no spawn (personagem já dentro do volume-gatilho / contador==0).
+ *
+ * O estado é THREAD-LOCAL de propósito: um relógio global seria "esquentado"
+ * pela thread de áudio (que chama gettimeofday em rajada, cada delta < 100ms),
+ * mascarando o salto do load. Por-thread, a thread do jogo -- bloqueada no
+ * load -- volta e vê UM salto único e grande, que é clampado a 1 frame. Cada
+ * thread mantém um relógio monotônico sem saltos; começam todas no now real,
+ * então ficam próximas o bastante para qualquer comparação cruzada. */
+static __thread uint64_t g_vt_us = 0, g_vt_last_real = 0;
+static __thread unsigned g_vt_clamped = 0;
+static int gettimeofday_clamp(struct timeval *tv, void *tz) {
+  (void)tz;
+  struct timeval r;
+  gettimeofday(&r, NULL);
+  /* SO a render/game thread tem o dt clampado. A thread de LOAD do engine
+   * precisa do tempo real correndo (a tela de loading progride/espera por
+   * tempo real); clampar ela travava o loading. A lógica de fase (objetivos,
+   * scripts, timers) roda na render thread via nativeRender -> geMain_Update,
+   * então é lá que o dt-spike do 1o frame pos-load precisa morrer. */
+  if (!pthr_is_render_thread()) return gettimeofday(tv, NULL);
+
+  uint64_t now = (uint64_t)r.tv_sec * 1000000ULL + (uint64_t)r.tv_usec;
+  if (g_vt_last_real == 0) { g_vt_last_real = now; g_vt_us = now; }
+  uint64_t d = (now > g_vt_last_real) ? (now - g_vt_last_real) : 0;
+  g_vt_last_real = now;
+  if (d > 100000ULL) { /* salto de load/stall -> 1 frame de 30fps */
+    if (g_vt_clamped < 40) {
+      g_vt_clamped++;
+      debugPrintf("dtclamp: render engoliu salto de %llu ms\n",
+                  (unsigned long long)(d / 1000ULL));
+    }
+    d = 33333ULL;
+  }
+  g_vt_us += d;
+  uint64_t out = g_vt_us;
+  if (tv) { tv->tv_sec = (time_t)(out / 1000000ULL); tv->tv_usec = (long)(out % 1000000ULL); }
+  return 0;
+}
+
 // fortified (_chk) libc variants: the trailing dst-size guard arg is ignored
 static void  *memcpy_chk_fake(void *d, const void *s, size_t n, size_t dl){(void)dl;return memcpy(d,s,n);}
 static void  *memmove_chk_fake(void *d, const void *s, size_t n, size_t dl){(void)dl;return memmove(d,s,n);}
@@ -171,7 +216,7 @@ DynLibFunction dynlib_functions[] = {
   { "closelog", (uintptr_t)&ret0 }, { "openlog", (uintptr_t)&ret0 }, { "syslog", (uintptr_t)&ret0 },
 
   // time / sched / sleep
-  { "gettimeofday", (uintptr_t)&gettimeofday },
+  { "gettimeofday", (uintptr_t)&gettimeofday_clamp },
   { "sched_get_priority_max", (uintptr_t)&sched_get_priority_max_fake },
   { "sched_get_priority_min", (uintptr_t)&sched_get_priority_min_fake },
   { "sched_yield", (uintptr_t)&sched_yield },

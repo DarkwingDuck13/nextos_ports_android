@@ -16,6 +16,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "../util.h"
 #include "../so_util.h"
@@ -44,6 +46,118 @@ static int patch_insn_in_symbol(const char *sym, uint32_t find, uint32_t repl,
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// interposição por GOT: símbolos DEFINIDOS no .so mas chamados via PLT
+// (preemptíveis) podem ser desviados escrevendo o wrapper no slot do GOT.
+// O wrapper chama o endereço real (dynsym) -- sem trampolim.
+// ---------------------------------------------------------------------------
+static uintptr_t got_interpose(const char *symname, uintptr_t wrapper) {
+  so_module *mod = &game_mod;
+  uintptr_t real = so_try_find_addr_rx(mod, symname);
+  if (!real) { debugPrintf("interpose: %s nao encontrado\n", symname); return 0; }
+  int patched = 0;
+  for (int i = 0; i < mod->elf_hdr->e_shnum; i++) {
+    char *sh_name = mod->shstrtab + mod->sec_hdr[i].sh_name;
+    if (strcmp(sh_name, ".rela.plt") != 0 && strcmp(sh_name, ".rela.dyn") != 0)
+      continue;
+    Elf64_Rela *rels = (Elf64_Rela *)((uintptr_t)mod->load_base + mod->sec_hdr[i].sh_addr);
+    for (size_t j = 0; j < mod->sec_hdr[i].sh_size / sizeof(Elf64_Rela); j++) {
+      int type = ELF64_R_TYPE(rels[j].r_info);
+      if (type != R_AARCH64_JUMP_SLOT) continue;
+      Elf64_Sym *sym = &mod->syms[ELF64_R_SYM(rels[j].r_info)];
+      const char *name = mod->dynstrtab + sym->st_name;
+      if (strcmp(name, symname) != 0) continue;
+      uintptr_t *slot = (uintptr_t *)((uintptr_t)mod->load_base + rels[j].r_offset);
+      *slot = wrapper;
+      patched++;
+    }
+  }
+  debugPrintf("interpose: %s slots=%d real=%p\n", symname, patched, (void *)real);
+  return patched ? real : 0;
+}
+
+// wrappers de log do fluxo de missão (diagnóstico "Level Complete na entrada")
+static uintptr_t (*real_CompleteObjective)(uintptr_t, uintptr_t);
+static uintptr_t wrap_CompleteObjective(uintptr_t a, uintptr_t b) {
+  debugPrintf("mission: CompleteObjective(%lu, %lu) @frame %d\n",
+              (unsigned long)a, (unsigned long)b, egl_swap_count);
+  return real_CompleteObjective(a, b);
+}
+static uintptr_t (*real_CompleteSubObjective)(uintptr_t, uintptr_t, uintptr_t);
+static uintptr_t wrap_CompleteSubObjective(uintptr_t a, uintptr_t b, uintptr_t c) {
+  debugPrintf("mission: CompleteSubObjective(%lu, %lu, %p)\n",
+              (unsigned long)a, (unsigned long)b, (void *)c);
+  return real_CompleteSubObjective(a, b, c);
+}
+static uintptr_t (*real_PushMissionComplete)(uintptr_t);
+static uintptr_t wrap_PushMissionComplete(uintptr_t m) {
+  debugPrintf("mission: PushMissionComplete(%lu)\n", (unsigned long)m);
+  return real_PushMissionComplete(m);
+}
+static uintptr_t (*real_PushEnterMission)(uintptr_t);
+static uintptr_t wrap_PushEnterMission(uintptr_t m) {
+  debugPrintf("mission: PushEnterMission(%lu)\n", (unsigned long)m);
+  return real_PushEnterMission(m);
+}
+static uintptr_t (*real_IsMissionComplete)(uintptr_t);
+static uintptr_t wrap_IsMissionComplete(uintptr_t m) {
+  uintptr_t r = real_IsMissionComplete(m);
+  static unsigned logs = 0;
+  if (logs < 60) { logs++;
+    debugPrintf("mission: IsMissionComplete(%lu) -> %lu\n",
+                (unsigned long)m, (unsigned long)(r & 0xff));
+  }
+  return r;
+}
+static uintptr_t (*real_FailObjective)(uintptr_t);
+static uintptr_t wrap_FailObjective(uintptr_t o) {
+  debugPrintf("mission: FailObjective(%lu)\n", (unsigned long)o);
+  return real_FailObjective(o);
+}
+
+/* GameLoopModule::LoadPostWorldLoad faz BUSY-WAIT apertado em
+ * UILoading::PreLoadShadersDone() -- gira `while(!PreLoadShadersDone());` na
+ * thread de LOAD do engine. Essa thread segura o contexto GL de contexto-único
+ * e nunca o solta enquanto gira, então a thread que compila os shaders de
+ * preload nunca pega o contexto -> a flag nunca vira 1 -> DEADLOCK (loading
+ * trava pra sempre). Interpondo o getter (chamado via PLT), cedemos o contexto
+ * GL a cada giro: park solta o contexto se esta thread o tem, o compilador
+ * pega, compila, e a flag finalmente vira 1. usleep evita fritar a CPU. */
+static unsigned char (*real_PreLoadShadersDone)(void);
+static unsigned char wrap_PreLoadShadersDone(void) {
+  unsigned char r = real_PreLoadShadersDone();
+  if (!r) {
+    egl_gl_ownership_park();
+    usleep(2000);
+  }
+  return r;
+}
+
+// fnFile_* consulta os .fib montados: logar SO as falhas (arquivo que nem o
+// fib tem) pra achar dado de missão/pool ausente do repack
+static uintptr_t (*real_fnFile_OpenStream)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+static uintptr_t wrap_fnFile_OpenStream(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+  uintptr_t r = real_fnFile_OpenStream(a, b, c, d);
+  if (!r) {
+    static unsigned logs = 0;
+    if (logs < 120) { logs++;
+      debugPrintf("fnFile: OpenStream FALHOU '%s'\n", (const char *)a);
+    }
+  }
+  return r;
+}
+static uintptr_t (*real_fnFile_Exists)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+static uintptr_t wrap_fnFile_Exists(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+  uintptr_t r = real_fnFile_Exists(a, b, c, d);
+  if (!(r & 0xff)) {
+    static unsigned logs = 0;
+    if (logs < 120) { logs++;
+      debugPrintf("fnFile: Exists=0 '%s'\n", (const char *)a);
+    }
+  }
+  return r;
+}
+
 void patch_game(void) {
   // cutscene stubs: redirect the engine's fnaFMV_* to our skip player (fmv.c)
   hook_arm64(so_try_find_addr(&game_mod, "_Z11fnaFMV_OpenPKcbPK18fnaFMVTRACKCHANNELjS0_"),
@@ -58,4 +172,26 @@ void patch_game(void) {
   // screen * 0.75 (fmov v0.2s,#0.75 = 0x0f03f500). Bump to 1.0 (0x0f03f600).
   patch_insn_in_symbol("_Z14fnaRender_InitP12fnFUSIONINIT",
                        0x0f03f500u, 0x0f03f600u, 0x32c / 4);
+
+  // diagnóstico do "Level Complete na entrada": logar o fluxo de missão
+  real_CompleteObjective = (void *)got_interpose(
+      "_ZN13MissionSystem17CompleteObjectiveEjj", (uintptr_t)&wrap_CompleteObjective);
+  real_CompleteSubObjective = (void *)got_interpose(
+      "_ZN13MissionSystem20CompleteSubObjectiveEjjP12GEGAMEOBJECT",
+      (uintptr_t)&wrap_CompleteSubObjective);
+  real_PushMissionComplete = (void *)got_interpose(
+      "_ZN12MissionPopup19PushMissionCompleteEj", (uintptr_t)&wrap_PushMissionComplete);
+  real_PushEnterMission = (void *)got_interpose(
+      "_ZN12MissionPopup16PushEnterMissionEj", (uintptr_t)&wrap_PushEnterMission);
+  real_IsMissionComplete = (void *)got_interpose(
+      "_ZN13MissionSystem17IsMissionCompleteEj", (uintptr_t)&wrap_IsMissionComplete);
+  real_FailObjective = (void *)got_interpose(
+      "_ZN13MissionSystem13FailObjectiveEj", (uintptr_t)&wrap_FailObjective);
+  real_fnFile_OpenStream = (void *)got_interpose(
+      "_Z17fnFile_OpenStreamPKcb", (uintptr_t)&wrap_fnFile_OpenStream);
+  real_fnFile_Exists = (void *)got_interpose(
+      "_Z13fnFile_ExistsPKcbPc", (uintptr_t)&wrap_fnFile_Exists);
+  // quebra o deadlock do busy-wait de compilação de shaders no load da fase
+  real_PreLoadShadersDone = (void *)got_interpose(
+      "_ZN9UILoading18PreLoadShadersDoneEv", (uintptr_t)&wrap_PreLoadShadersDone);
 }

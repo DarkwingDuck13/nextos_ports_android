@@ -330,7 +330,7 @@ static void fd_refill(AudioPlayer *p) {
   if (high > RING_BUFFER_SIZE / 2) high = RING_BUFFER_SIZE / 2;
 
   int guard = 8, dry = 0;
-  while (ring_readable(p) < high && guard-- > 0 && !p->decoder_done &&
+  while (ring_readable(p) < high && guard-- > 0 &&
          p->play_state == SL_PLAYSTATE_PLAYING) {
     int16_t buf[4608];
     size_t got = mp3dec_ex_read(p->mp3, buf, 4608);
@@ -340,13 +340,13 @@ static void fd_refill(AudioPlayer *p) {
       SDL_AtomicUnlock(&g_enqueue_lock);
     }
     if (got < 4608) { /* EOF (ou erro) */
-      if (p->loop_enabled) {
-        mp3dec_ex_seek(p->mp3, 0);
-        if (got == 0 && ++dry > 2) break; /* nao spinnar se o arquivo nao rende nada */
-      } else {
-        p->decoder_done = 1; /* HEADATEND + STOPPED no pump principal */
-        break;
-      }
+      /* SEMPRE dar loop: música de menu/mundo (maintitle) é feita pra repetir.
+       * NUNCA marcar decoder_done num FD player -> o jogo nunca vê o stream
+       * "acabar" naturalmente, então nunca dispara o fnaStream_Destroy que
+       * crasha (deref de vtable NULL, ~86s = fim do maintitle). Trocas de
+       * faixa continuam via STOP/Destroy explícito do jogo (caminhos tratados). */
+      mp3dec_ex_seek(p->mp3, 0);
+      if (got == 0 && ++dry > 2) break; /* arquivo vazio: não spinnar */
     } else {
       dry = 0;
     }

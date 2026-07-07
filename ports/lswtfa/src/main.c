@@ -80,6 +80,49 @@ static struct {
 
 #define RESOLVE(field, sym) g.field = (void *)so_find_addr_rx(&game_mod, sym)
 
+/* ---------------------------------------------------------------------------
+ * flowdbg: amostra o fluxo de módulos da engine (geMain) a cada 200ms e loga
+ * transições. Diagnóstico do "Level Complete na entrada da fase".
+ * ------------------------------------------------------------------------- */
+static void *flowdbg_thread(void *arg) {
+  (void)arg;
+  void **cur_mod_p  = (void **)so_try_find_addr(&game_mod, "geMain_CurrentUpdateModule");
+  void **last_mod_p = (void **)so_try_find_addr(&game_mod, "geMain_LastUpdatedModule");
+  int   *bgwait_p   = (int *)so_try_find_addr(&game_mod, "geMain_InBGWait");
+  const char *(*mod_name)(void *) =
+      (const char *(*)(void *))so_try_find_addr_rx(&game_mod, "_ZNK8geModule4NameEv");
+  unsigned char (*shaders_done)(void) =
+      (unsigned char (*)(void))so_try_find_addr_rx(&game_mod, "_ZN9UILoading18PreLoadShadersDoneEv");
+  if (!cur_mod_p || !mod_name) {
+    debugPrintf("flowdbg: simbolos ausentes (cur=%p name=%p)\n",
+                (void *)cur_mod_p, (void *)mod_name);
+    return NULL;
+  }
+  void *prev_cur = NULL, *prev_last = NULL;
+  int prev_sd = -1;
+  for (;;) {
+    void *cur = *cur_mod_p;
+    void *last = last_mod_p ? *last_mod_p : NULL;
+    int sd = shaders_done ? (int)shaders_done() : -1;
+    if (cur != prev_cur || last != prev_last || sd != prev_sd) {
+      const char *cn = "-", *ln = "-";
+      if (cur) cn = mod_name(cur);
+      if (last) ln = mod_name(last);
+      debugPrintf("flow: cur=%s(%p) last=%s(%p) shaders_done=%d bgwait=%d\n",
+                  cn ? cn : "?", cur, ln ? ln : "?", last, sd,
+                  bgwait_p ? *bgwait_p : -1);
+      prev_cur = cur; prev_last = last; prev_sd = sd;
+    }
+    usleep(200 * 1000);
+  }
+  return NULL;
+}
+
+static void flowdbg_start(void) {
+  pthread_t t;
+  pthread_create(&t, NULL, flowdbg_thread, NULL);
+}
+
 static void resolve_entry_points(void) {
   RESOLVE(setWritePath,             "Java_com_wbgames_LEGOgame_Fusion_nativeSetWritePath");
   RESOLVE(setSavePath,              "Java_com_wbgames_LEGOgame_Fusion_nativeSetSavePath");
@@ -420,6 +463,7 @@ int main(int argc, char *argv[]) {
   g.nativeResume(fake_env, GLSV_OBJ);
   g.nativeWindowFocusChanged(fake_env, GLSV_OBJ, 1);
   debugPrintf("startup sequence complete\n");
+  flowdbg_start();
 
   open_controller();
   SDL_GameControllerEventState(SDL_ENABLE);

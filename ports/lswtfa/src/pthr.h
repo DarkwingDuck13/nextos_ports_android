@@ -85,4 +85,7 @@ void pthr_ensure_fake_tls(void);
 void pthr_set_role_symbols(uintptr_t android_main, uintptr_t render_thread,
                            uintptr_t nu_thread);
 
+// 1 se a thread chamadora é a render/game thread (marcada em main.c).
+int pthr_is_render_thread(void);
+
 #endif

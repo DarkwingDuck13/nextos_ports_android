@@ -19,6 +19,7 @@
 #include "config.h"
 #include "util.h"
 #include "jni_fake.h"
+#include "so_util.h"
 
 #define JNI_OK 0
 #define JNI_VERSION_1_6 0x00010006
@@ -157,6 +158,18 @@ static juint call_boolean(const char *name, va_list va) {
       !strcmp(name, "FromNative_hasNetworkConnection")) {
     debugPrintf("JNI: CallBooleanMethod(%s) -> true\n", name);
     return 1;
+  }
+  // AlertDialog Java nao existe: o engine seta resposta=2 (pendente) e polla
+  // fnaDevice_GetAlertDialogResponse ate mudar -- sem auto-resposta o titulo
+  // congela no 1o boot (prompt do Google Play com save novo). Responder
+  // "negativo" (0) na hora.
+  if (!strcmp(name, "ShowAlertDialog")) {
+    extern so_module game_mod;
+    void (*setresp)(int) =
+        (void (*)(int))so_try_find_addr_rx(&game_mod, "_Z32fnaDevice_SetAlertDialogResponsei");
+    if (setresp) setresp(0);
+    debugPrintf("JNI: ShowAlertDialog -> auto-resposta NEGATIVA (0)\n");
+    return 1; // "dialog mostrado"
   }
   debugPrintf("JNI: CallBooleanMethod(%s) -> false\n", name);
   return 0;
