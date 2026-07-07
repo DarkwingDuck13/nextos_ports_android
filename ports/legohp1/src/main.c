@@ -560,16 +560,15 @@ static void hp_controls_mode_update(void) {
   // forced: GOPlayer_UpdateControls reloads Current from GOPlayer_NewControlMode
   // every frame (this is why the old Current-only experiment kept reverting).
   // They are 1-BYTE globals -- a 4-byte write clobbers the neighbours.
-  // /dev/shm/hp_cm1 restores the touch scheme (debug).
-  if (access("/dev/shm/hp_cm1", F_OK) != 0) {
+  // NOTE: forcing GOPlayer ControlMode=2 was tried and REVERTED: mode 2 turned
+  // out to be the AI/companion controller -- the player stops walking entirely
+  // (mode 1, the build's touch scheme, walks fine off our dpad/stick feed).
+  // Keep mode 1; actions are wired separately. /dev/shm/hp_cm2 re-applies the
+  // mode-2 experiment for debugging only.
+  if (access("/dev/shm/hp_cm2", F_OK) == 0) {
     uint8_t *cm_cur = (uint8_t *)so_try_find_addr(&game_mod, "GOPlayer_CurrentControlMode");
     uint8_t *cm_new = (uint8_t *)so_try_find_addr(&game_mod, "GOPlayer_NewControlMode");
-    if (cm_cur && cm_new && (*cm_cur != 2 || *cm_new != 2)) {
-      static int logged = 0;
-      if (!logged) { debugPrintf("player: ControlMode cur=%d new=%d -> 2/2 (pad scheme)\n", *cm_cur, *cm_new); logged = 1; }
-      *cm_cur = 2;
-      *cm_new = 2;
-    }
+    if (cm_cur && cm_new) { *cm_cur = 2; *cm_new = 2; }
   }
 
   if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
@@ -704,13 +703,42 @@ static void update_gamepad(void) {
     uint64_t a = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1 : 0;
     uint64_t bt = gc_btn(SDL_CONTROLLER_BUTTON_B) ? 1 : 0;
     uint64_t st = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1 : 0;
-    if (a && !a_prev) {
-      // the dialog pointer can dangle (non-NULL) after leaving a level, which
-      // would silently turn menu-A into a useless tap -- only honor it in-level
-      if (dialog && in_level) hp_queue_tap(screen_width * 0.5f, screen_height * 0.86f);
-      else g_fe_confirm = 8;                  // consumed by hp_uimenu_update
-    } else if (g_fe_confirm > 0) {
-      g_fe_confirm--;
+    // in-level pointer: the right stick moves an on-screen crosshair (drawn in
+    // egl_present); it starts at the centre (~the player, the camera tracks
+    // him). A taps AT the crosshair -- interact with the NPC/object aimed at,
+    // advance dialogs, attack. (touch scheme: every interaction is a tap)
+    {
+      extern void egl_set_cursor(float x, float y, int show);
+      static float cx = -1.f, cy = -1.f;
+      static int was_in_level = 0;
+      if (in_level && !was_in_level) { cx = screen_width * 0.5f; cy = screen_height * 0.52f; }
+      was_in_level = in_level;
+      if (in_level && g_pad) {
+        const float scale = 1.f / 32767.0f;
+        int rrx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
+        int rry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
+        // Twin USB PS2 adapters often deliver the right stick only on raw
+        // axes (commonly swapped: 2=Y, 3=X); fall back when mapped axes sleep
+        if (g_joy && rrx > -STICK_DEADZONE && rrx < STICK_DEADZONE &&
+            rry > -STICK_DEADZONE && rry < STICK_DEADZONE) {
+          rrx = SDL_JoystickGetAxis(g_joy, 3);
+          rry = SDL_JoystickGetAxis(g_joy, 2);
+        }
+        float mx = (rrx > STICK_DEADZONE || rrx < -STICK_DEADZONE) ? rrx * scale : 0.f;
+        float my = (rry > STICK_DEADZONE || rry < -STICK_DEADZONE) ? rry * scale : 0.f;
+        cx += mx * 14.f; cy += my * 14.f;
+        if (cx < 0) cx = 0; else if (cx > screen_width - 1) cx = screen_width - 1;
+        if (cy < 0) cy = 0; else if (cy > screen_height - 1) cy = screen_height - 1;
+      }
+      egl_set_cursor(cx, cy, in_level);
+
+      if (a && !a_prev) {
+        if (in_level) hp_queue_tap(cx, cy);   // tap at the crosshair
+        else g_fe_confirm = 8;                // menus: consumed by hp_uimenu_update
+      } else if (g_fe_confirm > 0) {
+        g_fe_confirm--;
+      }
+      (void)dialog;
     }
     if (!in_level) {
       if (bt && !b_prev) g.backButtonPressed(fake_env, FUSION_OBJ);

@@ -67,6 +67,56 @@ int egl_bringup(void) {
   return 0;
 }
 
+// on-screen cursor (right-stick pointer): drawn last, over the frame
+static float g_cursor_x = -1.f, g_cursor_y = -1.f;
+static int g_cursor_show = 0;
+void egl_set_cursor(float x, float y, int show) { g_cursor_x = x; g_cursor_y = y; g_cursor_show = show; }
+
+static void egl_draw_cursor(void) {
+  GLboolean tex = glIsEnabled(GL_TEXTURE_2D), blend = glIsEnabled(GL_BLEND);
+  GLboolean depth = glIsEnabled(GL_DEPTH_TEST), cull = glIsEnabled(GL_CULL_FACE);
+  GLboolean varr = glIsEnabled(GL_VERTEX_ARRAY), carr = glIsEnabled(GL_COLOR_ARRAY);
+  GLboolean tarr = glIsEnabled(GL_TEXTURE_COORD_ARRAY);
+  GLint vp[4];
+  glGetIntegerv(GL_VIEWPORT, vp);
+
+  glViewport(0, 0, screen_width, screen_height);
+  glDisable(GL_TEXTURE_2D); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
+  glDisable(GL_BLEND);
+  if (carr) glDisableClientState(GL_COLOR_ARRAY);
+  if (tarr) glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+  if (!varr) glEnableClientState(GL_VERTEX_ARRAY);
+
+  glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+  glOrthof(0.f, (float)screen_width, (float)screen_height, 0.f, -1.f, 1.f);
+  glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+
+  const float x = g_cursor_x, y = g_cursor_y;
+  // black outline cross, then white cross on top (two bars each)
+  const float oh[8] = { x-14,y-4, x+14,y-4, x-14,y+4, x+14,y+4 };
+  const float ov[8] = { x-4,y-14, x+4,y-14, x-4,y+14, x+4,y+14 };
+  const float wh[8] = { x-12,y-2, x+12,y-2, x-12,y+2, x+12,y+2 };
+  const float wv[8] = { x-2,y-12, x+2,y-12, x-2,y+12, x+2,y+12 };
+  glColor4f(0.f, 0.f, 0.f, 1.f);
+  glVertexPointer(2, GL_FLOAT, 0, oh); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glVertexPointer(2, GL_FLOAT, 0, ov); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glColor4f(1.f, 1.f, 1.f, 1.f);
+  glVertexPointer(2, GL_FLOAT, 0, wh); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glVertexPointer(2, GL_FLOAT, 0, wv); glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glColor4f(1.f, 1.f, 1.f, 1.f);
+
+  glMatrixMode(GL_PROJECTION); glPopMatrix();
+  glMatrixMode(GL_MODELVIEW); glPopMatrix();
+  if (!varr) glDisableClientState(GL_VERTEX_ARRAY);
+  if (carr) glEnableClientState(GL_COLOR_ARRAY);
+  if (tarr) glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+  if (tex) glEnable(GL_TEXTURE_2D);
+  if (blend) glEnable(GL_BLEND);
+  if (depth) glEnable(GL_DEPTH_TEST);
+  if (cull) glEnable(GL_CULL_FACE);
+  glViewport(vp[0], vp[1], vp[2], vp[3]);
+}
+
 void egl_present(void) {
   {
     GLboolean scis = glIsEnabled(GL_SCISSOR_TEST);
@@ -79,6 +129,7 @@ void egl_present(void) {
     glClear(GL_COLOR_BUFFER_BIT);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(cc[0], cc[1], cc[2], cc[3]);
+    if (g_cursor_show) egl_draw_cursor();
     if (scis) glEnable(GL_SCISSOR_TEST);
   }
   SDL_GL_SwapWindow(g_window);
