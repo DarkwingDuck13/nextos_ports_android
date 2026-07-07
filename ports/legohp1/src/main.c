@@ -93,6 +93,9 @@ static void    **hp_device_slot = NULL; // GOT slot -> fnaDevice struct (w/h flo
 static void hp_fna_poll(void *dev);                 // native joypad feeder (below)
 static void hp_get_fd_len_off(void *h, int *fd, uint64_t *len, uint64_t *off);
 static float hp_get_aspect(void) __attribute__((pcs("aapcs")));
+static int hp_uimenu_update(void *menu, int b);     // FE confirm-on-A hook
+static void *hp_make_tramp(uintptr_t fn);
+extern int (*uimenu_orig)(void *menu, int b);
 
 static void resolve_entry_points(void) {
   RESOLVE(setWritePath,     "Java_com_wbgames_LEGOgame_Fusion_nativeSetWritePath");
@@ -149,6 +152,16 @@ static void resolve_entry_points(void) {
   if (gfd) {
     hook_arm(gfd, (uintptr_t)&hp_get_fd_len_off);
     debugPrintf("audio: hooked fnaFile_GetFDLengthAndOffset @%p\n", (void *)gfd);
+  }
+
+  // frontend menus: A confirms the d-pad-selected item (see hp_uimenu_update)
+  uintptr_t uim = so_try_find_addr(&game_mod, "_Z13UIMenu_UpdateP6UIMENUb");
+  if (uim) {
+    uimenu_orig = hp_make_tramp(uim);
+    if (uimenu_orig) {
+      hook_arm(uim, (uintptr_t)&hp_uimenu_update);
+      debugPrintf("FE: hooked UIMenu_Update @%p (tramp=%p)\n", (void *)uim, (void *)uimenu_orig);
+    }
   }
 
   // 16:9: the title renders pillarboxed 4:3; the game asks the device layer for
@@ -396,13 +409,14 @@ static void hp_fna_poll(void *dev) {
     stick_circle_to_square(&lx, &ly);
   }
 
-  // d-pad feeds only its own elements (10..13) -- the engine derives walking
-  // from the analog stick itself (Controls_DPadFromAnalogStick), and the d-pad
-  // keeps its native functions.
   int d_up = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP);
   int d_dn = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
   int d_lf = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
   int d_rt = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+  // walking reads the d-pad elements (the engine only converts stick->dpad in
+  // the frontend), so mirror the left stick onto them for analog walking
+  if (lx < -0.5f) d_lf = 1; else if (lx > 0.5f) d_rt = 1;
+  if (ly < -0.5f) d_up = 1; else if (ly > 0.5f) d_dn = 1;
 
   int a = gc_btn(SDL_CONTROLLER_BUTTON_A), b = gc_btn(SDL_CONTROLLER_BUTTON_B);
   int x = gc_btn(SDL_CONTROLLER_BUTTON_X), y = gc_btn(SDL_CONTROLLER_BUTTON_Y);
@@ -523,16 +537,13 @@ static void hp_controls_mode_update(void) {
     }
   }
 
-  // auto mode: in-level (GOPlayer exists) -> native pad; frontend/menus ->
-  // touch bindings + virtual cursor. Manual /dev/shm overrides for testing.
-  if (access("/dev/shm/hp_pad", F_OK) == 0) {
-    if (!g_ctl_mode) hp_controls_set_mode(1);
-  } else if (access("/dev/shm/hp_touch", F_OK) == 0) {
+  // PAD mode permanent: menus navigate on the pad (CurrentInput=joypad) and
+  // real/injected taps keep working regardless (touch device still polled).
+  // /dev/shm/hp_touch restores touch bindings for debugging only.
+  if (access("/dev/shm/hp_touch", F_OK) == 0) {
     if (g_ctl_mode) hp_controls_set_mode(0);
-  } else {
-    void *goplayer = *(void **)(b + 0x2d12cc);   // GOPlayer_Active
-    int want_pad = goplayer != NULL;
-    if (want_pad != g_ctl_mode) hp_controls_set_mode(want_pad);
+  } else if (!g_ctl_mode) {
+    hp_controls_set_mode(1);
   }
 
   if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
@@ -541,6 +552,43 @@ static void hp_controls_mode_update(void) {
     g.backButtonPressed(fake_env, FUSION_OBJ);
     debugPrintf("inject: backButtonPressed\n");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Frontend confirm on the A button. The Potter FE menu widget (UIMenu_Update
+// @0x1338bc) never reads Controls_Confirm -- items are only activated by a
+// touch hit-test. Its CALLERS, however, use the contract "return != 0 => act
+// on the item at [menu+0x286]" (which the d-pad selection already moves). So:
+// trampoline-hook UIMenu_Update and return 1 when the pad's A was pressed.
+// ---------------------------------------------------------------------------
+int (*uimenu_orig)(void *menu, int b) = NULL;
+static volatile int g_fe_confirm = 0;   // frames left to honor an A press
+
+static int hp_uimenu_update(void *menu, int b) {
+  int r = uimenu_orig(menu, b);
+  if (r == 0 && g_fe_confirm) {
+    int8_t sel = *(int8_t *)((uint8_t *)menu + 0x286);
+    if (sel >= 0) {
+      g_fe_confirm = 0;
+      debugPrintf("FE: A -> confirm item %d\n", sel);
+      return 1;
+    }
+  }
+  return r;
+}
+
+// copy the first two (PC-free) instructions + jump back, so the hook can call
+// the original function
+static void *hp_make_tramp(uintptr_t fn) {
+  uint32_t *t = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (t == MAP_FAILED) return NULL;
+  t[0] = *(uint32_t *)fn;
+  t[1] = *(uint32_t *)(fn + 4);
+  t[2] = 0xE51FF004;              // ldr pc, [pc, #-4]
+  t[3] = (uint32_t)(fn + 8);
+  __builtin___clear_cache((char *)t, (char *)t + 16);
+  return t;
 }
 
 // diagnostic dump of the Controls_Init GOT-slot indirections (frame 60):
@@ -610,29 +658,27 @@ static void update_gamepad(void) {
 
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
-  // Virtual touch cursor for the touch-only frontend: stick moves, A taps
-  // (touchDown/Up). Active whenever we're in TOUCH mode; in-level the pad is
-  // native (fnaController_Poll hook) and the cursor stays out of the way.
-  if (g_ctl_mode) goto no_cursor;
-  static float tx = -1.f, ty = -1.f;
-  if (tx < 0) { tx = screen_width * 0.5f; ty = screen_height * 0.5f; }
-  const float cur_speed = 14.0f;
-  tx += lx * cur_speed; ty += ly * cur_speed;
-  if (tx < 0) tx = 0; else if (tx > screen_width - 1) tx = screen_width - 1;
-  if (ty < 0) ty = 0; else if (ty > screen_height - 1) ty = screen_height - 1;
-
-  static uint64_t a_prev = 0;
-  uint64_t a = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1 : 0;
-  if (a && !a_prev) {
-    if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
-  } else if (a && a_prev) {
-    if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
-  } else if (!a && a_prev) {
-    if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 0, tx, ty, 0.0f);
+  // Menu pad keys: A confirms the d-pad-selected item (UIMenu_Update hook,
+  // also covers the pause menu); outside of a level B = Android back and
+  // START = center tap (passes the touch-only "Touch the screen to begin").
+  {
+    int in_level = *(void **)((uint8_t *)game_mod.load_virtbase + 0x2d12cc) != NULL;
+    static uint64_t a_prev = 0, b_prev = 0, st_prev = 0;
+    uint64_t a = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1 : 0;
+    uint64_t bt = gc_btn(SDL_CONTROLLER_BUTTON_B) ? 1 : 0;
+    uint64_t st = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1 : 0;
+    if (a && !a_prev) g_fe_confirm = 8;           // consumed by hp_uimenu_update
+    else if (g_fe_confirm > 0) g_fe_confirm--;
+    if (!in_level) {
+      if (bt && !b_prev) g.backButtonPressed(fake_env, FUSION_OBJ);
+      if (st && !st_prev) {
+        g.touchDown(fake_env, FUSION_OBJ, 0, screen_width * 0.5f, screen_height * 0.5f, 1.0f);
+      } else if (!st && st_prev) {
+        g.touchUp(fake_env, FUSION_OBJ, 0, screen_width * 0.5f, screen_height * 0.5f, 0.0f);
+      }
+    }
+    a_prev = a; b_prev = bt; st_prev = st;
   }
-  a_prev = a;
-
-no_cursor:;
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
   if (back && !g_back_prev) g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
