@@ -17,10 +17,14 @@
 #include "so_util.h"
 #include "util.h"
 
-/* musica do jogo = MP3 via SL_DATALOCATOR_ANDROIDFD + MIME (o OpenSL real
- * decodifica sozinho); decodificamos com minimp3 no pump thread. */
+/* musica do jogo = MP3/FLAC via SL_DATALOCATOR_ANDROIDFD + MIME (o OpenSL real
+ * decodifica sozinho); decodificamos com minimp3/dr_flac no pump thread. O HP
+ * Years 1-4 embarca a musica em FLAC dentro do OBB (magic "fLaC" no offset). */
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3_ex.h"
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_STDIO
+#include "dr_flac.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 
@@ -140,6 +144,7 @@ typedef struct {
   uint64_t fd_pos;           /* posicao de leitura dentro da janela */
   mp3dec_ex_t *mp3;
   mp3dec_io_t mp3io;
+  drflac *flac;
   int mp3_open_failed;
   volatile int loop_enabled;
   volatile int fd_restart;   /* STOPPED->PLAYING: pump faz seek(0) */
@@ -293,35 +298,69 @@ static int fd_seek_cb(uint64_t position, void *user) {
   return 0;
 }
 
+/* dr_flac callbacks sobre a mesma janela (fd_off..fd_off+fd_len) */
+static size_t flac_read_cb(void *user, void *out, size_t bytes) {
+  return fd_read_cb(out, bytes, user);
+}
+
+static drflac_bool32 flac_seek_cb(void *user, int offset, drflac_seek_origin origin) {
+  AudioPlayer *p = (AudioPlayer *)user;
+  int64_t pos = (origin == drflac_seek_origin_start)
+                  ? (int64_t)offset : (int64_t)p->fd_pos + offset;
+  if (pos < 0 || (uint64_t)pos > p->fd_len) return DRFLAC_FALSE;
+  p->fd_pos = (uint64_t)pos;
+  return DRFLAC_TRUE;
+}
+
 /* decodifica mp3 pro ring ate ~0.5s de folga; roda no pump thread */
 static void fd_refill(AudioPlayer *p) {
   pthread_mutex_lock(&g_fd_lock);
   if (!p->active || p->mp3_open_failed || p->fd < 0) goto out;
 
-  if (!p->mp3) {
-    p->mp3 = (mp3dec_ex_t *)calloc(1, sizeof(mp3dec_ex_t));
-    if (!p->mp3) { p->mp3_open_failed = 1; goto out; }
-    p->mp3io.read = fd_read_cb;
-    p->mp3io.read_data = p;
-    p->mp3io.seek = fd_seek_cb;
-    p->mp3io.seek_data = p;
-    p->fd_pos = 0;
-    if (mp3dec_ex_open_cb(p->mp3, &p->mp3io, MP3D_SEEK_TO_SAMPLE)) {
-      debugPrintf("audio: fdplayer %ld mp3 open FALHOU (len=%llu)\n",
-                  (long)(p - g_players), (unsigned long long)p->fd_len);
-      free(p->mp3); p->mp3 = NULL; p->mp3_open_failed = 1;
-      goto out;
+  if (!p->mp3 && !p->flac) {
+    uint8_t magic[4] = { 0 };
+    pread(p->fd, magic, 4, (off_t)p->fd_off);
+    if (!memcmp(magic, "fLaC", 4)) {
+      p->fd_pos = 0;
+      p->flac = drflac_open(flac_read_cb, flac_seek_cb, p, NULL);
+      if (!p->flac) {
+        debugPrintf("audio: fdplayer %ld flac open FALHOU (len=%llu)\n",
+                    (long)(p - g_players), (unsigned long long)p->fd_len);
+        p->mp3_open_failed = 1;
+        goto out;
+      }
+      p->sample_rate = p->flac->sampleRate;
+      p->num_channels = p->flac->channels;
+      p->bits_per_sample = 16;
+      debugPrintf("audio: fdplayer %ld flac aberto: %uHz %uch frames=%llu loop=%d\n",
+                  (long)(p - g_players), p->sample_rate, p->num_channels,
+                  (unsigned long long)p->flac->totalPCMFrameCount, p->loop_enabled);
+    } else {
+      p->mp3 = (mp3dec_ex_t *)calloc(1, sizeof(mp3dec_ex_t));
+      if (!p->mp3) { p->mp3_open_failed = 1; goto out; }
+      p->mp3io.read = fd_read_cb;
+      p->mp3io.read_data = p;
+      p->mp3io.seek = fd_seek_cb;
+      p->mp3io.seek_data = p;
+      p->fd_pos = 0;
+      if (mp3dec_ex_open_cb(p->mp3, &p->mp3io, MP3D_SEEK_TO_SAMPLE)) {
+        debugPrintf("audio: fdplayer %ld mp3 open FALHOU (len=%llu)\n",
+                    (long)(p - g_players), (unsigned long long)p->fd_len);
+        free(p->mp3); p->mp3 = NULL; p->mp3_open_failed = 1;
+        goto out;
+      }
+      p->sample_rate = p->mp3->info.hz;
+      p->num_channels = p->mp3->info.channels;
+      p->bits_per_sample = 16;
+      debugPrintf("audio: fdplayer %ld mp3 aberto: %uHz %uch samples=%llu loop=%d\n",
+                  (long)(p - g_players), p->sample_rate, p->num_channels,
+                  (unsigned long long)p->mp3->samples, p->loop_enabled);
     }
-    p->sample_rate = p->mp3->info.hz;
-    p->num_channels = p->mp3->info.channels;
-    p->bits_per_sample = 16;
-    debugPrintf("audio: fdplayer %ld mp3 aberto: %uHz %uch samples=%llu loop=%d\n",
-                (long)(p - g_players), p->sample_rate, p->num_channels,
-                (unsigned long long)p->mp3->samples, p->loop_enabled);
   }
 
   if (p->fd_restart) {
-    mp3dec_ex_seek(p->mp3, 0);
+    if (p->flac) drflac_seek_to_pcm_frame(p->flac, 0);
+    else mp3dec_ex_seek(p->mp3, 0);
     p->fd_restart = 0;
   }
 
@@ -333,7 +372,13 @@ static void fd_refill(AudioPlayer *p) {
   while (ring_readable(p) < high && guard-- > 0 &&
          p->play_state == SL_PLAYSTATE_PLAYING) {
     int16_t buf[4608];
-    size_t got = mp3dec_ex_read(p->mp3, buf, 4608);
+    size_t got;
+    if (p->flac) {
+      uint32_t ch = p->num_channels ? p->num_channels : 2;
+      got = (size_t)drflac_read_pcm_frames_s16(p->flac, 4608 / ch, buf) * ch;
+    } else {
+      got = mp3dec_ex_read(p->mp3, buf, 4608);
+    }
     if (got > 0) {
       SDL_AtomicLock(&g_enqueue_lock);
       ring_write(p, buf, (uint32_t)(got * sizeof(int16_t)));
@@ -345,7 +390,8 @@ static void fd_refill(AudioPlayer *p) {
        * "acabar" naturalmente, então nunca dispara o fnaStream_Destroy que
        * crasha (deref de vtable NULL, ~86s = fim do maintitle). Trocas de
        * faixa continuam via STOP/Destroy explícito do jogo (caminhos tratados). */
-      mp3dec_ex_seek(p->mp3, 0);
+      if (p->flac) drflac_seek_to_pcm_frame(p->flac, 0);
+      else mp3dec_ex_seek(p->mp3, 0);
       if (got == 0 && ++dry > 2) break; /* arquivo vazio: não spinnar */
     } else {
       dry = 0;
@@ -631,6 +677,7 @@ static void player_reset_meta(AudioPlayer *p) {
   /* limpar estado FD do ocupante anterior do slot */
   pthread_mutex_lock(&g_fd_lock);
   if (p->mp3) { mp3dec_ex_close(p->mp3); free(p->mp3); p->mp3 = NULL; }
+  if (p->flac) { drflac_close(p->flac); p->flac = NULL; }
   if (p->is_fd && p->fd >= 0) close(p->fd);
   p->is_fd = 0;
   p->fd = -1;
@@ -746,8 +793,9 @@ static SLresult play_GetDuration(void *self, SLmillisecond *pMsec) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      if (p->is_fd && p->mp3 && p->sample_rate && p->num_channels) {
-        uint64_t frames = p->mp3->samples / p->num_channels;
+      if (p->is_fd && (p->mp3 || p->flac) && p->sample_rate && p->num_channels) {
+        uint64_t frames = p->flac ? p->flac->totalPCMFrameCount
+                                  : p->mp3->samples / p->num_channels;
         if ((uintptr_t)pMsec > 0x100000)
           *pMsec = (SLmillisecond)(frames * 1000ULL / p->sample_rate);
         return SL_RESULT_SUCCESS;

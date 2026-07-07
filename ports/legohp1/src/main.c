@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
@@ -73,10 +74,25 @@ static struct {
   void (*nativePause)(void *, void *);
   void (*nativeWindowFocusChanged)(void *, void *, int);
   void (*nativeDone)(void *, void *);
+
+  void (*pollTouchPoint)(void);   // _Z28fnaController_PollTouchPointv
 } g;
+
+// engine globals touched by the joypad/touch poll hook and the 16:9 patch
+static uint32_t *hp_touch_cnt = NULL;   // fnaController_TouchPointsCnt
+static uint16_t *hp_touch_pts = NULL;   // fnaController_TouchPoints (stride 6 bytes: x,y,id)
+static uint32_t *hp_touch_flag = NULL;  // static "touch active" flag (via GOT slot)
+static float    *hp_mouse_x = NULL, *hp_mouse_y = NULL; // static last-touch pos (via GOT)
+static float    *hp_main_aspect = NULL; // Main_AspectRatio
+static uint8_t  *hp_widescreen = NULL;  // Main_WideScreen
+static void    **hp_device_slot = NULL; // GOT slot -> fnaDevice struct (w/h floats inside)
 
 #define RESOLVE(field, sym) g.field = (void *)so_find_addr_rx(&game_mod, sym)
 #define RESOLVE_OPT(field, sym) g.field = (void *)so_try_find_addr_rx(&game_mod, sym)
+
+static void hp_fna_poll(void *dev);                 // native joypad feeder (below)
+static void hp_get_fd_len_off(void *h, int *fd, uint64_t *len, uint64_t *off);
+static float hp_get_aspect(void) __attribute__((pcs("aapcs")));
 
 static void resolve_entry_points(void) {
   RESOLVE(setWritePath,     "Java_com_wbgames_LEGOgame_Fusion_nativeSetWritePath");
@@ -99,6 +115,49 @@ static void resolve_entry_points(void) {
   RESOLVE(nativePause,      "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativePause");
   RESOLVE(nativeWindowFocusChanged, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeWindowFocusChanged");
   RESOLVE_OPT(nativeDone,   "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeDone");
+
+  g.pollTouchPoint = (void *)so_find_addr_rx(&game_mod, "_Z28fnaController_PollTouchPointv");
+  hp_touch_cnt = (uint32_t *)so_find_addr(&game_mod, "fnaController_TouchPointsCnt");
+  hp_touch_pts = (uint16_t *)so_find_addr(&game_mod, "fnaController_TouchPoints");
+  hp_main_aspect = (float *)so_find_addr(&game_mod, "Main_AspectRatio");
+  hp_widescreen  = (uint8_t *)so_try_find_addr(&game_mod, "Main_WideScreen");
+
+  // statics only reachable through GOT slots (offsets fixed for this exact .so):
+  // fnaController_Poll's touch path uses a "touch active" flag + last-touch x/y,
+  // and fnaDevice_GetAspectRatio divides two floats inside the device struct.
+  uintptr_t base = (uintptr_t)game_mod.load_virtbase;
+  hp_touch_flag = *(uint32_t **)(base + 0x21AC78);
+  hp_mouse_x    = *(float **)(base + 0x21C2E0);
+  hp_mouse_y    = *(float **)(base + 0x21C2E4);
+  hp_device_slot = (void **)(base + 0x21A764);
+
+  // native joypad: fnaController_Poll only handles the touchscreen device (the
+  // Android input layer used to fill the joypad one). Replace it with our SDL
+  // feeder; the touch path is replicated inside hp_fna_poll.
+  uintptr_t poll = so_try_find_addr(&game_mod, "_Z18fnaController_PollP13fnINPUTDEVICE");
+  if (poll) {
+    hook_arm(poll, (uintptr_t)&hp_fna_poll);
+    debugPrintf("pad: hooked fnaController_Poll @%p -> hp_fna_poll\n", (void *)poll);
+  } else {
+    debugPrintf("pad: fnaController_Poll not found!\n");
+  }
+
+  // music: the engine reads the MP3's fd with ldrsh [FILE+14] = bionic stdio's
+  // _file short. Our FILE* is glibc, so that read is garbage (the SL ANDROIDFD
+  // player then got fd=448 and dup() failed). Answer with the real fileno().
+  uintptr_t gfd = so_try_find_addr(&game_mod, "_Z28fnaFile_GetFDLengthAndOffsetP12fnFILEHANDLEPiPyS2_");
+  if (gfd) {
+    hook_arm(gfd, (uintptr_t)&hp_get_fd_len_off);
+    debugPrintf("audio: hooked fnaFile_GetFDLengthAndOffset @%p\n", (void *)gfd);
+  }
+
+  // 16:9: the title renders pillarboxed 4:3; the game asks the device layer for
+  // the aspect ratio, so answer 16:9 there.
+  uintptr_t gar = so_try_find_addr(&game_mod, "_Z24fnaDevice_GetAspectRatiov");
+  if (gar) {
+    hook_arm(gar, (uintptr_t)&hp_get_aspect);
+    debugPrintf("video: hooked fnaDevice_GetAspectRatio @%p -> 16:9\n", (void *)gar);
+  }
 }
 
 // crash handler (armhf): report PC/LR as offsets into the loaded .so
@@ -219,11 +278,28 @@ enum {
   HP_SOUTH = 0x0010, HP_EAST = 0x0020, HP_WEST = 0x0040, HP_NORTH = 0x0080,
   HP_L3 = 0x0200, HP_R3 = 0x0400, HP_START = 0x0800,
 };
+
+// Native joypad element indices -- THIS BUILD'S map, read straight out of the
+// Controls_* binding globals after Controls_Init (runtime dump): DPadUp=10,
+// DPadDown=11, DPadLeft=12, DPadRight=13, Start=4, Select=5, L1=6, R1=8,
+// Confirm/X=14, Cancel/A=15, B=16, Y=17, stick=elements 0/1. (Differs from
+// LOTR/Batman2!) Element array at dev+0x14, 22 elements of stride 0x14, float
+// at element+0; dev+0 bit0 = connected, dev+4 = type 1=joypad 16=touch.
+enum {
+  E_LX = 0, E_LY = 1, E_RX = 2, E_RY = 3,
+  E_START = 4, E_SELECT = 5,
+  E_L1 = 6, E_L2 = 7, E_R1 = 8, E_R2 = 9,
+  E_DUP = 10, E_DDOWN = 11, E_DLEFT = 12, E_DRIGHT = 13,
+  E_ENG_X = 14, E_ENG_A = 15, E_ENG_B = 16, E_ENG_Y = 17,
+};
+
 #define STICK_DEADZONE 8000
 #define TRIGGER_THRESHOLD 16000
 
 static SDL_GameController *g_pad = NULL;
 static uint64_t g_back_prev = 0;
+static int g_cursor = 0;   // virtual touch cursor (fallback; env LEGOHP1_CURSOR=1)
+static int g_padlog = 0;   // raw pad dump to debug.log (env LEGOHP1_PADLOG=1)
 
 static void open_controller(void) {
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -234,6 +310,238 @@ static void open_controller(void) {
   }
 }
 static int gc_btn(SDL_GameControllerButton b) { return g_pad && SDL_GameControllerGetButton(g_pad, b); }
+
+static void stick_circle_to_square(float *x, float *y) {
+  const float ax = fabsf(*x), ay = fabsf(*y);
+  const float m = (ax > ay) ? ax : ay;
+  if (m < 1e-6f) return;
+  const float s = sqrtf(*x * *x + *y * *y) / m;
+  *x *= s; *y *= s;
+  if (*x > 1.0f) *x = 1.0f; else if (*x < -1.0f) *x = -1.0f;
+  if (*y > 1.0f) *y = 1.0f; else if (*y < -1.0f) *y = -1.0f;
+}
+
+// Replica of fnaController_Poll's touchscreen path (the original is overwritten
+// by hook_arm): feed fnaController_TouchPoints into the touch INPUTDEVICE.
+static void hp_fill_touch(uint8_t *d) {
+  uint8_t *elems = *(uint8_t **)(d + 0x14);
+  if (!elems) return;
+#define EV(i) (*(float *)(elems + (size_t)(i) * 0x14))
+  EV(11) = 0.f; EV(16) = 0.f; EV(17) = 0.f;
+  if (hp_touch_flag) *hp_touch_flag = 0;
+  uint32_t cnt = hp_touch_cnt ? *hp_touch_cnt : 0;
+  if ((int32_t)cnt <= 0) return;
+  for (uint32_t i = 0; i < cnt; i++) {
+    float x = (float)hp_touch_pts[i * 3 + 0];
+    float y = (float)hp_touch_pts[i * 3 + 1];
+    EV(11 + i) = 1.0f;
+    EV(2 * i)     = x;
+    EV(2 * i + 1) = y;
+    if (i == 0 && hp_mouse_x) { *hp_mouse_x = x; *hp_mouse_y = y; }
+  }
+  if (hp_touch_flag) *hp_touch_flag = 1;
+#undef EV
+}
+
+// fnaController_Poll replacement: joypad device gets the SDL pad state (the
+// original is a no-op for it -- Android used to fill it), touch device gets the
+// replicated original behavior.
+static void hp_fna_poll(void *dev) {
+  if (g.pollTouchPoint) g.pollTouchPoint();
+  uint8_t *d = (uint8_t *)dev;
+  uint32_t type = *(uint32_t *)(d + 4);
+  { // one-shot: log each device type the engine actually polls
+    static uint32_t seen = 0;
+    if (type < 32 && !(seen & (1u << type))) {
+      seen |= 1u << type;
+      debugPrintf("pad: poll device type=%u n=%u\n", type, *(uint32_t *)(d + 0x10));
+    }
+  }
+  if (type == 16) { hp_fill_touch(d); return; }
+  if (type != 1) return;
+  uint32_t n = *(uint32_t *)(d + 0x10);
+  uint8_t *elems = *(uint8_t **)(d + 0x14);
+  if (!elems || n < 20) return;
+#define EV(i) (*(float *)(elems + (size_t)(i) * 0x14))
+
+  float lx = 0, ly = 0, rx = 0, ry = 0;
+  if (g_pad) {
+    const float scale = 1.f / 32767.0f;
+    int rlx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
+    int rly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
+    int rrx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
+    int rry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
+    lx = (rlx > STICK_DEADZONE || rlx < -STICK_DEADZONE) ? rlx * scale : 0.f;
+    ly = (rly > STICK_DEADZONE || rly < -STICK_DEADZONE) ? rly * scale : 0.f;
+    rx = (rrx > STICK_DEADZONE || rrx < -STICK_DEADZONE) ? rrx * scale : 0.f;
+    ry = (rry > STICK_DEADZONE || rry < -STICK_DEADZONE) ? rry * scale : 0.f;
+    stick_circle_to_square(&lx, &ly);
+  }
+
+  int d_up = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP);
+  int d_dn = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+  int d_lf = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+  int d_rt = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+  if (d_lf) lx = -1.f;
+  if (d_rt) lx =  1.f;
+  if (d_up) ly = -1.f;
+  if (d_dn) ly =  1.f;
+
+  int a = gc_btn(SDL_CONTROLLER_BUTTON_A), b = gc_btn(SDL_CONTROLLER_BUTTON_B);
+  int x = gc_btn(SDL_CONTROLLER_BUTTON_X), y = gc_btn(SDL_CONTROLLER_BUTTON_Y);
+  int l1 = gc_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+  int r1 = gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+  int start = gc_btn(SDL_CONTROLLER_BUTTON_START);
+  int sel = gc_btn(SDL_CONTROLLER_BUTTON_BACK);
+  // triggers digital + thresholded: generic adapters report nonzero rest values
+  int rl2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  : 0;
+  int rr2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) : 0;
+  float l2 = rl2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
+  float r2 = rr2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
+
+  // headless test inject: /dev/shm/hp_dir "lx ly", /dev/shm/hp_btn "<elem> <0|1>"
+  { FILE *df = fopen("/dev/shm/hp_dir", "r");
+    if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
+
+  if (g_padlog) {
+    static unsigned fc = 0;
+    int any = a||b||x||y||l1||r1||start||rl2>4000||rr2>4000;
+    if (any || (fc % 90) == 0)
+      debugPrintf("PAD raw: L(%d,%d) R(%d,%d) trig(%d,%d) A%d B%d X%d Y%d L1%d R1%d ST%d\n",
+                  (int)(lx*1000),(int)(ly*1000),(int)(rx*1000),(int)(ry*1000),
+                  rl2, rr2, a,b,x,y,l1,r1,start);
+    fc++;
+  }
+
+  EV(E_LX) =  lx; EV(E_LY) = -ly;   // engine wants up-positive Y
+  EV(E_RX) =  rx; EV(E_RY) = -ry;
+  EV(E_DUP) = d_up; EV(E_DDOWN) = d_dn; EV(E_DLEFT) = d_lf; EV(E_DRIGHT) = d_rt;
+  EV(E_ENG_X) = a;  // A(south) -> elem14 = menu Confirm / engine X
+  EV(E_ENG_A) = b;  // B(east)  -> elem15 = menu Cancel / engine A
+  EV(E_ENG_B) = x;  // X(west)  -> elem16 = engine B
+  EV(E_ENG_Y) = y;
+  EV(E_L1) = l1; EV(E_R1) = r1; EV(E_L2) = l2; EV(E_R2) = r2;
+  EV(E_START) = start; EV(E_SELECT) = sel;
+
+  { FILE *bf = fopen("/dev/shm/hp_btn", "r");
+    int be, bv;
+    if (bf) { if (fscanf(bf, "%d %d", &be, &bv) == 2 && be >= 0 && (uint32_t)be < n) EV(be) = (float)bv; fclose(bf); } }
+
+  *(uint32_t *)d |= 1;   // mark connected
+#undef EV
+}
+
+// fnaFile_GetFDLengthAndOffset replacement: the original reads the fd as
+// bionic's FILE._file (short at FILE+14); with glibc that's garbage. Handle
+// layout: [h+0]=FILE* (our fopen), [h+4]=length, [h+8]=offset (into the OBB).
+static void hp_get_fd_len_off(void *h, int *fd, uint64_t *len, uint64_t *off) {
+  FILE *f = *(FILE **)h;
+  *fd  = f ? fileno(f) : -1;
+  *len = *(uint32_t *)((uint8_t *)h + 4);
+  *off = *(uint32_t *)((uint8_t *)h + 8);
+  debugPrintf("audio: GetFDLengthAndOffset -> fd=%d len=%llu off=%llu\n",
+              *fd, (unsigned long long)*len, (unsigned long long)*off);
+}
+
+// fnaDevice_GetAspectRatio replacement (softfp: float returned in r0)
+__attribute__((pcs("aapcs"))) static float hp_get_aspect(void) {
+  return 16.0f / 9.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Controls device-mode flip. Controls_Init binds TOUCH at boot (the pad branch
+// is dead on Android). The engine's device globals (so+offsets, from the
+// Controls_Init GOT slots): 0x2c80f0=accel, 0x2c80f4=Controls_CurrentInput
+// (polled every frame -- the ACTIVE device), 0x2c80ec=joypad, 0x2c80e8=
+// secondary/gated-poll device. Pad mode = point CurrentInput at the joypad
+// device + the two extra stores only the pad branch does (flag so+0x2c80fc=1,
+// so+0x2c8100=14) + keep the joypad device flagged connected. Touch mode =
+// restore the boot values. "Last input wins": any pad activity flips to pad,
+// any touch (tap inject / cursor) flips back.
+// ---------------------------------------------------------------------------
+static int g_ctl_mode = 0; // 0=touch (boot), 1=pad
+static void *g_touch_dev = NULL;
+static void hp_dump_controls_slots(void);
+
+static void hp_controls_set_mode(int pad) {
+  uintptr_t b = (uintptr_t)game_mod.load_virtbase;
+  void **cur    = (void **)(b + 0x2c80f4);
+  void **joyp   = (void **)(b + 0x2c80ec);
+  uint32_t *fl1 = (uint32_t *)(b + 0x2c80fc);
+  uint32_t *fl2 = (uint32_t *)(b + 0x2c8100);
+  if (!*joyp) return;
+  if (!g_touch_dev) g_touch_dev = *cur;   // save boot (touch) device once
+  if (pad) {
+    *cur = *joyp;
+    *fl1 = 1;   // Controls_LeftStickY = element 1
+    *fl2 = 0;   // Controls_LeftStickX = element 0
+  } else {
+    *cur = g_touch_dev;
+    *fl1 = 0;
+    *fl2 = 0;
+  }
+  g_ctl_mode = pad;
+  debugPrintf("controls: mode -> %s (cur=%p)\n", pad ? "PAD" : "TOUCH", *cur);
+}
+
+static void hp_controls_mode_update(void) {
+  uintptr_t b = (uintptr_t)game_mod.load_virtbase;
+  void **joyp = (void **)(b + 0x2c80ec);
+  if (*joyp) *(volatile uint32_t *)*joyp |= 1;  // joypad device: connected
+
+  // manual override for headless testing
+  if (access("/dev/shm/hp_pad", F_OK) == 0 && !g_ctl_mode) hp_controls_set_mode(1);
+  if (access("/dev/shm/hp_touch", F_OK) == 0 && g_ctl_mode) hp_controls_set_mode(0);
+  if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
+
+  // last-input-wins: pad button activity -> pad mode
+  if (!g_ctl_mode && g_pad) {
+    int any = gc_btn(SDL_CONTROLLER_BUTTON_A) || gc_btn(SDL_CONTROLLER_BUTTON_B) ||
+              gc_btn(SDL_CONTROLLER_BUTTON_X) || gc_btn(SDL_CONTROLLER_BUTTON_Y) ||
+              gc_btn(SDL_CONTROLLER_BUTTON_START) ||
+              gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP) || gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
+              gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT) || gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    if (any) hp_controls_set_mode(1);
+  }
+}
+
+// diagnostic dump of the Controls_Init GOT-slot indirections (frame 60):
+// resolves what each slot really points at so the pad-mode flip is exact.
+static void hp_dump_controls_slots(void) {
+  static const uint32_t slots[] = { 0x21A7CC, 0x21AC64, 0x21C92C, 0x21C930,
+                                    0x21AA94, 0x21BACC,
+                                    // binding stores from Controls_Init, in
+                                    // store order (values 10,11,12,13,4,5,6,
+                                    // 8,14,15,15,16,17,14):
+                                    0x21A7E8, 0x21A7EC, 0x21A8B4, 0x21A8B8,
+                                    0x21A810, 0x21A80C, 0x21AA80, 0x21AA78,
+                                    0x21A7D0, 0x21A808, 0x21B340, 0x21AA7C,
+                                    0x21A800, 0x21A804 };
+  uintptr_t b = (uintptr_t)game_mod.load_virtbase;
+  for (unsigned i = 0; i < sizeof(slots)/sizeof(slots[0]); i++) {
+    uint8_t *p = *(uint8_t **)(b + slots[i]);
+    uintptr_t off = (uintptr_t)p - b;
+    uint32_t v0 = 0, v4 = 0;
+    if (p && off < text_size) { v0 = *(uint32_t *)p; v4 = *(uint32_t *)(p + 4); }
+    debugPrintf("ctlslot 0x%x -> so+0x%lx  [0]=0x%x [4]=0x%x\n",
+                slots[i], (unsigned long)off, v0, v4);
+  }
+}
+
+// one-shot diagnostic + per-frame widescreen forcing
+static void hp_force_widescreen(unsigned frame) {
+  if (frame == 60) hp_dump_controls_slots();
+  if (getenv("LEGOHP1_NOWIDE")) return;
+  if (frame == 120 && hp_device_slot && *hp_device_slot) {
+    float *ds = (float *)*hp_device_slot;
+    debugPrintf("video: devstruct front=%.0fx%.0f dev=%.0fx%.0f back=%.0fx%.0f aspect=%.3f wide=%d\n",
+                ds[0x28/4], ds[0x2c/4], ds[0x48/4], ds[0x4c/4], ds[0x60/4], ds[0x64/4],
+                hp_main_aspect ? *hp_main_aspect : -1.f,
+                hp_widescreen ? (int)*hp_widescreen : -1);
+  }
+  if (hp_main_aspect) *hp_main_aspect = 16.0f / 9.0f;
+  if (hp_widescreen)  *hp_widescreen = 1;
+}
 
 static void update_gamepad(void) {
   if (!g_pad) return;
@@ -264,10 +572,9 @@ static void update_gamepad(void) {
 
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
-  // The frontend ("Touch the screen to begin" + touch-driven menus) is not driven
-  // by controllerSetData -- it needs real touch events. Drive a virtual touch
-  // cursor with the left stick / d-pad and tap with A (down on press, up on
-  // release). Gameplay still gets the button via controllerSetData above.
+  // Fallback virtual touch cursor (LEGOHP1_CURSOR=1): stick moves, A taps.
+  // Default input path is the native joypad via the fnaController_Poll hook.
+  if (!g_cursor) goto no_cursor;
   static float tx = -1.f, ty = -1.f;
   if (tx < 0) { tx = screen_width * 0.5f; ty = screen_height * 0.5f; }
   const float cur_speed = 14.0f;
@@ -286,6 +593,7 @@ static void update_gamepad(void) {
   }
   a_prev = a;
 
+no_cursor:;
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
   if (back && !g_back_prev) g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
@@ -295,6 +603,8 @@ int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
   setvbuf(stderr, NULL, _IONBF, 0);
   debugPrintf("=== LEGO Harry Potter Years 1-4 -> Mali-450 (Linux/SDL, armv7/GLES1) ===\n");
+  g_cursor = getenv("LEGOHP1_CURSOR") != NULL;
+  g_padlog = getenv("LEGOHP1_PADLOG") != NULL;
 
   read_config(CONFIG_NAME);
   screen_width = config.screen_width > 0 ? config.screen_width : 1280;
@@ -321,6 +631,12 @@ int main(int argc, char *argv[]) {
 
   patch_game();
   resolve_entry_points();
+
+  // NOTE: forcing Controls_Init's pad-binding branch (bne->b @0x1d2a88) was
+  // tried and REVERTED: the frontend is touch-hardcoded ("Touch the screen to
+  // begin" stops responding to touch AND to every pad element under pad
+  // bindings). Boot keeps touch bindings; the pad is wired by flipping the
+  // Controls_* binding globals at runtime instead (see hp_controls_pad_mode).
 
   so_finalize(&game_mod);
   so_flush_caches(&game_mod);
@@ -368,6 +684,32 @@ int main(int argc, char *argv[]) {
       running = 0;
 
     update_gamepad();
+
+    hp_controls_mode_update();
+
+    // headless tap inject: echo "x y" > /dev/shm/hp_tap (down 1 frame, then up)
+    {
+      static float px = -1, py = -1; static int phase = 0;
+      if (phase == 0) {
+        FILE *tf = fopen("/dev/shm/hp_tap", "r");
+        if (tf) {
+          if (fscanf(tf, "%f %f", &px, &py) == 2) phase = 1;
+          fclose(tf); remove("/dev/shm/hp_tap");
+        }
+      } else if (phase == 1) {
+        g.touchDown(fake_env, FUSION_OBJ, 0, px, py, 1.0f);
+        debugPrintf("tap: down %.0f,%.0f\n", px, py);
+        phase = 2;
+      } else if (phase >= 2 && phase < 5) {
+        phase++;
+      } else if (phase == 5) {
+        g.touchUp(fake_env, FUSION_OBJ, 0, px, py, 0.0f);
+        debugPrintf("tap: up %.0f,%.0f\n", px, py);
+        phase = 0;
+      }
+    }
+
+    hp_force_widescreen(frame);
     g.nativeRender(fake_env, GLSV_OBJ);
     if (frame < 8 || (frame % 600) == 0)
       debugPrintf("render: frame %u (swaps=%d)\n", frame, egl_swap_count);
