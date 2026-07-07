@@ -69,6 +69,7 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Battlefield: Bad Company 2** (Karisma, GLES1) | so-loader (armeabi) | Jogável (Mali-450) — FPS 1ª pessoa, mundo 3D+NPC+HUD, gamepad nativo (AppOnKeyEvent/Joystick) | [`ports/bfbc2`](ports/bfbc2/) |
 | **Castle of Illusion** (Sega "oz") | so-loader (NativeActivity+FMOD, arm64) | Jogável (Mali-450) — render+controle+áudio | [`ports/castleofillusion`](ports/castleofillusion/) |
 | **LEGO Star Wars: A Força Desperta** (Fusion/WB) | so-loader (arm64, base lswtcs) | Jogável (Mali-450) — menu + mundo + controles + gameplay; áudio em validação final | [`ports/lswtfa`](ports/lswtfa/) |
+| **LEGO Ninjago: Shadow of Ronin** (Fusion/WB) | so-loader (arm64, base lswtfa) | Jogável (Mali-450) — menu → New Game → fase, controle Xbox padrão, áudio MP3, inglês, save persistente, Select+Start | [`ports/ninjago`](ports/ninjago/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
