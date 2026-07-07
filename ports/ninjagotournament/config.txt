@@ -1,0 +1,4 @@
+screen_width 1280
+screen_height 720
+language 0
+show_fps 0
