@@ -49,6 +49,10 @@ so_module game_mod;
 void *text_base = NULL;
 size_t text_size = 0;
 
+// diagnostic: when set, lotr_fna_poll dumps raw pad state to debug.log (off by
+// default; flip to 1 to chase a controller-mapping issue).
+int g_padlog = 0;
+
 #define FUSION_OBJ    ((void *)0x46555331)
 #define GLSV_OBJ      ((void *)0x474c5631)
 #define ACTIVITY_OBJ  ((void *)0x41435431)
@@ -405,12 +409,32 @@ static void lotr_fna_poll(void *dev) {
   int l1 = gc_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
   int r1 = gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
   int start = gc_btn(SDL_CONTROLLER_BUTTON_START);
-  float l2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  / 32767.f : 0.f;
-  float r2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.f : 0.f;
+  // triggers DIGITAL + thresholded: a generic USB adapter can report a nonzero
+  // (even negative) resting value on the trigger axes, which the engine reads as
+  // a permanently-held button -> stuck "block" stance. Only fire when clearly held.
+  int rl2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  : 0;
+  int rr2 = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) : 0;
+  float l2 = rl2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
+  float r2 = rr2 > TRIGGER_THRESHOLD ? 1.f : 0.f;
 
   // headless test inject: /dev/shm/lotr_dir "lx ly", /dev/shm/lotr_btn "<elem> <0|1>"
   { FILE *df = fopen("/dev/shm/lotr_dir", "r");
     if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
+
+  // DIAGNOSTIC: dump raw pad state so a stuck axis/button is visible in debug.log.
+  // Throttled; only when something is active (or every ~3s to catch a resting drift).
+  {
+    extern int g_padlog;
+    if (g_padlog) {
+      static unsigned fc = 0;
+      int any = a||b||x||y||l1||r1||start||rl2>4000||rr2>4000;
+      if (any || (fc % 90) == 0)
+        debugPrintf("PAD raw: L(%d,%d) R(%d,%d) trig(%d,%d) A%d B%d X%d Y%d L1%d R1%d ST%d\n",
+                    (int)(lx*1000),(int)(ly*1000),(int)(rx*1000),(int)(ry*1000),
+                    rl2, rr2, a,b,x,y,l1,r1,start);
+      fc++;
+    }
+  }
 
   EV(E_LX) =  lx; EV(E_LY) = -ly;   // engine wants up-positive Y
   EV(E_RX) =  rx; EV(E_RY) = -ry;
