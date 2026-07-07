@@ -20,7 +20,11 @@
 #define MAX_PLAYERS 16
 #define RING_BUFFER_SIZE (4 * 1024 * 1024)
 #define RING_BUFFER_MASK (RING_BUFFER_SIZE - 1)
-#define SDL_AUDIO_SAMPLES 2048
+/* Must stay SMALL: the game feeds streams as 4 in-flight buffers of ~256 bytes
+ * (23ms of mono 22kHz audio); if one SDL mixing burst needs more than that
+ * window, every callback underruns no matter how fast we pump. 512 frames =
+ * 11.6ms bursts. */
+#define SDL_AUDIO_SAMPLES 512
 
 /* Interface ID storage */
 static const int id_engine_tag = 1;
@@ -256,10 +260,13 @@ static void refill_player(AudioPlayer *p) {
     uint32_t counter_before = p->enqueue_counter;
     p->callback(&p->bq_ptr, p->callback_context);
     if (p->enqueue_counter == counter_before) {
-      /* Empty poll: a streaming decoder can be transiently dry (feeder thread
-       * behind); declaring end-of-stream on one miss killed and restarted the
-       * music constantly. Only give up after ~200ms of consecutive dry polls. */
-      if (p->ever_enqueued && !p->decoder_done) {
+      /* Dry poll. If the queue still holds buffers this is BACKPRESSURE (the
+       * feeder declines because it sees the queue full) -- never end-of-stream.
+       * Only count towards EOS when the queue is fully drained, and even then
+       * require ~200ms of consecutive dry polls (transiently-dry decoders). */
+      if (p->queued_count > 0) {
+        p->empty_polls = 0;
+      } else if (p->ever_enqueued && !p->decoder_done) {
         if (++p->empty_polls > 50) {
           p->decoder_done = 1;
           debugPrintf("audio: player %ld decoder_done after %u dry polls\n",
@@ -691,8 +698,14 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
   for (int i = 0; i < MAX_PLAYERS; i++) {
     if (&g_players[i].play_ptr == itf_ptr) {
       AudioPlayer *p = &g_players[i];
-      /* debugPrintf("opensles_shim: player %d SetPlayState(%u -> %u)\n",
-                  i, p->play_state, state); */
+      {
+        static uint32_t sps_logs = 0;
+        if (sps_logs < 60) {
+          sps_logs++;
+          debugPrintf("audio: player %d SetPlayState %u -> %u (ring=%u q=%u)\n",
+                      i, p->play_state, state, ring_readable(p), p->queued_count);
+        }
+      }
       device_lock();
       if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
         p->headatend_fired = 0;
@@ -871,8 +884,9 @@ static SLresult bq_GetState(void *self, void *pState) {
           static uint32_t full_logs = 0;
           if (full_logs < 12) {
             full_logs++;
-            debugPrintf("audio: player %d GetState FULL count=%u cap=%u ring=%u\n",
-                        i, p->queued_count, p->queue_capacity, ring_readable(p));
+            debugPrintf("audio: player %d GetState FULL count=%u cap=%u ring=%u state=%u rate=%u ch=%u lastenq=%u\n",
+                        i, p->queued_count, p->queue_capacity, ring_readable(p),
+                        p->play_state, p->sample_rate, p->num_channels, p->last_enqueue_size);
           }
         }
       }
