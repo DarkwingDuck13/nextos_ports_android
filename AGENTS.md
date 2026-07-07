@@ -82,3 +82,20 @@ gptokeyb · 07 VRAM/teardown · 08 texturas ETC1/ETC2 · 09 display/SDL · 10 em
   v-atamanenko (`FalsoJNI`, `soloader-boilerplate`) · NaGaa95 (Switch) · mtojek
   (Linux ARM64, nossa base). Úteis como referência de destraves por jogo — os
   stubs de JNI e receitas costumam transferir.
+
+## ⚠️ Armadilha: npot_fix herdado do Dysmantle (Mickey/porta pretos no COI)
+
+O `imports.c` do Dysmantle traz `my_glTexParameteri` com "npot_fix" DEFAULT ON que
+força `WRAP_S/T=CLAMP_TO_EDGE` e min-filter mipmap→`LINEAR` em TODA textura. Isso é
+CORRETO para o Dysmantle (texturas NPOT), mas ERRADO como default herdado: qualquer
+jogo cujos materiais usam UV espelhado/repetido (personagens skinned, planos
+`*_mirror_*`, adornos) passa a amostrar só os texels da BORDA do atlas → objeto com
+forma perfeita e albedo coerente porém errado/escuro ("personagem preto", "porta
+preta"), com luz e uniforms perfeitos. Diagnóstico que fecha a questão em ~3 runs
+(ver `ports/castleofillusion/src/imports.c`, probes `COI_CHARFS`):
+1. `COI_CHARFS=light` (fragment = luz total) → personagem branco = luz OK;
+2. `COI_TEXDUMP=1` + decodificar o payload ETC1 no host → atlas OK = conteúdo OK;
+3. sobra estado do sampler → testar `DYSMANTLE_NPOT_OFF=1` (no COI o default já foi
+   invertido: religar só com `DYSMANTLE_NPOT_FIX=1`).
+REGRA ao scaffoldar de Dysmantle: npot_fix começa OFF; só ligue se o jogo tiver
+textura NPOT real com artefato comprovado.
