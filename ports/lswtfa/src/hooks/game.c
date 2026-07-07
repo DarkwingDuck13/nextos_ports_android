@@ -76,45 +76,6 @@ static uintptr_t got_interpose(const char *symname, uintptr_t wrapper) {
   return patched ? real : 0;
 }
 
-// wrappers de log do fluxo de missão (diagnóstico "Level Complete na entrada")
-static uintptr_t (*real_CompleteObjective)(uintptr_t, uintptr_t);
-static uintptr_t wrap_CompleteObjective(uintptr_t a, uintptr_t b) {
-  debugPrintf("mission: CompleteObjective(%lu, %lu) @frame %d\n",
-              (unsigned long)a, (unsigned long)b, egl_swap_count);
-  return real_CompleteObjective(a, b);
-}
-static uintptr_t (*real_CompleteSubObjective)(uintptr_t, uintptr_t, uintptr_t);
-static uintptr_t wrap_CompleteSubObjective(uintptr_t a, uintptr_t b, uintptr_t c) {
-  debugPrintf("mission: CompleteSubObjective(%lu, %lu, %p)\n",
-              (unsigned long)a, (unsigned long)b, (void *)c);
-  return real_CompleteSubObjective(a, b, c);
-}
-static uintptr_t (*real_PushMissionComplete)(uintptr_t);
-static uintptr_t wrap_PushMissionComplete(uintptr_t m) {
-  debugPrintf("mission: PushMissionComplete(%lu)\n", (unsigned long)m);
-  return real_PushMissionComplete(m);
-}
-static uintptr_t (*real_PushEnterMission)(uintptr_t);
-static uintptr_t wrap_PushEnterMission(uintptr_t m) {
-  debugPrintf("mission: PushEnterMission(%lu)\n", (unsigned long)m);
-  return real_PushEnterMission(m);
-}
-static uintptr_t (*real_IsMissionComplete)(uintptr_t);
-static uintptr_t wrap_IsMissionComplete(uintptr_t m) {
-  uintptr_t r = real_IsMissionComplete(m);
-  static unsigned logs = 0;
-  if (logs < 60) { logs++;
-    debugPrintf("mission: IsMissionComplete(%lu) -> %lu\n",
-                (unsigned long)m, (unsigned long)(r & 0xff));
-  }
-  return r;
-}
-static uintptr_t (*real_FailObjective)(uintptr_t);
-static uintptr_t wrap_FailObjective(uintptr_t o) {
-  debugPrintf("mission: FailObjective(%lu)\n", (unsigned long)o);
-  return real_FailObjective(o);
-}
-
 /* GameLoopModule::LoadPostWorldLoad faz BUSY-WAIT apertado em
  * UILoading::PreLoadShadersDone() -- gira `while(!PreLoadShadersDone());` na
  * thread de LOAD do engine. Essa thread segura o contexto GL de contexto-único
@@ -129,31 +90,6 @@ static unsigned char wrap_PreLoadShadersDone(void) {
   if (!r) {
     egl_gl_ownership_park();
     usleep(2000);
-  }
-  return r;
-}
-
-// fnFile_* consulta os .fib montados: logar SO as falhas (arquivo que nem o
-// fib tem) pra achar dado de missão/pool ausente do repack
-static uintptr_t (*real_fnFile_OpenStream)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
-static uintptr_t wrap_fnFile_OpenStream(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-  uintptr_t r = real_fnFile_OpenStream(a, b, c, d);
-  if (!r) {
-    static unsigned logs = 0;
-    if (logs < 120) { logs++;
-      debugPrintf("fnFile: OpenStream FALHOU '%s'\n", (const char *)a);
-    }
-  }
-  return r;
-}
-static uintptr_t (*real_fnFile_Exists)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
-static uintptr_t wrap_fnFile_Exists(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
-  uintptr_t r = real_fnFile_Exists(a, b, c, d);
-  if (!(r & 0xff)) {
-    static unsigned logs = 0;
-    if (logs < 120) { logs++;
-      debugPrintf("fnFile: Exists=0 '%s'\n", (const char *)a);
-    }
   }
   return r;
 }
@@ -173,24 +109,6 @@ void patch_game(void) {
   patch_insn_in_symbol("_Z14fnaRender_InitP12fnFUSIONINIT",
                        0x0f03f500u, 0x0f03f600u, 0x32c / 4);
 
-  // diagnóstico do "Level Complete na entrada": logar o fluxo de missão
-  real_CompleteObjective = (void *)got_interpose(
-      "_ZN13MissionSystem17CompleteObjectiveEjj", (uintptr_t)&wrap_CompleteObjective);
-  real_CompleteSubObjective = (void *)got_interpose(
-      "_ZN13MissionSystem20CompleteSubObjectiveEjjP12GEGAMEOBJECT",
-      (uintptr_t)&wrap_CompleteSubObjective);
-  real_PushMissionComplete = (void *)got_interpose(
-      "_ZN12MissionPopup19PushMissionCompleteEj", (uintptr_t)&wrap_PushMissionComplete);
-  real_PushEnterMission = (void *)got_interpose(
-      "_ZN12MissionPopup16PushEnterMissionEj", (uintptr_t)&wrap_PushEnterMission);
-  real_IsMissionComplete = (void *)got_interpose(
-      "_ZN13MissionSystem17IsMissionCompleteEj", (uintptr_t)&wrap_IsMissionComplete);
-  real_FailObjective = (void *)got_interpose(
-      "_ZN13MissionSystem13FailObjectiveEj", (uintptr_t)&wrap_FailObjective);
-  real_fnFile_OpenStream = (void *)got_interpose(
-      "_Z17fnFile_OpenStreamPKcb", (uintptr_t)&wrap_fnFile_OpenStream);
-  real_fnFile_Exists = (void *)got_interpose(
-      "_Z13fnFile_ExistsPKcbPc", (uintptr_t)&wrap_fnFile_Exists);
   // quebra o deadlock do busy-wait de compilação de shaders no load da fase
   real_PreLoadShadersDone = (void *)got_interpose(
       "_ZN9UILoading18PreLoadShadersDoneEv", (uintptr_t)&wrap_PreLoadShadersDone);

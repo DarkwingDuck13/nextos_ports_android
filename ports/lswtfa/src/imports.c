@@ -88,7 +88,6 @@ static void abort_log(void) { debugPrintf("!!! game called abort()\n"); abort();
  * thread mantém um relógio monotônico sem saltos; começam todas no now real,
  * então ficam próximas o bastante para qualquer comparação cruzada. */
 static __thread uint64_t g_vt_us = 0, g_vt_last_real = 0;
-static __thread unsigned g_vt_clamped = 0;
 static int gettimeofday_clamp(struct timeval *tv, void *tz) {
   (void)tz;
   struct timeval r;
@@ -104,14 +103,7 @@ static int gettimeofday_clamp(struct timeval *tv, void *tz) {
   if (g_vt_last_real == 0) { g_vt_last_real = now; g_vt_us = now; }
   uint64_t d = (now > g_vt_last_real) ? (now - g_vt_last_real) : 0;
   g_vt_last_real = now;
-  if (d > 100000ULL) { /* salto de load/stall -> 1 frame de 30fps */
-    if (g_vt_clamped < 40) {
-      g_vt_clamped++;
-      debugPrintf("dtclamp: render engoliu salto de %llu ms\n",
-                  (unsigned long long)(d / 1000ULL));
-    }
-    d = 33333ULL;
-  }
+  if (d > 100000ULL) d = 33333ULL; /* salto de load/stall -> 1 frame de 30fps */
   g_vt_us += d;
   uint64_t out = g_vt_us;
   if (tv) { tv->tv_sec = (time_t)(out / 1000000ULL); tv->tv_usec = (long)(out % 1000000ULL); }
