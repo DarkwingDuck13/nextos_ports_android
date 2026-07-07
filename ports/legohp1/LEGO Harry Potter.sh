@@ -1,6 +1,6 @@
 #!/bin/bash
 # LEGO Harry Potter Years 1-4 (Android so-loader, engine Fusion armv7/GLES1)
-# -> Mali-450 fbdev (NextOS Amlogic-old). WIP.
+# -> Mali-450 fbdev (NextOS Amlogic-old).
 GAMEDIR="/storage/roms/ports/legohp1"; cd "$GAMEDIR"
 export HOME="$GAMEDIR" LD_LIBRARY_PATH="/usr/lib:$GAMEDIR"
 for s in /var/run/pulse/native /run/pulse/native; do [ -S "$s" ] && { export PULSE_SERVER="unix:$s"; break; }; done
