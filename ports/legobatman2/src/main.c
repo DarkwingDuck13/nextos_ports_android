@@ -281,13 +281,43 @@ static void run_boot_sequence(void) {
 }
 
 // ---------------------------------------------------------------------------
-// input: SDL GameController -> Fusion controllerSetData bitmask
+// input: caminho de joypad NATIVO da engine Fusion.
+//
+// LB2 1.07.9 saiu touch-only: o JNI nativeControllerSetData E o poll de
+// plataforma fnaController_Poll sao os dois `ret` vazios. Mas TODO o lado
+// engine do joypad esta intacto: geControls_Init cria um fnINPUTDEVICE de
+// joypad (24 elementos) e mapeia Controls_A/B/X/Y/DPad*/Stick* em indices
+// fixos; geControls_Update faz poll via fnInput_Poll todo frame, que aplica
+// deadzone e detecta bordas (fnInput_DetectButtonClicks) SO a partir dos
+// VALORES float dos elementos contra o snapshot do frame anterior.
+//
+// Entao restauramos apenas o elo faltante: hook no slot GOT de
+// fnaController_Poll preenchendo os valores dos elementos com o pad SDL.
+// Nada de sintetizar toque -> zero conflito com o joystick virtual.
+//
+// fnINPUTDEVICE (LB2 arm64, RE de fnaController_CreateDevice/fnInput_Poll):
+//   +0x00 u32 flags (bit0 = conectado; CreateDevice ja seta)
+//   +0x04 u32 tipo  (1 = joypad, 0x20 = touch)
+//   +0x10 u32 n elementos (0x18 no joypad)
+//   +0x18 elem*: stride 0x14 — float valor @+0 (deadzone @+8, limiar @+0xc,
+//         halfwords de borda @+0x10/+0x12 sao da engine, nao mexemos)
+//
+// Mapa de elementos (stores constantes do geControls_Init):
+//   0/1 = LStick X/Y  2/3 = RStick X/Y  6 = Start  7 = Select
+//   8 = L1  10 = R1  12..15 = DPad cima/baixo/esq/dir
+//   16 = engine X  17 = engine A (Cancel)  18 = engine B (Confirm)  19 = engine Y
+// Mapa fisico segue a convencao dos ports prontos (lswtfa/Ninjago):
+//   pad SOUTH(A)->Confirm(18)  EAST(B)->Cancel(17)  WEST(X)->19  NORTH(Y)->16
+// Eixo Y: engine quer cima-positivo (o JNI real faz fneg no Y do Android) ->
+// negamos o Y do SDL (baixo-positivo) aqui.
 // ---------------------------------------------------------------------------
 
 enum {
-  TFA_L2 = 0x0001, TFA_R2 = 0x0002, TFA_L1 = 0x0004, TFA_R1 = 0x0008,
-  TFA_SOUTH = 0x0010, TFA_EAST = 0x0020, TFA_WEST = 0x0040, TFA_NORTH = 0x0080,
-  TFA_L3 = 0x0200, TFA_R3 = 0x0400, TFA_START = 0x0800,
+  E_LX = 0, E_LY = 1, E_RX = 2, E_RY = 3,
+  E_START = 6, E_SELECT = 7,
+  E_L1 = 8, E_L2 = 9, E_R1 = 10, E_R2 = 11,   /* 9/11: palpite (entre L1/R1); inofensivo se errado */
+  E_DUP = 12, E_DDOWN = 13, E_DLEFT = 14, E_DRIGHT = 15,
+  E_ENG_X = 16, E_ENG_A = 17, E_ENG_B = 18, E_ENG_Y = 19,
 };
 
 #define STICK_DEADZONE    8000
@@ -322,131 +352,160 @@ static int gc_btn(SDL_GameControllerButton b) {
   return g_pad && SDL_GameControllerGetButton(g_pad, b);
 }
 
-/* 🔑 LB2 é TOUCH-ONLY: nativeControllerSetData no libLEGO_SH1.so é um `ret`
- * VAZIO (stub). O engine usa geControls (joystick+botoes VIRTUAIS). Dirigimos
- * DIRETO nas globais do engine (sem simular toque = sem drift):
- *   MOVIMENTO: geControls_SetIsUsingVirtualJoystick(1, &centro, &atual) — a
- *   direcao do personagem = (atual - centro), escala = geVirtualControlsJoystickSize.
- *   TAP (A/START): touchDown/Up no centro (title "touch to start"/menu). */
-static void (*p_setVJoy)(int, const float *, const float *) = NULL;
-static float *p_joySize = NULL;      /* geVirtualControlsJoystickSize (f32vec2) */
-static float *p_joyPos  = NULL;      /* geVirtualControlsJoystickPosition (f32vec2) */
-static int   syn_tap_frames = 0;
-static float syn_tap_x, syn_tap_y;
+static void pad_debug_state(void);
 
-static void controls_resolve(void) {
-  p_setVJoy = (void *)so_find_addr_rx(&game_mod,
-      "_Z36geControls_SetIsUsingVirtualJoystickbPK7f32vec2S1_");
-  p_joySize = (float *)so_find_addr(&game_mod, "geVirtualControlsJoystickSize");
-  p_joyPos  = (float *)so_find_addr(&game_mod, "geVirtualControlsJoystickPosition");
-  debugPrintf("controls: setVJoy=%p joySize=%p joyPos=%p\n",
-              (void *)p_setVJoy, (void *)p_joySize, (void *)p_joyPos);
-}
+static void **p_ControlsJoypad = NULL;     /* fnINPUTDEVICE* Controls_Joypad */
+static uint8_t *p_NoJoy = NULL;            /* Controls_NoJoy (bool) */
+static uint8_t *p_IsVJoy = NULL;           /* geControlsIsUsingVirtualJoystick */
+static uint8_t *p_Casual = NULL;           /* g_CasualControls (struct) */
+static int (*p_CasualInUse)(void) = NULL;  /* CasualControls_IsInUse() */
+static uint32_t *p_TutLoaded = NULL;       /* TutorialModule_IsLoaded */
+static void **p_TutData = NULL;            /* pTutorialModeData */
 
-/* LB2 (2012) tem nativeControllerSetData=STUB (4 bytes, ret) — NAO ha caminho de
- * gamepad no binario (ao contrario do Ninjago/TFA 2016). Todo input de gameplay
- * e' TOUCH (joystick+botoes virtuais). Fazemos a ponte pad->touch: o usuario joga
- * 100% no controle, nunca toca a tela.
- *
- *  MOVIMENTO: joystick FLUTUANTE — DOWN uma vez numa ancora fixa da metade
- *  esquerda, MOVE todo frame p/ ancora+vetor, UP so no neutro. Nunca re-toca
- *  enquanto segura (era o "esquerda precisava dar toques").
- *  A / START: tap central (confirma title "touch to start" e menus). */
-#define VJOY_ANCHOR_X 340.0f   /* metade esquerda, zona do joystick flutuante */
-#define VJOY_ANCHOR_Y 430.0f
-#define VJOY_RADIUS   140.0f   /* deflexao total > deadzone do stick virtual */
+/* hook do fnaController_Poll: a engine chama isto (via PLT/GOT) dentro de
+ * fnInput_Poll TODO frame, uma vez por device, com os valores ja zerados.
+ * So escrevemos os floats; deadzone e bordas sao da engine. */
+static void lb2_fna_poll(void *dev) {
+  uint8_t *d = (uint8_t *)dev;
+  if (*(uint32_t *)(d + 4) != 1) return;           /* so o device de joypad */
+  uint8_t *elems = *(uint8_t **)(d + 0x18);
+  uint32_t n = *(uint32_t *)(d + 0x10);
+  if (!elems || n < 20) return;
 
-static void update_touch_synth(void) {
-  if (!g_pad) return;
-
-  /* tap A/START no centro (edge-triggered, pointer 0) */
-  static int prev_a = 0;
-  int a = gc_btn(SDL_CONTROLLER_BUTTON_A) || gc_btn(SDL_CONTROLLER_BUTTON_START);
-  if (a && !prev_a && syn_tap_frames == 0) {
-    syn_tap_x = 640.0f; syn_tap_y = 360.0f;
-    g.touchDown(fake_env, FUSION_OBJ, 0, syn_tap_x, syn_tap_y, 1.0f);
-    syn_tap_frames = 4;
+  static int once = 0;
+  if (!once) {
+    once = 1;
+    debugPrintf("pad: fnaController_Poll hook vivo (dev=%p n=%u, Controls_Joypad=%p %s)\n",
+                dev, n, p_ControlsJoypad ? *p_ControlsJoypad : NULL,
+                (p_ControlsJoypad && *p_ControlsJoypad == dev) ? "MATCH" : "OUTRO");
   }
-  prev_a = a;
-  if (syn_tap_frames > 0 && --syn_tap_frames == 0)
-    g.touchUp(fake_env, FUSION_OBJ, 0, syn_tap_x, syn_tap_y, 0.0f);
+  pad_debug_state();
 
-  /* MOVIMENTO: joystick flutuante (pointer 1) */
-  const float scale = 1.f / 32767.0f;
-  int rlx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
-  int rly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
-  float lx = (rlx > STICK_DEADZONE || rlx < -STICK_DEADZONE) ? rlx * scale : 0.0f;
-  float ly = (rly > STICK_DEADZONE || rly < -STICK_DEADZONE) ? rly * scale : 0.0f;
-  /* AUTO-TESTE: /dev/shm/lb2_dir "lx ly" forca a direcao (sem pad fisico) */
+#define EV(i) (*(float *)(elems + (size_t)(i) * 0x14))
+
+  float lx = 0.0f, ly = 0.0f, rx = 0.0f, ry = 0.0f;
+  if (g_pad) {
+    const float scale = 1.f / 32767.0f;
+    int raw_lx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
+    int raw_ly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
+    int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
+    int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
+    lx = (raw_lx > STICK_DEADZONE || raw_lx < -STICK_DEADZONE) ? raw_lx * scale : 0.0f;
+    ly = (raw_ly > STICK_DEADZONE || raw_ly < -STICK_DEADZONE) ? raw_ly * scale : 0.0f;
+    rx = (raw_rx > STICK_DEADZONE || raw_rx < -STICK_DEADZONE) ? raw_rx * scale : 0.0f;
+    ry = (raw_ry > STICK_DEADZONE || raw_ry < -STICK_DEADZONE) ? raw_ry * scale : 0.0f;
+    stick_circle_to_square(&lx, &ly);
+  }
+
+  /* AUTO-TESTE remoto: /dev/shm/lb2_dir "lx ly" forca o stick (sem pad) */
   { FILE *df = fopen("/dev/shm/lb2_dir", "r");
     if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))  lx = -1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) lx =  1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP))    ly = -1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  ly =  1.0f;
-  /* clamp do vetor a raio 1 (diagonais nao estouram) */
-  float mag = sqrtf(lx * lx + ly * ly);
-  if (mag > 1.0f) { lx /= mag; ly /= mag; }
 
-  static int stick_down = 0;
-  if (lx != 0.0f || ly != 0.0f) {
-    float tx = VJOY_ANCHOR_X + lx * VJOY_RADIUS;
-    float ty = VJOY_ANCHOR_Y + ly * VJOY_RADIUS;
-    if (!stick_down) {
-      g.touchDown(fake_env, FUSION_OBJ, 1, VJOY_ANCHOR_X, VJOY_ANCHOR_Y, 1.0f);
-      stick_down = 1;
-    }
-    g.touchMove(fake_env, FUSION_OBJ, 1, tx, ty, 1.0f);
-  } else if (stick_down) {
-    g.touchUp(fake_env, FUSION_OBJ, 1, VJOY_ANCHOR_X, VJOY_ANCHOR_Y, 0.0f);
-    stick_down = 0;
-  }
-  (void)p_setVJoy; (void)p_joySize; (void)p_joyPos;
+  int d_up = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP);
+  int d_dn = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+  int d_lf = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+  int d_rt = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+
+  /* dpad tambem move (LEGO mapeia movimento no stick) */
+  if (d_lf) lx = -1.0f;
+  if (d_rt) lx =  1.0f;
+  if (d_up) ly = -1.0f;
+  if (d_dn) ly =  1.0f;
+
+  EV(E_LX) =  lx;
+  EV(E_LY) = -ly;   /* engine = cima-positivo */
+  EV(E_RX) =  rx;
+  EV(E_RY) = -ry;
+
+  EV(E_DUP)    = d_up ? 1.0f : 0.0f;
+  EV(E_DDOWN)  = d_dn ? 1.0f : 0.0f;
+  EV(E_DLEFT)  = d_lf ? 1.0f : 0.0f;
+  EV(E_DRIGHT) = d_rt ? 1.0f : 0.0f;
+
+  EV(E_ENG_B) = gc_btn(SDL_CONTROLLER_BUTTON_A) ? 1.0f : 0.0f;  /* Confirm/pulo */
+  EV(E_ENG_A) = gc_btn(SDL_CONTROLLER_BUTTON_B) ? 1.0f : 0.0f;  /* Cancel */
+  EV(E_ENG_Y) = gc_btn(SDL_CONTROLLER_BUTTON_X) ? 1.0f : 0.0f;
+  EV(E_ENG_X) = gc_btn(SDL_CONTROLLER_BUTTON_Y) ? 1.0f : 0.0f;
+
+  EV(E_L1) = gc_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER)  ? 1.0f : 0.0f;
+  EV(E_R1) = gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1.0f : 0.0f;
+  EV(E_L2) = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  / 32767.0f : 0.0f;
+  EV(E_R2) = g_pad ? SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0f : 0.0f;
+
+  EV(E_START) = gc_btn(SDL_CONTROLLER_BUTTON_START) ? 1.0f : 0.0f;
+  /* SELECT fica FORA do device: e' o pause via backButtonPressed (funciona);
+   * alimentar E_SELECT junto poderia disparar acao dupla. */
+
+  /* AUTO-TESTE remoto: /dev/shm/lb2_btn "<elem> <0|1>" forca um elemento */
+  { FILE *bf = fopen("/dev/shm/lb2_btn", "r");
+    int be, bv;
+    if (bf) { if (fscanf(bf, "%d %d", &be, &bv) == 2 && be >= 0 && (uint32_t)be < n) EV(be) = (float)bv; fclose(bf); } }
+
+  *(uint32_t *)d |= 1;                             /* conectado */
+#undef EV
 }
 
-static void update_gamepad(void) {
-  if (!g_pad) return;
+static void controls_install_native_pad(so_module *mod) {
+  const uintptr_t slot = rela_got_slot(mod, "_Z18fnaController_PollP13fnINPUTDEVICE");
+  if (!slot) {
+    debugPrintf("pad: GOT slot de fnaController_Poll NAO achado!\n");
+    return;
+  }
+  *(uintptr_t *)((uintptr_t)mod->load_base + slot) = (uintptr_t)lb2_fna_poll;
+  debugPrintf("pad: hook nativo instalado (GOT +0x%lx -> lb2_fna_poll)\n",
+              (unsigned long)slot);
 
-  int mask = 0;
-  // Xbox physical layout: A=south (jump), B=east, X=west (attack), Y=north.
-  if (gc_btn(SDL_CONTROLLER_BUTTON_A)) mask |= TFA_SOUTH;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_B)) mask |= TFA_EAST;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_X)) mask |= TFA_WEST;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_Y)) mask |= TFA_NORTH;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  mask |= TFA_L1;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= TFA_R1;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_LEFTSTICK))  mask |= TFA_L3;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK)) mask |= TFA_R3;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_START))      mask |= TFA_START;
+  p_ControlsJoypad = (void **)so_find_addr(mod, "Controls_Joypad");
+  p_NoJoy   = (uint8_t *)so_find_addr(mod, "Controls_NoJoy");
+  p_IsVJoy  = (uint8_t *)so_find_addr(mod, "geControlsIsUsingVirtualJoystick");
+  p_Casual  = (uint8_t *)so_find_addr(mod, "g_CasualControls");
+  p_CasualInUse = (void *)so_find_addr_rx(mod, "_Z22CasualControls_IsInUsev");
+  p_TutLoaded = (uint32_t *)so_find_addr(mod, "TutorialModule_IsLoaded");
+  p_TutData   = (void **)so_find_addr(mod, "pTutorialModeData");
+}
 
-  int raw_l2 = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-  int raw_r2 = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-  if (raw_l2 > TRIGGER_THRESHOLD) mask |= TFA_L2;
-  if (raw_r2 > TRIGGER_THRESHOLD) mask |= TFA_R2;
+/* estado do esquema de controle a cada ~2s enquanto /dev/shm/lb2_padlog existir */
+static void pad_debug_state(void) {
+  static unsigned n = 0;
+  if (++n % 60) return;
+  if (access("/dev/shm/lb2_padlog", F_OK) != 0) return;
+  debugPrintf("padlog: NoJoy=%d vjoy=%d casual_inuse=%d casual[0x18]=%p casual[0x58]=%d casual[0x72]=%d tut=%u tutdata=%p\n",
+              p_NoJoy ? *p_NoJoy : -1,
+              p_IsVJoy ? *p_IsVJoy : -1,
+              p_CasualInUse ? p_CasualInUse() : -1,
+              p_Casual ? *(void **)(p_Casual + 0x18) : NULL,
+              p_Casual ? p_Casual[0x58] : -1,
+              p_Casual ? p_Casual[0x72] : -1,
+              p_TutLoaded ? *p_TutLoaded : 0,
+              p_TutData ? *p_TutData : NULL);
+}
 
-  const float scale = 1.f / 32767.0f;
-  int raw_lx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
-  int raw_ly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
-  float lx = (raw_lx > STICK_DEADZONE || raw_lx < -STICK_DEADZONE) ? raw_lx * scale : 0.0f;
-  // Android axes are down-positive; the engine negates the Y we pass, so feed
-  // SDL's up-positive Y as-is (SDL down-positive already matches Android).
-  float ly = (raw_ly > STICK_DEADZONE || raw_ly < -STICK_DEADZONE) ? raw_ly * scale : 0.0f;
-  stick_circle_to_square(&lx, &ly);
-
-  // d-pad drives movement too (LEGO games map it to the stick)
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))  lx = -1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) lx =  1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP))    ly = -1.0f;
-  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  ly =  1.0f;
-
-  g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
-
-  // PAUSE = SELECT/BACK (edge) -> backButtonPressed. Funciona como TOGGLE limpo
-  // (usuario confirmou); START pausava bugado (precisava 2x e nao saia).
+/* fora do device: pause (SELECT -> backButtonPressed, toggle limpo confirmado
+ * pelo usuario) e tap remoto de debug. */
+static void update_pad_misc(void) {
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
   if (back && !g_back_prev)
     g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
+
+  /* AUTO-TESTE remoto: /dev/shm/lb2_tap "x y" -> toque de 4 frames */
+  static int tap_frames = 0;
+  static float tap_x, tap_y;
+  if (tap_frames == 0) {
+    FILE *tf = fopen("/dev/shm/lb2_tap", "r");
+    if (tf) {
+      float x, y;
+      if (fscanf(tf, "%f %f", &x, &y) == 2) {
+        tap_x = x; tap_y = y;
+        g.touchDown(fake_env, FUSION_OBJ, 0, tap_x, tap_y, 1.0f);
+        tap_frames = 4;
+      }
+      fclose(tf);
+      unlink("/dev/shm/lb2_tap");
+    }
+  } else if (--tap_frames == 0) {
+    g.touchUp(fake_env, FUSION_OBJ, 0, tap_x, tap_y, 0.0f);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +549,7 @@ int main(int argc, char *argv[]) {
   patch_all_stack_chk_branches(&game_mod);
   patch_game();
   resolve_entry_points();
-  controls_resolve();
+  controls_install_native_pad(&game_mod);
 
   so_finalize(&game_mod);
   so_flush_caches(&game_mod);
@@ -520,8 +579,6 @@ int main(int argc, char *argv[]) {
 
   open_controller();
   SDL_GameControllerEventState(SDL_ENABLE);
-  // register the controller once so the engine's "connected" gate is set
-  g.controllerSetData(fake_env, FUSION_OBJ, 0, 0, 0.0f, 0.0f);
 
   // 30 fps fixed-timestep pacing
   const uint64_t perf_freq = SDL_GetPerformanceFrequency();
@@ -548,8 +605,7 @@ int main(int argc, char *argv[]) {
     if (gc_btn(SDL_CONTROLLER_BUTTON_BACK) && gc_btn(SDL_CONTROLLER_BUTTON_START))
       running = 0;
 
-    update_gamepad();
-    update_touch_synth();  /* LB2 touch-only: pad -> taps/joystick virtual */
+    update_pad_misc();  /* gameplay vem do hook nativo lb2_fna_poll */
 
     g.nativeRender(fake_env, GLSV_OBJ);   // 1st call runs Fusion_OnceInit
     if (frame < 8 || (frame % 600) == 0)
