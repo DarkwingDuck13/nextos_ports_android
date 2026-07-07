@@ -1,377 +1,491 @@
-/*
- * main.c -- LEGO BATMAN 2: DC Super Heroes (TT Fusion, libLEGO_SH1.so arm64,
- * app dirigida por Java: GLSurfaceView + JNI) so-loader p/ NextOS aarch64 +
- * Mali-450 (Utgard, GLES2 via SDL2/EGL fbdev).
+/* main.c -- LEGO Star Wars: The Force Awakens (Android arm64) on Linux/Mali
  *
- * Base = framework do CASTLE OF ILLUSION (port FINALIZADO neste device:
- * so_util ELF64, canary bionic tpidr+0x28, egl_shim SDL2, opensles_shim,
- * imports.c com kit GL Mali). DIFERENCA-CHAVE: nao ha android_main — o
- * bootstrap replica o GameActivity.onCreate/GLSurfaceView decompilado do dex:
+ * libProject_Douglas_HH.so is the WB Games "Fusion" engine, driven through the
+ * classic Android GLSurfaceView contract: the wrapper owns the EGL context and
+ * calls nativeRender() once per frame on the GL thread. We reproduce
+ * GameActivity.onCreate + the GLSurfaceView render thread on this (main) thread.
  *
- *   Fusion.nativeSetWritePath/SavePath/CachePath
- *   Fusion.nativeInitializeAssetManager(assetMgr)
- *   Fusion.nativeSetCommandLine("") / nativeSetDeviceStrings(...)
- *   Fusion.nativeAddAssetPackLocation(<pack>/1079/1079) x5
- *   GLSurfaceView: nativeInit(config, activity) -> nativeResize(w,h,0,0,0,0)
- *   -> nativeWindowFocusChanged(1) -> nativeResume -> loop nativeRender()+swap
+ * Platform: plain Linux + SDL2 (window/GL/input/audio), Amlogic Mali-450 fbdev.
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
  */
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdint.h>
+
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <ucontext.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
-#include <ucontext.h>
-#include <unistd.h>
+#include <pthread.h>
 
+#include <SDL2/SDL.h>
+
+#include "config.h"
+#include "util.h"
+#include "error.h"
 #include "so_util.h"
-#include "egl_shim.h"
-#include "jni_shim.h"
+#include "hooks.h"
+#include "imports.h"
+#include "jni_fake.h"
+#include "pthr.h"
+#include "fmv.h"
+#include "opensles_shim.h"
 
-#define GAME_SO      "lib/libLEGO_SH1.so"
-#define GAME_HEAP_MB 192
-#define SCREEN_W 1280
-#define SCREEN_H 720
+so_module game_mod;
 
-volatile uintptr_t g_load_base = 0;
-volatile int g_movie_skip_pending = 0; /* jni startMoviePlayback -> pula no loop */
+// extent of the loaded image, for shims that range-check pointers (opensles_shim)
+void *text_base = NULL;
+size_t text_size = 0;
 
-/* stub p/ o path ETC1-texbake herdado do imports.c do Dysmantle */
-const char *bk_last_bmp_name(void) { return ""; }
+#define FUSION_OBJ    ((void *)0x46555331)
+#define GLSV_OBJ      ((void *)0x474c5631)
+#define ACTIVITY_OBJ  ((void *)0x41435431)
+#define EGLCONFIG_OBJ ((void *)0x45474331)
+#define ASSETMGR_OBJ  ((void *)0x41534d31)
 
-extern DynLibFunction coi_overrides[];
-extern const int coi_overrides_count;
-extern DynLibFunction revc_pthread_table[];
-extern const int revc_pthread_count;
-extern DynLibFunction coi_extra[];
-extern const int coi_extra_count;
+#define SO_REGION_MB 256
 
-/* canary bionic (tpidr_el0+0x28) — segredo Dysmantle/COI */
-__attribute__((aligned(16))) static _Thread_local char g_bionic_guard_pad[256];
+extern void pthr_mark_render_thread(void);
 
-static DynLibFunction *g_base;
-static int g_base_n;
-static void build_base_table(void) {
-  g_base_n = coi_overrides_count + revc_pthread_count + coi_extra_count;
-  g_base = malloc(sizeof(DynLibFunction) * g_base_n);
-  int o = 0;
-  memcpy(g_base + o, coi_overrides, sizeof(DynLibFunction) * coi_overrides_count);
-  o += coi_overrides_count;
-  memcpy(g_base + o, revc_pthread_table, sizeof(DynLibFunction) * revc_pthread_count);
-  o += revc_pthread_count;
-  memcpy(g_base + o, coi_extra, sizeof(DynLibFunction) * coi_extra_count);
+// resolved entry points -------------------------------------------------------
+
+static struct {
+  void (*setWritePath)(void *, void *, void *);
+  void (*setSavePath)(void *, void *, void *);
+  void (*setCachePath)(void *, void *, void *);
+  void (*setDeviceStrings)(void *, void *, void *, void *, void *, void *);
+  void (*setAudioOutputBufferSize)(void *, void *, int);
+  void (*initAssetManager)(void *, void *, void *);
+  void (*controllerSetData)(void *, void *, int, int, float, float);
+  int  (*backButtonPressed)(void *, void *);
+  void (*touchDown)(void *, void *, int, float, float, float);
+  void (*touchMove)(void *, void *, int, float, float, float);
+  void (*touchUp)(void *, void *, int, float, float, float);
+
+  void (*nativeInit)(void *, void *, void *, void *);
+  /* LB2: nativeResize tem 6 ints (w,h + 4 insets de display-cutout) */
+  void (*nativeResize)(void *, void *, int, int, int, int, int, int);
+  void (*nativeRender)(void *, void *);
+  void (*nativeResume)(void *, void *);
+  void (*nativePause)(void *, void *);
+  void (*nativeWindowFocusChanged)(void *, void *, int);
+  void (*nativeColdBoot)(void *, void *);
+  void (*nativeDone)(void *, void *);
+
+  void (*addAssetDir)(const char *);
+} g;
+
+#define RESOLVE(field, sym) g.field = (void *)so_find_addr_rx(&game_mod, sym)
+
+static void resolve_entry_points(void) {
+  RESOLVE(setWritePath,             "Java_com_wbgames_LEGOgame_Fusion_nativeSetWritePath");
+  RESOLVE(setSavePath,              "Java_com_wbgames_LEGOgame_Fusion_nativeSetSavePath");
+  RESOLVE(setCachePath,             "Java_com_wbgames_LEGOgame_Fusion_nativeSetCachePath");
+  RESOLVE(setDeviceStrings,         "Java_com_wbgames_LEGOgame_Fusion_nativeSetDeviceStrings");
+  RESOLVE(setAudioOutputBufferSize, "Java_com_wbgames_LEGOgame_Fusion_nativeSetAudioOutputBufferSize");
+  RESOLVE(initAssetManager,         "Java_com_wbgames_LEGOgame_Fusion_nativeInitializeAssetManager");
+  RESOLVE(controllerSetData,        "Java_com_wbgames_LEGOgame_Fusion_nativeControllerSetData");
+  RESOLVE(backButtonPressed,        "Java_com_wbgames_LEGOgame_Fusion_nativeBackButtonPressed");
+  RESOLVE(touchDown,                "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventDown");
+  RESOLVE(touchMove,                "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventMove");
+  RESOLVE(touchUp,                  "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventUp");
+
+  RESOLVE(nativeInit,               "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeInit");
+  RESOLVE(nativeResize,             "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeResize");
+  RESOLVE(nativeRender,             "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeRender");
+  RESOLVE(nativeResume,             "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeResume");
+  RESOLVE(nativePause,              "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativePause");
+  RESOLVE(nativeWindowFocusChanged, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeWindowFocusChanged");
+  g.nativeColdBoot = (void *)so_try_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeColdBoot");
+  g.nativeDone     = (void *)so_try_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeDone");
+
+  /* LB2: o equivalente do AddAssetDir do TFA chama-se fnAssetPack_AddLocation
+   * (Play Asset Delivery packs; o Java nativeAddAssetPackLocation cai nele). */
+  RESOLVE(addAssetDir,              "_Z23fnAssetPack_AddLocationPKc");
 }
 
-/* ---- simbolizacao no crash (identico ao COI) ---- */
-static void resolve_addr(uintptr_t a, char *out, int outsz) {
-  int fd = open("/proc/self/maps", O_RDONLY);
-  out[0] = 0;
-  if (fd < 0) return;
-  char buf[8192]; int n; char line[400]; int li = 0;
-  while ((n = read(fd, buf, sizeof(buf))) > 0)
-    for (int i = 0; i < n; i++) {
-      char c = buf[i];
-      if (c == '\n' || li >= (int)sizeof(line) - 1) {
-        line[li] = 0;
-        unsigned long s, e; char perm[8]; char path[256]; path[0] = 0;
-        if (sscanf(line, "%lx-%lx %7s %*x %*s %*d %255s", &s, &e, perm, path) >= 3 &&
-            a >= s && a < e) {
-          const char *base = strrchr(path, '/');
-          base = base ? base + 1 : (path[0] ? path : "?");
-          snprintf(out, outsz, "%s+0x%lx", base, (unsigned long)(a - s));
-          close(fd); return;
-        }
-        li = 0;
-      } else line[li++] = c;
+// ---------------------------------------------------------------------------
+// stack-canary workaround
+//
+// The .so's -fstack-protector reads the guard from bionic TLS (TPIDR_EL0 +
+// slot 5). On glibc that offset lands on a mutable glibc TCB field, so the
+// entry/exit values differ and the (bogus) check trips. We can't relocate the
+// glibc thread pointer, so instead we NOP every conditional branch that guards
+// a `bl __stack_chk_fail@plt`, making the check always take the success path.
+// The PLT stub is auto-detected (version-independent) via the GOT slot.
+// ---------------------------------------------------------------------------
+
+static uintptr_t rela_got_slot(so_module *mod, const char *symbol) {
+  for (int i = 0; i < mod->elf_hdr->e_shnum; i++) {
+    char *sh = mod->shstrtab + mod->sec_hdr[i].sh_name;
+    if (strcmp(sh, ".rela.plt") && strcmp(sh, ".rela.dyn")) continue;
+    Elf64_Rela *rels = (Elf64_Rela *)((uintptr_t)mod->load_base + mod->sec_hdr[i].sh_addr);
+    for (size_t j = 0; j < mod->sec_hdr[i].sh_size / sizeof(Elf64_Rela); j++) {
+      Elf64_Sym *sym = &mod->syms[ELF64_R_SYM(rels[j].r_info)];
+      const char *name = mod->dynstrtab + sym->st_name;
+      if (strcmp(name, symbol) == 0)
+        return rels[j].r_offset; // link-time GOT slot vaddr
     }
-  close(fd);
+  }
+  return 0;
 }
 
-static void crash_handler(int sig, siginfo_t *info, void *uc) {
-  /* serializa: 2+ threads crashando juntas embaralham o dump */
-  static volatile int lock = 0;
-  while (__sync_lock_test_and_set(&lock, 1)) usleep(1000);
-  ucontext_t *u = (ucontext_t *)uc;
-  mcontext_t *m = &u->uc_mcontext;
-  fprintf(stderr, "\n=== CRASH sig=%d addr=%p tid=%d ===\n", sig, info->si_addr,
-          (int)syscall(__NR_gettid));
-  char r[300];
-  resolve_addr(m->pc, r, sizeof(r));
-  fprintf(stderr, "  PC=%p %s", (void *)m->pc, r);
-  if (g_load_base && m->pc >= g_load_base)
-    fprintf(stderr, "  {game+0x%lx}", (unsigned long)(m->pc - g_load_base));
-  fprintf(stderr, "\n");
-  resolve_addr(m->regs[30], r, sizeof(r));
-  fprintf(stderr, "  LR=%p %s", (void *)m->regs[30], r);
-  if (g_load_base && m->regs[30] >= g_load_base)
-    fprintf(stderr, "  {game+0x%lx}", (unsigned long)(m->regs[30] - g_load_base));
-  fprintf(stderr, "\n");
-  for (int i = 0; i < 29; i += 3)
-    fprintf(stderr, "  x%-2d=%016lx x%-2d=%016lx x%-2d=%016lx\n",
-            i, (unsigned long)m->regs[i], i+1, (unsigned long)m->regs[i+1],
-            i+2, (unsigned long)m->regs[i+2]);
-  fprintf(stderr, "  sp=%lx fp=%lx\n", (unsigned long)m->sp, (unsigned long)m->regs[29]);
-  uintptr_t fp = m->regs[29];
+static uintptr_t find_fail_plt(so_module *mod) {
+  const uintptr_t got_slot = rela_got_slot(mod, "__stack_chk_fail");
+  if (!got_slot) return 0;
+  // find .plt
+  uintptr_t plt_addr = 0; size_t plt_size = 0;
+  for (int i = 0; i < mod->elf_hdr->e_shnum; i++) {
+    if (strcmp(mod->shstrtab + mod->sec_hdr[i].sh_name, ".plt") == 0) {
+      plt_addr = mod->sec_hdr[i].sh_addr;
+      plt_size = mod->sec_hdr[i].sh_size;
+      break;
+    }
+  }
+  if (!plt_addr) return 0;
+  uint32_t *base = (uint32_t *)((uintptr_t)mod->load_base + plt_addr);
+  const uintptr_t want = (uintptr_t)mod->load_base + got_slot;
+  for (size_t i = 0; i + 1 < plt_size / 4; i++) {
+    uint32_t a = base[i];
+    if ((a & 0x9f000000u) != 0x90000000u || (a & 0x1f) != 16) continue; // adrp x16
+    uint32_t l = base[i + 1];
+    if ((l & 0xffc00000u) != 0xf9400000u || ((l >> 5) & 0x1f) != 16 || (l & 0x1f) != 17) continue; // ldr x17,[x16,#imm]
+    int64_t immlo = (a >> 29) & 3, immhi = (a >> 5) & 0x7ffff;
+    int64_t imm = (immhi << 2) | immlo;
+    imm = (imm << 43) >> 43; // sign-extend 21 bits
+    const uintptr_t pc = (uintptr_t)mod->load_base + plt_addr + i * 4;
+    const uintptr_t page = (pc & ~0xfffULL) + (uintptr_t)(imm << 12);
+    const uintptr_t got = page + (((l >> 10) & 0xfff) * 8);
+    if (got == want)
+      return pc;
+  }
+  return 0;
+}
+
+// is the instruction at runtime address `addr` a `bl __stack_chk_fail@plt`?
+static int is_bl_to(uint32_t *words, size_t count, uintptr_t base, uintptr_t addr,
+                    uintptr_t fail_plt) {
+  if (addr < base || addr >= base + count * 4 || (addr & 3)) return 0;
+  uint32_t insn = words[(addr - base) / 4];
+  if ((insn & 0xfc000000u) != 0x94000000u) return 0; // not bl
+  int64_t off = (int32_t)((insn & 0x03ffffffu) << 6) >> 6; // sign-extend 26
+  return addr + (off << 2) == fail_plt;
+}
+
+static void patch_all_stack_chk_branches(so_module *mod) {
+  const uintptr_t fail_plt = find_fail_plt(mod);
+  if (!fail_plt) {
+    debugPrintf("canary: __stack_chk_fail@plt not found; skipping NOP patch\n");
+    return;
+  }
+  debugPrintf("canary: __stack_chk_fail@plt = %p\n", (void *)fail_plt);
+  uint32_t *words = (uint32_t *)mod->load_base;
+  const size_t count = mod->load_size / 4;
+  const uintptr_t base = (uintptr_t)mod->load_base;
+  int patched = 0;
+
+  // NOP every conditional branch whose target is a `bl __stack_chk_fail`.
+  for (size_t i = 0; i < count; i++) {
+    uint32_t b = words[i];
+    const uintptr_t bpc = base + i * 4;
+    uintptr_t tgt = 0;
+    if ((b & 0xff000010u) == 0x54000000u) {                    // b.cond
+      int64_t o = (int32_t)(((b >> 5) & 0x7ffff) << 13) >> 13;
+      tgt = bpc + (o << 2);
+    } else if ((b & 0x7e000000u) == 0x34000000u) {             // cbz/cbnz
+      int64_t o = (int32_t)(((b >> 5) & 0x7ffff) << 13) >> 13;
+      tgt = bpc + (o << 2);
+    } else if ((b & 0x7e000000u) == 0x36000000u) {             // tbz/tbnz
+      int64_t o = (int32_t)(((b >> 5) & 0x3fff) << 18) >> 18;
+      tgt = bpc + (o << 2);
+    } else continue;
+    if (is_bl_to(words, count, base, tgt, fail_plt)) {
+      words[i] = 0xd503201fu; // NOP
+      patched++;
+    }
+  }
+  debugPrintf("canary: NOP'd %d stack-check branches\n", patched);
+}
+
+// crash handler: report PC/LR as offsets into the loaded .so ----------------
+
+static void crash_handler(int sig, siginfo_t *info, void *uctx) {
+  ucontext_t *uc = (ucontext_t *)uctx;
+  uintptr_t pc = uc->uc_mcontext.pc;
+  uintptr_t base = (uintptr_t)text_base;
+  uintptr_t end = base + text_size;
+  fprintf(stderr, "\n=== CRASH sig=%d fault=%p pc=%p ===\n", sig,
+          info ? info->si_addr : NULL, (void *)pc);
+  if (pc >= base && pc < end)
+    fprintf(stderr, "PC in .so +0x%lx\n", (unsigned long)(pc - base));
+  else
+    fprintf(stderr, "PC outside .so\n");
+  uintptr_t lr = uc->uc_mcontext.regs[30];
+  if (lr >= base && lr < end)
+    fprintf(stderr, "LR in .so +0x%lx\n", (unsigned long)(lr - base));
+  // frame-pointer backtrace
+  uintptr_t fp = uc->uc_mcontext.regs[29];
   for (int f = 0; f < 24 && fp; f++) {
-    uintptr_t *p = (uintptr_t *)fp; uintptr_t next = p[0], lr = p[1];
-    if (!lr) break;
-    resolve_addr(lr, r, sizeof(r));
-    fprintf(stderr, "  #%-2d lr %p %s", f, (void *)lr, r);
-    if (g_load_base && lr >= g_load_base)
-      fprintf(stderr, "  {game+0x%lx}", (unsigned long)(lr - g_load_base));
-    fprintf(stderr, "\n");
-    if (next <= fp) break; fp = next;
+    uintptr_t *p = (uintptr_t *)fp;
+    uintptr_t nfp = p[0], rlr = p[1];
+    if (!rlr) break;
+    if (rlr >= base && rlr < end)
+      fprintf(stderr, "  #%-2d .so+0x%lx\n", f, (unsigned long)(rlr - base));
+    else
+      fprintf(stderr, "  #%-2d %p\n", f, (void *)rlr);
+    if (nfp <= fp) break;
+    fp = nfp;
   }
-  /* varredura da pilha: qualquer qword que caia no text do jogo = possivel
-   * retorno (acha o caller mesmo quando o memcpy nao montou frame) */
-  { extern void *text_base; extern size_t text_size;
-    uintptr_t lo = (uintptr_t)text_base, hi = lo + text_size;
-    uintptr_t *sp = (uintptr_t *)(m->sp & ~7UL);
-    fprintf(stderr, "  [scan pilha por game-addrs]\n");
-    for (int k = 0; k < 320; k++) {
-      uintptr_t v = sp[k];
-      if (v >= lo && v < hi)
-        fprintf(stderr, "    sp+0x%03x: game+0x%lx\n", k * 8,
-                (unsigned long)(v - lo));
-    } }
+  fprintf(stderr, "=== END CRASH (tid=%lx) ===\n", (unsigned long)pthread_self());
   fflush(stderr);
-  _exit(128 + sig);
-}
-
-static void bt_handler(int sig, siginfo_t *info, void *uc) {
-  (void)info;
-  ucontext_t *u = (ucontext_t *)uc;
-  mcontext_t *m = &u->uc_mcontext;
-  char r[300];
-  resolve_addr(m->pc, r, sizeof(r));
-  fprintf(stderr, "\n[BT sig=%d tid=%d] PC=%p %s", sig,
-          (int)syscall(__NR_gettid), (void *)m->pc, r);
-  if (g_load_base && m->pc >= g_load_base)
-    fprintf(stderr, " {game+0x%lx}", (unsigned long)(m->pc - g_load_base));
-  fprintf(stderr, "\n");
-  uintptr_t fp = m->regs[29];
-  for (int f = 0; f < 20 && fp; f++) {
-    uintptr_t *p = (uintptr_t *)fp; uintptr_t next = p[0], lr = p[1];
-    if (!lr) break;
-    resolve_addr(lr, r, sizeof(r));
-    fprintf(stderr, "  #%-2d lr %p %s", f, (void *)lr, r);
-    if (g_load_base && lr >= g_load_base)
-      fprintf(stderr, " {game+0x%lx}", (unsigned long)(lr - g_load_base));
-    fprintf(stderr, "\n");
-    if (next <= fp) break; fp = next;
-  }
-  fflush(stderr);
+  _exit(139);
 }
 
 static void install_crash_handler(void) {
-  struct sigaction sa; memset(&sa, 0, sizeof(sa));
-  sa.sa_sigaction = crash_handler; sa.sa_flags = SA_SIGINFO;
-  sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL);
-  sigaction(SIGILL, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
-  struct sigaction sb; memset(&sb, 0, sizeof(sb));
-  sb.sa_sigaction = bt_handler; sb.sa_flags = SA_SIGINFO;
-  sigaction(SIGUSR1, &sb, NULL);
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = crash_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGILL, &sa, NULL);
 }
 
-static void preload_device_libs(void) {
-  static const char *libs[] = {
-      "libSDL2-2.0.so.0", "libGLESv2.so", "libEGL.so",
-      "libOpenSLES.so", "libm.so.6", "libdl.so.2", "libz.so.1", NULL };
-  for (int i = 0; libs[i]; i++) {
-    void *h = dlopen(libs[i], RTLD_NOW | RTLD_GLOBAL);
-    fprintf(stderr, "preload: %s %s\n", libs[i], h ? "OK" : dlerror());
+// boot sequence (mirrors GameActivity.onCreate) ------------------------------
+
+static void run_boot_sequence(void) {
+  g.setWritePath(fake_env, FUSION_OBJ, jni_make_string(WRITE_PATH));
+  g.setSavePath (fake_env, FUSION_OBJ, jni_make_string(SAVE_PATH));
+  g.setCachePath(fake_env, FUSION_OBJ, jni_make_string(CACHE_PATH));
+  g.setDeviceStrings(fake_env, FUSION_OBJ,
+                     jni_make_string(DEVICE_MODEL), jni_make_string(DEVICE_PRODUCT),
+                     jni_make_string(DEVICE_MANUFACTURER), jni_make_string(DEVICE_HARDWARE));
+  g.setAudioOutputBufferSize(fake_env, FUSION_OBJ, AUDIO_BUF_FRAMES);
+  g.initAssetManager(fake_env, FUSION_OBJ, ASSETMGR_OBJ);
+  /* LB2: 5 Play-Asset-Delivery packs (como o GameActivity.onCreate real faz);
+   * cada pack root (…/1079/1079) contem assets/. */
+  {
+    static const char *packs[] = { "assets_cutscenes", "assets_music",
+                                   "assets_shaders", "assets_main", "assets_lofi" };
+    char p[512];
+    for (int i = 0; i < 5; i++) {
+      snprintf(p, sizeof(p), "files/assetpacks/%s/1079/1079", packs[i]);
+      g.addAssetDir(p);
+      debugPrintf("boot: registered asset pack '%s'\n", p);
+    }
   }
 }
 
-/* ---- natives do jogo (resolvidos por nome no .so) ---- */
-#define FUS(n) "Java_com_wbgames_LEGOgame_Fusion_" n
-#define GLS(n) "Java_com_wbgames_LEGOgame_GameGLSurfaceView_" n
+// ---------------------------------------------------------------------------
+// input: SDL GameController -> Fusion controllerSetData bitmask
+// ---------------------------------------------------------------------------
 
-typedef void (*fn_env_str)(void *, void *, void *);
-typedef void (*fn_env_obj)(void *, void *, void *);
-typedef void (*fn_env_v)(void *, void *);
-typedef void (*fn_env_b)(void *, void *, unsigned char);
-typedef void (*fn_env_4str)(void *, void *, void *, void *, void *, void *);
-typedef void (*fn_env_init)(void *, void *, void *, void *);
-typedef void (*fn_env_6i)(void *, void *, int, int, int, int, int, int);
-typedef void (*fn_touch)(void *, void *, int, float, float, float);
+enum {
+  TFA_L2 = 0x0001, TFA_R2 = 0x0002, TFA_L1 = 0x0004, TFA_R1 = 0x0008,
+  TFA_SOUTH = 0x0010, TFA_EAST = 0x0020, TFA_WEST = 0x0040, TFA_NORTH = 0x0080,
+  TFA_L3 = 0x0200, TFA_R3 = 0x0400, TFA_START = 0x0800,
+};
 
-static void *fake_vm, *fake_env;
+#define STICK_DEADZONE    8000
+#define TRIGGER_THRESHOLD 16000
 
-static uintptr_t need(const char *sym) {
-  uintptr_t a = so_find_addr_safe(sym);
-  if (!a) { fprintf(stderr, "FALTA native: %s\n", sym); }
-  return a;
+static SDL_GameController *g_pad = NULL;
+static uint64_t g_back_prev = 0;
+
+static void open_controller(void) {
+  for (int i = 0; i < SDL_NumJoysticks(); i++) {
+    if (SDL_IsGameController(i)) {
+      g_pad = SDL_GameControllerOpen(i);
+      if (g_pad) {
+        debugPrintf("input: opened controller '%s'\n", SDL_GameControllerName(g_pad));
+        return;
+      }
+    }
+  }
 }
 
-/* jstring via NewStringUTF do fake env (indice 167 da vtable JNI) */
-static void *jstr(const char *s) {
-  void ***env = (void ***)fake_env;
-  void *(*newstr)(void *, const char *) = (void *(*)(void *, const char *))(*env)[167];
-  return newstr(fake_env, s);
+static void stick_circle_to_square(float *x, float *y) {
+  const float ax = fabsf(*x), ay = fabsf(*y);
+  const float m = (ax > ay) ? ax : ay;
+  if (m < 1e-6f) return;
+  const float s = sqrtf(*x * *x + *y * *y) / m;
+  *x *= s; *y *= s;
+  if (*x > 1.0f) *x = 1.0f; else if (*x < -1.0f) *x = -1.0f;
+  if (*y > 1.0f) *y = 1.0f; else if (*y < -1.0f) *y = -1.0f;
 }
+
+static int gc_btn(SDL_GameControllerButton b) {
+  return g_pad && SDL_GameControllerGetButton(g_pad, b);
+}
+
+static void update_gamepad(void) {
+  if (!g_pad) return;
+
+  int mask = 0;
+  // Xbox physical layout: A=south (jump), B=east, X=west (attack), Y=north.
+  if (gc_btn(SDL_CONTROLLER_BUTTON_A)) mask |= TFA_SOUTH;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_B)) mask |= TFA_EAST;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_X)) mask |= TFA_WEST;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_Y)) mask |= TFA_NORTH;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_LEFTSHOULDER))  mask |= TFA_L1;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) mask |= TFA_R1;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_LEFTSTICK))  mask |= TFA_L3;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_RIGHTSTICK)) mask |= TFA_R3;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_START))      mask |= TFA_START;
+
+  int raw_l2 = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+  int raw_r2 = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+  if (raw_l2 > TRIGGER_THRESHOLD) mask |= TFA_L2;
+  if (raw_r2 > TRIGGER_THRESHOLD) mask |= TFA_R2;
+
+  const float scale = 1.f / 32767.0f;
+  int raw_lx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
+  int raw_ly = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
+  float lx = (raw_lx > STICK_DEADZONE || raw_lx < -STICK_DEADZONE) ? raw_lx * scale : 0.0f;
+  // Android axes are down-positive; the engine negates the Y we pass, so feed
+  // SDL's up-positive Y as-is (SDL down-positive already matches Android).
+  float ly = (raw_ly > STICK_DEADZONE || raw_ly < -STICK_DEADZONE) ? raw_ly * scale : 0.0f;
+  stick_circle_to_square(&lx, &ly);
+
+  // d-pad drives movement too (LEGO games map it to the stick)
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT))  lx = -1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) lx =  1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP))    ly = -1.0f;
+  if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  ly =  1.0f;
+
+  g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
+
+  // Back/Select -> back button (rising edge)
+  uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
+  if (back && !g_back_prev)
+    g.backButtonPressed(fake_env, FUSION_OBJ);
+  g_back_prev = back;
+}
+
+// ---------------------------------------------------------------------------
 
 int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
-  setvbuf(stdout, NULL, _IONBF, 0);
+
   setvbuf(stderr, NULL, _IONBF, 0);
-  install_crash_handler();
-  fprintf(stderr, "=== LEGO BATMAN 2 (TT Fusion) so-loader / NextOS aarch64 Mali-450 ===\n");
+  debugPrintf("=== LEGO Star Wars TFA -> Mali-450 (Linux/SDL) ===\n");
 
-  { uintptr_t tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
-    uintptr_t slot = tp + 0x28, lo = (uintptr_t)g_bionic_guard_pad;
-    fprintf(stderr, "TLS guard: slot+0x28=0x%lx pad=[0x%lx..0x%lx] %s\n",
-            (unsigned long)slot, (unsigned long)lo,
-            (unsigned long)(lo + sizeof(g_bionic_guard_pad)),
-            (slot >= lo && slot + 8 <= lo + sizeof(g_bionic_guard_pad)) ? "DENTRO" : "FORA(!)"); }
+  read_config(CONFIG_NAME);
+  screen_width = config.screen_width > 0 ? config.screen_width : 1280;
+  screen_height = config.screen_height > 0 ? config.screen_height : 720;
 
-  jni_shim_set_package("com.wb.goog.legobdc", 1079);
+  // check data present
+  struct stat st;
+  if (stat(SO_NAME, &st) < 0)
+    fatal_error("Missing %s in the current directory", SO_NAME);
+  if (stat(GAMEDATA_DIR "/project_douglas_mobile.fib", &st) < 0)
+    debugPrintf("WARN: %s/project_douglas_mobile.fib not found (assets may be missing)\n", GAMEDATA_DIR);
 
-  preload_device_libs();
-  build_base_table();
-
-  /* modulo unico: libLEGO_SH1.so */
-  size_t hs = (size_t)GAME_HEAP_MB * 1024 * 1024;
-  void *heap = mmap(NULL, hs, PROT_READ | PROT_WRITE | PROT_EXEC,
+  // RWX region for the loaded .so image
+  const size_t region = (size_t)SO_REGION_MB * 1024 * 1024;
+  void *base = mmap(NULL, region, PROT_READ | PROT_WRITE | PROT_EXEC,
                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (heap == MAP_FAILED) { fprintf(stderr, "mmap heap falhou\n"); return 1; }
-  fprintf(stderr, "== carregando %s ==\n", GAME_SO);
-  if (so_load(GAME_SO, heap, hs) < 0) { fprintf(stderr, "so_load falhou\n"); return 1; }
-  if (so_relocate() < 0) { fprintf(stderr, "so_relocate falhou\n"); return 1; }
-  so_resolve(g_base, g_base_n, 0);
-  so_finalize();
-  so_flush_caches();
-  so_execute_init_array();
-  g_load_base = (uintptr_t)text_base;
-  fprintf(stderr, "== game text=%p+%zu data=%p+%zu ==\n", text_base, text_size,
-          data_base, data_size);
+  if (base == MAP_FAILED)
+    fatal_error("mmap of %zu MB failed", region / (1024 * 1024));
+  debugPrintf("so region: %p (%d MB)\n", base, SO_REGION_MB);
 
-  jni_shim_init(&fake_vm, &fake_env);
+  if (so_load(&game_mod, SO_NAME, base, region) < 0)
+    fatal_error("Could not load %s", SO_NAME);
+  debugPrintf("loaded %s at %p (%zu KB)\n", SO_NAME, game_mod.load_virtbase,
+              game_mod.load_size / 1024);
+  text_base = game_mod.load_virtbase;
+  text_size = game_mod.load_size;
 
-  /* JNI_OnLoad primeiro (runtime Java faria isso no loadLibrary) */
-  { uintptr_t ol = so_find_addr_safe("JNI_OnLoad");
-    if (ol) {
-      int (*jol)(void *, void *) = (int (*)(void *, void *))ol;
-      int v = jol(fake_vm, NULL);
-      fprintf(stderr, "JNI_OnLoad(vm=%p) -> 0x%x\n", fake_vm, v);
-    } else fprintf(stderr, "AVISO: sem JNI_OnLoad\n"); }
+  update_imports();
+  so_relocate(&game_mod);
+  so_resolve(&game_mod, dynlib_functions, dynlib_numfunctions, 1);
 
-  /* janela EGL + UNICO contexto real ANTES do nativeInit. O modo single-context
-   * handoff (egl_shim) e ativado quando o jogo chama eglCreateContext; esta
-   * thread (render) adquire o contexto no 1o egl_shim_gl_acquire abaixo. */
-  egl_shim_create_window();
-  egl_shim_CreateContext(NULL, NULL, NULL, NULL); /* ativa handoff, fake token */
-  egl_shim_gl_acquire();                          /* render-thread pega o ctx */
+  patch_all_stack_chk_branches(&game_mod);
+  patch_game();
+  resolve_entry_points();
 
-  char cwd[512]; if (!getcwd(cwd, sizeof(cwd))) strcpy(cwd, ".");
-  char pbuf[1024];
+  so_finalize(&game_mod);
+  so_flush_caches(&game_mod);
+  so_execute_init_array(&game_mod);
 
-  /* --- sequencia do GameActivity.onCreate (dex decompilado) --- */
-  static int fake_cls, fake_activity, fake_assets;
-  void *env = fake_env, *cls = &fake_cls;
+  jni_init();
+  run_boot_sequence();
+  so_free_temp(&game_mod);
 
-  snprintf(pbuf, sizeof(pbuf), "%s/gamedata", cwd);
-  mkdir(pbuf, 0755);
-  fn_env_str f_str;
+  // SDL up (video + audio + gamecontroller)
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0)
+    fatal_error("SDL_Init failed: %s", SDL_GetError());
 
-  if ((f_str = (fn_env_str)need(FUS("nativeSetWritePath"))))
-    { snprintf(pbuf, sizeof(pbuf), "%s/gamedata", cwd); f_str(env, cls, jstr(pbuf));
-      fprintf(stderr, "nativeSetWritePath(%s)\n", pbuf); }
-  if ((f_str = (fn_env_str)need(FUS("nativeSetSavePath"))))
-    { snprintf(pbuf, sizeof(pbuf), "%s/gamedata", cwd); f_str(env, cls, jstr(pbuf));
-      fprintf(stderr, "nativeSetSavePath(%s)\n", pbuf); }
-  if ((f_str = (fn_env_str)need(FUS("nativeSetCachePath"))))
-    { snprintf(pbuf, sizeof(pbuf), "%s/cache", cwd); mkdir(pbuf, 0755);
-      f_str(env, cls, jstr(pbuf));
-      fprintf(stderr, "nativeSetCachePath(%s)\n", pbuf); }
+  install_crash_handler(); // override SDL's handlers to see real crash sites
 
-  { fn_env_obj f = (fn_env_obj)need(FUS("nativeInitializeAssetManager"));
-    if (f) { f(env, cls, &fake_assets); fprintf(stderr, "nativeInitializeAssetManager OK\n"); } }
+  // we are the GLSurfaceView render thread
+  pthr_mark_render_thread();
+  if (egl_bringup() < 0)
+    fatal_error("EGL bring-up failed");
 
-  if ((f_str = (fn_env_str)need(FUS("nativeSetCommandLine"))))
-    { f_str(env, cls, jstr("")); fprintf(stderr, "nativeSetCommandLine(\"\")\n"); }
+  if (g.nativeColdBoot) g.nativeColdBoot(fake_env, GLSV_OBJ);
+  g.nativeInit(fake_env, GLSV_OBJ, EGLCONFIG_OBJ, ACTIVITY_OBJ);
+  g.nativeResize(fake_env, GLSV_OBJ, screen_width, screen_height, 0, 0, 0, 0);
+  g.nativeResume(fake_env, GLSV_OBJ);
+  g.nativeWindowFocusChanged(fake_env, GLSV_OBJ, 1);
+  debugPrintf("startup sequence complete\n");
 
-  { fn_env_4str f = (fn_env_4str)need(FUS("nativeSetDeviceStrings"));
-    if (f) { f(env, cls, jstr("NextOS"), jstr("nextos"), jstr("NextOS"), jstr("mali"));
-      fprintf(stderr, "nativeSetDeviceStrings OK\n"); } }
+  open_controller();
+  SDL_GameControllerEventState(SDL_ENABLE);
+  // register the controller once so the engine's "connected" gate is set
+  g.controllerSetData(fake_env, FUSION_OBJ, 0, 0, 0.0f, 0.0f);
 
-  { fn_env_str f = (fn_env_str)need(FUS("nativeAddAssetPackLocation"));
-    static const char *packs[] = { "assets_cutscenes", "assets_music",
-                                   "assets_shaders", "assets_main", "assets_lofi" };
-    for (int i = 0; f && i < 5; i++) {
-      snprintf(pbuf, sizeof(pbuf), "%s/files/assetpacks/%s/1079/1079", cwd, packs[i]);
-      f(env, cls, jstr(pbuf));
-      fprintf(stderr, "nativeAddAssetPackLocation(%s)\n", pbuf);
-    }
-  }
+  // 30 fps fixed-timestep pacing
+  const uint64_t perf_freq = SDL_GetPerformanceFrequency();
+  const uint64_t frame_ticks = perf_freq / 30;
 
-  /* --- GLSurfaceView: coldBoot -> init -> resize -> focus -> resume --- */
-  /* nativeColdBoot ANTES do nativeInit (receita lswtfa): inicializa o estado que
-   * o engine espera; sem ele o render-thread fica esperando "load completo". */
-  { void (*f)(void *, void *) = (void (*)(void *, void *))
-        so_find_addr_safe(GLS("nativeColdBoot"));
-    if (f) { fprintf(stderr, "== nativeColdBoot ==\n"); f(env, cls); } }
-  { fn_env_init f = (fn_env_init)need(GLS("nativeInit"));
-    if (!f) return 1;
-    fprintf(stderr, "== nativeInit ==\n");
-    f(env, cls, NULL /*EGLConfig*/, &fake_activity); }
-
-  { fn_env_6i f = (fn_env_6i)need(GLS("nativeResize"));
-    if (f) { f(env, cls, SCREEN_W, SCREEN_H, 0, 0, 0, 0);
-      fprintf(stderr, "nativeResize(%dx%d)\n", SCREEN_W, SCREEN_H); } }
-
-  { fn_env_b f = (fn_env_b)need(GLS("nativeWindowFocusChanged"));
-    if (f) { f(env, cls, 1); fprintf(stderr, "nativeWindowFocusChanged(1)\n"); } }
-
-  { fn_env_v f = (fn_env_v)need(GLS("nativeResume"));
-    if (f) { f(env, cls); fprintf(stderr, "nativeResume()\n"); } }
-
-  /* --- game loop: nativeRender + swap + input debug (lb2_tap/lb2_shot) --- */
-  fn_env_v f_render = (fn_env_v)need(GLS("nativeRender"));
-  if (!f_render) return 1;
-  fn_touch f_down = (fn_touch)so_find_addr_safe(FUS("nativeTouchEventDown"));
-  fn_touch f_up   = (fn_touch)so_find_addr_safe(FUS("nativeTouchEventUp"));
-
-  /* nativeSkippedMovie: sinaliza "filme pulado" p/ a engine avancar sem player Java */
-  void (*f_skipmovie)(void *, void *) = (void (*)(void *, void *))
-      so_find_addr_safe(GLS("nativeSkippedMovie"));
-
-  fprintf(stderr, "== entrando no game loop ==\n");
+  int running = 1;
   unsigned frame = 0;
-  int tap_frames = 0; float tap_x = 0, tap_y = 0;
-  for (;;) {
-    egl_shim_gl_acquire();       /* render-thread reassume o ctx (loader pode ter pego) */
-    if (g_movie_skip_pending && f_skipmovie) {
-      g_movie_skip_pending = 0;
-      f_skipmovie(env, cls);
-      fprintf(stderr, "nativeSkippedMovie() -> engine avanca\n");
-    }
-    f_render(env, cls);
-    egl_shim_SwapBuffers(NULL, NULL);  /* faz acquire+swap+release_if_wanted */
-    frame++;
+  while (running) {
+    const uint64_t frame_start = SDL_GetPerformanceCounter();
 
-    /* tap injetavel: echo "x y" > /dev/shm/lb2_tap */
-    if ((frame & 7) == 0) {
-      FILE *tf = fopen("/dev/shm/lb2_tap", "r");
-      if (tf) {
-        if (fscanf(tf, "%f %f", &tap_x, &tap_y) == 2 && f_down) {
-          f_down(env, cls, 0, tap_x, tap_y, 1.0f);
-          tap_frames = 4;
-          fprintf(stderr, "[tap] down %.0f,%.0f\n", tap_x, tap_y);
-        }
-        fclose(tf); unlink("/dev/shm/lb2_tap");
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+      switch (e.type) {
+        case SDL_QUIT: running = 0; break;
+        case SDL_CONTROLLERDEVICEADDED: if (!g_pad) open_controller(); break;
+        case SDL_CONTROLLERDEVICEREMOVED:
+          if (g_pad) { SDL_GameControllerClose(g_pad); g_pad = NULL; }
+          break;
+        default: break;
       }
     }
-    if (tap_frames > 0 && --tap_frames == 0 && f_up) {
-      f_up(env, cls, 0, tap_x, tap_y, 0.0f);
-      fprintf(stderr, "[tap] up\n");
+
+    // SELECT+START quits
+    if (gc_btn(SDL_CONTROLLER_BUTTON_BACK) && gc_btn(SDL_CONTROLLER_BUTTON_START))
+      running = 0;
+
+    update_gamepad();
+
+    g.nativeRender(fake_env, GLSV_OBJ);   // 1st call runs Fusion_OnceInit
+    if (frame < 8 || (frame % 600) == 0)
+      debugPrintf("render: frame %u (swaps=%d)\n", frame, egl_swap_count);
+    egl_fbo_frame_summary(frame);
+    frame++;
+    egl_present();
+
+    opensles_shim_pump_callbacks();
+
+    const uint64_t elapsed = SDL_GetPerformanceCounter() - frame_start;
+    if (elapsed < frame_ticks) {
+      const uint64_t ns = (frame_ticks - elapsed) * 1000000000ull / perf_freq;
+      struct timespec ts = { (long)(ns / 1000000000ull), (long)(ns % 1000000000ull) };
+      nanosleep(&ts, NULL);
     }
   }
+
+  g.nativePause(fake_env, GLSV_OBJ);
+  if (g.nativeDone) g.nativeDone(fake_env, GLSV_OBJ);
+  if (g_pad) SDL_GameControllerClose(g_pad);
+  SDL_Quit();
   return 0;
 }

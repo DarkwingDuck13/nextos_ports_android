@@ -1,8 +1,9 @@
-/*
- * error.h -- error handler
+/* error.h -- error handler
  *
- * Based on max_arm64 by Jaakko Lukkari / fgsfds / Andy Nguyen
- * Adapted for Syberia ARM64 port
+ * Copyright (C) 2021 fgsfds
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
  */
 
 #ifndef __ERROR_H__
