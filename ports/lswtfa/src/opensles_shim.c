@@ -366,7 +366,12 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
     got = (got / frame_size) * frame_size;
     uint32_t src_frames_got = got / frame_size;
     if (src_frames_got == 0) continue;
+    /* queued_count feeds bq_GetState, which the game's stream feeder uses to
+     * decide whether the queue is full; an unsynchronized decrement here races
+     * queue_push and drifts the count up until the feeder starves the music. */
+    SDL_AtomicLock(&g_enqueue_lock);
     queue_consume(p, got);
+    SDL_AtomicUnlock(&g_enqueue_lock);
     p->played_bytes += got;
 
     /* Detect underrun: got less than requested = fade out last frames to avoid click */
@@ -693,9 +698,11 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
         p->headatend_fired = 0;
         p->decoder_done = 0;
         p->empty_polls = 0;
+        SDL_AtomicLock(&g_enqueue_lock);
         p->ring_head = 0;
         p->ring_tail = 0;
         queue_reset(p);
+        SDL_AtomicUnlock(&g_enqueue_lock);
       }
       if (state == SL_PLAYSTATE_PLAYING && p->play_state != SL_PLAYSTATE_PLAYING) {
         p->frames_played = 0;
@@ -828,12 +835,14 @@ static SLresult bq_Clear(void *self) {
       AudioPlayer *p = &g_players[i];
       /* debugPrintf("opensles_shim: player %d BufferQueue Clear\n", i); */
       device_lock();
+      SDL_AtomicLock(&g_enqueue_lock);
       p->ring_head = 0;
       p->ring_tail = 0;
       queue_reset(p);
       p->enqueued_since_cb = 0;
       p->enqueue_counter = 0;
       p->ever_enqueued = 0;
+      SDL_AtomicUnlock(&g_enqueue_lock);
       p->headatend_fired = 0;
       p->decoder_done = 0;
       p->empty_polls = 0;
@@ -858,6 +867,14 @@ static SLresult bq_GetState(void *self, void *pState) {
         }
         state[0] = p->queued_count;
         state[1] = play_index;
+        if (p->queue_capacity && p->queued_count >= p->queue_capacity) {
+          static uint32_t full_logs = 0;
+          if (full_logs < 12) {
+            full_logs++;
+            debugPrintf("audio: player %d GetState FULL count=%u cap=%u ring=%u\n",
+                        i, p->queued_count, p->queue_capacity, ring_readable(p));
+          }
+        }
       }
       return SL_RESULT_SUCCESS;
     }
@@ -1253,7 +1270,9 @@ void opensles_shim_pump_callbacks(void) {
         }
         device_lock();
         p->play_state = SL_PLAYSTATE_STOPPED;
+        SDL_AtomicLock(&g_enqueue_lock);
         queue_reset(p);
+        SDL_AtomicUnlock(&g_enqueue_lock);
         device_unlock();
       }
     }
