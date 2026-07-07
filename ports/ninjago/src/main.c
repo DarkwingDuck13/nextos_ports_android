@@ -49,9 +49,13 @@ size_t text_size = 0;
 
 #define SO_REGION_MB 256
 
-// Response fed to nativeSetAlertDialogResponse for auto-dismissed dialogs.
-// 1 = positive button (proceed/continue). Tune from the dialog text if needed.
-#define ALERT_RESPONSE 1
+// nativeSetAlertDialogResponse values for the boot "Can't access Google Play /
+// create a new save?" prompt (pos="No" keeps the previous save, neg="Yes"
+// overwrites it). Button code 0 = "No"/keep-load, 1 = "Yes"/new-overwrite.
+// We answer conditionally on whether a local save already exists so relaunching
+// LOADS progress instead of wiping it every boot.
+#define ALERT_RESP_KEEP 0   // "No"  -> keep & load existing save
+#define ALERT_RESP_NEW  1   // "Yes" -> create a fresh save (first run)
 
 extern void pthr_mark_render_thread(void);
 
@@ -280,7 +284,9 @@ static void run_boot_sequence(void) {
 enum {
   TFA_L2 = 0x0001, TFA_R2 = 0x0002, TFA_L1 = 0x0004, TFA_R1 = 0x0008,
   TFA_SOUTH = 0x0010, TFA_EAST = 0x0020, TFA_WEST = 0x0040, TFA_NORTH = 0x0080,
-  TFA_L3 = 0x0200, TFA_R3 = 0x0400, TFA_START = 0x0800,
+  // Ninjago's Fusion build swaps the START and L3 bits vs TFA: physical START
+  // must send 0x0200 (engine reads it as Start/Pause) and L3 sends 0x0800.
+  TFA_L3 = 0x0800, TFA_R3 = 0x0400, TFA_START = 0x0200,
 };
 
 #define STICK_DEADZONE    8000
@@ -463,8 +469,13 @@ int main(int argc, char *argv[]) {
     // Feed the positive button so sign-in/consent prompts dismiss and New Game
     // proceeds. Value derived empirically from the dialog text in debug.log.
     if (g_alert_pending && g.setAlertResponse) {
-      g.setAlertResponse(fake_env, FUSION_OBJ, ALERT_RESPONSE);
-      debugPrintf("alert: fed response %d\n", ALERT_RESPONSE);
+      struct stat sst;
+      int have_save = (stat(SAVE_GAME_FILE, &sst) == 0 && sst.st_size > 0);
+      int resp = have_save ? ALERT_RESP_KEEP : ALERT_RESP_NEW;
+      g.setAlertResponse(fake_env, FUSION_OBJ, resp);
+      debugPrintf("alert: save %s -> fed response %d (%s)\n",
+                  have_save ? "present" : "absent", resp,
+                  have_save ? "keep/load" : "new");
       g_alert_pending = 0;
     }
 

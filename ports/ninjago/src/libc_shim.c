@@ -294,6 +294,14 @@ FILE *fopen_fake(const char *path, const char *mode) {
     if (ext && (strcasecmp(ext, ".fib") == 0 || strcasecmp(ext, ".dat") == 0))
       setvbuf(f, NULL, _IOFBF, 256 * 1024);
   }
+  // Make save I/O observable: log every open of savegame.dat/config.dat with the
+  // resulting size so a Continue/load can be confirmed from the log.
+  if (f && strstr(p, "savegame.dat")) {
+    long cur = ftell(f); fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, cur, SEEK_SET);
+    debugPrintf("SAVE: fopen savegame.dat mode=%s -> OK size=%ld\n", mode, sz);
+  } else if (f && strstr(p, "config.dat")) {
+    debugPrintf("SAVE: fopen config.dat mode=%s -> OK\n", mode);
+  }
   if (!f)
     debugPrintf("fopen(%s => %s, %s) FAILED\n", path, p, mode);
   return f;
