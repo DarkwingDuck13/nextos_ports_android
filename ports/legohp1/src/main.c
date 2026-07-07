@@ -297,15 +297,24 @@ enum {
 #define TRIGGER_THRESHOLD 16000
 
 static SDL_GameController *g_pad = NULL;
+static SDL_Joystick *g_joy = NULL;   // raw joystick view of the same pad
 static uint64_t g_back_prev = 0;
 static int g_cursor = 0;   // virtual touch cursor (fallback; env LEGOHP1_CURSOR=1)
-static int g_padlog = 0;   // raw pad dump to debug.log (env LEGOHP1_PADLOG=1)
+static int g_padlog = 0;   // raw pad dump (env LEGOHP1_PADLOG=1 or /dev/shm/hp_padlog)
 
 static void open_controller(void) {
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
     if (SDL_IsGameController(i)) {
       g_pad = SDL_GameControllerOpen(i);
-      if (g_pad) { debugPrintf("input: opened controller '%s'\n", SDL_GameControllerName(g_pad)); return; }
+      if (g_pad) {
+        g_joy = SDL_GameControllerGetJoystick(g_pad);
+        debugPrintf("input: opened controller '%s' (axes=%d buttons=%d hats=%d)\n",
+                    SDL_GameControllerName(g_pad),
+                    g_joy ? SDL_JoystickNumAxes(g_joy) : -1,
+                    g_joy ? SDL_JoystickNumButtons(g_joy) : -1,
+                    g_joy ? SDL_JoystickNumHats(g_joy) : -1);
+        return;
+      }
     }
   }
 }
@@ -375,17 +384,25 @@ static void hp_fna_poll(void *dev) {
     ly = (rly > STICK_DEADZONE || rly < -STICK_DEADZONE) ? rly * scale : 0.f;
     rx = (rrx > STICK_DEADZONE || rrx < -STICK_DEADZONE) ? rrx * scale : 0.f;
     ry = (rry > STICK_DEADZONE || rry < -STICK_DEADZONE) ? rry * scale : 0.f;
+    // Twin USB PS2 adapters often deliver the sticks only on the raw joystick
+    // axes (and only with the pad's ANALOG mode on); fall back to raw axes 0/1
+    // when the mapped GameController axes are silent.
+    if (g_joy && lx == 0.f && ly == 0.f) {
+      int jx = SDL_JoystickGetAxis(g_joy, 0);
+      int jy = SDL_JoystickGetAxis(g_joy, 1);
+      if (jx > STICK_DEADZONE || jx < -STICK_DEADZONE) lx = jx * scale;
+      if (jy > STICK_DEADZONE || jy < -STICK_DEADZONE) ly = jy * scale;
+    }
     stick_circle_to_square(&lx, &ly);
   }
 
+  // d-pad feeds only its own elements (10..13) -- the engine derives walking
+  // from the analog stick itself (Controls_DPadFromAnalogStick), and the d-pad
+  // keeps its native functions.
   int d_up = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP);
   int d_dn = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
   int d_lf = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
   int d_rt = gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-  if (d_lf) lx = -1.f;
-  if (d_rt) lx =  1.f;
-  if (d_up) ly = -1.f;
-  if (d_dn) ly =  1.f;
 
   int a = gc_btn(SDL_CONTROLLER_BUTTON_A), b = gc_btn(SDL_CONTROLLER_BUTTON_B);
   int x = gc_btn(SDL_CONTROLLER_BUTTON_X), y = gc_btn(SDL_CONTROLLER_BUTTON_Y);
@@ -403,13 +420,18 @@ static void hp_fna_poll(void *dev) {
   { FILE *df = fopen("/dev/shm/hp_dir", "r");
     if (df) { float fx, fy; if (fscanf(df, "%f %f", &fx, &fy) == 2) { lx = fx; ly = fy; } fclose(df); } }
 
-  if (g_padlog) {
+  {
     static unsigned fc = 0;
-    int any = a||b||x||y||l1||r1||start||rl2>4000||rr2>4000;
-    if (any || (fc % 90) == 0)
-      debugPrintf("PAD raw: L(%d,%d) R(%d,%d) trig(%d,%d) A%d B%d X%d Y%d L1%d R1%d ST%d\n",
-                  (int)(lx*1000),(int)(ly*1000),(int)(rx*1000),(int)(ry*1000),
-                  rl2, rr2, a,b,x,y,l1,r1,start);
+    if ((fc % 30) == 0 && access("/dev/shm/hp_padlog", F_OK) == 0) g_padlog = 1;
+    if (g_padlog) {
+      int any = a||b||x||y||l1||r1||start||rl2>4000||rr2>4000;
+      if (any || (fc % 90) == 0)
+        debugPrintf("PAD raw: L(%d,%d) R(%d,%d) jaxes(%d,%d,%d,%d) trig(%d,%d) A%d B%d X%d Y%d L1%d R1%d ST%d\n",
+                    (int)(lx*1000),(int)(ly*1000),(int)(rx*1000),(int)(ry*1000),
+                    g_joy ? SDL_JoystickGetAxis(g_joy,0) : 0, g_joy ? SDL_JoystickGetAxis(g_joy,1) : 0,
+                    g_joy ? SDL_JoystickGetAxis(g_joy,2) : 0, g_joy ? SDL_JoystickGetAxis(g_joy,3) : 0,
+                    rl2, rr2, a,b,x,y,l1,r1,start);
+    }
     fc++;
   }
 
@@ -489,19 +511,35 @@ static void hp_controls_mode_update(void) {
   void **joyp = (void **)(b + 0x2c80ec);
   if (*joyp) *(volatile uint32_t *)*joyp |= 1;  // joypad device: connected
 
-  // manual override for headless testing
-  if (access("/dev/shm/hp_pad", F_OK) == 0 && !g_ctl_mode) hp_controls_set_mode(1);
-  if (access("/dev/shm/hp_touch", F_OK) == 0 && g_ctl_mode) hp_controls_set_mode(0);
-  if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
+  // engine mode tracker (frontend vs in-game) -- log transitions to learn the
+  // enum, and auto-flip pad/touch on the known values.
+  {
+    static int last_mode = -12345;
+    int m = *(int *)(b + 0x2c5aa0);   // geMain_Mode
+    if (m != last_mode) {
+      debugPrintf("geMain_Mode: %d -> %d (ctl=%s)\n", last_mode, m,
+                  g_ctl_mode ? "PAD" : "TOUCH");
+      last_mode = m;
+    }
+  }
 
-  // last-input-wins: pad button activity -> pad mode
-  if (!g_ctl_mode && g_pad) {
-    int any = gc_btn(SDL_CONTROLLER_BUTTON_A) || gc_btn(SDL_CONTROLLER_BUTTON_B) ||
-              gc_btn(SDL_CONTROLLER_BUTTON_X) || gc_btn(SDL_CONTROLLER_BUTTON_Y) ||
-              gc_btn(SDL_CONTROLLER_BUTTON_START) ||
-              gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP) || gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ||
-              gc_btn(SDL_CONTROLLER_BUTTON_DPAD_LEFT) || gc_btn(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-    if (any) hp_controls_set_mode(1);
+  // auto mode: in-level (GOPlayer exists) -> native pad; frontend/menus ->
+  // touch bindings + virtual cursor. Manual /dev/shm overrides for testing.
+  if (access("/dev/shm/hp_pad", F_OK) == 0) {
+    if (!g_ctl_mode) hp_controls_set_mode(1);
+  } else if (access("/dev/shm/hp_touch", F_OK) == 0) {
+    if (g_ctl_mode) hp_controls_set_mode(0);
+  } else {
+    void *goplayer = *(void **)(b + 0x2d12cc);   // GOPlayer_Active
+    int want_pad = goplayer != NULL;
+    if (want_pad != g_ctl_mode) hp_controls_set_mode(want_pad);
+  }
+
+  if (access("/dev/shm/hp_dump", F_OK) == 0) { remove("/dev/shm/hp_dump"); hp_dump_controls_slots(); }
+  if (access("/dev/shm/hp_back", F_OK) == 0) {
+    remove("/dev/shm/hp_back");
+    g.backButtonPressed(fake_env, FUSION_OBJ);
+    debugPrintf("inject: backButtonPressed\n");
   }
 }
 
@@ -572,9 +610,10 @@ static void update_gamepad(void) {
 
   g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
 
-  // Fallback virtual touch cursor (LEGOHP1_CURSOR=1): stick moves, A taps.
-  // Default input path is the native joypad via the fnaController_Poll hook.
-  if (!g_cursor) goto no_cursor;
+  // Virtual touch cursor for the touch-only frontend: stick moves, A taps
+  // (touchDown/Up). Active whenever we're in TOUCH mode; in-level the pad is
+  // native (fnaController_Poll hook) and the cursor stays out of the way.
+  if (g_ctl_mode) goto no_cursor;
   static float tx = -1.f, ty = -1.f;
   if (tx < 0) { tx = screen_width * 0.5f; ty = screen_height * 0.5f; }
   const float cur_speed = 14.0f;
