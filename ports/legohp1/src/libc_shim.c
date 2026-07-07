@@ -162,26 +162,40 @@ int rename_fake(const char *from, const char *to) {
 }
 
 // ---------------------------------------------------------------------------
-// struct stat conversion (bionic aarch64 layout)
+// struct stat conversion (bionic ARMv7 / 32-bit layout -- 104 bytes)
+// The engine allocates an ARMv7-sized stat buffer; writing the aarch64 layout
+// (128 bytes) overflowed it and corrupted adjacent memory. Match exactly.
 // ---------------------------------------------------------------------------
 
-struct bionic_timespec { int64_t tv_sec; int64_t tv_nsec; };
 struct bionic_stat {
-  uint64_t st_dev; uint64_t st_ino; uint32_t st_mode; uint32_t st_nlink;
-  uint32_t st_uid; uint32_t st_gid; uint64_t st_rdev; uint64_t __pad1;
-  int64_t st_size; int32_t st_blksize; int32_t __pad2; int64_t st_blocks;
-  struct bionic_timespec st_atim, st_mtim, st_ctim;
-  uint32_t __unused4; uint32_t __unused5;
-};
+  uint64_t st_dev;              // 0
+  unsigned char __pad0[4];      // 8
+  uint32_t __st_ino;            // 12
+  uint32_t st_mode;             // 16
+  uint32_t st_nlink;            // 20
+  uint32_t st_uid;              // 24
+  uint32_t st_gid;              // 28
+  uint64_t st_rdev;             // 32
+  unsigned char __pad3[4];      // 40
+  int64_t  st_size;             // 48 (8-aligned)
+  uint32_t st_blksize;          // 56
+  uint64_t st_blocks;           // 64 (8-aligned)
+  uint32_t b_atime;             // 72  (glibc st_atime is a macro; avoid the name)
+  uint32_t b_atime_nsec;        // 76
+  uint32_t b_mtime;             // 80
+  uint32_t b_mtime_nsec;        // 84
+  uint32_t b_ctime;             // 88
+  uint32_t b_ctime_nsec;        // 92
+  uint64_t st_ino;              // 96
+};                              // total 104
 
 static void convert_stat(const struct stat *in, struct bionic_stat *out) {
   memset(out, 0, sizeof(*out));
-  out->st_dev = in->st_dev; out->st_ino = in->st_ino; out->st_mode = in->st_mode;
-  out->st_nlink = in->st_nlink; out->st_uid = in->st_uid; out->st_gid = in->st_gid;
-  out->st_rdev = in->st_rdev; out->st_size = in->st_size;
-  out->st_blksize = in->st_blksize; out->st_blocks = in->st_blocks;
-  out->st_atim.tv_sec = in->st_atime; out->st_mtim.tv_sec = in->st_mtime;
-  out->st_ctim.tv_sec = in->st_ctime;
+  out->st_dev = in->st_dev; out->__st_ino = in->st_ino; out->st_ino = in->st_ino;
+  out->st_mode = in->st_mode; out->st_nlink = in->st_nlink;
+  out->st_uid = in->st_uid; out->st_gid = in->st_gid; out->st_rdev = in->st_rdev;
+  out->st_size = in->st_size; out->st_blksize = in->st_blksize; out->st_blocks = in->st_blocks;
+  out->b_atime = in->st_atime; out->b_mtime = in->st_mtime; out->b_ctime = in->st_ctime;
 }
 
 int stat_fake(const char *path, struct bionic_stat *st) {

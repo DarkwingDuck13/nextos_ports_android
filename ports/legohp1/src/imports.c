@@ -100,6 +100,32 @@ static int hp_fprintf(FILE *f, const char *fmt, ...) {
   int r = vfprintf_fake(f, fmt, ap);
   va_end(ap); return r;
 }
+// The Fusion engine does 32-bit pointer math on its big arenas and assumes
+// heap in the low 2GB; glibc malloc on this device returns high addresses
+// (0xe9...) whose sign bit breaks the engine's arithmetic. Serve large blocks
+// from a low-memory bump arena via MAP_FIXED under 0x80000000.
+static uintptr_t g_low_next = 0x18000000; // 384MB mark, grows up
+static void *low_alloc(size_t n) {
+  size_t a = (n + 0xffff) & ~0xffffUL;
+  void *p = mmap((void *)g_low_next, a, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (p == MAP_FAILED) return NULL;
+  if ((uintptr_t)p >= 0x80000000UL) { munmap(p, a); return NULL; }
+  g_low_next = (uintptr_t)p + a;
+  return p;
+}
+static void *malloc_log(size_t n) {
+  void *p = (n >= (8u<<20)) ? low_alloc(n) : NULL;   // big -> low arena
+  if (!p) p = malloc(n);
+  if (n >= (1u<<20) || !p)
+    debugPrintf("malloc(%zu = %.1fMB) -> %p%s\n", n, n/1048576.0, p, p?"":" *** NULL ***");
+  return p;
+}
+static void *calloc_log(size_t a, size_t b) {
+  void *p = calloc(a,b);
+  if ((size_t)a*b >= (1u<<20) || !p) debugPrintf("calloc(%zu) -> %p%s\n",(size_t)a*b,p,p?"":" NULL");
+  return p;
+}
 static int raise_fake(int sig) { debugPrintf("game raise(%d) ignored\n", sig); return 0; }
 
 // ---------------------------------------------------------------------------
@@ -196,8 +222,8 @@ DynLibFunction dynlib_functions[] = {
   // memory / stdlib
   { "abort", (uintptr_t)&abort_log }, { "atof", (uintptr_t)&atof },
   { "atoi", (uintptr_t)&atoi }, { "atol", (uintptr_t)&atol }, { "bsearch", (uintptr_t)&bsearch },
-  { "free", (uintptr_t)&free }, { "malloc", (uintptr_t)&malloc },
-  { "calloc", (uintptr_t)&calloc }, { "realloc", (uintptr_t)&realloc },
+  { "free", (uintptr_t)&free }, { "malloc", (uintptr_t)&malloc_log },
+  { "calloc", (uintptr_t)&calloc_log }, { "realloc", (uintptr_t)&realloc },
   { "memcmp", (uintptr_t)&memcmp }, { "memcpy", (uintptr_t)&memcpy },
   { "memmove", (uintptr_t)&memmove }, { "memset", (uintptr_t)&memset }, { "memchr", (uintptr_t)&memchr },
   { "qsort", (uintptr_t)&qsort }, { "posix_memalign", (uintptr_t)&posix_memalign_fake },
