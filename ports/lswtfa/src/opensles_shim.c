@@ -101,6 +101,7 @@ typedef struct {
   int ever_enqueued;
   int headatend_fired;
   int decoder_done;
+  volatile uint32_t empty_polls; /* consecutive dry callback polls (refill thread) */
   volatile uint32_t underrun_count;
   volatile uint32_t fadeout_count;
   volatile uint32_t frames_played;  /* total output frames mixed, for fade-in */
@@ -254,11 +255,20 @@ static void refill_player(AudioPlayer *p) {
   while (p->callback && readable <= refill_threshold && max_calls > 0) {
     uint32_t counter_before = p->enqueue_counter;
     p->callback(&p->bq_ptr, p->callback_context);
-    if (p->ever_enqueued && !p->decoder_done &&
-        p->enqueue_counter == counter_before) {
-      p->decoder_done = 1;
+    if (p->enqueue_counter == counter_before) {
+      /* Empty poll: a streaming decoder can be transiently dry (feeder thread
+       * behind); declaring end-of-stream on one miss killed and restarted the
+       * music constantly. Only give up after ~200ms of consecutive dry polls. */
+      if (p->ever_enqueued && !p->decoder_done) {
+        if (++p->empty_polls > 50) {
+          p->decoder_done = 1;
+          debugPrintf("audio: player %ld decoder_done after %u dry polls\n",
+                      (long)(p - g_players), p->empty_polls);
+        }
+      }
       break;
     }
+    p->empty_polls = 0;
     readable = ring_readable(p);
     max_calls--;
   }
@@ -565,6 +575,7 @@ static void player_reset_meta(AudioPlayer *p) {
   p->ever_enqueued = 0;
   p->headatend_fired = 0;
   p->decoder_done = 0;
+  p->empty_polls = 0;
   p->underrun_count = 0;
   p->fadeout_count = 0;
   p->frames_played = 0;
@@ -681,6 +692,7 @@ static SLresult play_SetPlayState(void *self, SLuint32 state) {
       if (state == SL_PLAYSTATE_STOPPED && p->play_state != SL_PLAYSTATE_STOPPED) {
         p->headatend_fired = 0;
         p->decoder_done = 0;
+        p->empty_polls = 0;
         p->ring_head = 0;
         p->ring_tail = 0;
         queue_reset(p);
@@ -824,6 +836,7 @@ static SLresult bq_Clear(void *self) {
       p->ever_enqueued = 0;
       p->headatend_fired = 0;
       p->decoder_done = 0;
+      p->empty_polls = 0;
       device_unlock();
       return SL_RESULT_SUCCESS;
     }
