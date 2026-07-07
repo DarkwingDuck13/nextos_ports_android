@@ -27,13 +27,18 @@ typedef struct {
   int32_t sched_priority;
 } pthread_attr_t_bionic;
 
-// Bionic's LP64 mutex (40 bytes) / cond (48) storage carries {real_ptr,
-// magic} in its first 16 bytes: the per-call "initialized yet?" check is one
-// atomic load (the game locks/signals thousands of times per frame).
-// Statically initialized storage is zero past the kind word, so magic == 0
-// means uninitialized.
-typedef struct { pthread_mutex_t *real_ptr; uint32_t magic; } pthread_mutex_t_bionic;
-typedef struct { pthread_cond_t  *real_ptr; uint32_t magic; } pthread_cond_t_bionic;
+// LP32 (32-bit ARM): bionic pthread_mutex_t / pthread_cond_t are a SINGLE
+// 4-byte word. These MUST stay 4 bytes -- the engine packs them inline in tight
+// structs (e.g. fnEVENT = { mutex@0, cond@4, uint8 signaled@8 }); an 8-byte
+// {ptr,magic} here (the LP64 layout) overruns the neighbouring field and
+// corrupts the struct (the magic 0x4D58544D "MTXM" then leaks out as a bad
+// pointer). We reinterpret the word as a pointer to a heap glibc object; a
+// value below 0x10000 (0 / 0x4000 / 0x8000 bionic init constants) means "not
+// wrapped yet" (mmap_min_addr guarantees no real pointer is that low).
+typedef struct { pthread_mutex_t *real_ptr; } pthread_mutex_t_bionic;
+typedef struct { pthread_cond_t  *real_ptr; } pthread_cond_t_bionic;
+_Static_assert(sizeof(pthread_mutex_t_bionic) == 4, "LP32 bionic mutex must be 4 bytes");
+_Static_assert(sizeof(pthread_cond_t_bionic)  == 4, "LP32 bionic cond must be 4 bytes");
 
 int pthread_create_soloader(pthread_t *thread, const pthread_attr_t_bionic *attr, void *(*start)(void *), void *param);
 int pthread_join_soloader(pthread_t thread, void **value_ptr);

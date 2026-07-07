@@ -55,9 +55,11 @@ static struct {
   void (*setCachePath)(void *, void *, void *);
   void (*setDeviceStrings)(void *, void *, void *, void *, void *, void *);
   void (*initAssetManager)(void *, void *, void *);
-  // addOBBEntriesToFusion(env, thiz, jstring obbDir, jobjectArray obbFilenames):
-  // iterates the filename array, builds obbDir/name and registers each OBB.
-  void (*addOBBEntries)(void *, void *, void *, void *);
+  // OBB package registry (fnOBBPackages_*): AddFile registers the physical .obb;
+  // AddFileEntry maps each subfile name -> (offset, length) inside the OBB so the
+  // engine can fopen(obb)+fseek to read it. obb_register() walks the zip dir.
+  int  (*obbAddFile)(const char *path, int stat_now);
+  void (*obbAddFileEntry)(unsigned pkg, const char *name, uint64_t off, uint64_t len);
   fusion_ctrl_fn controllerSetData;
   int  (*backButtonPressed)(void *, void *);
   fusion_touch_fn touchDown;
@@ -82,7 +84,8 @@ static void resolve_entry_points(void) {
   RESOLVE(setCachePath,     "Java_com_wbgames_LEGOgame_Fusion_nativeSetCachePath");
   RESOLVE(setDeviceStrings, "Java_com_wbgames_LEGOgame_Fusion_nativeSetDeviceStrings");
   RESOLVE(initAssetManager, "Java_com_wbgames_LEGOgame_Fusion_nativeInitializeAssetManager");
-  RESOLVE_OPT(addOBBEntries,"Java_com_wbgames_LEGOgame_Fusion_addOBBEntriesToFusion");
+  g.obbAddFile      = (void *)so_find_addr_rx(&game_mod, "_Z21fnOBBPackages_AddFilePKcb");
+  g.obbAddFileEntry = (void *)so_find_addr_rx(&game_mod, "_Z26fnOBBPackages_AddFileEntryjPKcyy");
   g.controllerSetData = (fusion_ctrl_fn)so_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_Fusion_nativeControllerSetData");
   RESOLVE(backButtonPressed,"Java_com_wbgames_LEGOgame_Fusion_nativeBackButtonPressed");
   g.touchDown = (fusion_touch_fn)so_find_addr_rx(&game_mod, "Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventDown");
@@ -129,6 +132,72 @@ static void install_crash_handler(void) {
   sigaction(SIGILL, &sa, NULL);
 }
 
+// ---------------------------------------------------------------------------
+// OBB registration: walk the APK-Expansion zip central directory and feed every
+// stored entry to the engine's fnOBBPackages registry (offset+length inside the
+// OBB). The engine reads a subfile via fopen(OBB)+fseek(dataOffset). (from lotr)
+// ---------------------------------------------------------------------------
+static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t rd32(const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); }
+
+static int obb_register(const char *obb_path) {
+  FILE *f = fopen(obb_path, "rb");
+  if (!f) { debugPrintf("OBB: cannot open %s\n", obb_path); return -1; }
+  fseek(f, 0, SEEK_END);
+  long fsize = ftell(f);
+
+  long scan = fsize < 65557 ? fsize : 65557;
+  uint8_t *tail = malloc(scan);
+  fseek(f, fsize - scan, SEEK_SET);
+  if (fread(tail, 1, scan, f) != (size_t)scan) { free(tail); fclose(f); return -1; }
+  long eocd = -1;
+  for (long i = scan - 22; i >= 0; i--)
+    if (rd32(tail + i) == 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) { debugPrintf("OBB: no EOCD found\n"); free(tail); fclose(f); return -1; }
+  uint32_t cd_count = rd16(tail + eocd + 10);
+  uint32_t cd_size  = rd32(tail + eocd + 12);
+  uint32_t cd_off   = rd32(tail + eocd + 16);
+  free(tail);
+
+  unsigned pkg = (unsigned)g.obbAddFile(obb_path, 1);
+
+  uint8_t *cd = malloc(cd_size);
+  fseek(f, cd_off, SEEK_SET);
+  if (fread(cd, 1, cd_size, f) != cd_size) { free(cd); fclose(f); return -1; }
+
+  int registered = 0, skipped = 0;
+  uint8_t lh[30];
+  uint32_t p = 0;
+  for (uint32_t i = 0; i < cd_count && p + 46 <= cd_size; i++) {
+    if (rd32(cd + p) != 0x02014b50) break;
+    uint16_t method  = rd16(cd + p + 10);
+    uint32_t usize   = rd32(cd + p + 24);
+    uint16_t fnlen   = rd16(cd + p + 28);
+    uint16_t extralen= rd16(cd + p + 30);
+    uint16_t cmtlen  = rd16(cd + p + 32);
+    uint32_t lho     = rd32(cd + p + 42);
+    char name[512];
+    uint16_t n = fnlen < sizeof(name) - 1 ? fnlen : sizeof(name) - 1;
+    memcpy(name, cd + p + 46, n);
+    name[n] = 0;
+    p += 46 + fnlen + extralen + cmtlen;
+
+    if (fnlen == 0 || name[fnlen - 1] == '/') continue;
+    if (method != 0) { skipped++; continue; }   // only STORED are raw-readable
+
+    fseek(f, lho, SEEK_SET);
+    if (fread(lh, 1, 30, f) != 30 || rd32(lh) != 0x04034b50) { skipped++; continue; }
+    uint32_t data_off = lho + 30 + rd16(lh + 26) + rd16(lh + 28);
+    g.obbAddFileEntry(pkg, name, data_off, usize);
+    registered++;
+  }
+  free(cd);
+  fclose(f);
+  debugPrintf("OBB: pkg=%u registered %d entries (%d skipped) from %s\n",
+              pkg, registered, skipped, obb_path);
+  return registered > 0 ? 0 : -1;
+}
+
 // boot sequence (mirrors GameActivity.onCreate)
 static void run_boot_sequence(void) {
   g.setWritePath(fake_env, FUSION_OBJ, jni_make_string(WRITE_PATH));
@@ -138,13 +207,8 @@ static void run_boot_sequence(void) {
                      jni_make_string(DEVICE_MODEL), jni_make_string(DEVICE_PRODUCT),
                      jni_make_string(DEVICE_MANUFACTURER), jni_make_string(DEVICE_HARDWARE));
   g.initAssetManager(fake_env, FUSION_OBJ, ASSETMGR_OBJ);
-  if (g.addOBBEntries) {
-    struct stat obbst;
-    long long obblen = (stat(OBB_FILE, &obbst) == 0) ? (long long)obbst.st_size : 0;
-    g.addOBBEntries(fake_env, FUSION_OBJ, jni_make_string(OBB_DIR),
-                    jni_make_obb_array(OBB_FILE, obblen));
-    debugPrintf("boot: registered OBB %s/%s (%lld bytes)\n", OBB_DIR, OBB_FILE, obblen);
-  }
+  if (obb_register(OBB_FILE) < 0)
+    debugPrintf("boot: WARN OBB registration failed (assets may be missing)\n");
 }
 
 // ---------------------------------------------------------------------------

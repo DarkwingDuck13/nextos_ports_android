@@ -38,8 +38,10 @@ void pthr_ensure_fake_tls(void) {}
 void pthr_pin_bg_core(void) {}
 void pthr_set_role_symbols(uintptr_t a, uintptr_t r, uintptr_t n) { (void)a; (void)r; (void)n; }
 
-#define PTHR_MUTEX_MAGIC 0x4D58544Du // "MTXM"
-#define PTHR_COND_MAGIC  0x444E434Du // "CNDM"
+// A wrapped mutex/cond stores the heap glibc pointer in its 4-byte slot; any
+// value below this is an unwrapped bionic init constant (0 / 0x4000 / 0x8000).
+// mmap_min_addr (>= 0x10000 on Linux) guarantees no real pointer is this low.
+#define BIONIC_INIT_MAX ((uintptr_t)0x10000)
 
 static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -53,11 +55,12 @@ static int attr_static_init(pthread_attr_t_bionic *attr) {
 }
 
 static int mutex_static_init(pthread_mutex_t_bionic *mutex, const pthread_mutexattr_t *attr) {
-  if (__atomic_load_n(&mutex->magic, __ATOMIC_ACQUIRE) == PTHR_MUTEX_MAGIC)
-    return 0;
+  uintptr_t v = (uintptr_t)__atomic_load_n(&mutex->real_ptr, __ATOMIC_ACQUIRE);
+  if (v >= BIONIC_INIT_MAX) return 0;   // already wrapped
 
   pthread_mutex_lock(&init_lock);
-  if (__atomic_load_n(&mutex->magic, __ATOMIC_RELAXED) == PTHR_MUTEX_MAGIC) {
+  v = (uintptr_t)mutex->real_ptr;
+  if (v >= BIONIC_INIT_MAX) {
     pthread_mutex_unlock(&init_lock);
     return 0;
   }
@@ -66,7 +69,7 @@ static int mutex_static_init(pthread_mutex_t_bionic *mutex, const pthread_mutexa
   if (attr) {
     pthread_mutexattr_gettype((pthread_mutexattr_t *)attr, &kind);
   } else {
-    switch (*(int *)mutex) {
+    switch ((int)v) {  // the slot still holds the bionic static initializer
       case BIONIC_PTHREAD_RECURSIVE_MUTEX_INITIALIZER:  kind = PTHREAD_MUTEX_RECURSIVE;  break;
       case BIONIC_PTHREAD_ERRORCHECK_MUTEX_INITIALIZER: kind = PTHREAD_MUTEX_ERRORCHECK; break;
       default:                                          kind = PTHREAD_MUTEX_NORMAL;     break;
@@ -81,8 +84,7 @@ static int mutex_static_init(pthread_mutex_t_bionic *mutex, const pthread_mutexa
   pthread_mutexattr_destroy(&ma);
 
   if (ret == 0) {
-    mutex->real_ptr = real;
-    __atomic_store_n(&mutex->magic, PTHR_MUTEX_MAGIC, __ATOMIC_RELEASE);
+    __atomic_store_n(&mutex->real_ptr, real, __ATOMIC_RELEASE);
   } else {
     free(real);
     debugPrintf("pthr: mutex init for %p failed (%d)\n", (void *)mutex, ret);
@@ -92,11 +94,12 @@ static int mutex_static_init(pthread_mutex_t_bionic *mutex, const pthread_mutexa
 }
 
 static int cond_static_init(pthread_cond_t_bionic *cond, const pthread_condattr_t *attr) {
-  if (__atomic_load_n(&cond->magic, __ATOMIC_ACQUIRE) == PTHR_COND_MAGIC)
-    return 0;
+  uintptr_t v = (uintptr_t)__atomic_load_n(&cond->real_ptr, __ATOMIC_ACQUIRE);
+  if (v >= BIONIC_INIT_MAX) return 0;   // already wrapped
 
   pthread_mutex_lock(&init_lock);
-  if (__atomic_load_n(&cond->magic, __ATOMIC_RELAXED) == PTHR_COND_MAGIC) {
+  v = (uintptr_t)cond->real_ptr;
+  if (v >= BIONIC_INIT_MAX) {
     pthread_mutex_unlock(&init_lock);
     return 0;
   }
@@ -105,8 +108,7 @@ static int cond_static_init(pthread_cond_t_bionic *cond, const pthread_condattr_
   int ret = pthread_cond_init(real, attr);
 
   if (ret == 0) {
-    cond->real_ptr = real;
-    __atomic_store_n(&cond->magic, PTHR_COND_MAGIC, __ATOMIC_RELEASE);
+    __atomic_store_n(&cond->real_ptr, real, __ATOMIC_RELEASE);
   } else {
     free(real);
     debugPrintf("pthr: cond init for %p failed (%d)\n", (void *)cond, ret);
@@ -200,13 +202,12 @@ int pthread_mutex_init_soloader(pthread_mutex_t_bionic *uid, const pthread_mutex
 int pthread_mutex_destroy_soloader(pthread_mutex_t_bionic *mutex) {
   if (!mutex) return 0;
   pthread_mutex_lock(&init_lock);
-  if (__atomic_load_n(&mutex->magic, __ATOMIC_RELAXED) != PTHR_MUTEX_MAGIC) {
+  if ((uintptr_t)mutex->real_ptr < BIONIC_INIT_MAX) {  // never wrapped
     pthread_mutex_unlock(&init_lock);
     return 0;
   }
-  __atomic_store_n(&mutex->magic, 0, __ATOMIC_RELEASE);
   pthread_mutex_t *real = mutex->real_ptr;
-  mutex->real_ptr = NULL;
+  __atomic_store_n(&mutex->real_ptr, NULL, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&init_lock);
   int ret = pthread_mutex_destroy(real);
   free(real);
@@ -252,13 +253,12 @@ int pthread_cond_init_soloader(pthread_cond_t_bionic *cond, const pthread_condat
 int pthread_cond_destroy_soloader(pthread_cond_t_bionic *cond) {
   if (!cond) return 0;
   pthread_mutex_lock(&init_lock);
-  if (__atomic_load_n(&cond->magic, __ATOMIC_RELAXED) != PTHR_COND_MAGIC) {
+  if ((uintptr_t)cond->real_ptr < BIONIC_INIT_MAX) {  // never wrapped
     pthread_mutex_unlock(&init_lock);
     return 0;
   }
-  __atomic_store_n(&cond->magic, 0, __ATOMIC_RELEASE);
   pthread_cond_t *real = cond->real_ptr;
-  cond->real_ptr = NULL;
+  __atomic_store_n(&cond->real_ptr, NULL, __ATOMIC_RELEASE);
   pthread_mutex_unlock(&init_lock);
   int ret = pthread_cond_destroy(real);
   free(real);
