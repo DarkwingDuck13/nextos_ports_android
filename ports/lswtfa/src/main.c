@@ -317,7 +317,10 @@ static void run_boot_sequence(void) {
 enum {
   TFA_L2 = 0x0001, TFA_R2 = 0x0002, TFA_L1 = 0x0004, TFA_R1 = 0x0008,
   TFA_SOUTH = 0x0010, TFA_EAST = 0x0020, TFA_WEST = 0x0040, TFA_NORTH = 0x0080,
-  TFA_L3 = 0x0200, TFA_R3 = 0x0400, TFA_START = 0x0800,
+  // L3 e START estavam trocados: o clique do analógico esquerdo pausava e o
+  // START clicava o analógico (confirmado na tela; o LEGO Ninjago com esta
+  // mesma base já corrige assim). START = bit 9 (0x200), L3 = bit 11 (0x800).
+  TFA_START = 0x0200, TFA_R3 = 0x0400, TFA_L3 = 0x0800,
 };
 
 #define STICK_DEADZONE    8000
