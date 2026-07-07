@@ -598,14 +598,41 @@ static void update_gamepad(void) {
   if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_UP))    ly = -1.0f;
   if (gc_btn(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  ly =  1.0f;
 
-  if (g.controllerSetData)
-    g.controllerSetData(fake_env, FUSION_OBJ, 0, mask, lx, ly);
-  // Marvel has no nativeControllerSetData; controls are injected via the
-  // fnaController_Poll GOT hook (see pad_* below), so this path is a no-op there.
+  (void)mask; (void)lx; (void)ly;
+  // Marvel has no nativeControllerSetData; in-game input is injected via the
+  // fnaController_Poll GOT hook (mvl_fna_poll). Here we only drive the touch
+  // front-end (menus) with a right-stick virtual cursor + Back handling.
+
+  // --- right-stick virtual touch cursor (menu navigation) -----------------
+  // The title/menus are touch-only. We map the RIGHT stick to a screen pointer:
+  // while deflected, a finger is held down and tracks (the engine shows its hand
+  // cursor and highlights the button under it); releasing the stick lifts the
+  // finger, which "clicks" the highlighted button. The LEFT stick still moves
+  // the character in-game (native path), so the two never conflict.
+  {
+    static float cx = -1, cy = -1;   // current cursor pos (init = screen centre)
+    static int finger_down = 0;
+    if (cx < 0) { cx = screen_width * 0.5f; cy = screen_height * 0.5f; }
+    int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
+    int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
+    int active = (abs(raw_rx) > STICK_DEADZONE || abs(raw_ry) > STICK_DEADZONE);
+    if (active) {
+      const float speed = 14.0f;
+      cx += (raw_rx * scale) * speed;
+      cy += (raw_ry * scale) * speed;
+      if (cx < 0) cx = 0; else if (cx > screen_width)  cx = screen_width;
+      if (cy < 0) cy = 0; else if (cy > screen_height) cy = screen_height;
+      if (!finger_down) { if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f); finger_down = 1; }
+      else              { if (g.touchMove) g.touchMove(fake_env, FUSION_OBJ, 1, cx, cy, 1.0f); }
+    } else if (finger_down) {
+      if (g.touchUp) g.touchUp(fake_env, FUSION_OBJ, 1, cx, cy, 0.0f);   // release = click
+      finger_down = 0;
+    }
+  }
 
   // Back/Select -> back button (rising edge)
   uint64_t back = gc_btn(SDL_CONTROLLER_BUTTON_BACK) ? 1 : 0;
-  if (back && !g_back_prev)
+  if (back && !g_back_prev && g.backButtonPressed)
     g.backButtonPressed(fake_env, FUSION_OBJ);
   g_back_prev = back;
 }
