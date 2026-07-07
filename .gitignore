@@ -160,3 +160,5 @@ ports/*/datacenter
 ports/*/*.rz.txt
 ports/elderand/elderand
 ports/kof2012a/kof2012a
+ports/legobatman2/legobatman2
+ports/legobatman2/files/
