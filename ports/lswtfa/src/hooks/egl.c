@@ -145,16 +145,6 @@ void egl_present(void) {
     glClearColor(cc[0], cc[1], cc[2], cc[3]);
     if (scis) glEnable(GL_SCISSOR_TEST);
   }
-  if ((cur_frame_no % 60) == 0 && cur_frame_no > 0) {
-    // final frame content at three spread points, right before swap
-    unsigned char a[4], b[4], c[4];
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glReadPixels(640, 360, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, a);
-    glReadPixels(200, 600, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
-    glReadPixels(1000, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c);
-    debugPrintf("SCREEN: frame %u c=%u,%u,%u l=%u,%u,%u r=%u,%u,%u\n",
-                cur_frame_no, a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
-  }
   SDL_GL_SwapWindow(g_window);
   ++egl_swap_count;
   gl_release_if_wanted();
@@ -324,29 +314,8 @@ void glLinkProgramHook(GLuint program) {
 }
 GLuint glCreateShaderHook(GLenum type) { GLL(); GLuint r = glCreateShader(type); GLU(); return r; }
 GLuint glCreateProgramHook(void) { GLL(); GLuint r = glCreateProgram(); GLU(); return r; }
-void glShaderSourceHook(GLuint s, GLsizei c, const GLchar *const *str, const GLint *len) {
-  GLL();
-  glShaderSource(s, c, str, len);
-  // dump source for post-mortem shader analysis (tmpfs, small)
-  char path[64];
-  snprintf(path, sizeof(path), "/tmp/shaders/s%u.glsl", s);
-  FILE *fp = fopen(path, "w");
-  if (fp) {
-    for (GLsizei i = 0; i < c; i++) {
-      if (!str[i]) continue;
-      if (len && len[i] >= 0) fwrite(str[i], 1, (size_t)len[i], fp);
-      else fputs(str[i], fp);
-    }
-    fclose(fp);
-  }
-  GLU();
-}
-void glAttachShaderHook(GLuint p, GLuint s) {
-  GLL();
-  glAttachShader(p, s);
-  debugPrintf("PROG: %u <- shader %u\n", p, s);
-  GLU();
-}
+void glShaderSourceHook(GLuint s, GLsizei c, const GLchar *const *str, const GLint *len) { GLL(); glShaderSource(s, c, str, len); GLU(); }
+void glAttachShaderHook(GLuint p, GLuint s) { GLL(); glAttachShader(p, s); GLU(); }
 void glBindAttribLocationHook(GLuint p, GLuint i, const GLchar *n) { GLL(); glBindAttribLocation(p, i, n); GLU(); }
 void glUseProgramHook(GLuint p) { GLL(); glUseProgram(p); GLU(); }
 void glDeleteShaderHook(GLuint s) { GLL(); glDeleteShader(s); GLU(); }
@@ -402,30 +371,8 @@ static volatile GLuint cur_fbo = 0;
 static volatile int draws_fbo0 = 0, draws_fboN = 0;
 static int fbo_log_budget = 64;
 
-// sample the scene FBO's center pixel as we leave it, every ~2s, to tell
-// "scene renders black" apart from "composite loses the texture"
-static unsigned last_probe_frame = 0;
 void glBindFramebufferHook(GLenum t, GLuint f) {
   GLL();
-  static unsigned probe_frame_marker = ~0u;
-  static int probes_this_frame = 0;
-  if (f != cur_fbo && cur_fbo != 0 && draws_fboN > 0 &&
-      ((cur_frame_no - last_probe_frame) >= 60 || probe_frame_marker == cur_frame_no)) {
-    if (probe_frame_marker != cur_frame_no) {
-      probe_frame_marker = cur_frame_no;
-      probes_this_frame = 0;
-      last_probe_frame = cur_frame_no;
-    }
-    if (probes_this_frame < 6) {
-      probes_this_frame++;
-      unsigned char px[4] = {9,9,9,9}, px2[4] = {9,9,9,9};
-      glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);   // safe on small buffers
-      glReadPixels(300, 150, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px2);
-      debugPrintf("PROBE: frame %u fbo=%u p10=%u,%u,%u,%u p300=%u,%u,%u,%u err=0x%x\n",
-                  cur_frame_no, cur_fbo, px[0], px[1], px[2], px[3],
-                  px2[0], px2[1], px2[2], px2[3], glGetError());
-    }
-  }
   glBindFramebuffer(t, f);
   cur_fbo = f;
   GLU();
@@ -476,43 +423,8 @@ void glClearHook(GLbitfield m) { GLL(); glClear(m); GLU(); }
 void glClearColorHook(GLfloat r, GLfloat g, GLfloat b, GLfloat a) { GLL(); glClearColor(r, g, b, a); GLU(); }
 void glClearDepthfHook(GLfloat d) { GLL(); glClearDepthf(d); GLU(); }
 void glClearStencilHook(GLint s) { GLL(); glClearStencil(s); GLU(); }
-// composite diagnostics: when the scene has been rendered offscreen this frame,
-// dump which texture each backbuffer draw samples and its min filter (a
-// mipmapping min filter on a level-0-only FBO texture samples black).
-static void log_fbo0_draw(const char *tag, GLsizei count) {
-  // first 6 composite draws of one frame out of every ~120 (plus the first ones)
-  if (draws_fboN == 0) return;
-  if (cur_frame_no > 40 && (cur_frame_no % 120) != 0) return;
-  if (draws_fbo0 > 6) return;
-  GLint active = 0, t[4] = {0,0,0,0}, prog = 0;
-  glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
-  for (int u = 0; u < 4; u++) {
-    glActiveTexture(GL_TEXTURE0 + u);
-    glGetIntegerv(0x8069 /*GL_TEXTURE_BINDING_2D*/, &t[u]);
-  }
-  glActiveTexture((GLenum)active);
-  glGetIntegerv(0x8B8D /*GL_CURRENT_PROGRAM*/, &prog);
-  unsigned char px[4] = {9,9,9,9};
-  glReadPixels(640, 300, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px); // result so far
-  debugPrintf("COMPOSE: frame %u %s n=%d t0=%d t1=%d t2=%d t3=%d prog=%d out=%u,%u,%u err=0x%x\n",
-              cur_frame_no, tag, (int)count, t[0], t[1], t[2], t[3], prog,
-              px[0], px[1], px[2], glGetError());
-  // raster state that can silently clip/kill the composite quad
-  GLint vp[4] = {0}, sc[4] = {0};
-  GLboolean scis = 0, blend = 0, depth = 0;
-  GLint cmask[4] = {0};
-  glGetIntegerv(0x0BA2 /*GL_VIEWPORT*/, vp);
-  glGetIntegerv(0x0C10 /*GL_SCISSOR_BOX*/, sc);
-  scis = glIsEnabled(0x0C11 /*GL_SCISSOR_TEST*/);
-  blend = glIsEnabled(0x0BE2 /*GL_BLEND*/);
-  depth = glIsEnabled(0x0B71 /*GL_DEPTH_TEST*/);
-  glGetIntegerv(0x0C23 /*GL_COLOR_WRITEMASK*/, cmask);
-  debugPrintf("STATE: prog=%d vp=%d,%d,%d,%d scis=%d box=%d,%d,%d,%d blend=%d depth=%d mask=%d%d%d%d\n",
-              prog, vp[0], vp[1], vp[2], vp[3], scis, sc[0], sc[1], sc[2], sc[3],
-              blend, depth, cmask[0], cmask[1], cmask[2], cmask[3]);
-}
-void glDrawArraysHook(GLenum m, GLint f, GLsizei c) { GLL(); glDrawArrays(m, f, c); if (cur_fbo) draws_fboN++; else { draws_fbo0++; log_fbo0_draw("arrays", c); } GLU(); }
-void glDrawElementsHook(GLenum m, GLsizei c, GLenum t, const void *i) { GLL(); glDrawElements(m, c, t, i); if (cur_fbo) draws_fboN++; else { draws_fbo0++; log_fbo0_draw("elems", c); } GLU(); }
+void glDrawArraysHook(GLenum m, GLint f, GLsizei c) { GLL(); glDrawArrays(m, f, c); if (cur_fbo) draws_fboN++; else draws_fbo0++; GLU(); }
+void glDrawElementsHook(GLenum m, GLsizei c, GLenum t, const void *i) { GLL(); glDrawElements(m, c, t, i); if (cur_fbo) draws_fboN++; else draws_fbo0++; GLU(); }
 void glViewportHook(GLint x, GLint y, GLsizei w, GLsizei h) { GLL(); glViewport(x, y, w, h); GLU(); }
 void glScissorHook(GLint x, GLint y, GLsizei w, GLsizei h) { GLL(); glScissor(x, y, w, h); GLU(); }
 void glEnableHook(GLenum c) { GLL(); glEnable(c); GLU(); }
