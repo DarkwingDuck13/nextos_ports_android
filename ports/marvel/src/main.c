@@ -563,6 +563,14 @@ static void disable_tutorials(so_module *mod) {
   else debugPrintf("tutorials: g_bTutorialsEnabled not found\n");
 }
 
+// game-mode global: distinguishes the front-end (title/menus) from in-level so
+// we can bind A/B to "tap Play" only on the title screen.
+static int32_t *p_game_mode = NULL;
+static void resolve_game_mode(so_module *mod) {
+  p_game_mode = (int32_t *)so_find_addr(mod, "gLego_GameMode");
+  debugPrintf("state: gLego_GameMode ptr=%p\n", p_game_mode);
+}
+
 static void update_gamepad(void) {
   if (!g_pad) return;
 
@@ -615,6 +623,10 @@ static void update_gamepad(void) {
     if (cx < 0) { cx = screen_width * 0.5f; cy = screen_height * 0.5f; }
     int raw_rx = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTX);
     int raw_ry = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_RIGHTY);
+    // remote test override for the right-stick cursor (no physical pad via ssh):
+    // /dev/shm/mvl_rstick "rx ry" injects raw right-stick values (-32767..32767)
+    { FILE *rf = fopen("/dev/shm/mvl_rstick", "r");
+      if (rf) { int fx, fy; if (fscanf(rf, "%d %d", &fx, &fy) == 2) { raw_rx = fx; raw_ry = fy; } fclose(rf); } }
     int active = (abs(raw_rx) > STICK_DEADZONE || abs(raw_ry) > STICK_DEADZONE);
     if (active) {
       const float speed = 14.0f;
@@ -682,6 +694,7 @@ int main(int argc, char *argv[]) {
   resolve_entry_points();
   controls_install_native_pad(&game_mod);
   disable_tutorials(&game_mod);
+  resolve_game_mode(&game_mod);
   // obb_install_logging(&game_mod);  // diagnostic only; OBB mount is confirmed
 
   so_finalize(&game_mod);
@@ -745,11 +758,32 @@ int main(int argc, char *argv[]) {
     if (p_tutorials_enabled) *p_tutorials_enabled = 0;  // keep tutorials off
 
     // Touch injection: the LEGO title/menu front-end is touch-driven (the engine
-    // ignores the joypad device there). We synthesize a tap. Remote test hook:
-    // /dev/shm/mvl_touch "x y" queues a down-then-up tap at pixel (x,y).
+    // ignores the joypad device there). We synthesize taps here.
+    //
+    // Front-end "Play": on the title screen (gLego_GameMode==0) the A or B button
+    // taps the Play arrow so the player can START the game with a face button
+    // (no cursor aiming needed). In-game (gamemode==1) A/B keep their joypad
+    // actions, so this never fires during gameplay.
+    // Remote test hook: /dev/shm/mvl_touch "x y" queues a tap at pixel (x,y).
     {
       static int touch_hold = 0;    // frames remaining with finger down
       static float tx = 0, ty = 0;
+      static int ab_prev = 0;
+      int want_tap = 0; float wx = 0, wy = 0;
+
+      // A/B on the title screen -> tap the Play arrow (~610,615 at 1280x720)
+      int ab = (gc_btn(SDL_CONTROLLER_BUTTON_A) || gc_btn(SDL_CONTROLLER_BUTTON_B));
+      // remote test: `touch /dev/shm/mvl_a` simulates one A press (no physical pad)
+      { FILE *af = fopen("/dev/shm/mvl_a", "r"); if (af) { ab = 1; fclose(af); remove("/dev/shm/mvl_a"); } }
+      int in_frontend = (p_game_mode && *p_game_mode == 0);
+      if (ab && !ab_prev && in_frontend) {
+        want_tap = 1;
+        wx = screen_width  * (610.0f / 1280.0f);
+        wy = screen_height * (615.0f / 720.0f);
+        debugPrintf("frontend: A/B -> tap Play (%.0f,%.0f)\n", wx, wy);
+      }
+      ab_prev = ab;
+
       if (touch_hold > 0) {
         touch_hold--;
         if (touch_hold == 0) {
@@ -761,14 +795,15 @@ int main(int argc, char *argv[]) {
         FILE *tf = fopen("/dev/shm/mvl_touch", "r");
         if (tf) {
           float x, y;
-          if (fscanf(tf, "%f %f", &x, &y) == 2) {
-            tx = x; ty = y;
-            if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
-            touch_hold = 6;
-            debugPrintf("touch: tap (%.0f,%.0f)\n", tx, ty);
-          }
+          if (fscanf(tf, "%f %f", &x, &y) == 2) { want_tap = 1; wx = x; wy = y; }
           fclose(tf);
           remove("/dev/shm/mvl_touch");
+        }
+        if (want_tap) {
+          tx = wx; ty = wy;
+          if (g.touchDown) g.touchDown(fake_env, FUSION_OBJ, 0, tx, ty, 1.0f);
+          touch_hold = 6;
+          debugPrintf("touch: tap (%.0f,%.0f)\n", tx, ty);
         }
       }
     }
