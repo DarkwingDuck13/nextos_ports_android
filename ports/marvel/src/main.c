@@ -643,7 +643,7 @@ int main(int argc, char *argv[]) {
   (void)argc; (void)argv;
 
   setvbuf(stderr, NULL, _IONBF, 0);
-  debugPrintf("=== LEGO Ninjago: Shadow of Ronin -> Mali-450 (Linux/SDL) ===\n");
+  debugPrintf("=== LEGO Marvel Super Heroes -> Mali-450 (Linux/SDL) ===\n");
 
   read_config(CONFIG_NAME);
   screen_width = config.screen_width > 0 ? config.screen_width : 1280;
@@ -682,7 +682,7 @@ int main(int argc, char *argv[]) {
   resolve_entry_points();
   controls_install_native_pad(&game_mod);
   disable_tutorials(&game_mod);
-  obb_install_logging(&game_mod);
+  // obb_install_logging(&game_mod);  // diagnostic only; OBB mount is confirmed
 
   so_finalize(&game_mod);
   so_flush_caches(&game_mod);

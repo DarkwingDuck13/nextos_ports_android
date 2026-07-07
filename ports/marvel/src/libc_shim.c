@@ -285,7 +285,6 @@ static void mkdir_p(const char *filepath) {
 FILE *fopen_fake(const char *path, const char *mode) {
   const char *p = fix_path(path);
   FILE *f = fopen(p, mode);
-  debugPrintf("fopen('%s' -> '%s', %s) = %s\n", path, p, mode, f ? "ok" : "FAIL");
   if (!f && (strchr(mode, 'w') || strchr(mode, 'a'))) {
     mkdir_p(p);
     f = fopen(p, mode);
