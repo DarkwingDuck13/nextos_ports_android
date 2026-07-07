@@ -1,0 +1,17 @@
+#!/bin/sh
+cd "$(dirname "$0")"
+export KOF_AUTONAV="${KOF_AUTONAV:-0}"
+export KOF_AUTO_MENU="${KOF_AUTO_MENU:-0}"
+export KOF_AUTO_SKIP_VIDEO="${KOF_AUTO_SKIP_VIDEO:-0}"
+export KOF_KEEP_ASPECT="${KOF_KEEP_ASPECT:-0}"
+export KOF_GAIN="${KOF_GAIN:-1.15}"
+export KOF_MOVIE_GAIN="${KOF_MOVIE_GAIN:-0.50}"
+export KOF_CONFIRM_TOUCH="${KOF_CONFIRM_TOUCH:-1}"
+export KOF_FONT_PATH="${KOF_FONT_PATH:-./assets/kof_font.ttf}"
+export KOF_FPS="${KOF_FPS:-30}"
+export KOF_CONFIRM_TEXT_FRAMES="${KOF_CONFIRM_TEXT_FRAMES:-600}"
+export KOF_DIALOG_DEFAULT="${KOF_DIALOG_DEFAULT:-1}"
+export KOF_DIALOG_YES_X="${KOF_DIALOG_YES_X:-168}"
+export KOF_DIALOG_NO_X="${KOF_DIALOG_NO_X:-312}"
+export KOF_DIALOG_Y="${KOF_DIALOG_Y:-226}"
+./kof2012a > ./log.txt 2>&1
