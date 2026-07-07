@@ -359,8 +359,9 @@ static uint8_t *p_NoJoy = NULL;            /* Controls_NoJoy (bool) */
 static uint8_t *p_IsVJoy = NULL;           /* geControlsIsUsingVirtualJoystick */
 static uint8_t *p_Casual = NULL;           /* g_CasualControls (struct) */
 static int (*p_CasualInUse)(void) = NULL;  /* CasualControls_IsInUse() */
-static uint32_t *p_TutLoaded = NULL;       /* TutorialModule_IsLoaded */
-static void **p_TutData = NULL;            /* pTutorialModeData */
+static uint32_t *p_TutLoaded = NULL;       /* TutorialModule_IsLoaded (diagnostico) */
+static void **p_TutData = NULL;            /* pTutorialModeData (diagnostico) */
+static uint8_t *p_SaveOptions = NULL;      /* SaveGame_Options ([5]=tutoriais on) */
 
 /* hook do fnaController_Poll: a engine chama isto (via PLT/GOT) dentro de
  * fnInput_Poll TODO frame, uma vez por device, com os valores ja zerados.
@@ -436,6 +437,12 @@ static void lb2_fna_poll(void *dev) {
   /* SELECT fica FORA do device: e' o pause via backButtonPressed (funciona);
    * alimentar E_SELECT junto poderia disparar acao dupla. */
 
+  /* toque liga o modo casual (tap-to-move, g_CasualControls+0x72); input de pad
+   * devolve o esquema classico — espelha o "ultimo device vence" do console. */
+  if (p_Casual && p_Casual[0x72] &&
+      (lx != 0.0f || ly != 0.0f || EV(E_ENG_B) || EV(E_ENG_A) || EV(E_ENG_Y) || EV(E_ENG_X)))
+    p_Casual[0x72] = 0;
+
   /* AUTO-TESTE remoto: /dev/shm/lb2_btn "<elem> <0|1>" forca um elemento */
   { FILE *bf = fopen("/dev/shm/lb2_btn", "r");
     int be, bv;
@@ -462,6 +469,7 @@ static void controls_install_native_pad(so_module *mod) {
   p_CasualInUse = (void *)so_find_addr_rx(mod, "_Z22CasualControls_IsInUsev");
   p_TutLoaded = (uint32_t *)so_find_addr(mod, "TutorialModule_IsLoaded");
   p_TutData   = (void **)so_find_addr(mod, "pTutorialModeData");
+  p_SaveOptions = (uint8_t *)so_find_addr(mod, "SaveGame_Options");
 }
 
 /* estado do esquema de controle a cada ~2s enquanto /dev/shm/lb2_padlog existir */
@@ -506,6 +514,15 @@ static void update_pad_misc(void) {
   } else if (--tap_frames == 0) {
     g.touchUp(fake_env, FUSION_OBJ, 0, tap_x, tap_y, 0.0f);
   }
+
+  /* modais de tutorial touch ("tap a chosen destination"...) congelam o jogo
+   * ate um toque. Gate oficial da engine: TutorialModule_Start so roda se
+   * SaveGame_Options[5]==1 (opcao "tutoriais"). Com pad eles sao inuteis ->
+   * forcamos 0 todo frame (o load do save pode reescrever). Obs:
+   * TutorialModule_IsLoaded NAO serve de gate (fica 1 pra sempre apos o 1o
+   * tutorial; auto-tap por ela = toque fantasma a cada 1.3s no gameplay). */
+  if (p_SaveOptions && p_SaveOptions[5])
+    p_SaveOptions[5] = 0;
 }
 
 // ---------------------------------------------------------------------------
