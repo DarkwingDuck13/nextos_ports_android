@@ -6,8 +6,8 @@
 
 <p>
   <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
-  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-29-brightgreen?style=for-the-badge">
-  <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-21-orange?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-30-brightgreen?style=for-the-badge">
+  <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-20-orange?style=for-the-badge">
 </p>
 <p>
   <img alt="Alvo" src="https://img.shields.io/badge/alvo-Mali%20·%20ARM64%20·%20Linux-lightgrey?style=flat-square">
@@ -70,12 +70,12 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Castle of Illusion** (Sega "oz") | so-loader (NativeActivity+FMOD, arm64) | Jogável (Mali-450) — render+controle+áudio | [`ports/castleofillusion`](ports/castleofillusion/) |
 | **LEGO Star Wars: A Força Desperta** (Fusion/WB) | so-loader (arm64, base lswtcs) | Jogável (Mali-450) — menu + mundo + **fases entram e jogam**, controle Xbox padrão, música MP3, cutscene inicial; dt-clamp render-only + fix do deadlock de compilação de shaders no load | [`ports/lswtfa`](ports/lswtfa/) |
 | **LEGO Ninjago: Shadow of Ronin** (Fusion/WB) | so-loader (arm64, base lswtfa) | Jogável (Mali-450) — menu → New Game → fase, controle Xbox padrão, áudio MP3, inglês, save persistente, Select+Start | [`ports/ninjago`](ports/ninjago/) |
+| **LEGO Batman 3: Beyond Gotham** (Fusion/WB) | so-loader (arm64, base ninjago) | Jogável (Mali-450) — menu com **fundo animado** → New Game → fase, controle Xbox padrão, áudio MP3, inglês, Select+Start | [`ports/legobatman`](ports/legobatman/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
 |---|---|---|---|
 | **GTA: Liberty City Stories** | so-loader | Carrega 100%, frame loop estável, gameplay 3D visível; ajustes finais | [`ports/lcs`](ports/lcs/) |
-| **LEGO Batman 3: Beyond Gotham** (Fusion) | so-loader | Render limpo/estável (FBCOPY), título+menu, controle Xbox; falta gameplay | [`ports/legobatman`](ports/legobatman/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | Gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity/Mono ARM32) | so-loader | Menu + entrada Cap.1; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Final Fantasy IX** (Unity IL2CPP) | so-loader | Renderiza claro no fb0; caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
