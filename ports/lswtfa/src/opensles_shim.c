@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "opensles_shim.h"
 #include "so_util.h"
@@ -268,12 +269,28 @@ static void refill_player(AudioPlayer *p) {
   }
 }
 
+/* Dedicated refill thread: calling the game's buffer-queue callbacks from
+ * inside the SDL audio callback deadlocks (SDL holds the device lock there,
+ * the game callback takes engine mutexes, and game threads take those same
+ * mutexes around SL calls that need the device lock). This thread invokes the
+ * callbacks holding NO device lock, every ~4ms -- like the real OpenSL ES
+ * notification thread. */
+static pthread_t g_pump_thread;
+static volatile int g_pump_running = 0;
+
+static void *pump_thread_main(void *arg) {
+  (void)arg;
+  while (g_pump_running) {
+    for (int i = 0; i < MAX_PLAYERS; i++)
+      refill_player(&g_players[i]);
+    usleep(4000);
+  }
+  return NULL;
+}
+
 static void sdl_audio_callback(void *userdata, Uint8 *stream, int len) {
   (void)userdata;
   g_audio_cb_tid = SDL_ThreadID();
-  /* top up every playing queue before mixing this period */
-  for (int i = 0; i < MAX_PLAYERS; i++)
-    refill_player(&g_players[i]);
   memset(stream, 0, len);
 
   int16_t *out = (int16_t *)stream;
@@ -518,6 +535,8 @@ static void ensure_audio_initialized(void) {
   debugPrintf("opensles_shim: SDL audio opened: %dHz %dch %d samples\n",
               have.freq, have.channels, have.samples);
   SDL_PauseAudioDevice(g_audio_dev, 0);
+  g_pump_running = 1;
+  pthread_create(&g_pump_thread, NULL, pump_thread_main, NULL);
   g_audio_initialized = 1;
 }
 
