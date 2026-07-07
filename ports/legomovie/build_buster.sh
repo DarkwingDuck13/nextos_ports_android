@@ -8,7 +8,7 @@
 #
 # Headers SDL2/EGL/GLES sao arch-neutros -> vem do sysroot. Libs reais vem do
 # device em runtime; no link usamos STUBS gerados dos simbolos undefined do
-# binario host ja linkado (./lotr).
+# binario host ja linkado (./legomovie).
 set -e
 
 CC=arm-linux-gnueabihf-gcc
@@ -27,9 +27,9 @@ for d in SDL2 EGL KHR GLES GLES2 GLES3; do
   [ -d "$SR/usr/include/$d" ] && cp -r "$SR/usr/include/$d" "$HDR/$d"
 done
 
-# stubs a partir dos undefined do binario host (./lotr precisa existir)
-[ -f ./lotr ] || { echo "ERRO: ./lotr (build host) ausente -- rode build.sh primeiro"; exit 1; }
-gen() { "$NM" -D --undefined-only ./lotr | awk '{print $NF}' | grep -E "$1" | sort -u | sed 's/.*/void &(void){}/'; }
+# stubs a partir dos undefined do binario host (./legomovie precisa existir)
+[ -f ./legomovie ] || { echo "ERRO: ./legomovie (build host) ausente -- rode build.sh primeiro"; exit 1; }
+gen() { "$NM" -D --undefined-only ./legomovie | awk '{print $NF}' | grep -E "$1" | sort -u | sed 's/.*/void &(void){}/'; }
 gen '^SDL_'   > "$STUB/sdl.c"
 gen '^egl'    > "$STUB/egl.c"
 gen '^gl[A-Z]'> "$STUB/gles.c"
@@ -47,12 +47,12 @@ $CC -march=armv7-a -mfpu=neon -mfloat-abi=hard \
     -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
     -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
     -Wno-unused-parameter -Wno-unused-function \
-    -o lotr.release $SRCS \
+    -o legomovie.release $SRCS \
     -Wl,--export-dynamic \
     -L"$STUB" -lSDL2 -lGLESv1_CM -lGLESv2 -lEGL -ldl -lm -lpthread -lgcc
 
-echo "BUILD OK -> lotr.release"
-echo "  arch:      $(file lotr.release 2>/dev/null | head -c 80)"
-echo "  GLIBC max: $($READELF -V lotr.release | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
-echo "  tamanho:   $(stat -c%s lotr.release) bytes"
-$READELF -d lotr.release | grep NEEDED
+echo "BUILD OK -> legomovie.release"
+echo "  arch:      $(file legomovie.release 2>/dev/null | head -c 80)"
+echo "  GLIBC max: $($READELF -V legomovie.release | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+echo "  tamanho:   $(stat -c%s legomovie.release) bytes"
+$READELF -d legomovie.release | grep NEEDED
