@@ -27,6 +27,12 @@ roda no ARM do device.
    **NextOS**.
 5. **Créditos obrigatórios** (licenças de terceiros): mtojek (Apache-2.0, base),
    initdream (Crazy Taxi), Producdevity (CoD BOZ, MIT). Mantenha `NOTICE`.
+6. **Binário LIMPO, `.sh` LIMPO, SELECT+START que VOLTA pro ES.** Todo port
+   entregue tem que sair de verdade. NUNCA deixe watchdog/heartbeat, selftest de
+   input, framedump/dump de framebuffer, ou spam de `[GLDRAW]/[GLSTATE]` ligado
+   por padrão no binário final; e NUNCA um launcher que para/mascara o
+   emustation. Ver a seção "Armadilha: launcher e saída" abaixo — quebrar isso
+   trava o device e obriga correção manual.
 
 ## Estrutura
 
@@ -99,3 +105,60 @@ preta"), com luz e uniforms perfeitos. Diagnóstico que fecha a questão em ~3 r
    invertido: religar só com `DYSMANTLE_NPOT_FIX=1`).
 REGRA ao scaffoldar de Dysmantle: npot_fix começa OFF; só ligue se o jogo tiver
 textura NPOT real com artefato comprovado.
+
+## ⚠️ Armadilha: launcher e saída (SELECT+START travava o device)
+
+Sintoma real (BADLAND + Magic Rampage, ports feitos por Codex, tiveram que ser
+corrigidos à mão): apertar SELECT+START pra fechar TRAVAVA o jogo e não voltava
+pro EmulationStation; em alguns casos o ES não subia mais nem depois de reboot.
+Duas causas, as duas proibidas:
+
+1. **Launcher parando/mascarando o frontend.** O `.sh` fazia
+   `systemctl stop emustation` e às vezes `systemctl mask --runtime`. O `mask`
+   **sobrevive ao fim do script** → `systemctl start emustation` passa a dar
+   "Unit is masked" e o ES nunca mais volta. **NUNCA** mexa no emustation no
+   launcher. O contrato do ES é: ele lança o `.sh` de `ports_scripts/` em
+   FOREGROUND e volta sozinho quando o script termina.
+
+2. **Shutdown "gracioso" que pendura.** As threads do `.so` carregado (FMOD,
+   workers do Cocos/engine) **nunca terminam**; chamar `nativeOnStop`/
+   `GS_destroy`/`SDL_Quit`/`atexit` no caminho de saída pendura segurando GPU/
+   áudio e a tela fica congelada. Saída correta: dispara uma thread-deadline
+   (`sleep 2; _exit(0)`), faz o mínimo (pausar áudio, soltar GL) e chama
+   `_exit(0)` — o processo morre garantido mesmo se o engine travar.
+
+**Padrão de launcher aprovado** (igual ninjago/LEGO — copie este esqueleto):
+```sh
+#!/bin/bash
+# resolve controlfolder (PortMaster) ... source control.txt; get_controls
+GAMEDIR="/storage/roms/ports/<nome>"; cd "$GAMEDIR"
+export HOME="$GAMEDIR"
+export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR:$LD_LIBRARY_PATH"
+for s in /var/run/pulse/native /run/pulse/native; do
+  [ -S "$s" ] && { export PULSE_SERVER="unix:$s"; break; }; done
+export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+./<binario> "$GAMEDIR" >"$GAMEDIR/debug.log" 2>&1
+```
+Regras do `.sh`: **nada** de `systemctl`, `pkill emustation`, watchdog,
+heartbeat, `nohup`/`&`/`setsid`, nem `SDL_VIDEODRIVER`/`SDL_AUDIODRIVER`
+forçado (vêm do sistema). Foreground puro, log em `debug.log`.
+
+**Loop principal e saída no binário** (o combo SELECT+START = BACK+START):
+```c
+if (gc_btn(SDL_CONTROLLER_BUTTON_BACK) && gc_btn(SDL_CONTROLLER_BUTTON_START))
+  running = 0;
+...
+// fim do loop:
+pthread_t d; if (pthread_create(&d,0,exit_deadline_thread,0)==0) pthread_detach(d);
+/* pausa áudio + solta GL se quiser */ _exit(0);
+```
+
+**Antes de entregar um port, remova do binário final:** watchdog/heartbeat,
+`*_INPUT_SELFTEST`, `dump_framebuffer`/`log_frame_pixels`, e deixe o trace
+GL/assets **silencioso por padrão** (atrás de um env tipo `<JOGO>_VERBOSE=1`).
+Debug fica atrás de env, nunca ligado no default.
+
+**Como validar a saída sem apertar botão:** `kill -TERM <pid>` no binário
+percorre o MESMO caminho do SELECT+START (vira `SDL_QUIT`). Rode o jogo por
+ssh, confirme render na tela (`dd if=/dev/fb0`), mande SIGTERM, e cheque que o
+processo morreu e o launcher retornou 0. Só então empacote.
