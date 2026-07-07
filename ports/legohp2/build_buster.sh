@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build RELEASE do LEGO The Lord of the Rings (armhf) no Docker debian:buster
+# Build RELEASE do LEGO Harry Potter 5-7 (armhf) no Docker debian:buster
 # (glibc <=2.30 -- regra de TODOS os ports; piso = ArkOS glibc 2.30).
 #
 # Run (host):
@@ -8,7 +8,7 @@
 #
 # Headers SDL2/EGL/GLES sao arch-neutros -> vem do sysroot. Libs reais vem do
 # device em runtime; no link usamos STUBS gerados dos simbolos undefined do
-# binario host ja linkado (./lotr).
+# binario host ja linkado (./legohp2).
 set -e
 
 CC=arm-linux-gnueabihf-gcc
@@ -27,9 +27,9 @@ for d in SDL2 EGL KHR GLES GLES2 GLES3; do
   [ -d "$SR/usr/include/$d" ] && cp -r "$SR/usr/include/$d" "$HDR/$d"
 done
 
-# stubs a partir dos undefined do binario host (./lotr precisa existir)
-[ -f ./lotr ] || { echo "ERRO: ./lotr (build host) ausente -- rode build.sh primeiro"; exit 1; }
-gen() { "$NM" -D --undefined-only ./lotr | awk '{print $NF}' | grep -E "$1" | sort -u | sed 's/.*/void &(void){}/'; }
+# stubs a partir dos undefined do binario host (./legohp2 precisa existir)
+[ -f ./legohp2 ] || { echo "ERRO: ./legohp2 (build host) ausente -- rode build.sh primeiro"; exit 1; }
+gen() { "$NM" -D --undefined-only ./legohp2 | awk '{print $NF}' | grep -E "$1" | sort -u | sed 's/.*/void &(void){}/'; }
 gen '^SDL_'   > "$STUB/sdl.c"
 gen '^egl'    > "$STUB/egl.c"
 gen '^gl[A-Z]'> "$STUB/gles.c"
@@ -47,12 +47,12 @@ $CC -march=armv7-a -mfpu=neon -mfloat-abi=hard \
     -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
     -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration \
     -Wno-unused-parameter -Wno-unused-function \
-    -o lotr.release $SRCS \
+    -o legohp2.release $SRCS \
     -Wl,--export-dynamic \
     -L"$STUB" -lSDL2 -lGLESv1_CM -lGLESv2 -lEGL -ldl -lm -lpthread -lgcc
 
-echo "BUILD OK -> lotr.release"
-echo "  arch:      $(file lotr.release 2>/dev/null | head -c 80)"
-echo "  GLIBC max: $($READELF -V lotr.release | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
-echo "  tamanho:   $(stat -c%s lotr.release) bytes"
-$READELF -d lotr.release | grep NEEDED
+echo "BUILD OK -> legohp2.release"
+echo "  arch:      $(file legohp2.release 2>/dev/null | head -c 80)"
+echo "  GLIBC max: $($READELF -V legohp2.release | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+echo "  tamanho:   $(stat -c%s legohp2.release) bytes"
+$READELF -d legohp2.release | grep NEEDED
