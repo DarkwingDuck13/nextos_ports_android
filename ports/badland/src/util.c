@@ -1,28 +1,26 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "util.h"
 
-#define LOG_NAME "debug.log"
-
+// trace de debug (spy GL/assets): silencioso por padrão; BADLAND_VERBOSE=1 liga.
 int debugPrintf(const char *text, ...) {
-  va_list list;
-
-  FILE *f = fopen(LOG_NAME, "a");
-  if (f) {
-    va_start(list, text);
-    vfprintf(f, text, list);
-    va_end(list);
-    fclose(f);
+  static int verbose = -1;
+  if (verbose < 0) {
+    const char *env = getenv("BADLAND_VERBOSE");
+    verbose = env && strcmp(env, "0") != 0;
   }
+  if (!verbose)
+    return 0;
 
+  va_list list;
   va_start(list, text);
-  vprintf(text, list);
+  vfprintf(stderr, text, list);
   va_end(list);
-
   return 0;
 }
 

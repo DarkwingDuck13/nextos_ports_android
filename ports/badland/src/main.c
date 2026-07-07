@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -112,16 +113,13 @@ __attribute__((used, aligned(16))) _Thread_local char g_bionic_guard_pad[256];
 
 static void *g_env;
 static SDL_GameController *g_controller;
-static char g_watchdog_path[PATH_MAX];
 static char g_last_pvr_path[PATH_MAX];
-static time_t g_watchdog_last_write;
 static int g_width = 1280;
 static int g_height = 720;
 static int g_touch_down;
 static int g_enable_fmod;
 static int g_enable_resume;
 static int g_input_log;
-static int g_input_selftest;
 
 static jint (*JNI_OnLoad_fn)(void *vm, void *reserved);
 static jint (*fmod_JNI_OnLoad_fn)(void *vm, void *reserved);
@@ -1448,23 +1446,6 @@ static void path_join(char *out, size_t n, const char *a, const char *b) {
   snprintf(out, n, "%s/%s", a, b);
 }
 
-static void watchdog_touch(unsigned frame) {
-  if (!g_watchdog_path[0])
-    return;
-  time_t now = time(NULL);
-  if (frame && now == g_watchdog_last_write)
-    return;
-  char tmp[PATH_MAX];
-  snprintf(tmp, sizeof(tmp), "%s.tmp", g_watchdog_path);
-  FILE *f = fopen(tmp, "w");
-  if (!f)
-    return;
-  fprintf(f, "%ld %u\n", (long)now, frame);
-  fclose(f);
-  rename(tmp, g_watchdog_path);
-  g_watchdog_last_write = now;
-}
-
 static int init_sdl(SDL_Window **out_window, SDL_GLContext *out_context) {
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK |
                SDL_INIT_GAMECONTROLLER) != 0) {
@@ -1691,139 +1672,15 @@ static float trigger_to_float(Sint16 value) {
   return v;
 }
 
-static void input_selftest_tick(unsigned frame) {
-  switch (frame) {
-  case 150:
-  case 300:
-  case 450:
-  case 650:
-  case 800:
-  case 950:
-  case 1100:
-    fprintf(stderr, "[INPUT] selftest A down frame=%u\n", frame);
-    send_pad_action(BADLAND_PAD_ACTION_DOWN, BADLAND_PAD_A, 0.0f, 0.0f);
-    break;
-  case 158:
-  case 308:
-  case 458:
-  case 658:
-  case 808:
-  case 958:
-  case 1108:
-    fprintf(stderr, "[INPUT] selftest A up frame=%u\n", frame);
-    send_pad_action(BADLAND_PAD_ACTION_UP, BADLAND_PAD_A, 0.0f, 0.0f);
-    break;
-  default:
-    break;
-  }
-}
-
-extern unsigned long badland_gl_draw_calls_total(void);
-extern const char *badland_gl_current_texture_label(void);
-extern unsigned badland_gl_current_texture_id(void);
-extern unsigned badland_gl_current_program_id(void);
-extern unsigned badland_gl_current_blend_src(void);
-extern unsigned badland_gl_current_blend_dst(void);
-
-static void log_frame_pixels(unsigned frame) {
-  if (frame != 1 && frame != 5 && frame != 30 && frame != 120 &&
-      frame != 300 && (frame % 600) != 0)
-    return;
-
-  unsigned long long sum_r = 0, sum_g = 0, sum_b = 0, sum_a = 0;
-  unsigned min_r = 255, min_g = 255, min_b = 255, min_a = 255;
-  unsigned max_r = 0, max_g = 0, max_b = 0, max_a = 0;
-  unsigned char px[4];
-  int samples = 0;
-
-  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  for (int y = 0; y < 9; y++) {
-    int py = (int)(((long long)(y * 2 + 1) * g_height) / 18);
-    if (py >= g_height)
-      py = g_height - 1;
-    for (int x = 0; x < 16; x++) {
-      int pxpos = (int)(((long long)(x * 2 + 1) * g_width) / 32);
-      if (pxpos >= g_width)
-        pxpos = g_width - 1;
-      memset(px, 0, sizeof(px));
-      glReadPixels(pxpos, py, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-      unsigned r = px[0], g = px[1], b = px[2], a = px[3];
-      sum_r += r;
-      sum_g += g;
-      sum_b += b;
-      sum_a += a;
-      if (r < min_r)
-        min_r = r;
-      if (g < min_g)
-        min_g = g;
-      if (b < min_b)
-        min_b = b;
-      if (a < min_a)
-        min_a = a;
-      if (r > max_r)
-        max_r = r;
-      if (g > max_g)
-        max_g = g;
-      if (b > max_b)
-        max_b = b;
-      if (a > max_a)
-        max_a = a;
-      samples++;
-    }
-  }
-
-  GLenum err = glGetError();
-  if (samples <= 0)
-    return;
-  static unsigned long last_draw_total;
-  unsigned long draw_total = badland_gl_draw_calls_total();
-  unsigned long draw_delta = draw_total - last_draw_total;
-  last_draw_total = draw_total;
-  const char *tex_label = badland_gl_current_texture_label();
-  fprintf(stderr,
-          "[framepix] frame=%u samples=%d avg=%llu,%llu,%llu,%llu "
-          "min=%u,%u,%u,%u max=%u,%u,%u,%u draws=%lu(+%lu) tex=%u "
-          "prog=%u blend=0x%x/0x%x label=\"%s\" glerr=0x%x\n",
-          frame, samples, sum_r / samples, sum_g / samples, sum_b / samples,
-          sum_a / samples, min_r, min_g, min_b, min_a, max_r, max_g, max_b,
-          max_a, draw_total, draw_delta, badland_gl_current_texture_id(),
-          badland_gl_current_program_id(), badland_gl_current_blend_src(),
-          badland_gl_current_blend_dst(), tex_label ? tex_label : "",
-          (unsigned)err);
-}
-
-static void dump_framebuffer(unsigned frame) {
-  if (frame != 300 &&
-      !(g_input_selftest &&
-        (frame == 600 || frame == 900 || frame == 1200 || frame == 1500)))
-    return;
-  const char *env = getenv("BADLAND_FRAMEDUMP");
-  if (env && strcmp(env, "0") == 0)
-    return;
-  int w = g_width;
-  int h = g_height;
-  if (w <= 0 || h <= 0 || w > 4096 || h > 4096)
-    return;
-  size_t bytes = (size_t)w * h * 4u;
-  unsigned char *rgba = malloc(bytes);
-  if (!rgba)
-    return;
-  glPixelStorei(GL_PACK_ALIGNMENT, 1);
-  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-  char path[PATH_MAX];
-  snprintf(path, sizeof(path), "./logs/frame-%u.ppm", frame);
-  FILE *f = fopen(path, "wb");
-  if (f) {
-    fprintf(f, "P6\n%d %d\n255\n", w, h);
-    for (int y = h - 1; y >= 0; y--) {
-      unsigned char *row = rgba + (size_t)y * w * 4u;
-      for (int x = 0; x < w; x++)
-        fwrite(row + x * 4, 1, 3, f);
-    }
-    fclose(f);
-    fprintf(stderr, "[framepix] dumped %s\n", path);
-  }
-  free(rgba);
+// saída: threads do .so carregado (FMOD, workers do Cocos) nunca terminam;
+// qualquer caminho "gracioso" (nativeOnStop/SDL_Quit/atexit) pode pendurar
+// segurando GPU/audio e a tela fica travada sem voltar pro ES. O deadline
+// garante que o processo morre mesmo se o shutdown do jogo travar.
+static void *exit_deadline_thread(void *arg) {
+  (void)arg;
+  sleep(2);
+  _exit(0);
+  return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -1843,25 +1700,18 @@ int main(int argc, char **argv) {
   path_join(apk_path, sizeof(apk_path), gamedir, "game.apk");
   path_join(logs_path, sizeof(logs_path), gamedir, "logs");
   mkdir_p(logs_path);
-  const char *hb_env = getenv("BADLAND_WATCHDOG_HEARTBEAT");
-  if (hb_env && hb_env[0])
-    snprintf(g_watchdog_path, sizeof(g_watchdog_path), "%s", hb_env);
-  else
-    path_join(g_watchdog_path, sizeof(g_watchdog_path), logs_path, "heartbeat");
-  watchdog_touch(0);
 
   fprintf(stderr, "=== BADLAND Cocos/FMOD so-loader ===\n");
   fprintf(stderr, "gamedir=%s\napk=%s\n", gamedir, apk_path);
+  // FMOD ligado por padrão (áudio do jogo); BADLAND_ENABLE_FMOD=0 desliga.
   const char *enable_fmod_env = getenv("BADLAND_ENABLE_FMOD");
-  g_enable_fmod = enable_fmod_env && strcmp(enable_fmod_env, "0") != 0;
+  g_enable_fmod = !(enable_fmod_env && strcmp(enable_fmod_env, "0") == 0);
   const char *enable_resume_env = getenv("BADLAND_ENABLE_RESUME");
   g_enable_resume = enable_resume_env && strcmp(enable_resume_env, "0") != 0;
   g_input_log = parse_int_env("BADLAND_INPUTLOG", 0) != 0;
-  g_input_selftest = parse_int_env("BADLAND_INPUT_SELFTEST", 0) != 0;
   fprintf(stderr, "native FMOD init: %s\n", g_enable_fmod ? "on" : "off");
   fprintf(stderr, "nativeOnResume: %s\n", g_enable_resume ? "on" : "off");
   fprintf(stderr, "input log: %s\n", g_input_log ? "on" : "off");
-  fprintf(stderr, "input selftest: %s\n", g_input_selftest ? "on" : "off");
 
   load_module(FMOD_SO, FMOD_HEAP_MB, dynlib_functions, dynlib_functions_count);
   fmod_JNI_OnLoad_fn = (void *)so_find_addr_safe("JNI_OnLoad");
@@ -2052,31 +1902,24 @@ int main(int argc, char **argv) {
       }
     }
 
-    if (g_input_selftest)
-      input_selftest_tick(frame + 1);
-
     if (frame < 5)
       fprintf(stderr, "nativeRender frame %u\n", frame + 1);
     nativeRender(g_env, NULL);
     if (frame < 5)
       fprintf(stderr, "nativeRender frame %u done\n", frame + 1);
-    log_frame_pixels(frame + 1);
-    dump_framebuffer(frame + 1);
     SDL_GL_SwapWindow(window);
-    watchdog_touch(++frame);
+    ++frame;
   }
 
   fprintf(stderr, "saindo\n");
+  pthread_t deadline;
+  if (pthread_create(&deadline, NULL, exit_deadline_thread, NULL) == 0)
+    pthread_detach(deadline);
   if (g_enable_fmod && nativeSetAudioPaused)
     nativeSetAudioPaused(g_env, NULL, 1);
-  if (g_enable_resume && nativeOnPause)
-    nativeOnPause(g_env, NULL);
-  if (nativeOnStop)
-    nativeOnStop(g_env, NULL);
   if (g_controller)
     SDL_GameControllerClose(g_controller);
   SDL_GL_DeleteContext(glctx);
   SDL_DestroyWindow(window);
-  SDL_Quit();
-  return 0;
+  _exit(0);
 }

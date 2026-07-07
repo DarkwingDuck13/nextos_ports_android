@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,8 +42,6 @@ static int g_base_n;
 static void *g_game_text;
 static size_t g_game_text_size;
 static SDL_GameController *g_controller;
-static char g_watchdog_path[PATH_MAX];
-static time_t g_watchdog_last_write;
 
 typedef void (*fn_void0)(void *, void *);
 typedef void (*fn_resize)(void *, void *, int, int);
@@ -822,37 +821,11 @@ static void path_join(char *out, size_t n, const char *a, const char *b) {
   snprintf(out, n, "%s/%s", a, b);
 }
 
-static void watchdog_touch(unsigned frame) {
-  if (!g_watchdog_path[0])
-    return;
-  time_t now = time(NULL);
-  if (frame && now == g_watchdog_last_write)
-    return;
-
-  char tmp[PATH_MAX];
-  snprintf(tmp, sizeof(tmp), "%s.tmp", g_watchdog_path);
-  FILE *f = fopen(tmp, "w");
-  if (!f)
-    return;
-  fprintf(f, "%ld %u\n", (long)now, frame);
-  fclose(f);
-  rename(tmp, g_watchdog_path);
-  g_watchdog_last_write = now;
-}
-
-static void watchdog_init(const char *gamedir) {
-  const char *env_path = getenv("MAGIC_WATCHDOG_HEARTBEAT");
-  if (env_path && *env_path) {
-    snprintf(g_watchdog_path, sizeof(g_watchdog_path), "%s", env_path);
-  } else {
-    char logs_path[PATH_MAX];
-    path_join(logs_path, sizeof(logs_path), gamedir, "logs");
-    mkdir_p(logs_path);
-    path_join(g_watchdog_path, sizeof(g_watchdog_path), logs_path,
-              "heartbeat");
-  }
-  watchdog_touch(0);
-  fprintf(stderr, "[watchdog] heartbeat=%s\n", g_watchdog_path);
+static void *exit_deadline_thread(void *arg) {
+  (void)arg;
+  sleep(2);
+  _exit(0);
+  return NULL;
 }
 
 static int init_sdl(SDL_Window **out_window, SDL_GLContext *out_context,
@@ -936,17 +909,14 @@ int main(int argc, char **argv) {
   path_join(global_path, sizeof(global_path), gamedir, "user-global");
   mkdir_p(user_path);
   mkdir_p(global_path);
-  watchdog_init(gamedir);
 
   fprintf(stderr, "=== Magic Rampage Android so-loader / NextOS aarch64 ===\n");
   fprintf(stderr, "gamedir=%s\napk=%s\n", gamedir, apk_path);
 
   preload_device_libs();
-  watchdog_touch(0);
   build_base_table();
 
   load_module(CXX_SO, CXX_HEAP_MB, g_base, g_base_n);
-  watchdog_touch(0);
   int cxx_n = 0;
   DynLibFunction *cxx_tbl = so_snapshot_symbols(&cxx_n);
   fprintf(stderr, "libc++ symbols: %d\n", cxx_n);
@@ -957,7 +927,6 @@ int main(int argc, char **argv) {
                      NULL, 0);
 
   load_module(CRYPTO_SO, CRYPTO_HEAP_MB, cxx_comb, cxx_comb_n);
-  watchdog_touch(0);
   int crypto_n = 0;
   DynLibFunction *crypto_tbl = so_snapshot_symbols(&crypto_n);
   fprintf(stderr, "crypto symbols: %d\n", crypto_n);
@@ -967,7 +936,6 @@ int main(int argc, char **argv) {
       &fmod_comb_n, g_base, g_base_n, cxx_tbl, cxx_n, crypto_tbl, crypto_n,
       NULL, 0);
   load_module(FMOD_SO, FMOD_HEAP_MB, fmod_comb, fmod_comb_n);
-  watchdog_touch(0);
   int fmod_n = 0;
   DynLibFunction *fmod_tbl = so_snapshot_symbols(&fmod_n);
   fprintf(stderr, "fmod symbols: %d\n", fmod_n);
@@ -977,7 +945,6 @@ int main(int argc, char **argv) {
       &game_comb_n, g_base, g_base_n, cxx_tbl, cxx_n, crypto_tbl, crypto_n,
       fmod_tbl, fmod_n);
   load_module(GAME_SO, GAME_HEAP_MB, game_comb, game_comb_n);
-  watchdog_touch(0);
   g_game_text = text_base;
   g_game_text_size = text_size;
   install_runtime_hooks();
@@ -1072,15 +1039,17 @@ int main(int argc, char **argv) {
 
     SDL_GL_SwapWindow(window);
     frame++;
-    watchdog_touch(frame);
   }
 
+  // saída: threads do .so carregado nunca terminam; GS_destroy/SDL_Quit podem
+  // pendurar segurando GPU/audio e a tela fica travada sem voltar pro ES.
+  // O deadline garante que o processo morre mesmo se o shutdown travar.
   fprintf(stderr, "saindo...\n");
-  if (GS_destroy)
-    GS_destroy(jni_env(), jni_class());
+  pthread_t deadline;
+  if (pthread_create(&deadline, NULL, exit_deadline_thread, NULL) == 0)
+    pthread_detach(deadline);
   audio_backend_shutdown();
   SDL_GL_DeleteContext(glctx);
   SDL_DestroyWindow(window);
-  SDL_Quit();
-  return 0;
+  _exit(0);
 }
