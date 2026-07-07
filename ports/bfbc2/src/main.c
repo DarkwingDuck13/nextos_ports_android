@@ -115,6 +115,24 @@ static void audio_cb(void *ud, Uint8 *stream, int len) {
   memcpy(stream, g_audio_buf, len);
 }
 
+/* 🚗 detecção de MODO VEÍCULO: hookeia CPlayerInput::SetOnRailsMode(bool) — no
+ * gunner do Vodnik o jogo entra em on-rails. Assim o R2 vira gatilho ÚNICO
+ * (a pé mira canto-dir; no veículo mira o ⊕ canto-esq). Replica o original:
+ * [this+1221]=onrails + UpdateHandedControls(this). */
+static volatile int g_onrails = 0;
+extern void hook_arm(uintptr_t addr, uintptr_t dst);
+extern void so_make_text_writable(void);
+extern void so_make_text_executable(void);
+static void my_SetOnRailsMode(void *thiz, int onrails) {
+  g_onrails = onrails ? 1 : 0;
+  unsigned char *f = (unsigned char *)thiz + 1221;
+  if (*f != (unsigned char)onrails) {
+    *f = (unsigned char)onrails;
+    void (*uhc)(void *) = (void *)so_find_addr_safe("_ZN3krm3BC212CPlayerInput20UpdateHandedControlsEv");
+    if (uhc) uhc(thiz);
+  }
+}
+
 /* ---- gamepad via /dev/input/jsN (direto, robusto p/ qualquer pad) ---- */
 static int js_fd[4] = { -1, -1, -1, -1 };
 static int js_log = -1;
@@ -160,17 +178,18 @@ static void poll_joysticks(int W, int H) {
           /* R2(7) = tiro no botão de tiro (a pé). L2(6) = tiro no CENTRO/crosshair
            * (p/ veículo/torre, onde o crosshair fica ao mirar com o stick). Cada um
            * usa um pointer id separado (não se atrapalham). */
+          float footx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
+          float footy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
+          float vehx  = W * (getenv("BC2_FIRE2X") ? atof(getenv("BC2_FIRE2X")) : 0.05f);
+          float vehy  = H * (getenv("BC2_FIRE2Y") ? atof(getenv("BC2_FIRE2Y")) : 0.90f);
           float fx, fy; int pid;
           if (e.number == 7) {
-            fx = W * (getenv("BC2_FIREX") ? atof(getenv("BC2_FIREX")) : 0.85f);
-            fy = H * (getenv("BC2_FIREY") ? atof(getenv("BC2_FIREY")) : 0.80f);
+            /* R2 UNIFICADO: no veículo (on-rails) mira o ⊕ canto-esq; a pé o dir. */
+            if (g_onrails) { fx = vehx; fy = vehy; } else { fx = footx; fy = footy; }
             pid = 1;
           } else {
-            /* L2 = TIRO DO VEÍCULO/TORRE: botão ⊕ no canto inf-ESQUERDO (0.05,0.90).
-             * CONFIRMADO: dispara a HMG Kord do Vodnik (som 'Vodnik_HMG_Kord'). */
-            fx = W * (getenv("BC2_FIRE2X") ? atof(getenv("BC2_FIRE2X")) : 0.05f);
-            fy = H * (getenv("BC2_FIRE2Y") ? atof(getenv("BC2_FIRE2Y")) : 0.90f);
-            pid = 2;
+            /* L2 = sempre o tiro do VEÍCULO (⊕ canto-esq), backup explícito. */
+            fx = vehx; fy = vehy; pid = 2;
           }
           static int firing[2];
           int idx = e.number == 7 ? 0 : 1;
@@ -292,6 +311,18 @@ int main(int argc, char *argv[]) {
   debugPrintf("libbc2.so carregado+resolvido. rodando init_array (ctors C++)...\n");
   so_execute_init_array();   /* 🔑 718 construtores globais — sem isso os pools de memória ficam com sentinela null */
   debugPrintf("init_array OK.\n");
+
+  /* 🚗 hook do modo veículo (on-rails) p/ o R2 unificado */
+  if (!getenv("BC2_NOHOOK")) {
+    uintptr_t sorm = so_find_addr_safe("_ZN3krm3BC212CPlayerInput14SetOnRailsModeEb");
+    if (sorm) {
+      so_make_text_writable();
+      hook_arm(sorm, (uintptr_t)my_SetOnRailsMode);
+      so_make_text_executable();
+      so_flush_caches();
+      debugPrintf("hook SetOnRailsMode @ %p (R2 unificado a pé/veículo)\n", (void *)sorm);
+    } else debugPrintf("!! SetOnRailsMode nao achado (R2 unificado off)\n");
+  }
 
   /* ---- JNI + bridge ---- */
   jni_shim_init(&g_vm, &g_env);
