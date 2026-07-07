@@ -6,8 +6,8 @@
 
 <p>
   <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
-  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-36-brightgreen?style=for-the-badge">
-  <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-20-orange?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-37-brightgreen?style=for-the-badge">
+  <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-21-orange?style=for-the-badge">
 </p>
 <p>
   <img alt="Alvo" src="https://img.shields.io/badge/alvo-Mali%20·%20ARM64%20·%20Linux-lightgrey?style=flat-square">
@@ -77,11 +77,13 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **LEGO Marvel Super Heroes: Universe in Peril** (Fusion/WB) | so-loader (arm64, `libLEGO_M1.so`) | Jogável (Mali-450) — OBB de 1.9GB montado nativamente em C, gamepad (hook `fnaController_Poll`), stick direito = cursor de menu, som | [`ports/marvel`](ports/marvel/) |
 | **LEGO Harry Potter: Years 5–7** (Fusion/WB) | so-loader (**armeabi-v7a / GLES1**, `libLEGO_HP2.so`, base lotr) | Jogável (Mali-450) — menu → gameplay, controle nativo (confirm nativo, mapa por contexto, pause no Start), inglês | [`ports/legohp2`](ports/legohp2/) |
 | **LEGO Harry Potter: Years 1–4** (Fusion/WB) | so-loader (**armeabi-v7a / GLES1**, `libLEGOHarry.so`, loader ELF32 próprio) | Jogável (Mali-450) — menu → hub → gameplay, texturas ATC/Adreno decodificadas, música FLAC, controle nativo + **cursor no analógico direito** (A interage no crosshair), inglês | [`ports/legohp1`](ports/legohp1/) |
+| **The LEGO Movie Videogame** (Fusion/WB) | so-loader (**armeabi-v7a**, `libLEGO_Emmet.so`, base lotr) | Jogável (Mali-450) — frontend touch dirigível por pad (swipe sintetizado + cursor no analógico), menu de pause, gameplay nativo, inglês | [`ports/legomovie`](ports/legomovie/) |
 
 ### 🚧 Em andamento
 | Jogo | Engine / método | Estado | Pasta |
 |---|---|---|---|
 | **GTA: Liberty City Stories** | so-loader | Carrega 100%, frame loop estável, gameplay 3D visível; ajustes finais | [`ports/lcs`](ports/lcs/) |
+| **LEGO Ninjago: Tournament** (Fusion/WB) | so-loader (**armeabi-v7a**, `libLEGO_M1.so`, base marvel/lotr) | Em progresso — mesma engine Fusion (módulo M1 do Marvel) | [`ports/ninjagotournament`](ports/ninjagotournament/) |
 | **NFS Most Wanted (2012)** | so-loader (armhf) | Gameplay 3D + áudio OK; fontes do menu pendentes | [`ports/nfs`](ports/nfs/) |
 | **Resident Evil 4** (Unity/Mono ARM32) | so-loader | Menu + entrada Cap.1; andar congela (deadlock job-system) | [`ports/re4`](ports/re4/) |
 | **Final Fantasy IX** (Unity IL2CPP) | so-loader | Renderiza claro no fb0; caminho nativo destravado (Time.time) | [`ports/ff9`](ports/ff9/) |
