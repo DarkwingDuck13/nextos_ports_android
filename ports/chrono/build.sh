@@ -12,16 +12,19 @@ SRCS=$(ls src/*.c)
 
 if [ "${CI_BUILD:-0}" = "1" ]; then
     # Ubuntu cross-compiler sysroot layout:
-    #   $SR/include/          — libc, kernel headers
-    #   /usr/include/         — SDL2, GLES2, EGL (amd64 headers, work for cross-compile)
-    #   /usr/include/aarch64-linux-gnu/ — arch-specific SDL2 config, freetype
+    #   $SR/include/                    — libc, kernel headers (aarch64 sysroot)
+    #   /usr/include/aarch64-linux-gnu/ — arm64 arch-specific SDL2/freetype/EGL headers
+    #                                     MUST come before /usr/include to avoid picking
+    #                                     up the x86_64 SDL_cpuinfo.h (which pulls immintrin.h)
+    #   /usr/include/                   — generic fallback headers
     $CC --sysroot="$SR" -D_GNU_SOURCE \
         -I src \
         -I "$SR/include" \
-        -I /usr/include \
         -I /usr/include/aarch64-linux-gnu \
-        -I /usr/include/freetype2 \
+        -I /usr/include/aarch64-linux-gnu/SDL2 \
         -I /usr/include/aarch64-linux-gnu/freetype2 \
+        -I /usr/include \
+        -I /usr/include/freetype2 \
         -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
         -Wno-int-conversion -Wno-incompatible-pointer-types \
         -o chrono $SRCS \
