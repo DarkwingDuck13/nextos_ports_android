@@ -16,7 +16,7 @@ SR="${SR:-$TC/aarch64-libreelec-linux-gnu/sysroot}"
 SRCS="src/main.c src/so_util.c src/jni_shim.c src/imports.c src/egl_shim.c \
       src/asset_archive.c src/zip_fs.c src/pthread_bridge.c src/util.c src/error.c \
       src/etc1_encode.c src/etc2_decode.c src/etc2_halve.c src/eac_encode.c src/bake_ui.c \
-      src/gtasa_stubs.c"
+      src/gtasa_stubs.c src/opensl_shim.c"
 
 OBJDIR=$(mktemp -d); STUB=$(mktemp -d)
 trap 'rm -rf "$OBJDIR" "$STUB"' EXIT

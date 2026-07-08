@@ -1225,10 +1225,10 @@ static void patch_game_gtasa(void) {
     hook_safe("_ZN17CVehicleModelInfo22SetEnvMapCoeffAtomicCBEP8RpAtomicPv",   (uintptr_t)gtasa_material_passthrough);
   }
 
-  /* ÁUDIO: PlaySound->SetAudioBuffer corrompe o heap (double free) via OpenAL do
-   * device. Desliga o playback p/ CHEGAR NO MUNDO (áudio é polish depois).
-   * Opt-out: GTASA_AUDIO=1 pra tentar com som. */
-  if (!getenv("GTASA_AUDIO"))
+  /* ÁUDIO: LIGADO por padrão via bridge OpenSL ES -> SDL_Audio (opensl_shim.c).
+   * GTASA_NOAUDIO=1 desliga (stuba PlaySound; slCreateEngine falha -> silêncio
+   * sem corromper heap). */
+  if (getenv("GTASA_NOAUDIO"))
     hook_safe("_ZN16CAEAudioHardware9PlaySoundEstttssf", (uintptr_t)ret0);
 
   /* LÍNGUA = INGLÊS (AMERICAN=0). InitialiseLanguage cai no fallback RUSSIAN(5)

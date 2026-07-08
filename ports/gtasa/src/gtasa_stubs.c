@@ -8,7 +8,16 @@
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "so_util.h"
+
+/* bridge OpenSL ES -> SDL_Audio (opensl_shim.c) */
+extern int gtasa_slCreateEngine(void *pEngine, unsigned no, const void *po,
+                                unsigned ni, const void *ii, const void *ir);
+extern const void *const gtasa_SL_IID_ENGINE;
+extern const void *const gtasa_SL_IID_PLAY;
+extern const void *const gtasa_SL_IID_BUFFERQUEUE;
+extern const void *const gtasa_SL_IID_ANDROIDSIMPLEBUFFERQUEUE;
 
 /* desvio de pthread_create (definido em jni_shim.c) */
 extern int gtasa_pthread_create(void *th, const void *attr, void *start, void *arg);
@@ -19,10 +28,14 @@ extern void gtasa_abort(void);
 /* --- retornos triviais (x0 = 0/1) --- */
 static int s_ret0(void) { return 0; }
 static int s_ret1(void) { return 1; }
-/* OpenSL slCreateEngine(SLObjectItf* pEngine, ...): retorna FALHA (nao-zero) p/ o
- * subsistema de audio abortar a init de forma limpa (sem deref de engine nulo).
- * SL_RESULT_FEATURE_UNSUPPORTED = 8. Áudio fica off até bridge OpenSL->OpenAL. */
-static int s_slCreateEngine(void) { return 8; }
+/* OpenSL slCreateEngine: com GTASA_AUDIO=1 usa o bridge OpenSL->SDL_Audio
+ * (opensl_shim.c) -> SOM REAL. Sem a env, retorna FALHA (8) e o PlaySound fica
+ * stubado (build estável silencioso, sem corromper heap). */
+static int s_slCreateEngine(void *pEngine, unsigned no, const void *po,
+                            unsigned ni, const void *ii, const void *ir) {
+  if (!getenv("GTASA_NOAUDIO")) return gtasa_slCreateEngine(pEngine, no, po, ni, ii, ir);
+  return 8;
+}
 
 /* --- __cxa_guard (Itanium ABI, byte 0 = inicializado) --- */
 static int  s_cxa_guard_acquire(char *g) { return g && g[0] == 0; }
@@ -67,10 +80,11 @@ DynLibFunction gtasa_stub_table[] = {
 
   /* OpenSL ES (áudio off até bridge) */
   {"slCreateEngine",                    (uintptr_t)s_slCreateEngine},
-  {"SL_IID_ENGINE",                     (uintptr_t)&d_SL_IID_ENGINE},
-  {"SL_IID_PLAY",                       (uintptr_t)&d_SL_IID_PLAY},
-  {"SL_IID_BUFFERQUEUE",                (uintptr_t)&d_SL_IID_BUFFERQUEUE},
-  {"SL_IID_ANDROIDSIMPLEBUFFERQUEUE",   (uintptr_t)&d_SL_IID_ANDROIDSIMPLEBUFFERQUEUE},
+  /* SL_IID_* apontam pros ids do shim -> GetInterface casa por ponteiro */
+  {"SL_IID_ENGINE",                     (uintptr_t)&gtasa_SL_IID_ENGINE},
+  {"SL_IID_PLAY",                       (uintptr_t)&gtasa_SL_IID_PLAY},
+  {"SL_IID_BUFFERQUEUE",                (uintptr_t)&gtasa_SL_IID_BUFFERQUEUE},
+  {"SL_IID_ANDROIDSIMPLEBUFFERQUEUE",   (uintptr_t)&gtasa_SL_IID_ANDROIDSIMPLEBUFFERQUEUE},
 
   /* EGL: init de display/contexto é NOSSA (egl_shim); estes ficam neutros */
   {"eglGetDisplay",   (uintptr_t)s_ret0},
