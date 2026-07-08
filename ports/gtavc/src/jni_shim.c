@@ -644,6 +644,7 @@ static void *nv_open(const char *p) {
    * ftell num handle NvAPK nosso (não-FILE*) -> SIGSEGV nos .met/.dat. Requer os
    * assets acessíveis por symlink relativo ao CWD (o launcher cria). */
   if (g_no_nvapk < 0) g_no_nvapk = getenv("GTASA_NO_NVAPK") ? 1 : 0;
+  { static int op = 0; if (op < 120) { fprintf(stderr, "[open] \"%s\"\n", p ? p : "(null)"); op++; } }
   if (g_no_nvapk) {
     if (p && ends_with(p, ".tex")) { extern void bully_set_tex_path(const char *); bully_set_tex_path(p); }
     return NULL;
@@ -979,16 +980,24 @@ static void *async_file_worker(void *a) {
    * deixava AMERICAN.GXT travado (o read fica enfileirado mas nunca é drenado). */
   int logn = 0;
   for (;;) {
-    if (g_AND_FileUpdated) {
+    /* VC usa impl-star RenderWare (= bully), NAO NVEvent (= gtasa). A fila so
+     * pode ser drenada quando firstAsyncFile foi PUBLICADO (store-release pela
+     * main thread ao terminar de montar a entrada). Ler com ACQUIRE evita
+     * processar uma entrada meio-construida (dest buffer ainda NULL -> NvFRead
+     * memcpy(NULL,...) -> SIGSEGV em libc). O call INCONDICIONAL do gtasa e hack
+     * NVEvent-only; aqui ele le um torn read (firstAsyncFile=1) e corrompe. */
+    if (g_AND_FileUpdated && g_first_async &&
+        __atomic_load_n(g_first_async, __ATOMIC_ACQUIRE)) {
       g_AND_FileUpdated(0.002);
       if (logn < 3) { fprintf(stderr, "[async] AND_FileUpdated tick #%d (firstAsyncFile=%p)\n",
-                              logn, g_first_async ? (void *)*g_first_async : NULL); logn++; }
+                              logn, (void *)*g_first_async); logn++; }
     }
-    usleep(1000);
+    usleep(2000);
   }
   return NULL;
 }
 static void start_async_file_worker(void) {
+  if (getenv("GTAVC_NOASYNC")) { fprintf(stderr, "[async] DESLIGADO (GTAVC_NOASYNC)\n"); return; }
   g_AND_FileUpdated = (void (*)(double))so_symbol(&mod_game, "_Z14AND_FileUpdated");
   g_first_async =
       (volatile uintptr_t *)so_symbol(&mod_game, "_ZN11AndroidFile14firstAsyncFileE");
