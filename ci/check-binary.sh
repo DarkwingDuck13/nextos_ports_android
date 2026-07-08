@@ -61,7 +61,9 @@ else
 fi
 
 # ── Check 2: glibc version ───────────────────────────────────────────────────
-echo "[check-binary] --- Check 2: glibc version (max allowed: 2.17) ---"
+# Limit set to 2.35 — Knulli/Batocera Buildroot toolchain ships glibc 2.35
+# on modern aarch64 targets, and Ubuntu 22.04 cross-compiler links against 2.35.
+echo "[check-binary] --- Check 2: glibc version (max allowed: 2.35) ---"
 MAX_MAJOR=0
 MAX_MINOR=0
 OFFENDING=""
@@ -79,14 +81,14 @@ done < <(objdump -p "$BINARY" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | \
          sed 's/GLIBC_//' | sort -t. -k1,1n -k2,2n -u)
 
 if [ "$MAX_MAJOR" -eq 0 ] && [ "$MAX_MINOR" -eq 0 ]; then
-  _ok "No versioned glibc symbols found (static or pre-2.17 only)"
-elif [ "$MAX_MAJOR" -gt 2 ] || { [ "$MAX_MAJOR" -eq 2 ] && [ "$MAX_MINOR" -gt 17 ]; }; then
+  _ok "No versioned glibc symbols found (static or pre-2.35 only)"
+elif [ "$MAX_MAJOR" -gt 2 ] || { [ "$MAX_MAJOR" -eq 2 ] && [ "$MAX_MINOR" -gt 35 ]; }; then
   OFFENDING=$(objdump -p "$BINARY" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -u)
-  _fail "Binary requires glibc $MAX_MAJOR.$MAX_MINOR (> 2.17 limit)"
+  _fail "Binary requires glibc $MAX_MAJOR.$MAX_MINOR (> 2.35 limit)"
   echo "[check-binary]   All versioned glibc requirements:" >&2
   echo "$OFFENDING" | sed 's/^/[check-binary]     /' >&2
 else
-  _ok "Highest glibc requirement: GLIBC_$MAX_MAJOR.$MAX_MINOR (<= 2.17)"
+  _ok "Highest glibc requirement: GLIBC_$MAX_MAJOR.$MAX_MINOR (<= 2.35)"
 fi
 
 # ── Check 3: No bundled runtime libraries ────────────────────────────────────
