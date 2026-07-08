@@ -37,7 +37,7 @@ $ESUDO chmod 666 /dev/uinput 2>/dev/null
 # Ambiente do so-loader. Video e audio vem AUTOMATICO do sistema/SDL do device
 # (NUNCA forcar SDL_VIDEODRIVER/SDL_AUDIODRIVER).
 export HOME="$GAMEDIR"
-export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR"
+#export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR"
 # Controle padrao Xbox: SDL mapeia qualquer controle conectado via gamecontrollerdb.
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
