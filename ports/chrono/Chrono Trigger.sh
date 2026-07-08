@@ -1,3 +1,4 @@
+```bash
 #!/bin/bash
 # PORTMASTER: chrono, Chrono Trigger.sh
 # Chrono Trigger (Cocos2d-x 3.14.1) -> Mali-450 aarch64 so-loader.
@@ -30,7 +31,7 @@ cd "$GAMEDIR" || exit 1
 
 > "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
 
-$ESUDO chmod +x "$GAMEDIR/chrono" 2>/dev/null
+$ESUDO chmod +x "$GAMEDIR/chrono.aarch64" 2>/dev/null
 $ESUDO chmod 666 /dev/uinput 2>/dev/null
 
 # Ambiente do so-loader. Video e audio vem AUTOMATICO do sistema/SDL do device
@@ -41,13 +42,14 @@ export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 
 # gptokeyb2 padrao PortMaster: fecha o jogo no Select+Start.
-$GPTOKEYB "chrono" &
-pm_platform_helper "$GAMEDIR/chrono" >/dev/null
+$GPTOKEYB "chrono.aarch64" &
+pm_platform_helper "$GAMEDIR/chrono.aarch64" >/dev/null
 
-./chrono
+./chrono.aarch64
 
 # limpeza
 $ESUDO kill -9 $(pidof gptokeyb gptokeyb2) 2>/dev/null
 $ESUDO systemctl restart oga_events 2>/dev/null &
 printf "\033c" >> $CUR_TTY 2>/dev/null
 pm_finish 2>/dev/null
+```
