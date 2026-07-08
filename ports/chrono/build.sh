@@ -18,6 +18,7 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
     #                                     up the x86_64 SDL_cpuinfo.h (which pulls immintrin.h)
     #   /usr/include/                   — generic fallback headers
     $CC --sysroot="$SR" -D_GNU_SOURCE \
+        -DSDL_DISABLE_IMMINTRIN_H \
         -I src \
         -I "$SR/include" \
         -I /usr/include/aarch64-linux-gnu \
