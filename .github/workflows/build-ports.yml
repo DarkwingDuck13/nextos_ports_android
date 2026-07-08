@@ -1,0 +1,237 @@
+name: Build Port ZIPs
+
+on:
+  workflow_dispatch:
+    inputs:
+      port:
+        description: 'Port name(s) to build: single name, comma-separated list, or "all"'
+        required: true
+        default: 'all'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed for gh release create/upload
+
+jobs:
+  # ── Job 1: setup ─────────────────────────────────────────────────────────────
+  # Installs the cross-compiler, bootstraps the aarch64 sysroot once,
+  # resolves the port selector, and emits the build matrix.
+  setup:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compiler and tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-10-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            debootstrap \
+            jq \
+            zip \
+            file \
+            binutils \
+            python3
+          echo "=== Compiler version ==="
+          aarch64-linux-gnu-gcc-10 --version
+          echo "=== Git commit ==="
+          git rev-parse HEAD
+
+      - name: Bootstrap aarch64 Debian Bullseye sysroot
+        run: |
+          sudo debootstrap \
+            --arch=arm64 \
+            --variant=minbase \
+            --include=libsdl2-dev,libegl-dev,libgles2-mesa-dev,libfreetype-dev,libstdc++-10-dev \
+            bullseye \
+            ./ci-sysroot \
+            http://deb.debian.org/debian
+          echo "=== Sysroot SDL2 check ==="
+          ls ./ci-sysroot/usr/include/SDL2/SDL.h
+          echo "=== Sysroot EGL check ==="
+          ls ./ci-sysroot/usr/include/EGL/egl.h
+          tar -czf ci-sysroot.tar.gz ci-sysroot/
+          echo "Sysroot tarball: $(du -sh ci-sysroot.tar.gz | cut -f1)"
+
+      - name: Upload sysroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-sysroot
+          path: ci-sysroot.tar.gz
+          retention-days: 1
+
+      - name: Discover playable ports and resolve selector
+        id: resolve
+        run: |
+          PORT_INPUT="${{ github.event_name == 'push' && 'all' || inputs.port }}"
+          echo "Port selector: $PORT_INPUT"
+
+          # Get full playable list
+          PLAYABLE=$(bash ci/discover-ports.sh README.md . 2>/dev/null)
+          echo "Playable ports: $PLAYABLE"
+
+          if [ "$PORT_INPUT" = "all" ]; then
+            MATRIX="$PLAYABLE"
+          else
+            # Build matrix from comma-separated input, validating each name
+            IFS=',' read -ra REQUESTED <<< "$PORT_INPUT"
+            VALID='[]'
+            ERRORS=()
+            for name in "${REQUESTED[@]}"; do
+              name=$(echo "$name" | tr -d ' ')
+              if echo "$PLAYABLE" | jq -e --arg n "$name" 'index($n) != null' >/dev/null; then
+                VALID=$(echo "$VALID" | jq --arg n "$name" '. + [$n]')
+              else
+                ERRORS+=("$name")
+              fi
+            done
+            if [ ${#ERRORS[@]} -gt 0 ]; then
+              echo "ERROR: The following ports are not in the playable list: ${ERRORS[*]}" >&2
+              echo "Playable ports are: $(echo "$PLAYABLE" | jq -r '.[]' | tr '\n' ' ')" >&2
+              exit 1
+            fi
+            MATRIX="$VALID"
+          fi
+
+          echo "Build matrix: $MATRIX"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+      - name: Log build info
+        run: |
+          echo "=== Build Summary ==="
+          echo "Trigger:    ${{ github.event_name }}"
+          echo "Ref:        ${{ github.ref }}"
+          echo "Commit:     $(git rev-parse HEAD)"
+          echo "Compiler:   $(aarch64-linux-gnu-gcc-10 --version | head -1)"
+          echo "Ports:      ${{ steps.resolve.outputs.matrix }}"
+
+  # ── Job 2: build (matrix per port) ───────────────────────────────────────────
+  build:
+    needs: [setup]
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        port: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false   # let other ports continue if one fails
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-10-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            binutils \
+            jq \
+            zip \
+            file \
+            python3
+
+      - name: Download sysroot
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-sysroot
+
+      - name: Extract sysroot
+        run: |
+          tar -xzf ci-sysroot.tar.gz
+          echo "SR=$(pwd)/ci-sysroot" >> "$GITHUB_ENV"
+          echo "CC=aarch64-linux-gnu-gcc-10" >> "$GITHUB_ENV"
+
+      - name: Compile port
+        run: |
+          bash ci/build-port.sh "${{ matrix.port }}"
+
+      - name: Check binary quality gates
+        run: |
+          BINARY="ports/${{ matrix.port }}/${{ matrix.port }}"
+          bash ci/check-binary.sh "${{ matrix.port }}" "$BINARY"
+
+      - name: Assemble PortMaster zip
+        run: |
+          mkdir -p dist
+          BINARY="ports/${{ matrix.port }}/${{ matrix.port }}"
+          bash ci/assemble-zip.sh "${{ matrix.port }}" "$BINARY" dist
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.port }}-portmaster-zip
+          path: dist/*.zip
+          retention-days: 14
+
+  # ── Job 3: release (only on v* tag pushes) ───────────────────────────────────
+  release:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all port zips
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-portmaster-zip'
+          path: release-zips
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Create release if it doesn't exist; ignore error if it does
+          gh release create "$TAG" \
+            --title "NextOS Ports $TAG" \
+            --generate-notes \
+            --draft=false \
+            --prerelease=false \
+            2>/dev/null || true
+
+          # Upload each zip, overwriting if already exists
+          for zip_file in release-zips/*.zip; do
+            [ -f "$zip_file" ] || continue
+            echo "Uploading: $zip_file"
+            gh release upload "$TAG" "$zip_file" --clobber
+          done
+
+  # ── Job 4: summary (always runs) ─────────────────────────────────────────────
+  summary:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    if: always()
+    steps:
+      - name: Write job summary
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## Port Build Results
+
+          | Port | Outcome |
+          |------|---------|
+          SUMMARY
+
+          # Map overall result to emoji
+          if [ "$BUILD_RESULT" = "success" ]; then
+            echo "| (all selected ports) | ✅ built |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$BUILD_RESULT" = "failure" ]; then
+            echo "| (one or more ports) | ❌ failed — check individual job logs above |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| (all selected ports) | ⏭ $BUILD_RESULT |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTE'
+
+          > Download individual port zips from the **Artifacts** section at the top of this workflow run page.
+          > Each zip is named `<portname>-portmaster-zip` and retained for 14 days.
+          NOTE

@@ -1,0 +1,113 @@
+name: CI Pipeline Self-Test
+
+# Runs on every push to master and on PRs to verify the CI scripts themselves
+# work correctly using the lightweight ci/testport/ fixture.
+# Target runtime: under 5 minutes.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-10-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            debootstrap \
+            jq \
+            zip \
+            file \
+            binutils \
+            python3
+
+      - name: Bootstrap aarch64 sysroot
+        run: |
+          sudo debootstrap \
+            --arch=arm64 \
+            --variant=minbase \
+            --include=libsdl2-dev,libegl-dev,libgles2-mesa-dev \
+            bullseye \
+            ./ci-sysroot \
+            http://deb.debian.org/debian
+          echo "SR=$(pwd)/ci-sysroot" >> "$GITHUB_ENV"
+          echo "CC=aarch64-linux-gnu-gcc-10" >> "$GITHUB_ENV"
+
+      - name: Run shell unit tests
+        run: bash ci/tests/run-all.sh
+
+      - name: Build testport fixture
+        run: |
+          # ci/build-port.sh expects the port under ports/<name>/
+          # For testport we symlink ci/testport into ports/ temporarily
+          ln -sf "$(pwd)/ci/testport" "$(pwd)/ports/testport"
+          bash ci/build-port.sh testport
+          ls -lh ports/testport/testport
+
+      - name: Check testport binary
+        run: |
+          bash ci/check-binary.sh testport ports/testport/testport
+
+      - name: Assemble testport zip
+        run: |
+          mkdir -p dist
+          bash ci/assemble-zip.sh testport ports/testport/testport dist
+          echo "=== Zip contents ==="
+          unzip -l dist/testport.zip
+
+      - name: Verify zip contents
+        run: |
+          python3 - <<'EOF'
+          import zipfile, sys
+
+          zf = zipfile.ZipFile("dist/testport.zip")
+          names = zf.namelist()
+          print("Files in zip:", names)
+
+          required = [
+              "Testport.sh",
+              "testport/testport.aarch64",
+              "testport/port.json",
+              "testport/README.md",
+              "testport/screenshot.png",
+          ]
+          missing = [r for r in required if r not in names]
+          if missing:
+              print("FAIL: Missing required files:", missing)
+              sys.exit(1)
+
+          forbidden = [n for n in names if n.endswith('.c') or n.endswith('.h')]
+          if forbidden:
+              print("FAIL: Forbidden files in zip:", forbidden)
+              sys.exit(1)
+
+          import json
+          port_json = json.loads(zf.read("testport/port.json"))
+          arch = port_json["attr"]["arch"]
+          assert arch == ["aarch64"], f"Expected arch=['aarch64'], got {arch}"
+
+          items = port_json["items"]
+          assert any("testport.aarch64" in i for i in items), \
+              f"items must contain testport.aarch64, got {items}"
+
+          print("All zip checks passed.")
+          EOF
+
+      - name: Upload selftest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: testport-selftest-zip
+          path: dist/testport.zip
+          retention-days: 3
+
+      - name: Cleanup symlink
+        if: always()
+        run: rm -f ports/testport

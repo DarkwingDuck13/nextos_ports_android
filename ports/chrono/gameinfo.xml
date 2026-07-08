@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gameList>
+  <game>
+    <path>./Chrono Trigger.sh</path>
+    <name>Chrono Trigger</name>
+    <desc>Chrono Trigger is a classic JRPG by Square. Travel through time with Crono and his companions to prevent a global catastrophe. Features multiple endings, the Active Time Battle system, and dual/triple techs.
+
+BYO-data: requires your legal copy of the Chrono Trigger Android APK.</desc>
+    <releasedate>20110808T000000</releasedate>
+    <developer>Square</developer>
+    <publisher>Square Enix</publisher>
+    <genre>RPG</genre>
+    <image>./chrono/cover.png</image>
+  </game>
+</gameList>

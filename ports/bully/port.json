@@ -3,7 +3,15 @@
     "name": "bully.zip",
     "items": [
         "Bully.sh",
-        "bully"
+        "bully/bully.aarch64",
+        "bully/alsoft.conf",
+        "bully/bully.gptk",
+        "bully/cover.png",
+        "bully/gameinfo.xml",
+        "bully/licenses/LICENSE.md",
+        "bully/port.json",
+        "bully/README.md",
+        "bully/screenshot.png"
     ],
     "items_opt": [],
     "attr": {

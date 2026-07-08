@@ -1,0 +1,30 @@
+{
+    "version": 2,
+    "name": "chrono.zip",
+    "items": [
+        "Chrono Trigger.sh",
+        "chrono/chrono.aarch64",
+        "chrono/port.json",
+        "chrono/README.md",
+        "chrono/screenshot.png"
+    ],
+    "items_opt": [],
+    "attr": {
+        "title": "Chrono Trigger",
+        "porter": [
+            "felc18-blip"
+        ],
+        "desc": "Chrono Trigger (Cocos2d-x 3.14.1) via so-loader do libGame.so Android. BYO-data: requer sua cópia legal do APK do Chrono Trigger (veja README.md).",
+        "inst": "Copie seu APK do Chrono Trigger para a pasta 'chrono/' e abra o jogo — ele extrai os dados sozinho na 1a vez.",
+        "genres": [
+            "rpg"
+        ],
+        "image": {},
+        "rtr": false,
+        "runtime": [],
+        "reqs": [],
+        "arch": [
+            "aarch64"
+        ]
+    }
+}
