@@ -31,7 +31,10 @@
 #
 set -e
 CC=aarch64-linux-gnu-gcc
-REPO=/repo
+# /repo is only present when run locally via `docker run -v "$PWD":/repo ...`.
+# In CI (or if run directly, no docker), fall back to the current directory.
+REPO=${REPO:-/repo}
+[ -d "$REPO" ] || REPO="$(pwd)"
 cd "$REPO"
 
 if ! command -v "$CC" >/dev/null; then
