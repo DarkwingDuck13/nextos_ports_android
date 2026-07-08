@@ -12,12 +12,10 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # needed for gh release create/upload
+  contents: write
 
 jobs:
-  # ── Job 1: setup ─────────────────────────────────────────────────────────────
-  # Installs the cross-compiler, bootstraps the aarch64 sysroot once,
-  # resolves the port selector, and emits the build matrix.
+  # ── Job 1: resolve port list ──────────────────────────────────────────────────
   setup:
     runs-on: ubuntu-22.04
     outputs:
@@ -26,93 +24,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install cross-compiler and tools
+      - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            gcc-10-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            libgcc-10-dev-arm64-cross \
-            jq \
-            zip \
-            file \
-            binutils \
-            python3
-          echo "=== Compiler version ==="
-          aarch64-linux-gnu-gcc-10 --version
-          echo "=== Git commit ==="
+          sudo apt-get install -y --no-install-recommends jq
           git rev-parse HEAD
 
-      - name: Build aarch64 sysroot (libc + dev headers)
-        run: |
-          # The Ubuntu cross-compiler package installs a proper sysroot at
-          # /usr/aarch64-linux-gnu/ with libc headers already in place.
-          # We extend it with SDL2, EGL, freetype, and GLES2 headers by
-          # downloading the arm64 dev packages and extracting into that sysroot.
-          SYSROOT="/usr/aarch64-linux-gnu"
-
-          # Verify base sysroot has stdio.h
-          ls "$SYSROOT/include/stdio.h"
-          echo "Base sysroot OK: $SYSROOT"
-
-          # Add arm64 architecture for apt
-          sudo dpkg --add-architecture arm64
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" \
-            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
-          sudo apt-get update -qq 2>/dev/null || true
-
-          # Try to install arm64 dev packages directly into the system
-          # (they go to /usr/lib/aarch64-linux-gnu/ and /usr/include/)
-          sudo apt-get install -y --no-install-recommends \
-            libsdl2-dev:arm64 \
-            libegl-dev:arm64 \
-            libgles2-mesa-dev:arm64 \
-            libfreetype-dev:arm64 \
-            libstdc++-10-dev:arm64 2>/dev/null || {
-            echo "arm64 packages not available, installing host headers as fallback"
-            sudo apt-get install -y --no-install-recommends \
-              libsdl2-dev libegl-dev libgles2-mesa-dev libfreetype-dev
-            # Copy host headers into the aarch64 sysroot
-            for inc in SDL2 EGL GLES2 GLES freetype2; do
-              [ -d "/usr/include/$inc" ] && sudo cp -r "/usr/include/$inc" "$SYSROOT/include/" || true
-            done
-            [ -f /usr/include/ft2build.h ] && sudo cp /usr/include/ft2build.h "$SYSROOT/include/" || true
-          }
-
-          echo "=== Sysroot check ==="
-          ls "$SYSROOT/include/stdio.h"
-          ls "$SYSROOT/include/SDL2/SDL.h" 2>/dev/null || \
-            ls /usr/include/SDL2/SDL.h 2>/dev/null || echo "SDL2 headers: not found"
-
-          # Write the sysroot path to a file for the build jobs
-          echo "$SYSROOT" > /tmp/sysroot_path.txt
-          tar -czf ci-sysroot.tar.gz --transform "s|^usr/aarch64-linux-gnu|ci-sysroot|" \
-            -C / usr/aarch64-linux-gnu 2>/dev/null || \
-          tar -czf ci-sysroot.tar.gz -C / usr/aarch64-linux-gnu
-          echo "Sysroot tarball: $(du -sh ci-sysroot.tar.gz | cut -f1)"
-
-      - name: Upload sysroot artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-sysroot
-          path: ci-sysroot.tar.gz
-          retention-days: 1
-
-      - name: Discover playable ports and resolve selector
+      - name: Resolve port selector
         id: resolve
         run: |
           PORT_INPUT="${{ github.event_name == 'push' && 'all' || inputs.port }}"
           echo "Port selector: $PORT_INPUT"
 
-          # Get full playable list — compact single-line JSON array
           PLAYABLE=$(bash ci/discover-ports.sh README.md . 2>/dev/null | jq -c '.')
-          echo "Playable ports: $PLAYABLE"
+          echo "Playable: $PLAYABLE"
 
           if [ "$PORT_INPUT" = "all" ]; then
             MATRIX="$PLAYABLE"
           else
-            # Build matrix from comma-separated input, validating each name
             IFS=',' read -ra REQUESTED <<< "$PORT_INPUT"
             VALID='[]'
             ERRORS=()
@@ -125,79 +54,91 @@ jobs:
               fi
             done
             if [ ${#ERRORS[@]} -gt 0 ]; then
-              echo "ERROR: The following ports are not in the playable list: ${ERRORS[*]}" >&2
-              echo "Playable ports are: $(echo "$PLAYABLE" | jq -r '.[]' | tr '\n' ' ')" >&2
+              echo "ERROR: not in playable list: ${ERRORS[*]}" >&2
               exit 1
             fi
             MATRIX="$VALID"
           fi
 
-          # GITHUB_OUTPUT requires single-line values — matrix must be compact JSON
-          MATRIX_COMPACT=$(echo "$MATRIX" | jq -c '.')
-          echo "Build matrix: $MATRIX_COMPACT"
-          echo "matrix=$MATRIX_COMPACT" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(echo "$MATRIX" | jq -c '.')" >> "$GITHUB_OUTPUT"
 
-      - name: Log build info
-        run: |
-          echo "=== Build Summary ==="
-          echo "Trigger:    ${{ github.event_name }}"
-          echo "Ref:        ${{ github.ref }}"
-          echo "Commit:     $(git rev-parse HEAD)"
-          echo "Compiler:   $(aarch64-linux-gnu-gcc-10 --version | head -1)"
-          echo "Ports:      ${{ steps.resolve.outputs.matrix }}"
-
-  # ── Job 2: build (matrix per port) ───────────────────────────────────────────
+  # ── Job 2: build each port ────────────────────────────────────────────────────
   build:
     needs: [setup]
     runs-on: ubuntu-22.04
     strategy:
       matrix:
         port: ${{ fromJson(needs.setup.outputs.matrix) }}
-      fail-fast: false   # let other ports continue if one fails
+      fail-fast: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build tools
+      - name: Install cross-compiler and arm64 dev headers
         run: |
           sudo apt-get update -qq
+
+          # Cross-compiler (installs sysroot at /usr/aarch64-linux-gnu)
           sudo apt-get install -y --no-install-recommends \
             gcc-10-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
             libc6-dev-arm64-cross \
             libgcc-10-dev-arm64-cross \
-            binutils \
-            jq \
-            zip \
-            file \
-            python3
+            jq zip file binutils python3
 
-      - name: Download sysroot
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-sysroot
+          # Add arm64 architecture to get arm64 dev packages
+          sudo dpkg --add-architecture arm64
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update -qq 2>/dev/null || true
 
-      - name: Extract sysroot
+          # Install arm64 dev headers into /usr/include and /usr/lib/aarch64-linux-gnu
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-dev:arm64 \
+            libegl-dev:arm64 \
+            libgles2-mesa-dev:arm64 \
+            libfreetype-dev:arm64 \
+            libstdc++-10-dev:arm64 2>/dev/null || {
+            echo "arm64 packages unavailable — copying host headers into sysroot"
+            sudo apt-get install -y --no-install-recommends \
+              libsdl2-dev libegl-dev libgles2-mesa-dev libfreetype-dev
+            SR=/usr/aarch64-linux-gnu
+            sudo mkdir -p "$SR/include"
+            for inc in SDL2 EGL GLES2 GLES freetype2; do
+              [ -d "/usr/include/$inc" ] && sudo cp -r "/usr/include/$inc" "$SR/include/" || true
+            done
+            [ -f /usr/include/ft2build.h ] && sudo cp /usr/include/ft2build.h "$SR/include/" || true
+          }
+
+          # Verify
+          echo "=== Sysroot check ==="
+          ls /usr/aarch64-linux-gnu/include/stdio.h
+          ls /usr/aarch64-linux-gnu/include/SDL2/SDL.h 2>/dev/null \
+            || ls /usr/include/SDL2/SDL.h \
+            || { echo "ERROR: SDL2 headers missing"; exit 1; }
+          aarch64-linux-gnu-gcc-10 --version
+
+      - name: Set CC and SR
         run: |
-          tar -xzf ci-sysroot.tar.gz
-          # Sysroot is extracted to ci-sysroot/ (remapped from /usr/aarch64-linux-gnu)
-          echo "SR=$(pwd)/ci-sysroot" >> "$GITHUB_ENV"
           echo "CC=$(command -v aarch64-linux-gnu-gcc-10)" >> "$GITHUB_ENV"
+          echo "SR=/usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
 
       - name: Compile port
-        run: |
-          bash ci/build-port.sh "${{ matrix.port }}"
+        run: bash ci/build-port.sh "${{ matrix.port }}"
 
       - name: Check binary quality gates
         run: |
-          BINARY="ports/${{ matrix.port }}/${{ matrix.port }}"
-          bash ci/check-binary.sh "${{ matrix.port }}" "$BINARY"
+          bash ci/check-binary.sh \
+            "${{ matrix.port }}" \
+            "ports/${{ matrix.port }}/${{ matrix.port }}"
 
       - name: Assemble PortMaster zip
         run: |
           mkdir -p dist
-          BINARY="ports/${{ matrix.port }}/${{ matrix.port }}"
-          bash ci/assemble-zip.sh "${{ matrix.port }}" "$BINARY" dist
+          bash ci/assemble-zip.sh \
+            "${{ matrix.port }}" \
+            "ports/${{ matrix.port }}/${{ matrix.port }}" \
+            dist
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
@@ -206,7 +147,7 @@ jobs:
           path: dist/*.zip
           retention-days: 14
 
-  # ── Job 3: release (only on v* tag pushes) ───────────────────────────────────
+  # ── Job 3: GitHub Release (v* tags only) ─────────────────────────────────────
   release:
     needs: [build]
     runs-on: ubuntu-22.04
@@ -227,49 +168,33 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_name }}"
-          # Create release if it doesn't exist; ignore error if it does
           gh release create "$TAG" \
             --title "NextOS Ports $TAG" \
-            --generate-notes \
-            --draft=false \
-            --prerelease=false \
-            2>/dev/null || true
-
-          # Upload each zip, overwriting if already exists
+            --generate-notes 2>/dev/null || true
           for zip_file in release-zips/*.zip; do
             [ -f "$zip_file" ] || continue
-            echo "Uploading: $zip_file"
             gh release upload "$TAG" "$zip_file" --clobber
           done
 
-  # ── Job 4: summary (always runs) ─────────────────────────────────────────────
+  # ── Job 4: Summary (always) ───────────────────────────────────────────────────
   summary:
     needs: [build]
     runs-on: ubuntu-22.04
     if: always()
     steps:
-      - name: Write job summary
+      - name: Write summary
         env:
           BUILD_RESULT: ${{ needs.build.result }}
         run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
-          ## Port Build Results
-
-          | Port | Outcome |
-          |------|---------|
-          SUMMARY
-
-          # Map overall result to emoji
-          if [ "$BUILD_RESULT" = "success" ]; then
-            echo "| (all selected ports) | ✅ built |" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$BUILD_RESULT" = "failure" ]; then
-            echo "| (one or more ports) | ❌ failed — check individual job logs above |" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| (all selected ports) | ⏭ $BUILD_RESULT |" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTE'
-
-          > Download individual port zips from the **Artifacts** section at the top of this workflow run page.
-          > Each zip is named `<portname>-portmaster-zip` and retained for 14 days.
-          NOTE
+          {
+            echo "## Port Build Results"
+            echo "| Port | Outcome |"
+            echo "|------|---------|"
+            if [ "$BUILD_RESULT" = "success" ]; then
+              echo "| all selected ports | ✅ built |"
+            else
+              echo "| one or more ports | ❌ $BUILD_RESULT — see job logs |"
+            fi
+            echo ""
+            echo "> Download zips from the **Artifacts** section above. Retained 14 days."
+          } >> "$GITHUB_STEP_SUMMARY"
