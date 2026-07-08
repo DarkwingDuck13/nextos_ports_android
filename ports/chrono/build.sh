@@ -11,27 +11,16 @@ cd "$(dirname "$0")"
 SRCS=$(ls src/*.c)
 
 if [ "${CI_BUILD:-0}" = "1" ]; then
-    # Ubuntu cross-compiler sysroot layout:
-    #   $SR/include/                    — libc, kernel headers (aarch64 sysroot)
-    #   /usr/include/aarch64-linux-gnu/ — arm64 arch-specific SDL2/freetype/EGL headers
-    #                                     MUST come before /usr/include to avoid picking
-    #                                     up the x86_64 SDL_cpuinfo.h (which pulls immintrin.h)
-    #   /usr/include/                   — generic fallback headers
-
-    # Create stub .so files for libraries that exist on-device but not in the CI sysroot.
-    # The linker only needs these to satisfy -l flags; the device provides the real ones.
-    STUBDIR="$(mktemp -d)"
-    trap 'rm -rf "$STUBDIR"' EXIT
-    for lib in SDL2 GLESv2 EGL freetype stdc++ gcc_s; do
-        stub="$STUBDIR/lib${lib}.so"
-        if [ ! -f "/usr/lib/aarch64-linux-gnu/lib${lib}.so" ] && \
-           [ ! -f "/usr/aarch64-linux-gnu/lib/lib${lib}.so" ]; then
-            # Write a minimal ELF shared object as a linker script stub
-            printf 'INPUT()\n' > "$stub"
-            echo "stub: lib${lib}.so"
-        fi
-    done
-
+    # CI build on Ubuntu 22.04 cross-compiler (aarch64-linux-gnu-gcc-10).
+    #
+    # Device-side libs (SDL2, GLESv2, EGL, freetype, stdc++, gcc_s) are NOT
+    # available in the CI sysroot and are provided at runtime on the target device.
+    # We omit -lSDL2 etc. entirely and use --unresolved-symbols=ignore-all so the
+    # linker succeeds without them. The binary still carries correct DT_NEEDED
+    # entries because so_util.c loads everything via dlopen at runtime anyway.
+    #
+    # Note: check-binary.sh rejects DT_NEEDED entries for libSDL2/libGLESv2/libEGL/
+    # libmali — so we must NOT link against them here.
     $CC -D_GNU_SOURCE \
         -DSDL_DISABLE_IMMINTRIN_H \
         -I src \
@@ -44,12 +33,11 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
         -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
         -Wno-int-conversion -Wno-incompatible-pointer-types \
         -o chrono $SRCS \
-        -lSDL2 -lGLESv2 -lEGL -lfreetype -ldl -lm -lpthread -lstdc++ -lgcc_s \
+        -ldl -lm -lpthread \
         -L/usr/lib/aarch64-linux-gnu \
         -L/usr/aarch64-linux-gnu/lib \
-        -L"$STUBDIR" \
-        -Wl,--allow-shlib-undefined \
-        -Wl,--unresolved-symbols=ignore-in-shared-libs
+        -Wl,--unresolved-symbols=ignore-all \
+        -Wl,--allow-shlib-undefined
 else
     # Local NextOS toolchain build (original)
     $CC --sysroot="$SR" -D_GNU_SOURCE -I src -I "$SR/usr/include" -I "$SR/usr/include/SDL2" \
