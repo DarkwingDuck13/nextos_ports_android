@@ -172,3 +172,55 @@ sistema (NÃO forçar SDL_VIDEODRIVER). glibc<=2.30 no release (Docker buster).
 - Áudio (bridge OpenAL sem corromper heap).
 - Língua: menu sai em RUSSO -> forçar EN (locale/settings).
 - MINFO.BIN/gta3.ini ausentes (não-fatais).
+
+---
+## 🔊 SOM — bridge OpenSL ES -> SDL_Audio (src/opensl_shim.c) [FEITO]
+O GTA SA embute **OpenAL-Soft ESTÁTICO** (define al*, alc*, opensl.c interno). O
+backend de saída dele no Android é **OpenSL ES** (`slCreateEngine`). O Amlogic
+não tem OpenSL, mas tem **SDL2 + ALSA (AML-M8AUDIO I2S)**.
+- **Sintoma sem bridge:** stubar slCreateEngine->falha deixava o OpenAL-Soft
+  meio-inicializado -> `double free` no CAEAudioHardware::PlaySound.
+- **Fix:** implementar a superfície OpenSL ES 1.0.1 (SLObjectItf, SLEngineItf,
+  SLPlayItf, SLAndroidSimpleBufferQueueItf) e mandar o PCM pro SDL_Audio:
+  `CreateAudioPlayer` lê o `SLDataFormat_PCM` (2ch/44100/16) -> `SDL_OpenAudioDevice`;
+  `Enqueue`->ring buffer; SDL callback dreno + dispara o cb do OpenAL-Soft (que
+  enfileira o próximo). **Padrão ON** (`GTASA_NOAUDIO=1` desliga).
+- Detalhe: cada "interface" OpenSL = ponteiro p/ um campo que guarda o
+  ptr-de-vtable; método recupera o objeto por `container_of`. SL_IID_* casam por
+  valor E endereço (jogo pode derefenciar a variável ou passar &var).
+
+## 🖼️ IMAGEM — resolução + texturas
+- **Resolução = DEVICE decide** (padrão): `OS_ApplicationInitialize` só chama
+  `OS_ScreenSetResolution(1280,720)` se o tier >= 2; senão render escalado. Mali-450
+  reporta tier baixo -> escalado LISO (~30fps). `GTASA_FULLRES=1` -> NOP no `b.lt`
+  de OS_ApplicationInitialize+0x14 -> full 1280x720 (~20fps, mais nítido).
+- **Texturas** (config_gtasa.txt, no device): `trilinear_filter 1`,
+  `disable_mipmaps 0` (nitidez). `disable_detail_textures`/`drop_highest_lod`
+  ficam off por memória do Mali-450 (testar ligar no futuro).
+- TODO: comparar c/ o port Yavuz (GLES3, mesma libGTASA) p/ ver o que dá p/
+  aproveitar (ETC2/detail/LOD) sem estourar a memória de textura do Utgard.
+
+## 🛠️ BUILD & RUN (referência)
+```
+# build (cross aarch64, glibc do device via sysroot NextOS-Retro-Elite)
+cd ports/gtasa && ./build.sh          # -> ./gtasa (PIE aarch64)
+# deploy: gtasa -> device:/storage/roms/ports/gtasa/gtasa-nosso
+# engine+assets (libGTASA.so, libc++_shared.so, assets/, config_gtasa.txt) já no device
+```
+Launcher: `gtasa-nextos.sh` (device) -> foreground (ES resume), symlinks de
+assets/, `GTASA_NO_NVAPK=1` (fopen nativo), `GTASA_FULLRES=1` (opcional),
+NÃO força SDL_VIDEODRIVER (mali fbdev vem do sistema).
+
+Envs: `GTASA_NO_NVAPK=1` (obrigatório: fopen nativo p/ OS_FileGetPosition/ftell),
+`GTASA_FULLRES=1` (full-res), `GTASA_NOAUDIO=1` (mudo), `GTASA_ENVMAP=1` (religa
+env-map de veículo, CRASHA no Mali-450), `GTASA_NODIAG=1` (sem dump de threads).
+
+## 📁 Arquivos-chave (src/)
+- `main.c` — carrega libc++_shared + libGTASA, crash/diag handlers, chama jni_load.
+- `jni_shim.c` — DRIVER NVEvent (jni_load), fake JNI env/vm, patch_game_gtasa
+  (hooks por-nome: threads, screen, língua, env-map, áudio, resolução), input.
+- `gtasa_stubs.c` — imports que faltavam (cxa_guard, cloud*, SL_IID*, social,
+  raise/abort log, pthread_create desvio, sigaction/setname).
+- `opensl_shim.c` — bridge OpenSL ES -> SDL_Audio (som).
+- `imports.c` — libc/GL/AAsset bionic->glibc; `ci_fopen` case-insensitive.
+- `so_util.c` — loader ELF aarch64 (relocate/resolve/hook), do reVC/max_arm64.
