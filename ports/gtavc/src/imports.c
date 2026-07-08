@@ -1,369 +1,1660 @@
-// imports.c — tabela DynLibFunction (GTA VC armhf). GERADO por gen_imports.py
+/* imports.c (DEVICE) -- shims bionic/NDK do libGame.so como tabela DynLibFunction.
+ * Igual aos shims validados no PC; aqui expostos como bully_stub_table[] p/ o
+ * so_resolve do so_util AArch64 (fallback dlsym pega libc/GLES/EGL/openal/mpg123
+ * do device). Ponte pthread bionic->glibc vem do pthread_bridge.c. */
 #define _GNU_SOURCE
-#include "imports.h"
-#include "so_util.h"
-// headers que declaram os simbolos passthrough:
+#include <ctype.h>
+#include <dlfcn.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-#include <ctype.h>
-#include <time.h>
-#include <setjmp.h>
-#include <signal.h>
+#include <sys/syscall.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
-#include <semaphore.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <dirent.h>
-#include <locale.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <syscall.h>
-#include <errno.h>
-#include <GLES2/gl2.h>
-#include <GLES2/gl2ext.h>
-#include <EGL/egl.h>
+#include <strings.h>
 
-// wrappers (pthread_fake.c / vc_impl.c / egl_shim.c)
-extern int pthread_attr_destroy_fake();
-extern int pthread_attr_init_fake();
-extern int pthread_attr_setdetachstate_fake();
-extern int pthread_attr_setschedparam_fake();
-extern int pthread_attr_setstacksize_fake();
-extern int pthread_cond_broadcast_fake();
-extern int pthread_cond_destroy_fake();
-extern int pthread_cond_init_fake();
-extern int pthread_cond_signal_fake();
-extern int pthread_cond_timedwait_fake();
-extern int pthread_cond_timeout_np_fake();
-extern int pthread_cond_wait_fake();
-extern int pthread_create_fake();
-extern int pthread_mutex_destroy_fake();
-extern int pthread_mutex_init_fake();
-extern int pthread_mutex_lock_fake();
-extern int pthread_mutex_trylock_fake();
-extern int pthread_mutex_unlock_fake();
-extern int pthread_setname_np_fake();
-extern int pthread_setschedparam_fake();
-extern int sem_destroy_fake();
-extern int sem_init_fake();
-extern int sem_post_fake();
-extern int sem_trywait_fake();
-extern int sem_wait_fake();
-extern int ImmVibeCloseDevice();
-extern int ImmVibeGetEffectState();
-extern int ImmVibeGetIVTEffectIndexFromName();
-extern int ImmVibeInitialize2();
-extern int ImmVibeOpenDevice();
-extern int ImmVibePlayUHLEffect();
-extern int ImmVibeStopPlayingEffect();
-extern int ImmVibeTerminate();
-extern const unsigned char *_ctype_;
-extern FILE __sF[];
-static const char *eglQueryString_stub(void *d, int n){(void)d;(void)n;return "";}
-#include <stdarg.h>
-extern void *text_base;
-static int __android_log_print_stub(int prio,const char*tag,const char*fmt,...){
-  void*ra=__builtin_return_address(0); unsigned long off=(unsigned long)ra-(unsigned long)text_base;
-  va_list ap; va_start(ap,fmt); FILE*f=fopen("/storage/roms/ports/gtavc/debug.log","a");
-  if(f){fprintf(f,"[LOG %d/%s ra=.so+0x%lx] ",prio,tag?tag:"",off);vfprintf(f,fmt,ap);fprintf(f,"\n");fclose(f);}
-  va_end(ap); return 0;}
-extern int raise_stub(int); extern void abort_stub(void);
-extern const unsigned char *my_glGetString(unsigned int);
-extern void my_glViewport(int,int,int,int);
-extern void my_glClear(unsigned);
-extern void my_glClearColor(float,float,float,float);
-extern void my_glClearDepthf(float);
-extern void my_glTexParameterf(unsigned,unsigned,float);
-extern void my_glBlendFunc(unsigned,unsigned);
-extern void my_glBindFramebuffer(unsigned,unsigned);
-extern void my_glFramebufferTexture2D(unsigned,unsigned,unsigned,unsigned,int);
-extern void my_glCompileShader(unsigned);
-extern GLenum my_glCheckFramebufferStatus(unsigned);
-extern void my_glShaderSource(unsigned,int,const char*const*,const int*);
-extern void my_glLinkProgram(unsigned);
-extern void my_glUseProgram(unsigned);
-extern void my_glDrawArrays(unsigned,int,int);
-extern void my_glDrawElements(unsigned,int,unsigned,const void*);
-extern float vc_acosf(float);
-extern float vc_asinf(float);
-extern float vc_atanf(float);
-extern float vc_atan2f(float,float);
-extern float vc_ceilf(float);
-extern float vc_cosf(float);
-extern float vc_floorf(float);
-extern float vc_fmodf(float,float);
-extern float vc_log10f(float);
-extern float vc_powf(float,float);
-extern float vc_sinf(float);
-extern float vc_sqrtf(float);
-extern float vc_tanf(float);
-extern int my_open(const char*,int,...); extern FILE *my_fopen(const char*,const char*);
-extern long my_syscall(long,long,long,long,long,long,long);
-extern int sigaction_stub(int,const void*,void*);
-extern void *signal_stub(int,void*);
-// decls de simbolos da glibc nao expostos por headers padrao:
-extern int __cxa_atexit(void(*)(void*),void*,void*);
-extern void __cxa_finalize(void*);
-extern void __cxa_pure_virtual(void);
-extern int __cxa_guard_acquire(void*);
-extern void __cxa_guard_release(void*);
-extern void __cxa_guard_abort(void*);
-extern int __finitef(float);
-extern int __gnu_Unwind_Find_exidx(void);
-extern const short *_toupper_tab_;
+#include "so_util.h"
+#include "jni_shim.h"
+#include "zip_fs.h"
 
-DynLibFunction dynlib_functions[] = {
-  {"ImmVibeCloseDevice", (uintptr_t)&ImmVibeCloseDevice},   // vc_impl
-  {"ImmVibeGetEffectState", (uintptr_t)&ImmVibeGetEffectState},   // vc_impl
-  {"ImmVibeGetIVTEffectIndexFromName", (uintptr_t)&ImmVibeGetIVTEffectIndexFromName},   // vc_impl
-  {"ImmVibeInitialize2", (uintptr_t)&ImmVibeInitialize2},   // vc_impl
-  {"ImmVibeOpenDevice", (uintptr_t)&ImmVibeOpenDevice},   // vc_impl
-  {"ImmVibePlayUHLEffect", (uintptr_t)&ImmVibePlayUHLEffect},   // vc_impl
-  {"ImmVibeStopPlayingEffect", (uintptr_t)&ImmVibeStopPlayingEffect},   // vc_impl
-  {"ImmVibeTerminate", (uintptr_t)&ImmVibeTerminate},   // vc_impl
-  {"__android_log_print", (uintptr_t)&__android_log_print_stub},
-  {"__cxa_atexit", (uintptr_t)&__cxa_atexit},
-  {"__cxa_finalize", (uintptr_t)&__cxa_finalize},
-  {"__errno", (uintptr_t)&__errno_location},
-  {"__gnu_Unwind_Find_exidx", (uintptr_t)&__gnu_Unwind_Find_exidx},
-  {"__isfinitef", (uintptr_t)&__finitef},
-  {"__sF", (uintptr_t)&__sF},   // vc_impl
-  {"_ctype_", (uintptr_t)&_ctype_},   // vc_impl
-  {"_toupper_tab_", (uintptr_t)&_toupper_tab_},   // vc_impl
-  {"abort", (uintptr_t)&abort_stub},
-  {"accept", (uintptr_t)&accept},
-  {"acos", (uintptr_t)&acos},
-  {"acosf", (uintptr_t)&vc_acosf},
-  {"asinf", (uintptr_t)&vc_asinf},
-  {"atan2", (uintptr_t)&atan2},
-  {"atan2f", (uintptr_t)&vc_atan2f},
-  {"atanf", (uintptr_t)&vc_atanf},
-  {"atoi", (uintptr_t)&atoi},
-  {"bind", (uintptr_t)&bind},
-  {"calloc", (uintptr_t)&calloc},
-  {"ceilf", (uintptr_t)&vc_ceilf},
-  {"clock_gettime", (uintptr_t)&clock_gettime},
-  {"close", (uintptr_t)&close},
-  {"closedir", (uintptr_t)&closedir},
-  {"connect", (uintptr_t)&connect},
-  {"cos", (uintptr_t)&cos},
-  {"cosf", (uintptr_t)&vc_cosf},
-  {"ctime", (uintptr_t)&ctime},
-  {"eglGetDisplay", (uintptr_t)&eglGetDisplay},   // egl_shim
-  {"eglGetProcAddress", (uintptr_t)&eglGetProcAddress},   // egl_shim
-  {"eglQueryString", (uintptr_t)&eglQueryString_stub},
-  {"exp", (uintptr_t)&exp},
-  {"fclose", (uintptr_t)&fclose},
-  {"fdopen", (uintptr_t)&fdopen},
-  {"fflush", (uintptr_t)&fflush},
-  {"fgetc", (uintptr_t)&fgetc},
-  {"fgets", (uintptr_t)&fgets},
-  {"floorf", (uintptr_t)&vc_floorf},
-  {"fmodf", (uintptr_t)&vc_fmodf},
-  {"fopen", (uintptr_t)&my_fopen},
-  {"fprintf", (uintptr_t)&fprintf},
-  {"fputc", (uintptr_t)&fputc},
-  {"fputs", (uintptr_t)&fputs},
-  {"fread", (uintptr_t)&fread},
-  {"free", (uintptr_t)&free},
-  {"fseek", (uintptr_t)&fseek},
-  {"ftell", (uintptr_t)&ftell},
-  {"fwrite", (uintptr_t)&fwrite},
-  {"getenv", (uintptr_t)&getenv},
-  {"gethostbyaddr", (uintptr_t)&gethostbyaddr},
-  {"gethostbyname", (uintptr_t)&gethostbyname},
-  {"getsockname", (uintptr_t)&getsockname},
-  {"getsockopt", (uintptr_t)&getsockopt},
-  {"gettid", (uintptr_t)&gettid},
-  {"gettimeofday", (uintptr_t)&gettimeofday},
-  {"glActiveTexture", (uintptr_t)&glActiveTexture},
-  {"glAttachShader", (uintptr_t)&glAttachShader},
-  {"glBindAttribLocation", (uintptr_t)&glBindAttribLocation},
-  {"glBindBuffer", (uintptr_t)&glBindBuffer},
-  {"glBindFramebuffer", (uintptr_t)&my_glBindFramebuffer},
-  {"glBindRenderbuffer", (uintptr_t)&glBindRenderbuffer},
-  {"glBindTexture", (uintptr_t)&glBindTexture},
-  {"glBlendFunc", (uintptr_t)&my_glBlendFunc},
-  {"glBufferData", (uintptr_t)&glBufferData},
-  {"glCheckFramebufferStatus", (uintptr_t)&my_glCheckFramebufferStatus},
-  {"glClear", (uintptr_t)&my_glClear},
-  {"glClearColor", (uintptr_t)&my_glClearColor},
-  {"glClearDepthf", (uintptr_t)&my_glClearDepthf},
-  {"glClearStencil", (uintptr_t)&glClearStencil},
-  {"glCompileShader", (uintptr_t)&my_glCompileShader},
-  {"glCompressedTexImage2D", (uintptr_t)&glCompressedTexImage2D},
-  {"glCreateProgram", (uintptr_t)&glCreateProgram},
-  {"glCreateShader", (uintptr_t)&glCreateShader},
-  {"glCullFace", (uintptr_t)&glCullFace},
-  {"glDeleteBuffers", (uintptr_t)&glDeleteBuffers},
-  {"glDeleteFramebuffers", (uintptr_t)&glDeleteFramebuffers},
-  {"glDeleteProgram", (uintptr_t)&glDeleteProgram},
-  {"glDeleteRenderbuffers", (uintptr_t)&glDeleteRenderbuffers},
-  {"glDeleteShader", (uintptr_t)&glDeleteShader},
-  {"glDeleteTextures", (uintptr_t)&glDeleteTextures},
-  {"glDepthFunc", (uintptr_t)&glDepthFunc},
-  {"glDepthMask", (uintptr_t)&glDepthMask},
-  {"glDisable", (uintptr_t)&glDisable},
-  {"glDisableVertexAttribArray", (uintptr_t)&glDisableVertexAttribArray},
-  {"glDrawArrays", (uintptr_t)&my_glDrawArrays},
-  {"glDrawElements", (uintptr_t)&my_glDrawElements},
-  {"glEnable", (uintptr_t)&glEnable},
-  {"glEnableVertexAttribArray", (uintptr_t)&glEnableVertexAttribArray},
-  {"glFramebufferRenderbuffer", (uintptr_t)&glFramebufferRenderbuffer},
-  {"glFramebufferTexture2D", (uintptr_t)&my_glFramebufferTexture2D},
-  {"glFrontFace", (uintptr_t)&glFrontFace},
-  {"glGenBuffers", (uintptr_t)&glGenBuffers},
-  {"glGenFramebuffers", (uintptr_t)&glGenFramebuffers},
-  {"glGenRenderbuffers", (uintptr_t)&glGenRenderbuffers},
-  {"glGenTextures", (uintptr_t)&glGenTextures},
-  {"glGetAttribLocation", (uintptr_t)&glGetAttribLocation},
-  {"glGetError", (uintptr_t)&glGetError},
-  {"glGetIntegerv", (uintptr_t)&glGetIntegerv},
-  {"glGetProgramInfoLog", (uintptr_t)&glGetProgramInfoLog},
-  {"glGetProgramiv", (uintptr_t)&glGetProgramiv},
-  {"glGetShaderInfoLog", (uintptr_t)&glGetShaderInfoLog},
-  {"glGetShaderiv", (uintptr_t)&glGetShaderiv},
-  {"glGetString", (uintptr_t)&my_glGetString},
-  {"glGetUniformLocation", (uintptr_t)&glGetUniformLocation},
-  {"glHint", (uintptr_t)&glHint},
-  {"glLinkProgram", (uintptr_t)&my_glLinkProgram},
-  {"glReadPixels", (uintptr_t)&glReadPixels},
-  {"glRenderbufferStorage", (uintptr_t)&glRenderbufferStorage},
-  {"glShaderSource", (uintptr_t)&my_glShaderSource},
-  {"glTexImage2D", (uintptr_t)&glTexImage2D},
-  {"glTexParameterf", (uintptr_t)&my_glTexParameterf},
-  {"glTexParameteri", (uintptr_t)&glTexParameteri},
-  {"glUniform1fv", (uintptr_t)&glUniform1fv},
-  {"glUniform1i", (uintptr_t)&glUniform1i},
-  {"glUniform2fv", (uintptr_t)&glUniform2fv},
-  {"glUniform3fv", (uintptr_t)&glUniform3fv},
-  {"glUniform4fv", (uintptr_t)&glUniform4fv},
-  {"glUniformMatrix3fv", (uintptr_t)&glUniformMatrix3fv},
-  {"glUniformMatrix4fv", (uintptr_t)&glUniformMatrix4fv},
-  {"glUseProgram", (uintptr_t)&my_glUseProgram},
-  {"glVertexAttrib4fv", (uintptr_t)&glVertexAttrib4fv},
-  {"glVertexAttribPointer", (uintptr_t)&glVertexAttribPointer},
-  {"glViewport", (uintptr_t)&my_glViewport},
-  {"gmtime", (uintptr_t)&gmtime},
-  {"inet_aton", (uintptr_t)&inet_aton},
-  {"inet_ntoa", (uintptr_t)&inet_ntoa},
-  {"ioctl", (uintptr_t)&ioctl},
-  {"listen", (uintptr_t)&listen},
-  {"log", (uintptr_t)&log},
-  {"log10f", (uintptr_t)&vc_log10f},
-  {"longjmp", (uintptr_t)&_longjmp},
-  {"lrand48", (uintptr_t)&lrand48},
-  {"lseek", (uintptr_t)&lseek},
-  {"malloc", (uintptr_t)&malloc},
-  {"memchr", (uintptr_t)&memchr},
-  {"memcmp", (uintptr_t)&memcmp},
-  {"memcpy", (uintptr_t)&memcpy},
-  {"memmove", (uintptr_t)&memmove},
-  {"memset", (uintptr_t)&memset},
-  {"mkdir", (uintptr_t)&mkdir},
-  {"nanosleep", (uintptr_t)&nanosleep},
-  {"open", (uintptr_t)&my_open},
-  {"opendir", (uintptr_t)&opendir},
-  {"pow", (uintptr_t)&pow},
-  {"powf", (uintptr_t)&vc_powf},
-  {"printf", (uintptr_t)&printf},
-  {"pthread_attr_destroy", (uintptr_t)&pthread_attr_destroy_fake},
-  {"pthread_attr_getschedparam", (uintptr_t)&pthread_attr_getschedparam},
-  {"pthread_attr_getstacksize", (uintptr_t)&pthread_attr_getstacksize},
-  {"pthread_attr_init", (uintptr_t)&pthread_attr_init_fake},
-  {"pthread_attr_setschedparam", (uintptr_t)&pthread_attr_setschedparam_fake},
-  {"pthread_attr_setstacksize", (uintptr_t)&pthread_attr_setstacksize_fake},
-  {"pthread_cond_broadcast", (uintptr_t)&pthread_cond_broadcast_fake},
-  {"pthread_cond_destroy", (uintptr_t)&pthread_cond_destroy_fake},
-  {"pthread_cond_init", (uintptr_t)&pthread_cond_init_fake},
-  {"pthread_cond_signal", (uintptr_t)&pthread_cond_signal_fake},
-  {"pthread_cond_timedwait", (uintptr_t)&pthread_cond_timedwait_fake},
-  {"pthread_cond_timeout_np", (uintptr_t)&pthread_cond_timeout_np_fake},
-  {"pthread_cond_wait", (uintptr_t)&pthread_cond_wait_fake},
-  {"pthread_create", (uintptr_t)&pthread_create_fake},
-  {"pthread_getspecific", (uintptr_t)&pthread_getspecific},
-  {"pthread_join", (uintptr_t)&pthread_join},
-  {"pthread_key_create", (uintptr_t)&pthread_key_create},
-  {"pthread_key_delete", (uintptr_t)&pthread_key_delete},
-  {"pthread_mutex_destroy", (uintptr_t)&pthread_mutex_destroy_fake},
-  {"pthread_mutex_init", (uintptr_t)&pthread_mutex_init_fake},
-  {"pthread_mutex_lock", (uintptr_t)&pthread_mutex_lock_fake},
-  {"pthread_mutex_unlock", (uintptr_t)&pthread_mutex_unlock_fake},
-  {"pthread_mutexattr_destroy", (uintptr_t)&pthread_mutexattr_destroy},
-  {"pthread_mutexattr_init", (uintptr_t)&pthread_mutexattr_init},
-  {"pthread_mutexattr_settype", (uintptr_t)&pthread_mutexattr_settype},
-  {"pthread_once", (uintptr_t)&pthread_once},
-  {"pthread_self", (uintptr_t)&pthread_self},
-  {"pthread_setname_np", (uintptr_t)&pthread_setname_np_fake},
-  {"pthread_setschedparam", (uintptr_t)&pthread_setschedparam_fake},
-  {"pthread_setspecific", (uintptr_t)&pthread_setspecific},
-  {"puts", (uintptr_t)&puts},
-  {"qsort", (uintptr_t)&qsort},
-  {"raise", (uintptr_t)&raise_stub},
-  {"read", (uintptr_t)&read},
-  {"readdir", (uintptr_t)&readdir},
-  {"realloc", (uintptr_t)&realloc},
-  {"recvmsg", (uintptr_t)&recvmsg},
-  {"rewind", (uintptr_t)&rewind},
-  {"sched_get_priority_max", (uintptr_t)&sched_get_priority_max},
-  {"sched_get_priority_min", (uintptr_t)&sched_get_priority_min},
-  {"sched_yield", (uintptr_t)&sched_yield},
-  {"select", (uintptr_t)&select},
-  {"sem_destroy", (uintptr_t)&sem_destroy_fake},
-  {"sem_getvalue", (uintptr_t)&sem_getvalue},
-  {"sem_init", (uintptr_t)&sem_init_fake},
-  {"sem_post", (uintptr_t)&sem_post_fake},
-  {"sem_trywait", (uintptr_t)&sem_trywait_fake},
-  {"sem_wait", (uintptr_t)&sem_wait_fake},
-  {"sendmsg", (uintptr_t)&sendmsg},
-  {"setjmp", (uintptr_t)&_setjmp},
-  {"setsockopt", (uintptr_t)&setsockopt},
-  {"shutdown", (uintptr_t)&shutdown},
-  {"sigaction", (uintptr_t)&sigaction_stub},
-  {"sin", (uintptr_t)&sin},
-  {"sinf", (uintptr_t)&vc_sinf},
-  {"snprintf", (uintptr_t)&snprintf},
-  {"socket", (uintptr_t)&socket},
-  {"sprintf", (uintptr_t)&sprintf},
-  {"sqrtf", (uintptr_t)&vc_sqrtf},
-  {"srand48", (uintptr_t)&srand48},
-  {"sscanf", (uintptr_t)&sscanf},
-  {"stat", (uintptr_t)&stat},
-  {"strcasecmp", (uintptr_t)&strcasecmp},
-  {"strcat", (uintptr_t)&strcat},
-  {"strchr", (uintptr_t)&strchr},
-  {"strcmp", (uintptr_t)&strcmp},
-  {"strcpy", (uintptr_t)&strcpy},
-  {"strerror", (uintptr_t)&strerror},
-  {"strlen", (uintptr_t)&strlen},
-  {"strncasecmp", (uintptr_t)&strncasecmp},
-  {"strncat", (uintptr_t)&strncat},
-  {"strncmp", (uintptr_t)&strncmp},
-  {"strncpy", (uintptr_t)&strncpy},
-  {"strpbrk", (uintptr_t)&strpbrk},
-  {"strrchr", (uintptr_t)&strrchr},
-  {"strstr", (uintptr_t)&strstr},
-  {"strtod", (uintptr_t)&strtod},
-  {"strtok", (uintptr_t)&strtok},
-  {"strtol", (uintptr_t)&strtol},
-  {"strtoul", (uintptr_t)&strtoul},
-  {"syscall", (uintptr_t)&my_syscall},
-  {"sysconf", (uintptr_t)&sysconf},
-  {"tan", (uintptr_t)&tan},
-  {"tanf", (uintptr_t)&vc_tanf},
-  {"time", (uintptr_t)&time},
-  {"usleep", (uintptr_t)&usleep},
-  {"vsnprintf", (uintptr_t)&vsnprintf},
-  {"vsprintf", (uintptr_t)&vsprintf},
-  {"write", (uintptr_t)&write},
+/* caminho do .tex atualmente aberto (chave da sidetable ETC1; setado em nv_open).
+ * Espelho do bk_last_bmp_name do dysmantle. */
+char bully_cur_tex_path[256];
+/* g_path_fresh: o path so e valido p/ a PROXIMA textura criada apos abrir o .tex.
+ * Cada criacao de textura (Storage/SubImage/Image2D) CONSOME a frescura na entrada.
+ * Assim, RENDER TARGETS (criados sem abrir .tex -> path stale) NAO recebem ETC2/ETC1
+ * -> nao viram textura comprimida -> FBO continua COMPLETO -> cena 3D renderiza.
+ * [RAIZ R36S "mundo 3D branco": RT herdava path stale, casava cache, virava ETC2 ->
+ *  FBO incompleto -> 3D nao compunha -> branco. ES2 nao tinha (upload ETC2 e ES3-only).] */
+int g_path_fresh = 0;
+void bully_set_tex_path(const char *p) {
+  if (!p) { bully_cur_tex_path[0] = '\0'; g_path_fresh = 0; return; }
+  size_t n = strlen(p); if (n >= sizeof(bully_cur_tex_path)) n = sizeof(bully_cur_tex_path) - 1;
+  memcpy(bully_cur_tex_path, p, n); bully_cur_tex_path[n] = '\0';
+  g_path_fresh = 1;
+}
+
+/* ANTI-STUTTER (R36S 1GB): a CAUSA dos engasgos = sob pressao de RAM o kernel DESCARTA paginas de
+ * CODIGO (file-backed das .so: libMali/GLES/libGame) e re-le do SD lento -> trava 300-500ms
+ * (majflt+1768/frame, assetKB~0, provado por instrumentacao). FIX: mlock o codigo executavel ->
+ * nao pode ser descartado -> some o re-fault do SD. Orcamento BULLY_MLOCK_CAP_MB (default 48) p/
+ * nao apertar a RAM a ponto de OOM. Chamado periodicamente (catch de .so carregadas tarde). */
+void bully_mlock_code(void) {
+  static int on = -1; if (on < 0) on = getenv("BULLY_MLOCK_CODE") ? 1 : 0;
+  if (!on) return;
+  static long budget = -1; if (budget < 0) { const char *c = getenv("BULLY_MLOCK_CAP_MB"); budget = (c ? atol(c) : 48) * 1024L * 1024L; }
+  static long locked_total = 0;
+  if (locked_total >= budget) return;
+  FILE *f = fopen("/proc/self/maps", "r"); if (!f) return;
+  char line[600];
+  while (fgets(line, sizeof line, f) && locked_total < budget) {
+    unsigned long a, b; char perms[8]; char path[400];
+    path[0] = 0;
+    if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %399[^\n]", &a, &b, perms, path) < 3) continue;
+    if (perms[2] != 'x') continue;                 /* so EXECUTAVEL (codigo) */
+    const char *p = path; while (*p == ' ') p++;
+    if (*p != '/') continue;                        /* so file-backed (.so do disco) */
+    if (b - a > 64UL * 1024 * 1024) continue;       /* pula regiao gigante */
+    if (mlock((void *)a, b - a) == 0) locked_total += (long)(b - a);
+  }
+  fclose(f);
+  static int logged = 0;
+  if (!logged && locked_total > 0) { fprintf(stderr, "[mlock] codigo travado=%ldKB (anti-stutter file-fault)\n", locked_total / 1024); logged = 1; }
+}
+
+/* ===================== CACHE ETC1 OFFLINE (bakeado, embarcado) =====================
+ * O engine decodifica o .tex (formato console tiled/swizzled, fechado) e sobe RGBA/16-bit
+ * via glTexImage2D -- e ele NAO tem caminho ETC1. Entao: bakeamos o ETC1 do NOSSO lado
+ * (BULLY_BAKE=1 captura os pixels decodificados full-res e grava por nome do asset) e
+ * embarcamos o cache no pacote (a textura e identica p/ todos -- mesmo APK 1.4.311).
+ * No device do usuario: so LE ETC1 pronto e sobe GL_ETC1_RGB8_OES (4x menos VRAM ->
+ * resolve o limite de MMU do Utgard) -- ZERO conversao/encode em runtime, zero engasgo.
+ * So texturas OPACAS 565 (sem alpha); 4444/8888/luminance caem no caminho original. */
+#include "etc1_encode.h"
+#define GL_ETC1_RGB8_OES 0x8D64
+static const char *bully_etc1_dir(void) {
+  static const char *d = NULL; static int got = 0;
+  if (!got) { d = getenv("BULLY_ETC1CACHE"); got = 1; }
+  return d;
+}
+static int bully_etc1_bake(void) { static int m = -1; if (m < 0) m = getenv("BULLY_BAKE") ? 1 : 0; return m; }
+/* META-RESOLUCAO (1GB): jogo inteiro a 1/2 res. O cache (etc2cache_half) tem o ETC2 ja em meia-res;
+ * aqui pedimos a chave meia-res e ALOCAMOS metade -> 4x menos GPU/RAM nas texturas grandes (cabe no R36S).
+ * bully_halfdim (def. em etc2_halve.c) decide quais halvam (>=64 e mult-de-8); resto fica cheio. */
+extern int bully_halfdim(int w, int h, int *hw, int *hh);
+static int bully_tex_halfall(void) { static int m = -1; if (m < 0) m = getenv("BULLY_TEX_HALFALL") ? 1 : 0; return m; }
+/* BULLY_ETC1_FORCE: usar ETC1 TAMBEM no KMSDRM (devices KMSDRM <=1.2GB, ex R36S 1GB, que
+ * PRECISAM da economia de VRAM). Nesses, tratamos a textura como no fbdev: MIN_FILTER=
+ * LINEAR + SEM mipmap (o cache ETC1 so tem o nivel base). Setado pelo launcher por RAM. */
+static int bully_etc1_force(void) { static int m = -1; if (m < 0) m = getenv("BULLY_ETC1_FORCE") ? 1 : 0; return m; }
+/* BULLY_TRILINEAR: TESTE de qualidade no fbdev/Mali-450 -- DESLIGA o ETC1 e deixa o
+ * trilinear+mipmaps do jogo passar (igual kmsdrm). Custa ~2.6x VRAM -> pode OOM em 1GB. */
+static int bully_trilinear(void) { static int m = -1; if (m < 0) m = getenv("BULLY_TRILINEAR") ? 1 : 0; return m; }
+/* TESTE: ligar mipmap tb nos RECORTES (arvores/cercas) -> some a cintilacao. Risco: halo preto na borda
+ * se a arte tiver alpha com RGB preto. Gate p/ A/B sem rebuild. */
+static int bully_cutout_mip(void) { static int m = -1; if (m < 0) m = getenv("BULLY_CUTOUT_MIP") ? 1 : 0; return m; }
+static void bully_etc1_key(char *out, size_t n, const char *path, int w, int h) {
+  char san[200]; size_t j = 0;
+  for (const char *p = path; *p && j < sizeof(san) - 1; p++) san[j++] = (*p == '/' || *p == '\\') ? '_' : *p;
+  san[j] = '\0';
+  snprintf(out, n, "%s/%s_%dx%d.etc1", bully_etc1_dir(), san, w, h);
+}
+/* 565 (u16 LE) -> RGB888 */
+static void bully_expand565(const unsigned char *s, int w, int h, unsigned char *rgb) {
+  for (int i = 0; i < w * h; i++) {
+    unsigned v = s[2*i] | (s[2*i+1] << 8);
+    rgb[3*i]   = (unsigned char)((((v >> 11) & 31) * 255 + 15) / 31);
+    rgb[3*i+1] = (unsigned char)((((v >> 5) & 63) * 255 + 31) / 63);
+    rgb[3*i+2] = (unsigned char)(((v & 31) * 255 + 15) / 31);
+  }
+}
+extern unsigned char *etc2_decode_rgba(unsigned, int, int, const void *, int);
+/* VERIFICACAO DE CONTEUDO (anti-roxo): decodifica ~24 blocos do ETC1 do cache e compara
+ * com os pixels 565 que o engine ia subir. MAD alto = o cache foi salvo no nome errado
+ * (corrida no bake) -> rejeita e usa a textura original. Igual o anti-magenta do dysmantle. */
+static int bully_etc1_verify(const unsigned char *blob, int w, int h, const unsigned char *px565) {
+  int bw = w / 4, bh = h / 4; if (bw <= 0 || bh <= 0 || !px565) return -1;
+  int gx = bw < 5 ? bw : 5, gy = bh < 5 ? bh : 5; long sum = 0, cnt = 0; int sampled = 0;
+  for (int iy = 0; iy < gy; iy++) for (int ix = 0; ix < gx; ix++) {
+    int bx = (int)((long)ix * (bw - 1) / (gx > 1 ? gx - 1 : 1));
+    int by = (int)((long)iy * (bh - 1) / (gy > 1 ? gy - 1 : 1));
+    unsigned char *dec = etc2_decode_rgba(0x9274, 4, 4, blob + ((long)by * bw + bx) * 8, 8);
+    if (!dec) continue; sampled++;
+    for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+      long p = (long)(by * 4 + j) * w + (bx * 4 + i);
+      unsigned v = px565[2 * p] | (px565[2 * p + 1] << 8);
+      int sr = (((v >> 11) & 31) * 255 + 15) / 31, sg = (((v >> 5) & 63) * 255 + 31) / 63, sb = ((v & 31) * 255 + 15) / 31;
+      const unsigned char *d = dec + (j * 4 + i) * 4;
+      int dr = d[0] - sr, dg = d[1] - sg, db = d[2] - sb;
+      sum += (dr < 0 ? -dr : dr) + (dg < 0 ? -dg : dg) + (db < 0 ? -db : db); cnt += 3;
+    }
+    free(dec);
+  }
+  if (!sampled || !cnt) return -1;
+  return (int)(sum / cnt);
+}
+static unsigned (*real_glCompressedTexImage2D2)(unsigned, int, unsigned, int, int, int, int, const void *) = NULL;
+extern int bully_is_kmsdrm(void);
+/* retorna 1 se tratou (subiu ETC1 do cache, ou pulou mip de textura ja-ETC1). */
+static int bully_try_etc1(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur_cached = 0;            /* base atual virou ETC1? -> pula seus mips */
+  if (!bully_etc1_dir()) return 0;      /* cache desligado */
+  if (bully_trilinear()) return 0;      /* TESTE trilinear: sem ETC1 (RGBA+mips) */
+  if (bully_is_kmsdrm() && !bully_etc1_force()) return 0;  /* fbdev sempre; kmsdrm so com FORCE (low-RAM) */
+  if (lvl > 0) return cur_cached;       /* pula mips da textura cacheada */
+  cur_cached = 0;
+  if (type != 0x8363 || fmt != 0x1907) return 0;          /* SO 565 opaco (RGB) */
+  if (w < 64 || h < 64 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
+  if (!bully_cur_tex_path[0]) return 0;
+  char key[300]; bully_etc1_key(key, sizeof(key), bully_cur_tex_path, w, h);
+  size_t etcsz = (size_t)(w / 4) * (h / 4) * 8;
+  if (!real_glCompressedTexImage2D2) real_glCompressedTexImage2D2 = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  FILE *f = fopen(key, "rb");
+  if (f) {                              /* RUNTIME: sobe o ETC1 pronto */
+    unsigned char *buf = malloc(etcsz);
+    size_t r = buf ? fread(buf, 1, etcsz, f) : 0; fclose(f);
+    if (buf && r == etcsz && real_glCompressedTexImage2D2) {
+      /* anti-roxo: so sobe o ETC1 se ele BATE com a textura que o engine ia subir. */
+      static int vmax = -1; if (vmax < 0) { const char *e = getenv("BULLY_VERIFY_MAX"); vmax = e ? atoi(e) : 34; }
+      int mad = (px && type == 0x8363) ? bully_etc1_verify(buf, w, h, (const unsigned char *)px) : 0;
+      if (mad > vmax) {  /* cache no nome errado (corrida do bake) -> usa a original */
+        static int rj = 0; if (rj < 12) { fprintf(stderr, "[etc1] REJEITA '%s' %dx%d mad=%d (usa original)\n", bully_cur_tex_path, w, h, mad); rj++; }
+        free(buf); return 0;
+      }
+      real_glCompressedTexImage2D2(tgt, 0, GL_ETC1_RGB8_OES, w, h, 0, (int)etcsz, buf);
+      free(buf); cur_cached = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc1] up '%s' %dx%d\n", bully_cur_tex_path, w, h); up++; }
+      return 1;
+    }
+    free(buf); return 0;
+  }
+  if (bully_etc1_bake() && px) {        /* BAKE (nosso lado): encoda full-res e grava */
+    unsigned char *rgb = malloc((size_t)w * h * 3);
+    unsigned char *etc = malloc(etcsz);
+    if (rgb && etc) {
+      bully_expand565(px, w, h, rgb);
+      etc1_encode_image(rgb, w, h, 3, etc);
+      FILE *wf = fopen(key, "wb");
+      if (wf) { fwrite(etc, 1, etcsz, wf); fclose(wf); static int bk = 0; if (bk < 12) { fprintf(stderr, "[bake] '%s' %dx%d -> %zuB\n", bully_cur_tex_path, w, h, etcsz); bk++; } }
+    }
+    free(rgb); free(etc);
+  }
+  return 0;
+}
+
+/* ETC1 RUNTIME (sem cache/bake): encoda a 565 opaca -> ETC1 e SOBE na hora (4x menos VRAM).
+ * A textura ETC1 fica RESIDENTE (pequena) e NAO e registrada p/ paginacao -> corta a I/O do
+ * texswap (causa do engasgo). E o modelo do v10, mas encodando em runtime (custo = CPU no load).
+ * Gate: BULLY_ETC1_RUNTIME. Independe de trilinear (no fbdev o filtro ja e forcado LINEAR). */
+static int g_etc1_rt = -1;
+static int bully_etc1_runtime(void) { if (g_etc1_rt < 0) g_etc1_rt = getenv("BULLY_ETC1_RUNTIME") ? 1 : 0; return g_etc1_rt; }
+static int bully_try_etc1_runtime(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur = 0;                   /* base atual virou ETC1? -> pula seus mips */
+  if (!bully_etc1_runtime()) return 0;
+  if (bully_is_kmsdrm()) return 0;      /* so fbdev/Utgard (ES2 ETC1) */
+  if (lvl > 0) return cur;              /* pula mips da textura que virou ETC1 (LINEAR) */
+  cur = 0;
+  if (type != 0x8363 || fmt != 0x1907 || !px) return 0;   /* SO 565 opaco com pixels */
+  if (w < 64 || h < 64 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) return 0;
+  size_t etcsz = (size_t)(w / 4) * (h / 4) * 8;
+  unsigned char *rgb = malloc((size_t)w * h * 3);
+  unsigned char *etc = malloc(etcsz);
+  int ok = 0;
+  if (rgb && etc) {
+    bully_expand565(px, w, h, rgb);
+    etc1_encode_image(rgb, w, h, 3, etc);
+    if (!real_glCompressedTexImage2D2) real_glCompressedTexImage2D2 = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+    if (real_glCompressedTexImage2D2) {
+      real_glCompressedTexImage2D2(tgt, 0, GL_ETC1_RGB8_OES, w, h, 0, (int)etcsz, etc);
+      ok = 1; cur = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc1rt] '%s' %dx%d -> ETC1 %zuB\n", bully_cur_tex_path, w, h, etcsz); up++; }
+    }
+  }
+  free(rgb); free(etc);
+  return ok;
+}
+
+/* ===================== ETC2 (GLES3: R36S/G31 e qualquer GLES3) =====================
+ * ETC2_RGBA8_EAC (0x9278): 4x menos VRAM que RGBA8888, COM alpha (vs ETC1 = so opaco) e resolucao
+ * CHEIA. Cobre o JOGO INTEIRO (opaco+recorte). G31 sobe nativo (zero decode em runtime). Resolve o
+ * R36S (481MB nao cabe nativo). Encoder = eac_encode_image_rgba (src/eac_encode.c, reusa etc1_encode).
+ * Gate: BULLY_ETC2CACHE + contexto ES3. Bake (BULLY_BAKE) encoda+grava; runtime so LE. */
+#define GL_COMPRESSED_RGBA8_ETC2_EAC 0x9278
+extern int bully_is_es3(void);
+extern void eac_encode_image_rgba(const unsigned char *rgba, int w, int h, int channels, unsigned char *out);
+static const char *bully_etc2_dir(void) { static const char *d; static int got; if (!got) { d = getenv("BULLY_ETC2CACHE"); got = 1; } return d; }
+static void bully_etc2_key(char *out, size_t n, const char *path, int w, int h) {
+  char san[200]; size_t j = 0;
+  for (const char *p = path; *p && j < sizeof(san) - 1; p++) san[j++] = (*p == '/' || *p == '\\') ? '_' : *p;
+  san[j] = '\0'; snprintf(out, n, "%s/%s_%dx%d.etc2", bully_etc2_dir(), san, w, h);
+}
+/* converte o que o engine sobe (565/8888/4444/5551) p/ RGBA8888 (input do EAC). 0 = formato nao suportado. */
+static int bully_to_rgba8888(const unsigned char *s, int w, int h, unsigned fmt, unsigned type, unsigned char *out) {
+  int n = w * h;
+  if (type == 0x1401 && fmt == 0x1908) { memcpy(out, s, (size_t)n * 4); return 1; }          /* RGBA8888 */
+  if (type == 0x1401 && fmt == 0x1907) { for (int i = 0; i < n; i++) {                          /* RGB888 (opaca) */
+      out[4*i]=s[3*i]; out[4*i+1]=s[3*i+1]; out[4*i+2]=s[3*i+2]; out[4*i+3]=255; } return 1; }
+  if (type == 0x1401 && fmt == 0x1909) { for (int i = 0; i < n; i++) {                          /* LUMINANCE */
+      out[4*i]=out[4*i+1]=out[4*i+2]=s[i]; out[4*i+3]=255; } return 1; }
+  if (type == 0x1401 && fmt == 0x190A) { for (int i = 0; i < n; i++) {                          /* LUMINANCE_ALPHA */
+      out[4*i]=out[4*i+1]=out[4*i+2]=s[2*i]; out[4*i+3]=s[2*i+1]; } return 1; }
+  if (type == 0x1401 && fmt == 0x1906) { for (int i = 0; i < n; i++) {                          /* ALPHA */
+      out[4*i]=out[4*i+1]=out[4*i+2]=255; out[4*i+3]=s[i]; } return 1; }
+  if (type == 0x8363) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8);  /* 565 RGB (alpha=255) */
+      out[4*i]=(((v>>11)&31)*255+15)/31; out[4*i+1]=(((v>>5)&63)*255+31)/63; out[4*i+2]=((v&31)*255+15)/31; out[4*i+3]=255; } return 1; }
+  if (type == 0x8033 && fmt == 0x1908) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8); /* 4444 */
+      out[4*i]=(((v>>12)&15)*255+7)/15; out[4*i+1]=(((v>>8)&15)*255+7)/15; out[4*i+2]=(((v>>4)&15)*255+7)/15; out[4*i+3]=((v&15)*255+7)/15; } return 1; }
+  if (type == 0x8034 && fmt == 0x1908) { for (int i = 0; i < n; i++) { unsigned v = s[2*i] | (s[2*i+1] << 8); /* 5551 */
+      out[4*i]=(((v>>11)&31)*255+15)/31; out[4*i+1]=(((v>>6)&31)*255+15)/31; out[4*i+2]=(((v>>1)&31)*255+15)/31; out[4*i+3]=(v&1)?255:0; } return 1; }
+  return 0;
+}
+static int bully_try_etc2(unsigned tgt, int lvl, int w, int h, unsigned fmt, unsigned type, const void *px) {
+  static int cur_cached = 0;
+  if (!bully_etc2_dir()) return 0;                     /* encode roda em qualquer GLES (CPU); upload exige ES3 */
+  if (lvl > 0) return cur_cached;                      /* pula mips da textura cacheada */
+  cur_cached = 0;
+  if (w < 8 || h < 8 || w > 2048 || h > 2048 || (w & 3) || (h & 3)) {
+    if (bully_etc1_bake() && getenv("BULLY_BAKEDIAG")) { static int sr=0; if(sr<40){ fprintf(stderr, "[bakediag] '%s' %dx%d REJEITADO tamanho\n", bully_cur_tex_path[0]?bully_cur_tex_path:"(nopath)", w, h); sr++; } }
+    return 0;
+  }
+  if (!bully_cur_tex_path[0]) {
+    if (bully_etc1_bake() && getenv("BULLY_BAKEDIAG")) { static int np=0; if(np<40){ fprintf(stderr, "[bakediag] %dx%d SEM path (cur_tex_path vazio)\n", w, h); np++; } }
+    return 0;
+  }
+  char key[300]; bully_etc2_key(key, sizeof key, bully_cur_tex_path, w, h);
+  size_t sz = (size_t)(w / 4) * (h / 4) * 16;
+  static unsigned (*rCompr)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
+  static void (*rParam)(unsigned,unsigned,int) = NULL;
+  if (!rCompr) rCompr = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  if (!rParam) rParam = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  FILE *f = bully_is_es3() ? fopen(key, "rb") : NULL;  /* RUNTIME upload: SO em ES3 (GLES2 nao sobe ETC2) */
+  if (f) {                                             /* RUNTIME: sobe o ETC2 pronto */
+    unsigned char *buf = malloc(sz); size_t r = buf ? fread(buf, 1, sz, f) : 0; fclose(f);
+    if (buf && r == sz && rCompr) {
+      rCompr(tgt, 0, GL_COMPRESSED_RGBA8_ETC2_EAC, w, h, 0, (int)sz, buf);
+      if (rParam) { rParam(tgt, 0x2801, 0x2601); rParam(tgt, 0x2800, 0x2601); } /* LINEAR */
+      free(buf); cur_cached = 1;
+      static int up = 0; if (up < 8) { fprintf(stderr, "[etc2] up '%s' %dx%d\n", bully_cur_tex_path, w, h); up++; }
+      return 1;
+    }
+    free(buf); return 0;
+  }
+  if (bully_is_es3() && !bully_etc1_bake()) {           /* DIAG: por que o mundo nao casa o cache? */
+    static int ms = 0; if (ms < 40) { fprintf(stderr, "[etc2] MISS '%s' %dx%d key=%s\n", bully_cur_tex_path, w, h, key); ms++; }
+  }
+  if (bully_etc1_bake() && px) {                        /* BAKE: encoda ETC2 (RGBA8/EAC) e grava */
+    unsigned char *rgba = malloc((size_t)w * h * 4);
+    unsigned char *etc = malloc(sz);
+    if (rgba && etc && bully_to_rgba8888(px, w, h, fmt, type, rgba)) {
+      eac_encode_image_rgba(rgba, w, h, 4, etc);
+      FILE *wf = fopen(key, "wb");
+      if (wf) { fwrite(etc, 1, sz, wf); fclose(wf); static int bk = 0; if (bk < 12) { fprintf(stderr, "[etc2-bake] '%s' %dx%d -> %zuB\n", bully_cur_tex_path, w, h, sz); bk++; } }
+    } else if (getenv("BULLY_BAKEDIAG")) {              /* DIAG: por que NAO encodou (formato nao-tratado?) */
+      static int bd = 0; if (bd < 60) { fprintf(stderr, "[bakediag] '%s' %dx%d fmt=0x%x type=0x%x -> conv FALHOU\n", bully_cur_tex_path, w, h, fmt, type); bd++; }
+    }
+    free(rgba); free(etc);
+  } else if (bully_etc1_bake() && !px && getenv("BULLY_BAKEDIAG")) {
+    static int bn = 0; if (bn < 30) { fprintf(stderr, "[bakediag] '%s' %dx%d px=NULL (RT/deferido?)\n", bully_cur_tex_path, w, h); bn++; }
+  }
+  return 0;
+}
+
+/* ===================== PAGINACAO DE TEXTURA (resident-set / VM de textura) =====================
+ * O motor do Bully NUNCA despeja textura (provado: gen=1386 del=1). Na UMA do Mali, textura GL =
+ * RAM. Entao implementamos o despejo NOS: cada textura cacheada/swap vira "pageavel". A FONTE fica
+ * no SD (etc1cache/etc2cache/texswap). Acima do orcamento, despejamos a mais FRIA (re-define 1x1 ->
+ * libera a RAM, o id continua valido). Quando o motor RE-BINDA uma despejada (page fault), re-subimos.
+ * Gate: BULLY_PAGE=1 ; orcamento: BULLY_PAGE_CAP_MB (default 220). Diag: BULLY_PAGELOG=1. */
+extern long long g_texbytes_live;
+unsigned bully_g_texbytes(unsigned id);            /* fwd (def. junto do array g_texbytes) */
+void     bully_g_texbytes_set(unsigned id, unsigned b);
+static int bpp_of(unsigned fmt, unsigned type);    /* fwd (def. perto do my_glTexImage2D) */
+static char         *g_page_name[262144];   /* strdup do asset cacheado (kind=1/3) ~2MB */
+static unsigned char  g_page_kind[262144];  /* 0=nao-pageavel, 1=ETC1, 2=SWAP, 3=ETC2 */
+static unsigned short g_page_w[262144], g_page_h[262144];
+static unsigned char  g_page_present[262144];/* 1 = textura cheia carregada; 0 = despejada (1x1) */
+static unsigned       g_page_use[262144];   /* relogio LRU */
+static unsigned       g_page_clock = 0;
+static long long      g_page_resident = 0;  /* bytes PRESENTES (pageaveis) */
+static unsigned       g_page_list[40000]; static int g_page_n = 0; /* lista compacta de ids pageaveis */
+static long g_pf = 0, g_ev = 0;              /* contadores: page-faults / evicts */
+/* cabecalho do arquivo de swap (kind=2): re-upload precisa de w/h/formato */
+struct bully_swap_hdr { unsigned magic; int w, h, ifmt; unsigned ufmt, utype, bytes; };
+#define BULLY_SWAP_MAGIC 0xB0115A91u
+static const char *bully_swapdir(void){ static const char*d; static int got; if(!got){ d=getenv("BULLY_PAGE_SWAP"); got=1; } return d; }
+static int bully_paging(void){ static int m=-1; if(m<0)m=getenv("BULLY_PAGE")?1:0; return m; }
+static long long bully_page_cap(void){ static long long c=-1; if(c<0){ const char*e=getenv("BULLY_PAGE_CAP_MB"); c=(long long)(e?atoll(e):220)*1024*1024; } return c; }
+extern unsigned bully_g_texbytes(unsigned id);          /* getter (def. junto do array) */
+extern void     bully_g_texbytes_set(unsigned id, unsigned b);
+static void bully_texbytes_account(unsigned id, unsigned bytes) {
+  if (id >= 262144) return;
+  g_texbytes_live += (long long)bytes - bully_g_texbytes(id);
+  bully_g_texbytes_set(id, bytes);
+}
+static void bully_page_set_name(unsigned id, const char *name) {
+  if (!name || !name[0]) return;
+  if (!g_page_name[id] || strcmp(g_page_name[id], name) != 0) {
+    free(g_page_name[id]);
+    g_page_name[id] = strdup(name);
+  }
+}
+static void bully_page_register_cached(unsigned id, unsigned char kind, const char *name, int w, int h, unsigned bytes) {
+  if (!bully_paging() || id >= 262144 || !name || !name[0] || !bytes) return;
+  if (!g_page_kind[id] && g_page_n < 40000) g_page_list[g_page_n++] = id;  /* 1a vez na lista */
+  if (g_page_kind[id] == 2 && kind != 2 && bully_swapdir()) {
+    char p[320]; snprintf(p, sizeof p, "%s/%u.tx", bully_swapdir(), id); remove(p);
+  }
+  unsigned old = bully_g_texbytes(id);
+  int was_present = g_page_kind[id] && g_page_present[id];
+  bully_page_set_name(id, name);
+  g_page_kind[id] = kind;
+  g_page_w[id] = (unsigned short)w; g_page_h[id] = (unsigned short)h; g_page_use[id] = ++g_page_clock;
+  bully_texbytes_account(id, bytes);
+  g_page_resident += was_present ? (long long)bytes - old : (long long)bytes;
+  g_page_present[id] = 1;
+}
+/* registra uma textura ETC1 recem-subida como pageavel */
+static void bully_page_register(unsigned id, const char *name, int w, int h, unsigned etcsz) {
+  bully_page_register_cached(id, 1, name, w, h, etcsz);
+}
+/* registra uma textura ETC2 recem-subida como pageavel; sem paging, ao menos corrige o contador. */
+static void bully_page_register_etc2(unsigned id, const char *name, int w, int h, unsigned etcsz) {
+  if (bully_paging()) bully_page_register_cached(id, 3, name, w, h, etcsz);
+  else bully_texbytes_account(id, etcsz);
+}
+/* registra uma textura NAO-ETC1 (alpha/RGBA) como pageavel: grava os pixels num arquivo de swap no SD
+ * (fonte p/ re-upload) e marca kind=2. Render targets (px=NULL) e pequenas sao puladas pelo chamador. */
+static void bully_page_write_swap(unsigned id, int ifmt, int w, int h, unsigned ufmt, unsigned utype, const void *data) {
+  if (!bully_paging() || !bully_swapdir() || id >= 262144 || !data) return;
+  if (g_page_kind[id] == 1 || g_page_kind[id] == 3) return;  /* cache comprimido ja cuida */
+  int bpp = bpp_of(ufmt, utype); if (bpp <= 0) return;
+  size_t bytes = (size_t)w * h * bpp;
+  if (bytes < 96 * 1024) return;               /* pula texturas pequenas (<96KB) -- nao vale paginar */
+  char path[320]; snprintf(path, sizeof path, "%s/%u.tx", bully_swapdir(), id);
+  if (g_page_kind[id] != 2) {                  /* 1a vez: grava o swap (write-once) + entra na lista */
+    FILE *f = fopen(path, "wb");
+    if (f) { struct bully_swap_hdr hd = { BULLY_SWAP_MAGIC, w, h, ifmt, ufmt, utype, (unsigned)bytes };
+      fwrite(&hd, sizeof hd, 1, f); fwrite(data, 1, bytes, f); fclose(f); }
+    if (g_page_n < 40000) g_page_list[g_page_n++] = id;
+    g_page_kind[id] = 2;
+  }
+  g_page_w[id] = (unsigned short)w; g_page_h[id] = (unsigned short)h; g_page_use[id] = ++g_page_clock;
+  if (!g_page_present[id]) { g_page_present[id] = 1; g_page_resident += bully_g_texbytes(id); }
+}
+/* despeja as mais FRIAS ate voltar ao orcamento. 'keep'/'target' = a textura sendo usada agora
+ * (nao despejar; re-bindar no fim). Re-define 1x1 -> libera a RAM da textura grande. */
+static void bully_page_evict(unsigned target, unsigned keep) {
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (!rTexImg || !rBind) return;
+  static const unsigned char black[4] = {0,0,0,0};
+  int guard = 0;
+  while (g_page_resident > bully_page_cap() && guard++ < 4096) {
+    unsigned best = 0; unsigned bu = 0xffffffffu; int fi = -1;
+    for (int i = 0; i < g_page_n; i++) { unsigned id = g_page_list[i];
+      if (id == keep || !g_page_present[id] || bully_g_texbytes(id) == 0) continue; /* pula a atual e as JA-despejadas (1x1) -- senao thrash em "cadaveres" de 3 bytes */
+      if (g_page_use[id] < bu) { bu = g_page_use[id]; best = id; fi = i; } }
+    if (fi < 0) break;                                            /* nada pra despejar */
+    long long b = bully_g_texbytes(best);                         /* bytes residentes (ETC1 ou SWAP) */
+    rBind(0x0DE1, best);
+    rTexImg(0x0DE1, 0, 0x1907, 1, 1, 0, 0x1907, 0x1401, black);   /* RGB 1x1 -> libera a grande */
+    g_texbytes_live += 3 - b; bully_g_texbytes_set(best, 3);      /* agora ocupa ~3 bytes */
+    g_page_resident -= b; g_page_present[best] = 0; g_ev++;       /* despejada */
+  }
+  rBind(target, keep);                                            /* restaura o bind do motor */
+}
+/* ===================== STREAMING ASSINCRONO (estilo GTA: pop-in, sem freeze) =====================
+ * O re-upload SINCRONO do SD (ler arquivo no meio do frame) CONGELA com cap agressivo. Solucao: uma
+ * thread de fundo le o SD (ZERO GL -- so file I/O) e enfileira o buffer pronto; a render thread sobe
+ * o GL no proximo bind (pop-in de 1-2 frames). GL SO na render thread (contexto unico).
+ * Gate: BULLY_PAGE_ASYNC=1. Sem ele, cai no caminho sincrono (fallback abaixo).
+ * forward p/ o bind corrente do motor (def. real mais adiante, mesmo objeto de linkage interno). */
+static unsigned g_cur_tex2d;
+static unsigned char g_tex_alpha[262144]; /* forward: textura tem ALPHA/recorte (def. real adiante) -> trilinear=LINEAR */
+/* pedido (render->worker): snapshot dos metadados sob lock p/ o worker NAO tocar globais compartilhados
+ * (g_page_name pode ser free()ado pelo my_glDeleteTextures na render thread). */
+struct page_req   { unsigned id; unsigned char kind; int w, h; char name[256]; };
+/* buffer pronto (worker->render): pixels lidos do SD, prontos p/ subir no GL. */
+struct page_ready { unsigned id; unsigned char *buf; int w, h; int ifmt; unsigned ufmt, utype, bytes; unsigned char kind; };
+#define PAGE_RING 4096
+static struct page_req   g_req_ring[PAGE_RING]; static int g_req_head = 0, g_req_tail = 0; /* tail=produz, head=consome */
+static struct page_ready g_ready[PAGE_RING];    static int g_ready_n = 0;
+static unsigned char     g_page_req[262144];    /* 1 = pedido em voo (enfileirado/lendo/pronto) -- nao duplicar */
+static struct page_ready g_drain_buf[PAGE_RING];/* copia-out da drenagem (render thread, single-thread) */
+static pthread_mutex_t g_page_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_page_cv  = PTHREAD_COND_INITIALIZER;
+static pthread_t g_page_thr; static int g_page_thr_on = 0;        /* 0=nao iniciado, 1=rodando, -1=falhou(sync) */
+static int bully_async(void){ static int m=-1; if(m<0)m=getenv("BULLY_PAGE_ASYNC")?1:0; return m; }
+
+/* === SO I/O (pode rodar no worker) === le o arquivo do SD pro buffer. Devolve 1 + out preenchido (buf malloc). */
+static int page_req_read(const struct page_req *rq, struct page_ready *out) {
+  if (rq->kind == 1 || rq->kind == 3) {                          /* ETC1/ETC2 (cache por nome) */
+    char key[300];
+    size_t sz;
+    if (rq->kind == 1) { bully_etc1_key(key, sizeof key, rq->name, rq->w, rq->h); sz = (size_t)(rq->w/4) * (rq->h/4) * 8; }
+    else { if (!bully_etc2_dir()) return 0; bully_etc2_key(key, sizeof key, rq->name, rq->w, rq->h); sz = (size_t)(rq->w/4) * (rq->h/4) * 16; }
+    FILE *f = fopen(key, "rb"); if (!f) return 0;
+    unsigned char *buf = malloc(sz); size_t r = buf ? fread(buf, 1, sz, f) : 0; fclose(f);
+    if (!buf || r != sz) { free(buf); return 0; }
+    out->id=rq->id; out->buf=buf; out->w=rq->w; out->h=rq->h; out->ifmt=0; out->ufmt=0; out->utype=0; out->bytes=(unsigned)sz; out->kind=rq->kind;
+    return 1;
+  } else if (rq->kind == 2 && bully_swapdir()) {                 /* SWAP cru (arquivo por id, com cabecalho) */
+    char path[320]; snprintf(path, sizeof path, "%s/%u.tx", bully_swapdir(), rq->id);
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    struct bully_swap_hdr hd; if (fread(&hd, sizeof hd, 1, f) != 1 || hd.magic != BULLY_SWAP_MAGIC) { fclose(f); return 0; }
+    unsigned char *buf = malloc(hd.bytes); size_t r = buf ? fread(buf, 1, hd.bytes, f) : 0; fclose(f);
+    if (!buf || r != hd.bytes) { free(buf); return 0; }
+    out->id=rq->id; out->buf=buf; out->w=hd.w; out->h=hd.h; out->ifmt=hd.ifmt; out->ufmt=hd.ufmt; out->utype=hd.utype; out->bytes=hd.bytes; out->kind=2;
+    return 1;
+  }
+  return 0;
+}
+/* === SO GL (render thread) === sobe o buffer pronto no GL. Binda o id, sobe, filtro LINEAR, contabiliza. */
+static void page_upload(const struct page_ready *pr) {
+  static unsigned (*rCompr)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
+  static void (*rTexImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+  static void (*rParam)(unsigned,unsigned,int) = NULL;
+  static void (*rBind)(unsigned,unsigned) = NULL;
+  if (!rCompr)  rCompr  = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  if (!rTexImg) rTexImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  if (!rParam)  rParam  = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  if (!rBind)   rBind   = dlsym(RTLD_DEFAULT, "glBindTexture");
+  unsigned id = pr->id;
+  if (rBind) rBind(0x0DE1, id);
+  if (pr->kind == 1 || pr->kind == 3) {
+    unsigned cf = (pr->kind == 3) ? GL_COMPRESSED_RGBA8_ETC2_EAC : 0x8D64;
+    if (rCompr) rCompr(0x0DE1, 0, cf, pr->w, pr->h, 0, (int)pr->bytes, pr->buf);
+  } else {
+    if (rTexImg) rTexImg(0x0DE1, 0, pr->ifmt, pr->w, pr->h, 0, pr->ufmt, pr->utype, pr->buf);
+  }
+  /* re-upload subiu so o nivel 0. Se TRILINEAR (e nao for recorte/alpha), REGENERA a cadeia de
+   * mip + filtro trilinear -- senao GLES amostra niveis inexistentes = PRETO. kind=2 (nativo) so. */
+  int trimip = (pr->kind == 2) && bully_trilinear() && (bully_cutout_mip() || !(id < 262144 && g_tex_alpha[id]));
+  if (trimip) {
+    static void (*rGenMip)(unsigned) = NULL;
+    if (!rGenMip) rGenMip = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+    if (rGenMip) rGenMip(0x0DE1);
+    if (rParam) { rParam(0x0DE1, 0x2801, 0x2703); rParam(0x0DE1, 0x2800, 0x2601); } /* min=LINEAR_MIPMAP_LINEAR mag=LINEAR */
+  } else if (rParam) { rParam(0x0DE1, 0x2801, 0x2601); rParam(0x0DE1, 0x2800, 0x2601); } /* LINEAR (sem mip) */
+  g_texbytes_live += (long long)pr->bytes - bully_g_texbytes(id); bully_g_texbytes_set(id, pr->bytes);
+  g_page_resident += pr->bytes; g_page_present[id] = 1; g_pf++;
+}
+/* page fault SINCRONO (fallback async OFF): le + sobe na hora (BINDADA agora; target sempre GL_TEXTURE_2D). */
+static void bully_page_fault(unsigned target, unsigned id) {
+  (void)target;
+  struct page_req rq; rq.id = id; rq.kind = g_page_kind[id]; rq.w = g_page_w[id]; rq.h = g_page_h[id];
+  if ((rq.kind == 1 || rq.kind == 3) && g_page_name[id]) { strncpy(rq.name, g_page_name[id], sizeof rq.name - 1); rq.name[sizeof rq.name - 1] = '\0'; }
+  else rq.name[0] = '\0';
+  struct page_ready pr;
+  if (page_req_read(&rq, &pr)) { page_upload(&pr); free(pr.buf); }  /* binda id e o deixa bindado (== o motor acabou de bindar) */
+}
+/* worker: dorme no cond; acorda, tira um pedido, LE o arquivo (so I/O), poe na lista pronto. Nunca toca GL. */
+static void *page_worker(void *arg) {
+  (void)arg;
+  for (;;) {
+    struct page_req rq;
+    pthread_mutex_lock(&g_page_mtx);
+    while (g_req_head == g_req_tail) pthread_cond_wait(&g_page_cv, &g_page_mtx);
+    rq = g_req_ring[g_req_head]; g_req_head = (g_req_head + 1) % PAGE_RING;
+    pthread_mutex_unlock(&g_page_mtx);
+    struct page_ready pr;
+    if (page_req_read(&rq, &pr)) {
+      pthread_mutex_lock(&g_page_mtx);
+      if (g_ready_n < PAGE_RING) g_ready[g_ready_n++] = pr; else free(pr.buf); /* lista cheia: descarta (re-pedido depois) */
+      pthread_mutex_unlock(&g_page_mtx);
+    } else {                                                      /* leitura falhou (arquivo sumiu/delete) -> libera p/ re-pedir */
+      pthread_mutex_lock(&g_page_mtx);
+      if (rq.id < 262144) g_page_req[rq.id] = 0;
+      pthread_mutex_unlock(&g_page_mtx);
+    }
+  }
+  return NULL;
+}
+/* render thread: enfileira um pedido (snapshot dos metadados sob lock) e sinaliza o worker. */
+static void page_enqueue(unsigned id) {
+  pthread_mutex_lock(&g_page_mtx);
+  if (!g_page_req[id]) {
+    int nt = (g_req_tail + 1) % PAGE_RING;
+    if (nt != g_req_head) {                                      /* ring nao cheio */
+      struct page_req *rq = &g_req_ring[g_req_tail];
+      rq->id = id; rq->kind = g_page_kind[id]; rq->w = g_page_w[id]; rq->h = g_page_h[id];
+      if ((rq->kind == 1 || rq->kind == 3) && g_page_name[id]) { strncpy(rq->name, g_page_name[id], sizeof rq->name - 1); rq->name[sizeof rq->name - 1] = '\0'; }
+      else rq->name[0] = '\0';
+      g_req_tail = nt; g_page_req[id] = 1;
+      pthread_cond_signal(&g_page_cv);
+    }
+  }
+  pthread_mutex_unlock(&g_page_mtx);
+}
+/* render thread: sobe no GL tudo que o worker ja leu. So sobe se ainda valido (kind bate) e despejado. */
+static void page_drain(void) {
+  int n;
+  pthread_mutex_lock(&g_page_mtx);
+  n = g_ready_n; for (int i = 0; i < n; i++) g_drain_buf[i] = g_ready[i]; g_ready_n = 0;
+  pthread_mutex_unlock(&g_page_mtx);
+  if (!n) return;
+  unsigned saved = g_cur_tex2d;
+  for (int i = 0; i < n; i++) {
+    struct page_ready *pr = &g_drain_buf[i]; unsigned id = pr->id;
+    if (id < 262144 && g_page_kind[id] == pr->kind && !g_page_present[id]) page_upload(pr); /* motor pode ter deletado/reusado/ja-subido */
+    free(pr->buf);
+  }
+  pthread_mutex_lock(&g_page_mtx);
+  for (int i = 0; i < n; i++) if (g_drain_buf[i].id < 262144) g_page_req[g_drain_buf[i].id] = 0; /* pedido concluido */
+  pthread_mutex_unlock(&g_page_mtx);
+  static void (*rBind)(unsigned,unsigned) = NULL; if (!rBind) rBind = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (rBind) rBind(0x0DE1, saved);                              /* restaura o bind do motor */
+}
+/* chamado do my_glBindTexture: toca o LRU, atende page fault (async ou sync), e despeja se acima do orcamento. */
+void bully_page_on_bind(unsigned target, unsigned id) {
+  if (!bully_paging() || target != 0x0DE1 || id >= 262144 || !g_page_kind[id]) return;
+  g_page_use[id] = ++g_page_clock;
+  if (bully_async()) {
+    if (g_page_thr_on == 0) g_page_thr_on = (pthread_create(&g_page_thr, NULL, page_worker, NULL) == 0) ? 1 : -1;
+    if (g_page_thr_on == 1) {
+      if (!g_page_present[id]) page_enqueue(id);                 /* pop-in: NAO sobe agora -- fica 1x1 ate o worker ler */
+      page_drain();                                             /* sobe o que o worker ja leu */
+    } else if (!g_page_present[id]) bully_page_fault(target, id);/* thread falhou -> sincrono */
+  } else if (!g_page_present[id]) bully_page_fault(target, id);  /* async OFF -> sincrono (comportamento antigo) */
+  if (g_page_resident > bully_page_cap()) bully_page_evict(target, id);
+  if (getenv("BULLY_PAGELOG")) { static long c=0; if ((c++ % 600)==0)
+    fprintf(stderr, "[page] resident=%lldMB cap=%lldMB pf=%ld ev=%ld pageaveis=%d ready=%d\n",
+            g_page_resident/(1024*1024), bully_page_cap()/(1024*1024), g_pf, g_ev, g_page_n, g_ready_n); }
+}
+
+/* ---- bionic libc bridges ---- */
+static int *bionic___errno(void) { extern int *__errno_location(void); return __errno_location(); }
+static size_t b_strlen_chk(const char *s, size_t n) { (void)n; return strlen(s); }
+static char *b_strrchr_chk(const char *s, int c, size_t n) { (void)n; return strrchr(s, c); }
+static char *b_strchr_chk(const char *s, int c, size_t n) { (void)n; return strchr(s, c); }
+static char *b_strncpy_chk2(char *d, const char *s, size_t n, size_t dn, size_t sn) { (void)dn; (void)sn; return strncpy(d, s, n); }
+static void b_assert2(const char *f, int l, const char *fn, const char *e) {
+  fprintf(stderr, "assert: %s:%d %s: %s\n", f, l, fn, e); abort();
+}
+static int b_android_log(int prio, const char *tag, const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  fprintf(stderr, "[ALOG:%d %s] ", prio, tag ? tag : "?");
+  vfprintf(stderr, fmt, ap); fprintf(stderr, "\n"); va_end(ap);
+  return 0;
+}
+
+/* bionic __sF[3] = stdin/out/err. Wrappers traduzem p/ stream real. */
+static char bionic_sF[3][512];
+static FILE *map_sF(void *fp) {
+  if (fp == (void *)&bionic_sF[0]) return stdin;
+  if (fp == (void *)&bionic_sF[1]) return stdout;
+  if (fp == (void *)&bionic_sF[2]) return stderr;
+  return (FILE *)fp;
+}
+static int w_fprintf(void *fp, const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt); int r = vfprintf(map_sF(fp), fmt, ap); va_end(ap); return r;
+}
+static int w_vfprintf(void *fp, const char *fmt, va_list ap) { return vfprintf(map_sF(fp), fmt, ap); }
+static size_t w_fwrite(const void *p, size_t s, size_t n, void *fp) { return fwrite(p, s, n, map_sF(fp)); }
+static int w_fputs(const char *str, void *fp) { return fputs(str, map_sF(fp)); }
+static int w_fputc(int c, void *fp) { return fputc(c, map_sF(fp)); }
+static int w_fflush(void *fp) { return fflush(fp ? map_sF(fp) : NULL); }
+
+/* _ctype_ legado (BSD): tabela 1+256, indexada de -1. */
+static unsigned char ctype_tab[1 + 256];
+#define _CT_U 0x01
+#define _CT_L 0x02
+#define _CT_N 0x04
+#define _CT_S 0x08
+#define _CT_P 0x10
+#define _CT_C 0x20
+#define _CT_X 0x40
+#define _CT_B 0x80
+static void ctype_init(void) {
+  for (int c = 0; c < 256; c++) {
+    unsigned char f = 0;
+    if (isupper(c)) f |= _CT_U; if (islower(c)) f |= _CT_L;
+    if (isdigit(c)) f |= _CT_N; if (isspace(c)) f |= _CT_S;
+    if (ispunct(c)) f |= _CT_P; if (iscntrl(c)) f |= _CT_C;
+    if (isxdigit(c)) f |= _CT_X; if (c == ' ') f |= _CT_B;
+    ctype_tab[1 + c] = f;
+  }
+}
+
+/* ---- NDK ANativeWindow (a janela é do egl_shim Mali fbdev) ---- */
+static void *aw_fromSurface(void *env, void *surface) { (void)env; (void)surface; return (void *)0xAA11; }
+static int aw_setBuffersGeometry(void *w, int x, int y, int f) { (void)w;(void)x;(void)y;(void)f; return 0; }
+extern int bully_screen_w(void); extern int bully_screen_h(void);
+static int aw_getWidth(void *w) { (void)w; return bully_screen_w(); }
+static int aw_getHeight(void *w) { (void)w; return bully_screen_h(); }
+static void aw_release(void *w) { (void)w; }
+
+/* ---- NDK AAssetManager / AAsset (lê dos arquivos reais) ---- */
+#ifndef ASSET_DIR
+#define ASSET_DIR "assets"
+#endif
+typedef struct { FILE *fp; long len; } AAsset;
+static void *am_fromJava(void *env, void *obj) { (void)env; (void)obj; return (void *)0xA55E7; }
+/* fopen CASE-INSENSITIVE: o GTA SA (origem Windows) pede caminhos com case
+ * misto ("data/decision/PedEvent.txt") mas o ext4 é case-sensitive e os arquivos
+ * têm outro case ("data/Decision/PedEvent.txt"). Resolve componente a componente
+ * via opendir/strcasecmp. Sem isto, ReadLine trava/crasha num handle nulo. */
+FILE *ci_fopen(const char *root, const char *rel) {
+  char full[1024];
+  snprintf(full, sizeof full, "%s/%s", root, rel);
+  FILE *fp = fopen(full, "rb");
+  if (fp) return fp;
+  char cur[1024];
+  snprintf(cur, sizeof cur, "%s", root);
+  const char *p = rel;
+  while (*p) {
+    while (*p == '/') p++;
+    if (!*p) break;
+    const char *slash = strchr(p, '/');
+    size_t clen = slash ? (size_t)(slash - p) : strlen(p);
+    char comp[256];
+    if (clen == 0 || clen >= sizeof comp) return NULL;
+    memcpy(comp, p, clen); comp[clen] = 0;
+    char child[1024];
+    snprintf(child, sizeof child, "%s/%s", cur, comp);
+    struct stat st;
+    if (stat(child, &st) == 0) {
+      memcpy(cur, child, sizeof cur);
+    } else {
+      DIR *d = opendir(cur);
+      if (!d) return NULL;
+      struct dirent *e; int found = 0;
+      while ((e = readdir(d))) {
+        if (strcasecmp(e->d_name, comp) == 0) {
+          char nxt[1024]; snprintf(nxt, sizeof nxt, "%s/%s", cur, e->d_name);
+          memcpy(cur, nxt, sizeof cur); found = 1; break;
+        }
+      }
+      closedir(d);
+      if (!found) return NULL;
+    }
+    if (!slash) break;
+    p = slash + 1;
+  }
+  return fopen(cur, "rb");
+}
+static void *aa_open(void *mgr, const char *path, int mode) {
+  (void)mgr; (void)mode;
+  char full[1024]; snprintf(full, sizeof(full), "%s/%s", ASSET_DIR, path);
+  /* procura em assets/ E na RAIZ do dir do jogo (CINFO.BIN, MODELS/MINFO.BIN,
+   * GTASAsf*.b, gta3.ini ficam na raiz, não em assets/). Ambos case-insensitive. */
+  FILE *fp = ci_fopen(ASSET_DIR, path);
+  if (!fp) fp = ci_fopen(".", path);
+  if (!fp) { fprintf(stderr, "[asset] FALTA %s\n", full); return NULL; }
+  AAsset *a = calloc(1, sizeof(AAsset)); a->fp = fp;
+  fseek(fp, 0, SEEK_END); a->len = ftell(fp); fseek(fp, 0, SEEK_SET);
+  return a;
+}
+static int aa_read(void *h, void *buf, size_t n) { AAsset *a = h; return a ? fread(buf, 1, n, a->fp) : -1; }
+static long aa_seek64(void *h, long off, int wh) { AAsset *a = h; if (!a) return -1; fseek(a->fp, off, wh); return ftell(a->fp); }
+static long aa_getLength64(void *h) { AAsset *a = h; return a ? a->len : 0; }
+static long aa_getRemainingLength64(void *h) { AAsset *a = h; return a ? a->len - ftell(a->fp) : 0; }
+static void aa_close(void *h) { AAsset *a = h; if (a) { fclose(a->fp); free(a); } }
+
+/* ---- fopen: disco; se falhar (leitura), serve de DENTRO dos data_*.zip ---- */
+static FILE *w_fopen(const char *path, const char *mode) {
+  static FILE *(*real)(const char *, const char *) = NULL;
+  if (!real) real = dlsym(RTLD_DEFAULT, "fopen");
+  FILE *f = real ? real(path, mode) : NULL;
+  /* device: os dados ficam em assets/ (vfat sem symlink); o jogo fopena
+   * "data_N.zip" no cwd -> redireciona p/ "assets/data_N.zip". */
+  if (!f && real && path && mode && mode[0] == 'r' && strncmp(path, "assets/", 7) != 0) {
+    char alt[1024]; snprintf(alt, sizeof(alt), "assets/%s", path);
+    f = real(alt, mode);
+  }
+  /* TRACE settings/storage.ini -> descobrir se/onde o jogo le/escreve a config */
+  if (path && (strstr(path, "settings.ini") || strstr(path, "storage.ini")))
+    fprintf(stderr, "[cfg] fopen(\"%s\",\"%s\") -> %s\n", path, mode ? mode : "?", f ? "OK" : "FALHOU");
+  return f;
+}
+
+/* ---- stat/lstat/fstat/fstatat (CAUSA do texto invisivel em glibc velha) ----
+ * Em glibc < 2.33 os NOMES "stat"/"lstat"/"fstat" NAO sao simbolos exportados
+ * (sao macros/wrappers inline -> __xstat(_STAT_VER,...)). O so_resolve resolve
+ * imports por dlsym(NOME), entao nos devices de glibc antiga -- justamente os que
+ * caem no bully.compat -- esses imports do libGame/libc++ ficam UNRESOLVED. O
+ * jogo entao nao consegue stat() dos arquivos (ex.: as fontes) e o texto some,
+ * mesmo com o resto renderizando. Resolvemos via SYSCALL crua: o kernel preenche
+ * a `struct stat` no layout arm64 == layout do bionic (libGame), sem conversao.
+ * Replica o fallback "assets/" do w_fopen (dados em vfat sem symlink). */
+static int g_stat_log = 0;
+static int stat_at(const char *path, void *buf, int flag) {
+  int r = syscall(SYS_newfstatat, AT_FDCWD, path, buf, flag);
+  if (r != 0 && path && strncmp(path, "assets/", 7) != 0) {
+    char alt[1024]; snprintf(alt, sizeof(alt), "assets/%s", path);
+    r = syscall(SYS_newfstatat, AT_FDCWD, alt, buf, flag);
+  }
+  if (g_stat_log < 24) { fprintf(stderr, "[stat] \"%s\" flag=%d -> %d\n", path ? path : "(null)", flag, r); g_stat_log++; }
+  return r;
+}
+static int my_stat(const char *path, void *buf)  { return stat_at(path, buf, 0); }
+static int my_lstat(const char *path, void *buf) { return stat_at(path, buf, AT_SYMLINK_NOFOLLOW); }
+static int my_fstatat(int dfd, const char *path, void *buf, int flag) {
+  if (dfd == AT_FDCWD) return stat_at(path, buf, flag);
+  return syscall(SYS_newfstatat, dfd, path, buf, flag);
+}
+static int my_fstat(int fd, void *buf) {
+  int r = syscall(SYS_fstat, fd, buf);
+  if (g_stat_log < 24) { fprintf(stderr, "[stat] fstat(fd=%d) -> %d\n", fd, r); g_stat_log++; }
+  return r;
+}
+
+/* ---- glGetString nunca-NULL ----
+ * SPOOF opcional do device: o perfprofile do Bully casa o GL_RENDERER (regex
+ * "Mali-(\w+)" / "Adreno .TM. (.+)") contra uma tabela e ESCONDE opcoes do menu
+ * (Shadows etc.) em GPU de tier baixo/desconhecido. BULLY_GPU_RENDERER e
+ * BULLY_GPU_VENDOR fingem outro aparelho p/ destravar o menu, SEM mudar a GPU
+ * real (so o nome que o jogo le). 0x1F01=GL_RENDERER, 0x1F00=GL_VENDOR. */
+static const unsigned char *w_glGetString(unsigned name) {
+  static const unsigned char *(*real)(unsigned) = NULL;
+  if (!real) real = dlsym(RTLD_DEFAULT, "glGetString");
+  if (name == 0x1F01) { const char *e = getenv("BULLY_GPU_RENDERER"); if (e && *e) return (const unsigned char *)e; }
+  if (name == 0x1F00) { const char *e = getenv("BULLY_GPU_VENDOR");   if (e && *e) return (const unsigned char *)e; }
+  const unsigned char *r = real ? real(name) : NULL;
+  return r ? r : (const unsigned char *)"";
+}
+
+/* ---- bionic-only (não existem na glibc; libc++/libGame usam) ---- */
+static void b_set_abort_message(const char *m) { fprintf(stderr, "[abort_msg] %s\n", m ? m : "?"); }
+/* SPOOF opcional do modelo (alguns perfis casam por ro.product.model/board em
+ * vez do GL_RENDERER). BULLY_DEV_MODEL / BULLY_DEV_MANUF / BULLY_DEV_BOARD. */
+static int b_system_property_get(const char *name, char *value) {
+  if (!value) return 0;
+  value[0] = 0;
+  if (name) {
+    const char *e = NULL;
+    if (!strcmp(name, "ro.product.model"))             e = getenv("BULLY_DEV_MODEL");
+    else if (!strcmp(name, "ro.product.manufacturer")) e = getenv("BULLY_DEV_MANUF");
+    else if (!strcmp(name, "ro.board.platform") ||
+             !strcmp(name, "ro.hardware"))              e = getenv("BULLY_DEV_BOARD");
+    if (e && *e) { strncpy(value, e, 91); value[91] = 0; return (int)strlen(value); }
+  }
+  return 0;
+}
+
+/* ---- C++ thread-local init helpers (_ZTH*): no-op ---- */
+static void tl_noop(void) {}
+
+/* ================= GLES2 fixes Mali-450 Utgard (receitas do reVC) ============
+ * O game importa glShaderSource/glTexImage2D/glTexParameteri direto -> a tabela
+ * resolve p/ estes wrappers, que corrigem p/ o Utgard e chamam o real (Mali). */
+static char *str_replace_all(const char *src, const char *find, const char *repl) {
+  size_t fl = strlen(find), rl = strlen(repl), n = 0;
+  for (const char *p = src; (p = strstr(p, find)); p += fl) n++;
+  char *out = malloc(strlen(src) + n * (rl > fl ? rl - fl : 0) + 1);
+  char *o = out; const char *p = src, *q;
+  while ((q = strstr(p, find))) { memcpy(o, p, q - p); o += q - p; memcpy(o, repl, rl); o += rl; p = q + fl; }
+  strcpy(o, p);
+  return out;
+}
+extern int bully_is_kmsdrm(void);
+static void (*real_glShaderSource)(unsigned, int, const char *const *, const int *) = NULL;
+static void my_glShaderSource(unsigned sh, int count, const char *const *str, const int *len) {
+  (void)len;
+  if (!real_glShaderSource) real_glShaderSource = dlsym(RTLD_DEFAULT, "glShaderSource");
+  size_t total = 1;
+  for (int i = 0; i < count; i++) if (str && str[i]) total += strlen(str[i]);
+  char *cat = malloc(total); cat[0] = 0;
+  for (int i = 0; i < count; i++) if (str && str[i]) strcat(cat, str[i]);
+  /* Utgard (Mali-400/450 GP) não suporta highp -> mediump (cores lavadas) */
+  /* Mali-450: a GP (vertex) É FP32 e SUPORTA highp; só a PP (fragment) não tem.
+   * Forçar mediump no VERTEX quebra a precisão do skinning -> braços/corpo do
+   * Jimmy (muita deformação) colapsam/NaN -> invisíveis. Então só troca
+   * highp->mediump nos shaders de FRAGMENTO (mantém highp no vertex). */
+  /* só fragment: highp->mediump (Utgard PP não tem highp). Vertex mantém highp (skinning). */
+  int is_vertex = strstr(cat, "gl_Position") != NULL;
+  /* G310/kmsdrm: MANTEM highp em TUDO (qualidade). Mali-450/fbdev: fragment->mediump (PP sem highp). */
+  char *s0 = (is_vertex || bully_is_kmsdrm()) ? strdup(cat) : str_replace_all(cat, "highp", "mediump");
+  free(cat);
+  /* alpha-test SÓ nos shaders de PERSONAGEM (têm `fadeandcolor`, exclusivo de
+   * peds/Jimmy): a roupa do Jimmy é composta numa textura (RTT, 163 draws OK),
+   * mas o alpha da textura composta sai baixo no Mali -> `if (a<0.7) discard`
+   * corta a roupa -> aparece e some. Baixa p/ 0.04 só nesses shaders (folhagem
+   * NÃO tem fadeandcolor -> intacta). */
+  char *s1 = s0;
+  if (!is_vertex && strstr(s0, "fadeandcolor")) {
+    s1 = str_replace_all(s0, "< 0.7)", "< 0.04)");
+    free(s0);
+  }
+  const char *one = s1;
+  if (real_glShaderSource) real_glShaderSource(sh, 1, &one, NULL);
+  free(s1);
+}
+/* forward (defs reais mais adiante): usados aqui no my_glTexParameteri */
+#define RESMAP 262144
+static unsigned char g_tex_alpha[RESMAP];   /* textura tem ALPHA (recorte) -> trilinear=LINEAR (sem halo preto) */
+static unsigned char g_tex_emul[RESMAP];    /* fwd: 1 = alocada via glTexStorage2D emulado (SO nivel 0, sem mips) */
+static unsigned g_cur_tex2d;
+static void (*real_glTexParameteri)(unsigned, unsigned, int) = NULL;
+static void my_glTexParameteri(unsigned target, unsigned pname, int param) {
+  if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+  if (pname == 0x813D) return;                                  /* GL_TEXTURE_MAX_LEVEL: inexistente em GLES2 */
+  /* fbdev (Mali-450): mipmap filter -> GL_LINEAR (Utgard sem mipmap = preto).
+   * kmsdrm (G310): deixa o trilinear do jogo passar (mipmaps gerados no glTexImage2D). */
+  int fl = 0;
+  if (!bully_trilinear()) { if (!bully_is_kmsdrm() || bully_etc1_force()) fl = 1; }       /* fbdev/etc1: sempre LINEAR */
+  else if (g_cur_tex2d < RESMAP && g_tex_alpha[g_cur_tex2d] && !bully_cutout_mip()) fl = 1; /* trilinear: recorte = LINEAR (a menos que CUTOUT_MIP) */
+  /* GLES3 (R36S/kmsdrm): texturas emuladas via glTexStorage2D so tem o NIVEL 0 (a emulacao
+   * nao gera mips; ETC2 comprimido nem pode). O motor seta MIN_FILTER mipmapado nas opacas
+   * 3D (personagens/mundo) -> textura INCOMPLETA -> amostra BRANCO. Forca LINEAR nelas.
+   * (O comentario antigo "kmsdrm: mips gerados no glTexImage2D" so vale p/ o path glTexImage2D,
+   *  NAO p/ a emulacao glTexStorage2D do R36S -> era a RAIZ do "personagens/mundo brancos".) */
+  if (g_cur_tex2d < RESMAP && g_tex_emul[g_cur_tex2d]) fl = 1;
+  if (fl && (pname == 0x2801 || pname == 0x2800) && param >= 0x2700 && param <= 0x2703)
+    param = 0x2601;
+  if (real_glTexParameteri) real_glTexParameteri(target, pname, param);
+}
+/* log de erros de compile/link de shader (achar o shader do Jimmy que falha) */
+static void (*real_glCompileShader)(unsigned) = NULL;
+static void my_glCompileShader(unsigned sh) {
+  if (!real_glCompileShader) real_glCompileShader = dlsym(RTLD_DEFAULT, "glCompileShader");
+  if (real_glCompileShader) real_glCompileShader(sh);
+  void (*giv)(unsigned, unsigned, int *) = dlsym(RTLD_DEFAULT, "glGetShaderiv");
+  void (*gil)(unsigned, int, int *, char *) = dlsym(RTLD_DEFAULT, "glGetShaderInfoLog");
+  int ok = 1; if (giv) giv(sh, 0x8B81, &ok); /* GL_COMPILE_STATUS */
+  if (!ok) { char log[1500] = {0}; if (gil) gil(sh, 1500, NULL, log); fprintf(stderr, "[shader] COMPILE FAIL sh=%u: %s\n", sh, log); }
+}
+static void (*real_glLinkProgram)(unsigned) = NULL;
+static void my_glLinkProgram(unsigned p) {
+  if (!real_glLinkProgram) real_glLinkProgram = dlsym(RTLD_DEFAULT, "glLinkProgram");
+  if (real_glLinkProgram) real_glLinkProgram(p);
+  void (*giv)(unsigned, unsigned, int *) = dlsym(RTLD_DEFAULT, "glGetProgramiv");
+  void (*gil)(unsigned, int, int *, char *) = dlsym(RTLD_DEFAULT, "glGetProgramInfoLog");
+  int ok = 1; if (giv) giv(p, 0x8B82, &ok); /* GL_LINK_STATUS */
+  if (!ok) { char log[1500] = {0}; if (gil) gil(p, 1500, NULL, log); fprintf(stderr, "[shader] LINK FAIL p=%u: %s\n", p, log); }
+}
+/* texturas comprimidas: Mali-450 só faz ETC1 (0x8D64). Loga formatos p/ achar
+ * se a camisa/skin do Jimmy usa um formato que o Mali rejeita -> transparente. */
+static void (*real_glCompressedTexImage2D)(unsigned,int,unsigned,int,int,int,int,const void*) = NULL;
+static void my_glCompressedTexImage2D(unsigned t,int l,unsigned ifmt,int w,int h,int b,int sz,const void*d) {
+  if (!real_glCompressedTexImage2D) real_glCompressedTexImage2D = dlsym(RTLD_DEFAULT, "glCompressedTexImage2D");
+  static int n = 0;
+  if (n < 40) { fprintf(stderr, "[tex] compressed fmt=0x%x %dx%d sz=%d\n", ifmt, w, h, sz); n++; }
+  if (real_glCompressedTexImage2D) real_glCompressedTexImage2D(t,l,ifmt,w,h,b,sz,d);
+}
+/* TESTE: ignora glEnable(GL_BLEND) -> se a camisa do Jimmy aparecer OPACA,
+ * confirma que ela some por alpha-blend (alpha~0). (Quebra transparências
+ * legítimas; é só p/ diagnóstico.) */
+static void (*real_glEnable)(unsigned) = NULL;
+static void my_glEnable(unsigned cap) {
+  if (!real_glEnable) real_glEnable = dlsym(RTLD_DEFAULT, "glEnable");
+  if (real_glEnable) real_glEnable(cap); /* (skip de GL_BLEND revertido: não era blend) */
+}
+static void (*real_glClear)(unsigned) = NULL;
+static int g_cleardbg = 0;
+unsigned g_pending_clear = 0;   /* clear adiado dentro de FBO (só efetiva se vier draw) */
+static int g_defer_clear = -1;
+void bully_flush_pending_clear(void) { /* chamado pelos draws dentro do FBO */
+  if (g_pending_clear) {
+    if (!real_glClear) real_glClear = dlsym(RTLD_DEFAULT, "glClear");
+    if (real_glClear) real_glClear(g_pending_clear);
+    g_pending_clear = 0;
+  }
+}
+static void my_glClear(unsigned mask) {
+  extern int g_in_fbo, g_rtt_clears;
+  if (!real_glClear) real_glClear = dlsym(RTLD_DEFAULT, "glClear");
+  if (g_in_fbo) g_rtt_clears++;
+  /* CAUSA-RAIZ da roupa que some: este wrapper forçava GL_COLOR_BUFFER_BIT em
+   * TODO clear (fix de tela preta). Dentro do render-to-texture da roupa, o jogo
+   * faz clear só de PROFUNDIDADE -> o nosso force-COLOR APAGAVA a cor (a roupa já
+   * composta). FIX: forçar COR só FORA de FBO (a tela). Dentro de FBO, respeita
+   * a máscara do jogo (clear de profundidade NÃO apaga a roupa). */
+  unsigned m = g_in_fbo ? mask : (mask | 0x4000);
+  if (g_cleardbg < 12) { fprintf(stderr, "[gl] glClear in_fbo=%d mask=0x%x -> 0x%x\n", g_in_fbo, mask, m); g_cleardbg++; }
+  if (real_glClear) real_glClear(m);
+}
+/* ===== INSTRUMENTACAO DE VAZAMENTO (recursos GL vivos) =====
+ * Conta texturas/FBOs/renderbuffers vivos (gen - delete) + bytes estimados, p/
+ * descobrir O QUE vaza (testers: RAM enche e OOM em ~30min no R36S). Report a
+ * cada 120 frames via bully_resource_report(). So medicao; nao altera render. */
+long g_tex_live = 0, g_fb_live = 0, g_rb_live = 0, g_tex_gen = 0, g_tex_del = 0;
+long long g_texbytes_live = 0;
+/* medicao p/ decidir halving SELETIVO: full-bytes (em res cheia) das texturas que
+ * o TEX_HALF reduz, separadas por classe. delta de manter 512 cheias = 3/4 do full. */
+long long g_half512_full = 0, g_half1024_full = 0; long g_half512_cnt = 0, g_half1024_cnt = 0;
+/* RESMAP + g_tex_alpha declarados acima (antes do my_glTexParameteri) */
+static unsigned g_texbytes[RESMAP];   /* bytes correntes por id de textura */
+unsigned bully_g_texbytes(unsigned id) { return id < RESMAP ? g_texbytes[id] : 0; }
+void bully_g_texbytes_set(unsigned id, unsigned b) { if (id < RESMAP) g_texbytes[id] = b; }
+static unsigned g_rbbytes[RESMAP];    /* idem renderbuffer */
+static unsigned char g_half_seen[RESMAP]; /* medicao: id ja contado no tally do halving */
+static unsigned g_cur_tex2d = 0, g_cur_rb = 0;
+static int bpp_internal(unsigned ifmt) {
+  switch (ifmt) {
+    case 0x8056: case 0x8D62: case 0x8033: case 0x8034: case 0x8363: return 2; /* RGBA4/565/4444/5551 */
+    case 0x1907: case 0x81A6: return 3;       /* RGB / DEPTH24 */
+    default: return 4;                          /* RGBA8/RGBA/DEPTH24_STENCIL8/etc */
+  }
+}
+static long tex_chain_bytes(unsigned ifmt, int w, int h, int levels) {
+  if (levels < 1) levels = 1;
+  long bpp = bpp_internal(ifmt), t = 0;
+  for (int i = 0; i < levels && (w > 0 || h > 0); i++) {
+    int ww = w > 0 ? w : 1, hh = h > 0 ? h : 1;
+    t += (long)ww * hh * bpp; w >>= 1; h >>= 1;
+  }
+  return t;
+}
+static void (*real_glBindTexture)(unsigned, unsigned) = NULL;
+extern void bully_page_on_bind(unsigned target, unsigned id);
+static void my_glBindTexture(unsigned target, unsigned tex) {
+  if (target == 0x0DE1) g_cur_tex2d = tex;   /* GL_TEXTURE_2D */
+  if (!real_glBindTexture) real_glBindTexture = dlsym(RTLD_DEFAULT, "glBindTexture");
+  if (real_glBindTexture) real_glBindTexture(target, tex);
+  bully_page_on_bind(target, tex);           /* PAGINACAO: LRU + page-fault + despejo (gated BULLY_PAGE) */
+}
+static void (*real_glGenTextures)(int, unsigned*) = NULL;
+static void my_glGenTextures(int n, unsigned *ids) {
+  if (!real_glGenTextures) real_glGenTextures = dlsym(RTLD_DEFAULT, "glGenTextures");
+  if (real_glGenTextures) real_glGenTextures(n, ids);
+  g_tex_live += n; g_tex_gen += n;
+}
+static void (*real_glDeleteTextures)(int, const unsigned*) = NULL;
+static void my_glDeleteTextures(int n, const unsigned *ids) {
+  for (int i = 0; ids && i < n; i++) { unsigned id = ids[i];
+    if (id < RESMAP) {
+      if (g_page_kind[id]) {   /* PAGINACAO: motor deletou uma pageavel -> limpa estado (id pode ser reusado) */
+        if (g_page_present[id]) g_page_resident -= (long long)bully_g_texbytes(id);
+        if (g_page_kind[id] == 2 && bully_swapdir()) {   /* apaga o arquivo de swap (id sera reusado) */
+          char p[320]; snprintf(p, sizeof p, "%s/%u.tx", bully_swapdir(), id); remove(p);
+        }
+        if (g_page_name[id]) { free(g_page_name[id]); g_page_name[id] = NULL; }
+        g_page_kind[id] = 0; g_page_present[id] = 0; g_page_req[id] = 0; /* async: pedido em voo se auto-descarta no drain (kind!=) */
+      }
+      g_texbytes_live -= g_texbytes[id]; g_texbytes[id] = 0; } }
+  if (!real_glDeleteTextures) real_glDeleteTextures = dlsym(RTLD_DEFAULT, "glDeleteTextures");
+  if (real_glDeleteTextures) real_glDeleteTextures(n, ids);
+  g_tex_live -= n; g_tex_del += n;
+}
+static void (*real_glGenFramebuffers)(int, unsigned*) = NULL;
+static void my_glGenFramebuffers(int n, unsigned *ids) {
+  if (!real_glGenFramebuffers) real_glGenFramebuffers = dlsym(RTLD_DEFAULT, "glGenFramebuffers");
+  if (real_glGenFramebuffers) real_glGenFramebuffers(n, ids);
+  g_fb_live += n;
+}
+static void (*real_glDeleteFramebuffers)(int, const unsigned*) = NULL;
+static void my_glDeleteFramebuffers(int n, const unsigned *ids) {
+  if (!real_glDeleteFramebuffers) real_glDeleteFramebuffers = dlsym(RTLD_DEFAULT, "glDeleteFramebuffers");
+  if (real_glDeleteFramebuffers) real_glDeleteFramebuffers(n, ids);
+  g_fb_live -= n;
+}
+static void (*real_glGenRenderbuffers)(int, unsigned*) = NULL;
+static void my_glGenRenderbuffers(int n, unsigned *ids) {
+  if (!real_glGenRenderbuffers) real_glGenRenderbuffers = dlsym(RTLD_DEFAULT, "glGenRenderbuffers");
+  if (real_glGenRenderbuffers) real_glGenRenderbuffers(n, ids);
+  g_rb_live += n;
+}
+static void (*real_glDeleteRenderbuffers)(int, const unsigned*) = NULL;
+static void my_glDeleteRenderbuffers(int n, const unsigned *ids) {
+  for (int i = 0; ids && i < n; i++) { unsigned id = ids[i];
+    if (id < RESMAP) { g_texbytes_live -= g_rbbytes[id]; g_rbbytes[id] = 0; } }
+  if (!real_glDeleteRenderbuffers) real_glDeleteRenderbuffers = dlsym(RTLD_DEFAULT, "glDeleteRenderbuffers");
+  if (real_glDeleteRenderbuffers) real_glDeleteRenderbuffers(n, ids);
+  g_rb_live -= n;
+}
+static void (*real_glBindRenderbuffer)(unsigned, unsigned) = NULL;
+static void my_glBindRenderbuffer(unsigned target, unsigned rb) {
+  g_cur_rb = rb;
+  if (!real_glBindRenderbuffer) real_glBindRenderbuffer = dlsym(RTLD_DEFAULT, "glBindRenderbuffer");
+  if (real_glBindRenderbuffer) real_glBindRenderbuffer(target, rb);
+}
+static void (*real_glRenderbufferStorage)(unsigned, unsigned, int, int) = NULL;
+static void my_glRenderbufferStorage(unsigned target, unsigned ifmt, int w, int h) {
+  long b = (long)(w > 0 ? w : 1) * (h > 0 ? h : 1) * bpp_internal(ifmt);
+  if (g_cur_rb < RESMAP) { g_texbytes_live += b - g_rbbytes[g_cur_rb]; g_rbbytes[g_cur_rb] = b; }
+  if (!real_glRenderbufferStorage) real_glRenderbufferStorage = dlsym(RTLD_DEFAULT, "glRenderbufferStorage");
+  if (real_glRenderbufferStorage) real_glRenderbufferStorage(target, ifmt, w, h);
+}
+/* chamado pelo loop de render (jni_shim) a cada 120 frames */
+void bully_resource_report(void) {
+  fprintf(stderr, "[leak] tex_live=%ld (gen=%ld del=%ld) fbo_live=%ld rb_live=%ld | ~%lld MB em texturas/RB vivos\n",
+          g_tex_live, g_tex_gen, g_tex_del, g_fb_live, g_rb_live, g_texbytes_live / (1024*1024));
+  /* medicao halving seletivo: full = bytes em res CHEIA das texturas reduzidas.
+   * Hoje (todas reduzidas) usam full/4. Manter 512 cheias custaria +3/4 do full-512. */
+  fprintf(stderr, "[texmem] 512-range: %ld tex full=%lld MB (manter-cheias custa +%lld MB) | 1024+: %ld tex full=%lld MB (reduzidas ja economizam %lld MB)\n",
+          g_half512_cnt, g_half512_full/(1024*1024), (g_half512_full*3/4)/(1024*1024),
+          g_half1024_cnt, g_half1024_full/(1024*1024), (g_half1024_full*3/4)/(1024*1024));
+}
+
+/* ES3 (R36S/G31): o motor usa glTexStorage2D (IMUTAVEL) + glTexSubImage2D em vez de glTexImage2D.
+ * Pra o pipeline (ETC2/streaming/despejo) funcionar no R36S, EMULAMOS o storage com glTexImage2D
+ * (MUTAVEL, nivel 0) -> a textura vira EVICTAVEL (re-spec 1x1) + encodavel (ETC2). Sem isso as
+ * texturas acumulam na GPU -> Mali GPU OOM (can_alloc_page) -> bully morre. [RAIZ R36S 2026-06-21] */
+static unsigned char g_tex_emul[RESMAP];        /* 1 = alocada via glTexStorage2D emulado (mutavel) */
+static unsigned char g_tex_etc2[RESMAP];        /* 1 = ja subiu ETC2 do cache no storage -> ignora o SubImage RGBA */
+static int g_tex_emul_ifmt[RESMAP];             /* internalformat do glTexImage2D (p/ re-upload do paging) */
+/* mapeia internalformat SIZED (ES3) -> (internalformat, fmt, type) do glTexImage2D. 0 = desconhecido. */
+static int bully_sized_to_fmt(unsigned s, int *gli, unsigned *fmt, unsigned *type) {
+  switch (s) {
+    case 0x8058: *gli=0x1908; *fmt=0x1908; *type=0x1401; return 1; /* RGBA8 -> RGBA/UBYTE */
+    case 0x8051: *gli=0x1907; *fmt=0x1907; *type=0x1401; return 1; /* RGB8 -> RGB/UBYTE */
+    case 0x8056: *gli=0x1908; *fmt=0x1908; *type=0x8033; return 1; /* RGBA4 -> RGBA/4444 */
+    case 0x8057: *gli=0x1908; *fmt=0x1908; *type=0x8034; return 1; /* RGB5_A1 -> RGBA/5551 */
+    case 0x8d62: *gli=0x1907; *fmt=0x1907; *type=0x8363; return 1; /* RGB565 -> RGB/565 */
+    default: return 0;
+  }
+}
+/* fwd: escala global de textura (def. perto do my_glTexImage2D) -- usada tb no caminho ES3 */
+static double bully_tex_scale(void);
+static void bully_scaled_dim(int w, int h, int *nw, int *nh);
+static int bully_tex_resample(const unsigned char *src, int w, int h, unsigned fmt, unsigned type, int nw, int nh, unsigned char *dst);
+static void (*real_glTexStorage2D)(unsigned, int, unsigned, int, int) = NULL;
+static void my_glTexStorage2D(unsigned t, int levels, unsigned ifmt, int w, int h) {
+  if (!real_glTexStorage2D) real_glTexStorage2D = dlsym(RTLD_DEFAULT, "glTexStorage2D");
+  int pf = g_path_fresh; g_path_fresh = 0;   /* consome a frescura: so a 1a textura apos o .tex e asset; RT = pf 0 */
+  static int n = 0; if (n < 8) { fprintf(stderr, "[tex] STORAGE levels=%d ifmt=0x%x %dx%d\n", levels, ifmt, w, h); n++; }
+  int gli; unsigned fmt, type;
+  if (t == 0x0DE1 && g_cur_tex2d < RESMAP && w >= 4 && h >= 4 && bully_sized_to_fmt(ifmt, &gli, &fmt, &type)) {
+    /* RUNTIME: se tem ETC2 no cache, sobe ETC2 JÁ AQUI (alocação PEQUENA desde o início, sem rajada RGBA8
+     * que estoura a GPU). No bake o .etc2 ainda não existe -> cai no RGBA8 mutável + encoda no SubImage.
+     * pf=0 (render target / path stale) -> NUNCA ETC2 aqui -> RT continua renderavel (FBO completo). */
+    int hw = w, hh = h;
+    if (pf && bully_tex_halfall()) bully_halfdim(w, h, &hw, &hh);  /* 1GB: aloca metade (ETC2 meia-res do cache half) */
+    if (pf && bully_try_etc2(t, 0, hw, hh, 0, 0, NULL)) {
+      g_tex_emul[g_cur_tex2d] = 1; g_tex_etc2[g_cur_tex2d] = 1;
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, hw, hh, (unsigned)((size_t)(hw/4)*(hh/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+      return;
+    }
+    if (bully_paging() && g_page_resident > bully_page_cap())  /* despeja ANTES de alocar (libera GPU p/ a nova) */
+      bully_page_evict(t, g_cur_tex2d);
+    static void (*rImg)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+    if (!rImg) rImg = dlsym(RTLD_DEFAULT, "glTexImage2D");
+    int aw, ah; bully_scaled_dim(w, h, &aw, &ah);   /* TEX_SCALE: aloca o storage JA menor (ES3) */
+    if (rImg) rImg(t, 0, gli, aw, ah, 0, fmt, type, NULL); /* MUTAVEL nivel 0 (escalado) */
+    g_tex_emul[g_cur_tex2d] = 1; g_tex_etc2[g_cur_tex2d] = 0; g_tex_emul_ifmt[g_cur_tex2d] = gli;
+    { static void(*rP)(unsigned,unsigned,int)=NULL; if(!rP)rP=dlsym(RTLD_DEFAULT,"glTexParameteri");
+      if(rP){ rP(t,0x2801,0x2601); rP(t,0x2800,0x2601); } } /* LINEAR (sem mip) */
+    int bb = bpp_of(fmt,type); long b = bb>0 ? (long)aw*ah*bb : 0;
+    if (b>0) { g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d]=b; }
+    return;
+  }
+  if (g_cur_tex2d < RESMAP) { g_tex_emul[g_cur_tex2d] = 0; g_tex_etc2[g_cur_tex2d] = 0;
+    long b = tex_chain_bytes(ifmt, w, h, levels); g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b; }
+  if (real_glTexStorage2D) real_glTexStorage2D(t, levels, ifmt, w, h);
+}
+static void (*real_glTexSubImage2D)(unsigned,int,int,int,int,int,unsigned,unsigned,const void*) = NULL;
+static void my_glTexSubImage2D(unsigned t,int l,int xo,int yo,int w,int h,unsigned fmt,unsigned type,const void*px) {
+  if (!real_glTexSubImage2D) real_glTexSubImage2D = dlsym(RTLD_DEFAULT, "glTexSubImage2D");
+  int pf = (l == 0) ? g_path_fresh : 0; if (l == 0) g_path_fresh = 0;  /* consome a frescura no nivel 0 */
+  static int n = 0; if (n < 8 && l == 0) { fprintf(stderr, "[tex] SUB fmt=0x%x type=0x%x %dx%d\n", fmt, type, w, h); n++; }
+  if (t == 0x0DE1 && g_cur_tex2d < RESMAP && g_tex_etc2[g_cur_tex2d]) return; /* ja e ETC2 (subido no storage) -> ignora os pixels RGBA */
+  /* textura EMULADA (mutavel) + nivel 0 + imagem inteira -> ROTA PELO PIPELINE (ETC2 + streaming) */
+  if (t == 0x0DE1 && l == 0 && xo == 0 && yo == 0 && g_cur_tex2d < RESMAP && g_tex_emul[g_cur_tex2d] && px) {
+    /* BAKE: o glTexStorage2D ja consumiu o pf -> aqui pf=0 SEMPRE no ES3 -> o encode ETC2
+     * nunca disparava (yield ~2% no R36S). No bake o bully_try_etc2 so GRAVA o cache e
+     * retorna 0 (nao sobe ETC2 -> nao corrompe RT), entao contornar o pf e seguro. [fix R36S] */
+    if ((pf || bully_etc1_bake()) && bully_try_etc2(t, 0, w, h, fmt, type, px)) {  /* runtime: re-spec ETC2; bake: grava cache */
+      g_tex_etc2[g_cur_tex2d] = 1;
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+      return;
+    }
+    int aw, ah; bully_scaled_dim(w, h, &aw, &ah);   /* TEX_SCALE (ES3): storage alocado em aw x ah */
+    if (aw < w || ah < h) {
+      int sbpp = bpp_of(fmt, type);
+      unsigned char *rs = (sbpp > 0) ? malloc((size_t)aw * ah * sbpp) : NULL;
+      if (rs && bully_tex_resample(px, w, h, fmt, type, aw, ah, rs)) {
+        if (real_glTexSubImage2D) real_glTexSubImage2D(t, 0, 0, 0, aw, ah, fmt, type, rs);
+        bully_page_write_swap(g_cur_tex2d, g_tex_emul_ifmt[g_cur_tex2d], aw, ah, fmt, type, rs);
+        if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(t, g_cur_tex2d);
+        free(rs);
+        static int sl2 = 0; if (sl2 < 6) { fprintf(stderr, "[texscale-es3] %s -> %dx%d\n", bully_cur_tex_path[0]?bully_cur_tex_path:"?", aw, ah); sl2++; }
+        return;
+      }
+      free(rs);
+    }
+    if (real_glTexSubImage2D) real_glTexSubImage2D(t, l, xo, yo, w, h, fmt, type, px); /* bake: sobe RGBA na mutavel */
+    bully_page_write_swap(g_cur_tex2d, g_tex_emul_ifmt[g_cur_tex2d], w, h, fmt, type, px); /* registra p/ despejo */
+    if (bully_paging() && g_page_resident > bully_page_cap())  /* DESPEJA NA HORA (rajada do boot enche a GPU antes do bind) */
+      bully_page_evict(t, g_cur_tex2d);
+    return;
+  }
+  if (g_cur_tex2d < RESMAP && l > 0 && g_tex_emul[g_cur_tex2d]) return; /* emulada=so nivel 0 (LINEAR); pula mips */
+  if (real_glTexSubImage2D) real_glTexSubImage2D(t,l,xo,yo,w,h,fmt,type,px);
+}
+/* status do FBO (render-to-texture da roupa) — se INCOMPLETO no Mali, a textura
+ * do corpo fica vazia -> camisa preta+discard. */
+static void (*real_glBindFramebuffer)(unsigned, unsigned) = NULL;
+unsigned long g_fbo_binds = 0; /* contador p/ medir RTT */
+unsigned long g_frame_no = 0;  /* setado pelo loop de render (jni_shim) */
+int g_in_fbo = 0;              /* >0 = dentro de um render-to-texture */
+int g_rtt_draws = 0, g_rtt_clears = 0; /* trace: draws/clears no FBO atual */
+unsigned g_rtt_tex = 0;        /* textura anexada ao FBO atual */
+static int g_rtt_trace = 0;
+static void my_glBindFramebuffer(unsigned t, unsigned fb) {
+  if (!real_glBindFramebuffer) real_glBindFramebuffer = dlsym(RTLD_DEFAULT, "glBindFramebuffer");
+  if (g_rtt_trace == 0) g_rtt_trace = getenv("BULLY_RTT_TRACE") ? 1 : 0;
+  if (fb != 0) { g_in_fbo = 1; g_fbo_binds++; g_rtt_draws = 0; g_rtt_clears = 0; g_rtt_tex = 0; g_pending_clear = 0; }
+  if (real_glBindFramebuffer) real_glBindFramebuffer(t, fb);
+  /* ao SAIR do render-to-texture (roupa do Jimmy), o Mali Utgard não GRAVA o
+   * render na textura sem sync -> modelo amostra vazio (roupa pisca e some).
+   * glFinish ESPERA a GPU gravar antes de amostrar. Só DEPOIS do frame 300
+   * (loading pesado já passou -> não satura o device). */
+  if (fb == 0 && g_in_fbo) {
+    g_in_fbo = 0;
+    g_pending_clear = 0; /* pula clear-only (não apaga a roupa já composta) */
+    if (g_rtt_trace && g_frame_no > 60) {
+      static int tn = 0;
+      if (tn < 400) { fprintf(stderr, "[rtt] composite tex=%u draws=%d clears=%d (frame %lu)\n", g_rtt_tex, g_rtt_draws, g_rtt_clears, g_frame_no); tn++; }
+    }
+    if (g_frame_no > 300) {
+      /* glFinish trava a GPU Utgard ate gravar -> necessario p/ a ROUPA do Jimmy
+       * (RTT pesado, ~163 draws) ser amostrada certa. MAS em CADA RTT (a cena
+       * recompoe a cada movimento) satura o A53 e ESTOURA o audio (causa-raiz do
+       * estouro em movimento; loading e limpo pq nao tem RTT). HEURISTICA: glFinish
+       * so nos RTT PESADOS (>= MINDRAWS draws = a roupa); glFlush (nao-bloqueante)
+       * nos leves (shadow/post) -> libera CPU p/ a mixagem -> audio limpo ao mover,
+       * roupa preservada. BULLY_RTT_FINISH_MINDRAWS (default 0 = sempre glFinish). */
+      static int mind = -1;
+      if (mind < 0) { const char *e = getenv("BULLY_RTT_FINISH_MINDRAWS"); mind = e ? atoi(e) : 0; }
+      if (g_rtt_draws >= mind) {
+        static void (*fin)(void) = NULL;
+        if (!fin) fin = dlsym(RTLD_DEFAULT, "glFinish");
+        if (fin) fin();
+      } else {
+        static void (*fl)(void) = NULL;
+        if (!fl) fl = dlsym(RTLD_DEFAULT, "glFlush");
+        if (fl) fl();
+      }
+    } else {
+      static void (*fl)(void) = NULL;
+      if (!fl) fl = dlsym(RTLD_DEFAULT, "glFlush");
+      if (fl) fl();
+    }
+  }
+}
+static void (*real_glFramebufferTexture2D)(unsigned,unsigned,unsigned,unsigned,int) = NULL;
+static void my_glFramebufferTexture2D(unsigned t,unsigned att,unsigned tt,unsigned tex,int lvl) {
+  extern unsigned g_rtt_tex;
+  if (att == 0x8CE0) g_rtt_tex = tex;     /* trace: textura-cor anexada ao FBO atual */
+  if (!real_glFramebufferTexture2D) real_glFramebufferTexture2D = dlsym(RTLD_DEFAULT, "glFramebufferTexture2D");
+  if (real_glFramebufferTexture2D) real_glFramebufferTexture2D(t,att,tt,tex,lvl);
+  static int n = 0;
+  if (n < 14) {
+    unsigned (*chk)(unsigned) = dlsym(RTLD_DEFAULT, "glCheckFramebufferStatus");
+    unsigned s = chk ? chk(0x8D40) : 0;
+    unsigned tb = (tex < RESMAP) ? g_texbytes[tex] : 0;  /* bytes da textura -> infere a resolucao do RT */
+    fprintf(stderr, "[fbo] ATTACH att=0x%x tex=%u lvl=%d -> status=0x%x %s | RT~%u KB (%s)\n",
+            att, tex, lvl, s, s == 0x8CD5 ? "OK" : "INCOMPLETO", tb/1024,
+            tb > 2500000 ? "ALTA" : tb > 800000 ? "media" : "baixa");
+    n++;
+  }
+}
+static void (*real_glReadPixels)(int,int,int,int,unsigned,unsigned,void*) = NULL;
+static void my_glReadPixels(int x,int y,int w,int h,unsigned fmt,unsigned type,void*px) {
+  if (!real_glReadPixels) real_glReadPixels = dlsym(RTLD_DEFAULT, "glReadPixels");
+  static int n = 0;
+  if (n < 12) { fprintf(stderr, "[fbo] READPIXELS %dx%d fmt=0x%x type=0x%x\n", w, h, fmt, type); n++; }
+  if (real_glReadPixels) real_glReadPixels(x,y,w,h,fmt,type,px);
+}
+static unsigned (*real_glCheckFramebufferStatus)(unsigned) = NULL;
+static unsigned my_glCheckFramebufferStatus(unsigned t) {
+  if (!real_glCheckFramebufferStatus) real_glCheckFramebufferStatus = dlsym(RTLD_DEFAULT, "glCheckFramebufferStatus");
+  unsigned s = real_glCheckFramebufferStatus ? real_glCheckFramebufferStatus(t) : 0;
+  static int n = 0;
+  if (n < 20) { fprintf(stderr, "[fbo] CheckStatus=0x%x %s\n", s, s == 0x8CD5 ? "COMPLETE" : "INCOMPLETO!"); n++; }
+  return s;
+}
+static void (*real_glClearColor)(float, float, float, float) = NULL;
+static int g_ccdbg = 0;
+static void my_glClearColor(float r, float g, float b, float a) {
+  if (!real_glClearColor) real_glClearColor = dlsym(RTLD_DEFAULT, "glClearColor");
+  if (g_ccdbg < 8) { fprintf(stderr, "[gl] glClearColor %.2f %.2f %.2f %.2f\n", r, g, b, a); g_ccdbg++; }
+  if (real_glClearColor) real_glClearColor(r, g, b, a);
+}
+static int bpp_of(unsigned fmt, unsigned type) {
+  if (type == 0x1401) return fmt == 0x1908 ? 4 : fmt == 0x1907 ? 3 : fmt == 0x190A ? 2 : 1;
+  if (type == 0x8033 || type == 0x8034 || type == 0x8363) return 2; /* 4444/5551/565 */
+  return 0; /* desconhecido -> não reduz */
+}
+static int g_tex_half = -1;
+static void (*real_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = NULL;
+static void (*real_glGenerateMipmap)(unsigned) = NULL;
+
+/* ===== ESCALA GLOBAL configuravel (BULLY_TEX_SCALE) =====================================
+ * Reduz TODA textura de conteudo por um fator (ex: 0.9 = 10% menor), bilinear, MANTENDO o
+ * formato (565/4444/5551/8888/888) p/ economizar memoria de verdade. NAO poupa nada (opaca
+ * E alpha). So nao toca em render-target (px=NULL). Independe de streaming/ETC1. */
+static double g_tex_scale = -1.0;
+static double bully_tex_scale(void) {
+  if (g_tex_scale < 0) { const char *e = getenv("BULLY_TEX_SCALE"); g_tex_scale = e ? atof(e) : 1.0;
+    if (g_tex_scale <= 0.05 || g_tex_scale > 1.0) g_tex_scale = 1.0; }
+  return g_tex_scale;
+}
+/* dimensoes escaladas (multiplo de 4, >=4, nunca maior que o original) */
+static void bully_scaled_dim(int w, int h, int *nw, int *nh) {
+  double sc = bully_tex_scale();
+  int a = (int)(w * sc + 0.5) & ~3, b = (int)(h * sc + 0.5) & ~3;
+  if (a < 4) a = 4; if (b < 4) b = 4;
+  if (a > w) a = w; if (b > h) b = h;
+  *nw = a; *nh = b;
+}
+static void bully_rd_px(const unsigned char *s, size_t i, unsigned fmt, unsigned type, int o[4]) {
+  if (type == 0x1401) {                                  /* UNSIGNED_BYTE */
+    if (fmt == 0x1908) { o[0]=s[i*4]; o[1]=s[i*4+1]; o[2]=s[i*4+2]; o[3]=s[i*4+3]; }      /* RGBA8888 */
+    else { o[0]=s[i*3]; o[1]=s[i*3+1]; o[2]=s[i*3+2]; o[3]=255; }                          /* RGB888 */
+  } else { unsigned v = s[i*2] | (s[i*2+1] << 8);
+    if (type == 0x8363) { o[0]=((v>>11)&31)*255/31; o[1]=((v>>5)&63)*255/63; o[2]=(v&31)*255/31; o[3]=255; }       /* 565 */
+    else if (type == 0x8033) { o[0]=((v>>12)&15)*17; o[1]=((v>>8)&15)*17; o[2]=((v>>4)&15)*17; o[3]=(v&15)*17; }   /* 4444 */
+    else { o[0]=((v>>11)&31)*255/31; o[1]=((v>>6)&31)*255/31; o[2]=((v>>1)&31)*255/31; o[3]=(v&1)?255:0; }          /* 5551 */
+  }
+}
+static void bully_wr_px(unsigned char *d, size_t i, unsigned fmt, unsigned type, int p[4]) {
+  for (int k = 0; k < 4; k++) { if (p[k] < 0) p[k] = 0; if (p[k] > 255) p[k] = 255; }
+  if (type == 0x1401) {
+    if (fmt == 0x1908) { d[i*4]=p[0]; d[i*4+1]=p[1]; d[i*4+2]=p[2]; d[i*4+3]=p[3]; }
+    else { d[i*3]=p[0]; d[i*3+1]=p[1]; d[i*3+2]=p[2]; }
+  } else { unsigned v;
+    if (type == 0x8363) v = ((p[0]>>3)<<11) | ((p[1]>>2)<<5) | (p[2]>>3);
+    else if (type == 0x8033) v = ((p[0]>>4)<<12) | ((p[1]>>4)<<8) | ((p[2]>>4)<<4) | (p[3]>>4);
+    else v = ((p[0]>>3)<<11) | ((p[1]>>3)<<6) | ((p[2]>>3)<<1) | (p[3] >= 128 ? 1 : 0);
+    d[i*2] = v & 0xFF; d[i*2+1] = (v >> 8) & 0xFF;
+  }
+}
+/* bilinear src(w,h) -> dst(nw,nh) no MESMO formato. retorna 1 ok. */
+static int bully_tex_resample(const unsigned char *src, int w, int h, unsigned fmt, unsigned type, int nw, int nh, unsigned char *dst) {
+  if (w < 2 || h < 2 || nw < 1 || nh < 1) return 0;
+  for (int y = 0; y < nh; y++) {
+    double fy = (y + 0.5) * h / nh - 0.5; int y0 = (int)fy; if (y0 < 0) y0 = 0; int y1 = y0 + 1; if (y1 >= h) y1 = h - 1;
+    double wy = fy - (int)fy; if (wy < 0) wy = 0;
+    for (int x = 0; x < nw; x++) {
+      double fx = (x + 0.5) * w / nw - 0.5; int x0 = (int)fx; if (x0 < 0) x0 = 0; int x1 = x0 + 1; if (x1 >= w) x1 = w - 1;
+      double wx = fx - (int)fx; if (wx < 0) wx = 0;
+      int a[4], b[4], c[4], e[4], p[4];
+      bully_rd_px(src, (size_t)y0*w + x0, fmt, type, a);
+      bully_rd_px(src, (size_t)y0*w + x1, fmt, type, b);
+      bully_rd_px(src, (size_t)y1*w + x0, fmt, type, c);
+      bully_rd_px(src, (size_t)y1*w + x1, fmt, type, e);
+      for (int k = 0; k < 4; k++) {
+        double top = a[k]*(1-wx) + b[k]*wx, bot = c[k]*(1-wx) + e[k]*wx;
+        p[k] = (int)(top*(1-wy) + bot*wy + 0.5);
+      }
+      bully_wr_px(dst, (size_t)y*nw + x, fmt, type, p);
+    }
+  }
+  return 1;
+}
+static void my_glTexImage2D(unsigned tgt, int lvl, int ifmt, int w, int h, int bord, unsigned fmt, unsigned type, const void *px) {
+  if (!real_glTexImage2D) real_glTexImage2D = dlsym(RTLD_DEFAULT, "glTexImage2D");
+  int pf = (lvl == 0) ? g_path_fresh : 0; if (lvl == 0) g_path_fresh = 0; /* consome frescura: RT (px=NULL, path stale) -> pf=0 -> sem ETC2/ETC1 */
+  if (g_tex_half < 0) g_tex_half = (getenv("BULLY_TEX_HALF") && !bully_paging()) ? 1 : 0; /* FASE 2: paginando = NATIVO full-res (sem downscale) */
+  /* GROUND-TRUTH p/ a sidetable ETC1: casa nome do .tex <-> upload real. */
+  if (getenv("BULLY_TEXDIAG")) {
+    static int td = 0;
+    if (td < 400) { fprintf(stderr, "[texdiag] '%s' lvl=%d %dx%d ifmt=0x%x fmt=0x%x type=0x%x px=%d\n",
+        bully_cur_tex_path[0] ? bully_cur_tex_path : "(none)", lvl, w, h, ifmt, fmt, type, px ? 1 : 0); td++; }
+  }
+  /* DUMP os pixels DECODIFICADOS pelo engine (ground-truth p/ crackear o .tex offline).
+   * BULLY_DUMPTEX=substring -> grava /tmp/bullydump/<basename>_L<lvl>_<w>x<h>_t<type>.bin */
+  { const char *want = getenv("BULLY_DUMPTEX");
+    if (want && want[0] && px && bully_cur_tex_path[0] && strstr(bully_cur_tex_path, want)) {
+      int bb = bpp_of(fmt, type); if (bb <= 0) bb = 4;
+      const char *bn = strrchr(bully_cur_tex_path, '/'); bn = bn ? bn+1 : bully_cur_tex_path;
+      char fn[256]; snprintf(fn, sizeof(fn), "/tmp/bullydump/%s_L%d_%dx%d_t%x.bin", bn, lvl, w, h, type);
+      mkdir("/tmp/bullydump", 0777);
+      FILE *df = fopen(fn, "wb");
+      if (df) { fwrite(px, 1, (size_t)w*h*bb, df); fclose(df); fprintf(stderr, "[dumptex] %s (%d bytes)\n", fn, w*h*bb); }
+    }
+  }
+  /* leak-track: bytes do nível 0 da textura 2D corrente (RTT geralmente vem por aqui c/ px=NULL) */
+  if (lvl == 0 && g_cur_tex2d < RESMAP) {
+    int bb = bpp_of(fmt, type); if (bb <= 0) bb = 4;
+    long b = (long)(w > 0 ? w : 1) * (h > 0 ? h : 1) * bb;
+    g_texbytes_live += b - g_texbytes[g_cur_tex2d]; g_texbytes[g_cur_tex2d] = b;
+  }
+  /* ETC2 (GLES3): cobre o JOGO INTEIRO (opaco+alpha), 4x menos VRAM, full-res. ANTES do ETC1.
+   * Runtime: sobe ETC2 e PULA o resto. Bake: encoda+grava e segue normal (renderiza p/ force-render). */
+  int hw2 = w, hh2 = h;
+  /* BAKE: contorna o gate pf (path-fresh). O gate existe p/ o RUNTIME nao virar RT em ETC2
+   * (bug das sombras); mas no BAKE o bully_try_etc2 SO grava o cache e retorna 0 (nao sobe
+   * ETC2 -> nao corrompe RT), e ainda guarda RT por bully_cur_tex_path vazio. Sem isto a
+   * maioria dos uploads (pf=0) NAO encodava (yield ~1% no R36S). */
+  int bake_mode = bully_etc1_bake();
+  if (lvl == 0 && (pf || bake_mode) && bully_tex_halfall()) bully_halfdim(w, h, &hw2, &hh2);  /* 1GB: meia-res */
+  if ((lvl > 0 || pf || bake_mode) && bully_try_etc2(tgt, lvl, hw2, hh2, fmt, type, px)) {  /* lvl>0=skip-mip; lvl0=path fresco OU bake */
+    if (lvl == 0 && g_cur_tex2d < RESMAP) {
+      bully_page_register_etc2(g_cur_tex2d, bully_cur_tex_path, hw2, hh2, (unsigned)((size_t)(hw2/4)*(hh2/4)*16));
+      if (bully_paging() && g_page_resident > bully_page_cap()) bully_page_evict(tgt, g_cur_tex2d);
+    }
+    return;
+  }
+  /* ETC1 RUNTIME (sem cache): encoda 565 opaca -> ETC1 e sobe na hora. Fica RESIDENTE
+   * (pequena, nao pagina) -> 4x menos VRAM + corta a I/O do texswap (engasgo). ANTES do
+   * cache ETC1 e compativel com paginacao (so as 565 opacas; alpha seguem paginando). */
+  if ((lvl > 0 || pf) && bully_try_etc1_runtime(tgt, lvl, w, h, fmt, type, px)) return;
+  /* CACHE ETC1 offline: textura opaca 565 com ETC1 bakeado -> sobe ETC1 (4x menos VRAM)
+   * e PULA o resto (conversoes/halving/mips). No bake, grava e segue o caminho normal. */
+  if ((lvl > 0 || pf) && !bully_paging() && bully_try_etc1(tgt, lvl, w, h, fmt, type, px)) { /* FASE 2: paginando = NATIVO (sem ETC1 lossy); textura cai no swap kind=2 */
+    if (lvl == 0 && g_cur_tex2d < RESMAP)   /* registra a textura ETC1 como pageavel */
+      bully_page_register(g_cur_tex2d, bully_cur_tex_path, w, h, (unsigned)((size_t)(w/4)*(h/4)*8));
+    return;
+  }
+  /* BAKE-ALL: ja encodamos o ETC1 (565) acima; agora sobe um STUB 1x1 em vez da textura
+   * cheia -> a GL fica minuscula (sem estourar a MMU) e NAO precisamos deletar GL textures
+   * (era o que crashava por use-after-free no wrap do ring). O sprite desenha 1x1 (lixo,
+   * tanto faz: e so um passe de conversao). */
+  { static int g_bakeall = -1; if (g_bakeall < 0) g_bakeall = getenv("BULLY_BAKEALL") ? 1 : 0;
+    if (g_bakeall) {
+      if (lvl == 0) { static const unsigned char stub[4] = {0,0,0,255};
+        if (real_glTexImage2D) real_glTexImage2D(tgt, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, stub); }
+      return;
+    } }
+  if (ifmt == 0x8058) ifmt = 0x1908;       /* GL_RGBA8 -> GL_RGBA (GLES2 não aceita sized) */
+  else if (ifmt == 0x8051) ifmt = 0x1907;  /* GL_RGB8 -> GL_RGB */
+  /* pula mipmaps: como forço MIN_FILTER=LINEAR, os níveis >0 nunca são usados ->
+   * só desperdiçam memória de textura da GPU (o Mali Utgard trava ao estourar).
+   * TEX_SCALE: tb pula os mips DO ENGINE (tamanho original) -> a cadeia e
+   * REGENERADA (glGenerateMipmap) sobre o nivel 0 ja escalado, consistente. */
+  if ((g_tex_half || bully_tex_scale() < 0.999) && lvl > 0) return;
+  /* LUMINANCE vazia (px=NULL) = alvo de render-to-texture da roupa; Mali não
+   * renderiza p/ LUMINANCE -> aloca RGBA (renderável). Sem reduzir (é o alvo). */
+  if ((fmt == 0x1909 || fmt == 0x190A) && type == 0x1401 && !px && w > 0 && h > 0) {
+    if (real_glTexImage2D) real_glTexImage2D(tgt, lvl, 0x1908, w, h, bord, 0x1908, 0x1401, NULL);
+    return;
+  }
+  /* monta os dados finais; converte LUMINANCE->RGBA (Mali lê L como (L,L,L,L)) */
+  const unsigned char *data = px;
+  unsigned ufmt = fmt, utype = type;
+  unsigned char *conv = NULL;
+  if ((fmt == 0x1909 || fmt == 0x190A) && type == 0x1401 && px && w > 0 && h > 0) {
+    int la = (fmt == 0x190A);
+    const unsigned char *src = px;
+    conv = malloc((size_t)w * h * 4);
+    if (conv) {
+      for (int i = 0; i < w * h; i++) {
+        unsigned char L = src[la ? i * 2 : i];
+        conv[i*4] = L; conv[i*4+1] = L; conv[i*4+2] = L; conv[i*4+3] = la ? src[i*2+1] : 255;
+      }
+      data = conv; ufmt = 0x1908; utype = 0x1401; ifmt = 0x1908;
+    }
+  }
+  /* HALVING SELETIVO (v8.3 qualidade): reduz pela metade so as texturas >=1024
+   * (as MAIORES, grosso da memoria). As 512-range ficam em RES CHEIA (nitidas) ->
+   * mundo mais nitido. Custo ~+42MB (cabe na folga; despejo segura excursoes).
+   * Antes era >=512 (tudo reduzido). UV normalizado -> reduzir nao quebra coords.
+   * Override: BULLY_TEX_HALF_MIN (default 1024; 512 = comportamento antigo). */
+  /* TRILINEAR: detecta textura de RECORTE (alpha vazado: folhas/cercas/portoes/corrimaos).
+   * Recorte NAO pode ter mipmap (o mip mistura o RGB preto dos texels transparentes -> HALO
+   * PRETO FORTE). Detecta por SCAN do alpha (so recortes REAIS, nao todo RGBA -> nao quebra
+   * o resto). is_cutout -> LINEAR (sem mip), setado AQUI no upload E no glTexParameteri
+   * (robusto a ordem param/upload -- foi o que quebrou antes). [2026-06-20] */
+  int is_cutout = 0;
+  if (bully_trilinear() && lvl == 0 && data) {
+    if (utype == 0x8033 || utype == 0x8034) is_cutout = 1;          /* 4444/5551 = formato com alpha */
+    else if (ufmt == 0x1908 && utype == 0x1401 && w > 0 && h > 0) { /* RGBA8888: scaneia o alpha */
+      int n = w * h, step = n > 4096 ? n / 4096 : 1, tr = 0;
+      for (int i = 0; i < n; i += step) if (((const unsigned char *)data)[(size_t)i*4+3] < 250) { if (++tr > 8) break; }
+      is_cutout = (tr > 8);
+    }
+  }
+  if (lvl == 0 && g_cur_tex2d < RESMAP) g_tex_alpha[g_cur_tex2d] = is_cutout ? 1 : 0;
+  /* DIAG (BULLY_TEXLOG): lista texturas com alpha -> achar as folhas/papeis do chao e ver
+   * se sao detectadas como recorte. So qdo o env liga (sem custo no normal). */
+  if (getenv("BULLY_TEXLOG") && lvl == 0 && data && (ufmt == 0x1908 || utype == 0x8033 || utype == 0x8034)) {
+    static int lg = 0; if (lg < 300) { fprintf(stderr, "[texlog] %s %dx%d ufmt=%x type=%x cutout=%d\n",
+      bully_cur_tex_path[0]?bully_cur_tex_path:"?", w, h, ufmt, utype, is_cutout); lg++; }
+  }
+  /* ALPHA BLEED: nos recortes (folhas/trepadeiras) os texels transparentes tem RGB PRETO;
+   * o bilinear na borda mistura esse preto na parte visivel = CONTORNO PRETO FORTE. Preenche
+   * o RGB dos transparentes com o do vizinho opaco (2 passes = 2 aneis). So muda RGB, alpha
+   * intacto (alpha-test inalterado). RGBA8888 recorte. [2026-06-20] */
+  if (is_cutout && data && w >= 2 && h >= 2 && lvl == 0) {
+    int W = w, H = h;
+    if (ufmt == 0x1908 && utype == 0x1401) {            /* RGBA8888 (4 bytes/texel) */
+      unsigned char *d = malloc((size_t)W * H * 4);
+      if (d) { memcpy(d, data, (size_t)W * H * 4);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = ((size_t)y * W + x) * 4;  if (d[o+3] >= 128) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = ((size_t)ny[k]*W+nx[k])*4;
+            if (d[n+3] >= 128) { d[o]=d[n]; d[o+1]=d[n+1]; d[o+2]=d[n+2]; break; } } }
+        if (conv) free(conv); conv = d; data = d; }
+    } else if (utype == 0x8033) {                        /* RGBA4444: u16, alpha=val&0xF, rgb=val&0xFFF0 */
+      unsigned short *d = malloc((size_t)W * H * 2);
+      if (d) { memcpy(d, data, (size_t)W * H * 2);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = (size_t)y * W + x;  if ((d[o] & 0xF) >= 8) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = (size_t)ny[k]*W+nx[k];
+            if ((d[n] & 0xF) >= 8) { d[o] = (unsigned short)((d[n] & 0xFFF0) | (d[o] & 0xF)); break; } } }
+        if (conv) free(conv); conv = (unsigned char*)d; data = (unsigned char*)d; }
+    } else if (utype == 0x8034) {                        /* RGBA5551: u16, alpha=val&1, rgb=val&0xFFFE */
+      unsigned short *d = malloc((size_t)W * H * 2);
+      if (d) { memcpy(d, data, (size_t)W * H * 2);
+        for (int p = 0; p < 2; p++) for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+          size_t o = (size_t)y * W + x;  if (d[o] & 1) continue;
+          int nx[4] = {x-1,x+1,x,x}, ny[4] = {y,y,y-1,y+1};
+          for (int k = 0; k < 4; k++) { if (nx[k]<0||nx[k]>=W||ny[k]<0||ny[k]>=H) continue; size_t n = (size_t)ny[k]*W+nx[k];
+            if (d[n] & 1) { d[o] = (unsigned short)((d[n] & 0xFFFE) | (d[o] & 1)); break; } } }
+        if (conv) free(conv); conv = (unsigned char*)d; data = (unsigned char*)d; }
+    }
+  }
+  /* ESCALA GLOBAL (BULLY_TEX_SCALE<1): reduz TODA textura de conteudo (opaca+alpha) por um
+   * fator, bilinear, mantendo o formato. NAO poupa nada. (RT/px=NULL nao chega aqui c/ data.) */
+  if (lvl == 0 && data && bully_tex_scale() < 0.999) {
+    int nw, nh; bully_scaled_dim(w, h, &nw, &nh);
+    int sbpp = bpp_of(ufmt, utype);
+    if (sbpp > 0 && (nw < w || nh < h)) {
+      unsigned char *rs = malloc((size_t)nw * nh * sbpp);
+      if (rs && bully_tex_resample(data, w, h, ufmt, utype, nw, nh, rs)) {
+        if (conv) free(conv); conv = rs; data = rs; w = nw; h = nh;
+        static int sl = 0; if (sl < 6) { fprintf(stderr, "[texscale] %s -> %dx%d (x%.2f)\n", bully_cur_tex_path[0]?bully_cur_tex_path:"?", nw, nh, bully_tex_scale()); sl++; }
+      } else free(rs);
+    }
+  }
+  int bpp = bpp_of(ufmt, utype);
+  static int half_min = -1;
+  if (half_min < 0) { const char *e = getenv("BULLY_TEX_HALF_MIN"); half_min = e ? atoi(e) : 1024; if (half_min < 256) half_min = 256; }
+  if (g_tex_half && data && bpp > 0 && (w >= half_min || h >= half_min)) {
+    /* tally p/ decidir halving seletivo (1x por id) */
+    if (g_cur_tex2d < RESMAP && !g_half_seen[g_cur_tex2d]) {
+      g_half_seen[g_cur_tex2d] = 1;
+      long full = (long)w * h * bpp; int dim = (w > h) ? w : h;
+      if (dim < 1024) { g_half512_cnt++; g_half512_full += full; }
+      else { g_half1024_cnt++; g_half1024_full += full; }
+    }
+    int nw = w / 2, nh = h / 2;
+    unsigned char *sm = (nw > 0 && nh > 0) ? malloc((size_t)nw * nh * bpp) : NULL;
+    if (sm) {
+      /* nearest (1 pixel a cada 2). NOTA: box-filter 2x2 foi testado e BUGOU a tela
+       * (amacia o alpha das texturas de recorte/mascara -> bordas erradas). Mantido
+       * nearest, que preserva valores exatos (alpha-test/cutout intactos). */
+      for (int y = 0; y < nh; y++)
+        for (int x = 0; x < nw; x++)
+          memcpy(sm + ((size_t)y * nw + x) * bpp, data + ((size_t)(y*2) * w + x*2) * bpp, bpp);
+      if (real_glTexImage2D) real_glTexImage2D(tgt, lvl, ifmt, nw, nh, bord, ufmt, utype, sm);
+      if (lvl == 0 && g_cur_tex2d < RESMAP)   /* PAGINACAO: swap da versao halved */
+        bully_page_write_swap(g_cur_tex2d, ifmt, nw, nh, ufmt, utype, sm);
+      free(sm); free(conv);
+      /* TRILINEAR: a textura halved tb precisa de mipmap, senao trilinear amostra niveis
+       * que nao existem -> PRETO (era por isso que os personagens (atlas >=768, halved)
+       * ficavam pretos e o mundo (tiles <768, nao-halved) ficava nitido). [teste 2026-06-20] */
+      if (lvl == 0 && bully_trilinear()) {
+        if (is_cutout) {  /* recorte: LINEAR (sem mip = sem halo preto) */
+          if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+          if (real_glTexParameteri) real_glTexParameteri(tgt, 0x2801, 0x2601);
+        } else {          /* opaca: trilinear+mip */
+          if (!real_glGenerateMipmap) real_glGenerateMipmap = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+          if (real_glGenerateMipmap) real_glGenerateMipmap(tgt);
+        }
+      }
+      return;
+    }
+  }
+  if (real_glTexImage2D) real_glTexImage2D(tgt, lvl, ifmt, w, h, bord, ufmt, utype, data);
+  if (lvl == 0 && g_cur_tex2d < RESMAP)   /* PAGINACAO: swap da textura cheia (alpha/RGBA; RT px=NULL e pulado) */
+    bully_page_write_swap(g_cur_tex2d, ifmt, w, h, ufmt, utype, data);
+  /* kmsdrm (G310): gera a cadeia de mipmap completa p/ o trilinear funcionar (sem
+   * isso, MIN_FILTER mipmap -> textura preta). So no nivel 0 com dados reais. */
+  if (lvl == 0 && data && ((bully_is_kmsdrm() && !bully_etc1_force()) || bully_trilinear())) {
+    if (bully_trilinear() && is_cutout && !bully_cutout_mip()) {  /* recorte: LINEAR (sem mip = sem halo preto) */
+      if (!real_glTexParameteri) real_glTexParameteri = dlsym(RTLD_DEFAULT, "glTexParameteri");
+      if (real_glTexParameteri) real_glTexParameteri(tgt, 0x2801, 0x2601);
+    } else {                                /* opaca, ou recorte c/ CUTOUT_MIP, ou kmsdrm: trilinear+mip */
+      if (!real_glGenerateMipmap) real_glGenerateMipmap = dlsym(RTLD_DEFAULT, "glGenerateMipmap");
+      if (real_glGenerateMipmap) real_glGenerateMipmap(tgt);
+    }
+  }
+  free(conv);
+}
+
+/* trace: conta os desenhos dentro de cada render-to-texture (roupa) */
+static void (*real_glDrawElements)(unsigned, int, unsigned, const void *) = NULL;
+static void my_glDrawElements(unsigned mode, int count, unsigned type, const void *idx) {
+  extern int g_in_fbo, g_rtt_draws; extern void bully_flush_pending_clear(void);
+  if (g_in_fbo) { bully_flush_pending_clear(); g_rtt_draws++; }
+  if (!real_glDrawElements) real_glDrawElements = dlsym(RTLD_DEFAULT, "glDrawElements");
+  if (real_glDrawElements) real_glDrawElements(mode, count, type, idx);
+}
+static void (*real_glDrawArrays)(unsigned, int, int) = NULL;
+static void my_glDrawArrays(unsigned mode, int first, int count) {
+  extern int g_in_fbo, g_rtt_draws; extern void bully_flush_pending_clear(void);
+  if (g_in_fbo) { bully_flush_pending_clear(); g_rtt_draws++; }
+  if (!real_glDrawArrays) real_glDrawArrays = dlsym(RTLD_DEFAULT, "glDrawArrays");
+  if (real_glDrawArrays) real_glDrawArrays(mode, first, count);
+}
+
+void bully_imports_init(void) { ctype_init(); }
+
+/* tabela de overrides (resolvida ANTES do fallback dlsym do so_resolve) */
+
+/* KMSDRM: o eglSwapBuffers cru nao faz page-flip (so SDL_GL_SwapWindow faz).
+ * fbdev (mali): mantem o raw (Amlogic-old intacto). */
+extern void bully_swap_buffers(void);
+extern int  bully_is_kmsdrm(void);
+static unsigned (*real_eglSwapBuffers)(void*, void*) = NULL;
+static unsigned my_eglSwapBuffers(void *dpy, void *surf) {
+  /* durante o bake: pinta a tela "Convertendo texturas (PT/EN/RU) + barra/contador"
+   * por cima, ANTES do swap -> some o jogo cru/preto, fica um loading limpo. */
+  { extern int bully_bake_active, bully_bake_cur, bully_bake_total; extern void bully_bake_ui(int, int);
+    if (bully_bake_active) { static int n=0; if(n<3){fprintf(stderr,"[swap] via my_eglSwapBuffers (bake)\n");n++;} bully_bake_ui(bully_bake_cur, bully_bake_total); } }
+  if (bully_is_kmsdrm()) { bully_swap_buffers(); return 1; }
+  { extern void bully_maybe_screenshot(void); bully_maybe_screenshot(); } /* fbdev: screenshot sob demanda (gameplay presenta por aqui) */
+  if (!real_eglSwapBuffers) real_eglSwapBuffers = dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+  return real_eglSwapBuffers ? real_eglSwapBuffers(dpy, surf) : 1;
+}
+
+/* VAO / MRT: o libGame importa as versoes CORE (glGenVertexArrays etc + glDrawBuffers)
+ * que existem no Mali-G31 (GLES3.2) mas NAO como simbolo no Mali-450 Utgard (GLES2)
+ * -> ficavam *** UNRESOLVED ***. Resolvemos via eglGetProcAddress tentando o CORE e
+ * depois a EXTENSAO (OES p/ VAO, EXT p/ draw_buffers); no-op seguro se o device nao
+ * tiver nenhuma (hoje o jogo nao chama esse caminho no GLES2 -> nunca executa, mas o
+ * no-op evita slot invalido caso chame). No X5M/GLES3 pega a core real (VAO de verdade). */
+static void *gl_proc2(const char *core, const char *ext) {
+  void *(*gpa)(const char *) = dlsym(RTLD_DEFAULT, "eglGetProcAddress");
+  void *p = gpa ? gpa(core) : NULL;
+  if (!p && gpa && ext) p = gpa(ext);
+  if (!p) p = dlsym(RTLD_DEFAULT, core);
+  if (!p && ext) p = dlsym(RTLD_DEFAULT, ext);
+  return p;
+}
+static void (*r_glGenVAO)(int, unsigned *) = NULL;
+static void my_glGenVertexArrays(int n, unsigned *a) {
+  if (!r_glGenVAO) r_glGenVAO = gl_proc2("glGenVertexArrays", "glGenVertexArraysOES");
+  if (r_glGenVAO) r_glGenVAO(n, a);
+  else if (a) for (int i = 0; i < n; i++) a[i] = 0;
+}
+static void (*r_glBindVAO)(unsigned) = NULL;
+static void my_glBindVertexArray(unsigned a) {
+  if (!r_glBindVAO) r_glBindVAO = gl_proc2("glBindVertexArray", "glBindVertexArrayOES");
+  if (r_glBindVAO) r_glBindVAO(a);
+}
+static void (*r_glDelVAO)(int, const unsigned *) = NULL;
+static void my_glDeleteVertexArrays(int n, const unsigned *a) {
+  if (!r_glDelVAO) r_glDelVAO = gl_proc2("glDeleteVertexArrays", "glDeleteVertexArraysOES");
+  if (r_glDelVAO) r_glDelVAO(n, a);
+}
+static void (*r_glDrawBuffers)(int, const unsigned *) = NULL;
+static void my_glDrawBuffers(int n, const unsigned *b) {
+  if (!r_glDrawBuffers) r_glDrawBuffers = gl_proc2("glDrawBuffers", "glDrawBuffersEXT");
+  if (r_glDrawBuffers) r_glDrawBuffers(n, b);
+}
+
+/* __stack_chk_fail neutralizado (insurance): com o TLS pad do main.c a canary
+ * bionic ja fica estavel e isto nunca dispara; mas se um path nao-coberto ler
+ * tpidr+0x28 instavel, melhor logar do que abortar o jogo. */
+static void b_stack_chk_fail(void) {
+  static int n = 0;
+  if (n++ < 3) fprintf(stderr, "[stack_chk_fail] FALSO-POSITIVO TLS ignorado\n");
+}
+
+DynLibFunction bully_stub_table[] = {
+  {"__stack_chk_fail", (uintptr_t)b_stack_chk_fail},
+  {"eglSwapBuffers", (uintptr_t)my_eglSwapBuffers},
+  {"__errno", (uintptr_t)bionic___errno}, {"__assert2", (uintptr_t)b_assert2},
+  {"__strlen_chk", (uintptr_t)b_strlen_chk}, {"__strrchr_chk", (uintptr_t)b_strrchr_chk},
+  {"__strchr_chk", (uintptr_t)b_strchr_chk}, {"__strncpy_chk2", (uintptr_t)b_strncpy_chk2},
+  {"__android_log_print", (uintptr_t)b_android_log},
+  {"android_set_abort_message", (uintptr_t)b_set_abort_message},
+  {"__system_property_get", (uintptr_t)b_system_property_get},
+  {"__sF", (uintptr_t)bionic_sF},
+  {"fprintf", (uintptr_t)w_fprintf}, {"vfprintf", (uintptr_t)w_vfprintf}, {"fwrite", (uintptr_t)w_fwrite},
+  {"fputs", (uintptr_t)w_fputs}, {"fputc", (uintptr_t)w_fputc}, {"fflush", (uintptr_t)w_fflush},
+  {"_ctype_", (uintptr_t)(ctype_tab + 1)},
+  {"ANativeWindow_fromSurface", (uintptr_t)aw_fromSurface},
+  {"ANativeWindow_setBuffersGeometry", (uintptr_t)aw_setBuffersGeometry},
+  {"ANativeWindow_getWidth", (uintptr_t)aw_getWidth}, {"ANativeWindow_getHeight", (uintptr_t)aw_getHeight},
+  {"ANativeWindow_release", (uintptr_t)aw_release},
+  {"AAssetManager_fromJava", (uintptr_t)am_fromJava}, {"AAssetManager_open", (uintptr_t)aa_open},
+  {"AAsset_read", (uintptr_t)aa_read}, {"AAsset_seek64", (uintptr_t)aa_seek64},
+  {"AAsset_getLength64", (uintptr_t)aa_getLength64}, {"AAsset_getRemainingLength64", (uintptr_t)aa_getRemainingLength64},
+  /* GTA SA usa os nomes NÃO-64 (off_t=8B no aarch64 -> mesma impl). Sem isto,
+   * AAsset_getLength=0 -> CText::Load acha AMERICAN.GXT vazio e trava. */
+  {"AAsset_seek", (uintptr_t)aa_seek64},
+  {"AAsset_getLength", (uintptr_t)aa_getLength64},
+  {"AAsset_getRemainingLength", (uintptr_t)aa_getRemainingLength64},
+  {"AAsset_close", (uintptr_t)aa_close},
+  {"glGetString", (uintptr_t)w_glGetString},
+  {"glShaderSource", (uintptr_t)my_glShaderSource},
+  {"glTexParameteri", (uintptr_t)my_glTexParameteri},
+  {"glTexImage2D", (uintptr_t)my_glTexImage2D},
+  {"glClear", (uintptr_t)my_glClear},
+  {"glClearColor", (uintptr_t)my_glClearColor},
+  {"glCompileShader", (uintptr_t)my_glCompileShader},
+  {"glLinkProgram", (uintptr_t)my_glLinkProgram},
+  {"glCompressedTexImage2D", (uintptr_t)my_glCompressedTexImage2D},
+  {"glEnable", (uintptr_t)my_glEnable},
+  {"glTexStorage2D", (uintptr_t)my_glTexStorage2D},
+  {"glTexSubImage2D", (uintptr_t)my_glTexSubImage2D},
+  /* leak-track (medicao do vazamento de recursos GL) */
+  {"glBindTexture", (uintptr_t)my_glBindTexture},
+  {"glGenTextures", (uintptr_t)my_glGenTextures},
+  {"glDeleteTextures", (uintptr_t)my_glDeleteTextures},
+  {"glGenFramebuffers", (uintptr_t)my_glGenFramebuffers},
+  {"glDeleteFramebuffers", (uintptr_t)my_glDeleteFramebuffers},
+  {"glGenRenderbuffers", (uintptr_t)my_glGenRenderbuffers},
+  {"glDeleteRenderbuffers", (uintptr_t)my_glDeleteRenderbuffers},
+  {"glBindRenderbuffer", (uintptr_t)my_glBindRenderbuffer},
+  {"glRenderbufferStorage", (uintptr_t)my_glRenderbufferStorage},
+  {"glCheckFramebufferStatus", (uintptr_t)my_glCheckFramebufferStatus},
+  {"glBindFramebuffer", (uintptr_t)my_glBindFramebuffer},
+  {"glReadPixels", (uintptr_t)my_glReadPixels},
+  {"glFramebufferTexture2D", (uintptr_t)my_glFramebufferTexture2D},
+  {"glDrawElements", (uintptr_t)my_glDrawElements},
+  {"glDrawArrays", (uintptr_t)my_glDrawArrays},
+  /* VAO/MRT: core no Mali-G31(GLES3), via OES/EXT no Utgard, no-op se nao tiver */
+  {"glGenVertexArrays", (uintptr_t)my_glGenVertexArrays},
+  {"glBindVertexArray", (uintptr_t)my_glBindVertexArray},
+  {"glDeleteVertexArrays", (uintptr_t)my_glDeleteVertexArrays},
+  {"glDrawBuffers", (uintptr_t)my_glDrawBuffers},
+  {"fopen", (uintptr_t)w_fopen},
+  /* stat: ausentes como simbolo em glibc<2.33 -> via syscall (texto/fontes) */
+  {"stat", (uintptr_t)my_stat}, {"lstat", (uintptr_t)my_lstat},
+  {"fstat", (uintptr_t)my_fstat}, {"fstatat", (uintptr_t)my_fstatat},
+  {"stat64", (uintptr_t)my_stat}, {"lstat64", (uintptr_t)my_lstat},
+  {"fstat64", (uintptr_t)my_fstat}, {"fstatat64", (uintptr_t)my_fstatat},
+  {"_ZTH7gString", (uintptr_t)tl_noop}, {"_ZTH8gString2", (uintptr_t)tl_noop},
+  {"_ZTHN10ALCcontext13sLocalContextE", (uintptr_t)tl_noop},
+  {"_Z24NVThreadGetCurrentJNIEnvv", (uintptr_t)NVThreadGetCurrentJNIEnv},
 };
-size_t dynlib_numfunctions = sizeof(dynlib_functions)/sizeof(dynlib_functions[0]);
-FILE *stderr_fake;
+const int bully_stub_count = sizeof(bully_stub_table) / sizeof(bully_stub_table[0]);

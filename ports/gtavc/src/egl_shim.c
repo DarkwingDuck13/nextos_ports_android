@@ -1,365 +1,192 @@
-#ifndef PORT_WINDOW_TITLE
-#define PORT_WINDOW_TITLE "nextos_port"
-#endif
-/*
- * egl_shim.c -- EGL wrapper backed by SDL2 (OpenGL ES 2.0)
- *
- * Each fake EGL context gets a real SDL GL context. We keep a bootstrap
- * context around as the share root so all contexts can share resources.
- */
-
+/* egl_shim.c (DEVICE) -- contexto GL via SDL2 (driver "mali" do device faz o
+ * EGL fbdev CERTO -> render visível na TV; o raw eglCreateWindowSurface(fbdev_
+ * window) dava BAD_ALLOC 0x3003). Expomos os objetos EGL que o SDL2-mali criou
+ * (eglGetCurrent*) p/ o libGame (que importa egl* direto) usar o MESMO contexto.
+ * API bully_* idêntica -> jni_shim não muda. */
+#define _GNU_SOURCE
 #include <SDL2/SDL.h>
+#include <EGL/egl.h>
 #include <GLES2/gl2.h>
-#include <pthread.h>
+#include <dlfcn.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
 #include <string.h>
 
-#include "egl_shim.h"
-#include "util.h"
+static SDL_Window *g_win = NULL;
+static SDL_GLContext g_ctx = NULL;
+static int g_w = 1280, g_h = 720;
+static int g_is_kmsdrm = 0;
+int bully_is_kmsdrm(void) { return g_is_kmsdrm; }
+static int g_es3 = 0;                       /* contexto ES3 obtido (GLES3 device) -> habilita ETC2 */
+int bully_is_es3(void) { return g_es3; }
 
-#define SCREEN_WIDTH 1280
-#define SCREEN_HEIGHT 720
+int bully_screen_w(void) { return g_w; }
+int bully_screen_h(void) { return g_h; }
 
-typedef struct {
-  SDL_GLContext sdl_context;
-  EGLBoolean is_pbuffer;
-  int id;
-} _egl_context;
-
-static SDL_Window *egl_window = NULL;
-static SDL_GLContext egl_share_root = NULL;
-static pthread_mutex_t egl_context_create_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int frame_count = 0;
-static int next_context_id = 1;
-
-static _Thread_local _egl_context *current_context = NULL;
-static _Thread_local _egl_context *last_context = NULL;
-static _Thread_local int has_real_gl = 0;
-
-SDL_Window *egl_shim_get_window(void) { return egl_window; }
-
-void egl_shim_create_window(void) {
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-  SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-
-  egl_window = SDL_CreateWindow(
-      PORT_WINDOW_TITLE, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      SCREEN_WIDTH, SCREEN_HEIGHT,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
-  if (!egl_window) {
-    debugPrintf("egl_shim: SDL_CreateWindow FAILED: %s\n", SDL_GetError());
-    return;
-  }
-  debugPrintf("egl_shim: Window created %dx%d\n", SCREEN_WIDTH, SCREEN_HEIGHT);
-
-  egl_share_root = SDL_GL_CreateContext(egl_window);
-  if (!egl_share_root) {
-    debugPrintf("egl_shim: SDL_GL_CreateContext FAILED: %s\n", SDL_GetError());
-    return;
-  }
-  debugPrintf("egl_shim: GL share-root context created\n");
-
-  SDL_GL_MakeCurrent(egl_window, NULL);
-  debugPrintf("egl_shim: Context released, ready for game\n");
-}
-
-/* --- Mutex hooks (called from imports.c pthread wrappers) --- */
-
-void egl_shim_on_mutex_post_lock(void *mutex_id) {
-  (void)mutex_id;
-}
-
-void egl_shim_on_mutex_pre_unlock(void *mutex_id) {
-  (void)mutex_id;
-}
-
-int egl_shim_ensure_current(void) {
-  if (has_real_gl)
-    return 1;
-  _egl_context *ctx = current_context ? current_context : last_context;
-  if (!egl_window || !ctx || !ctx->sdl_context)
-    return 0;
-
-  int ret = SDL_GL_MakeCurrent(egl_window, ctx->sdl_context);
-  if (ret == 0) {
-    has_real_gl = 1;
-    current_context = ctx;
-    debugPrintf("egl_shim: restored current context [tid=%lx] [ctx_id=%d]\n",
-                (unsigned long)pthread_self(), ctx->id);
-    return 1;
-  }
-
-  debugPrintf("egl_shim: failed to restore current context [tid=%lx] [ctx_id=%d]: %s\n",
-              (unsigned long)pthread_self(), ctx->id, SDL_GetError());
-  return 0;
-}
-
-/* --- EGL API --- */
-
-EGLDisplay egl_shim_GetDisplay(EGLNativeDisplayType display_id) {
-  (void)display_id;
-  debugPrintf("egl_shim: eglGetDisplay()\n");
-  return (EGLDisplay)strdup("display");
-}
-
-EGLBoolean egl_shim_Initialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
-  (void)dpy;
-  if (major) *major = 1;
-  if (minor) *minor = 4;
-  debugPrintf("egl_shim: eglInitialize() -> 1.4\n");
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_Terminate(EGLDisplay dpy) {
-  (void)dpy;
-  debugPrintf("egl_shim: eglTerminate()\n");
-  if (egl_share_root) {
-    SDL_GL_DeleteContext(egl_share_root);
-    egl_share_root = NULL;
-  }
-  if (egl_window) {
-    SDL_DestroyWindow(egl_window);
-    egl_window = NULL;
-  }
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_ChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
-                                  EGLConfig *configs, EGLint config_size,
-                                  EGLint *num_config) {
-  (void)dpy; (void)attrib_list;
-  debugPrintf("egl_shim: eglChooseConfig()\n");
-  if (configs && config_size > 0)
-    configs[0] = (EGLConfig)strdup("config");
-  if (num_config)
-    *num_config = 1;
-  return EGL_TRUE;
-}
-
-EGLSurface egl_shim_CreateWindowSurface(EGLDisplay dpy, EGLConfig config,
-                                         EGLNativeWindowType win,
-                                         const EGLint *attrib_list) {
-  (void)dpy; (void)config; (void)win; (void)attrib_list;
-  EGLSurface s = (EGLSurface)strdup("window");
-  debugPrintf("egl_shim: eglCreateWindowSurface() -> %p\n", s);
-  return s;
-}
-
-EGLSurface egl_shim_CreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
-                                          const EGLint *attrib_list) {
-  (void)dpy; (void)config; (void)attrib_list;
-  EGLSurface s = (EGLSurface)strdup("pbuffer");
-  debugPrintf("egl_shim: eglCreatePbufferSurface() -> %p\n", s);
-  return s;
-}
-
-EGLContext egl_shim_CreateContext(EGLDisplay dpy, EGLConfig config,
-                                  EGLContext share_context,
-                                  const EGLint *attrib_list) {
-  (void)dpy; (void)config; (void)share_context; (void)attrib_list;
-  _egl_context *c = (_egl_context *)calloc(1, sizeof(_egl_context));
-  if (!c)
-    return EGL_NO_CONTEXT;
-
-  pthread_mutex_lock(&egl_context_create_mutex);
-  SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
-  if (egl_share_root)
-    SDL_GL_MakeCurrent(egl_window, egl_share_root);
-  c->sdl_context = SDL_GL_CreateContext(egl_window);
-  SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
-  SDL_GL_MakeCurrent(egl_window, NULL);
-  pthread_mutex_unlock(&egl_context_create_mutex);
-
-  if (!c->sdl_context) {
-    debugPrintf("egl_shim: eglCreateContext(share=%p) FAILED: %s\n",
-                share_context, SDL_GetError());
-    free(c);
-    return EGL_NO_CONTEXT;
-  }
-
-  c->id = next_context_id++;
-  debugPrintf("egl_shim: eglCreateContext(share=%p) -> %p [ctx_id=%d]\n",
-              share_context, c, c->id);
-  return (EGLContext)c;
-}
-
-EGLBoolean egl_shim_MakeCurrent(EGLDisplay dpy, EGLSurface draw,
-                                 EGLSurface read, EGLContext ctx) {
-  (void)dpy; (void)read;
-
-  _egl_context *context = (_egl_context *)ctx;
-  static _Thread_local int mc_count = 0;
-  int mc = ++mc_count;
-
-  /* === UNBIND === */
-  if (context == NULL || draw == NULL) {
-    current_context = NULL;
-    if (egl_window) {
-      SDL_GL_MakeCurrent(egl_window, NULL);
-      /* debugPrintf("egl_shim: GL released [tid=%lx] reason=eglMakeCurrent(NULL)\n",
-                    (unsigned long)pthread_self()); */
-    }
-    has_real_gl = 0;
-    return EGL_TRUE;
-  }
-
-  int is_window = (((char *)draw)[0] == 'w');
-  context->is_pbuffer = is_window ? EGL_FALSE : EGL_TRUE;
-  current_context = context;
-  last_context = context;
-
-  if (!egl_window || !context->sdl_context)
-    return EGL_TRUE;
-
-  int ret = SDL_GL_MakeCurrent(egl_window, context->sdl_context);
-  if (ret == 0) {
-    has_real_gl = 1;
-    static _Thread_local int acq_log = 0;
-    if (acq_log < 20 || mc % 500 == 0) {
-      //debugPrintf("egl_shim: MakeCurrent #%d %s [tid=%lx] ACQUIRED [ctx_id=%d]\n",
-      //            mc, is_window ? "WINDOW" : "PBUFFER",
-      //            (unsigned long)pthread_self(), context->id);
-      acq_log++;
-    }
-  } else {
-    has_real_gl = 0;
-    debugPrintf("egl_shim: MakeCurrent #%d %s [tid=%lx] SDL FAILED [ctx_id=%d]: %s\n",
-                mc, is_window ? "WINDOW" : "PBUFFER",
-                (unsigned long)pthread_self(), context->id, SDL_GetError());
-  }
-
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_SwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-  (void)dpy; (void)surface;
-  if (!egl_window) return EGL_TRUE;
-
-  if (has_real_gl && current_context && !current_context->is_pbuffer) {
-    SDL_GL_SwapWindow(egl_window);
-    int fc = ++frame_count;
-    if (fc <= 10 || fc % 60 == 0) {
-      //debugPrintf("egl_shim: SwapBuffers #%d [tid=%lx]\n",
-      //            fc, (unsigned long)pthread_self());
-    }
-  } else {
-    static int noswap_log = 0;
-    if (noswap_log < 3) {
-      debugPrintf("egl_shim: SwapBuffers SKIPPED (no real GL) [tid=%lx]\n",
-                  (unsigned long)pthread_self());
-      noswap_log++;
-    }
-  }
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_DestroySurface(EGLDisplay dpy, EGLSurface surface) {
-  (void)dpy;
-  free(surface);
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_DestroyContext(EGLDisplay dpy, EGLContext ctx) {
-  (void)dpy;
-  _egl_context *context = (_egl_context *)ctx;
-  if (context) {
-    if (context->sdl_context)
-      SDL_GL_DeleteContext(context->sdl_context);
-    free(context);
-  }
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_QuerySurface(EGLDisplay dpy, EGLSurface surface,
-                                  EGLint attribute, EGLint *value) {
-  (void)dpy; (void)surface;
-  if (attribute == 0x3057 && value) *value = SCREEN_WIDTH;
-  else if (attribute == 0x3056 && value) *value = SCREEN_HEIGHT;
-  return EGL_TRUE;
-}
-
-EGLBoolean egl_shim_GetConfigAttrib(EGLDisplay dpy, EGLConfig config,
-                                     EGLint attribute, EGLint *value) {
-  (void)dpy; (void)config;
-  if (!value) return EGL_TRUE;
-  switch (attribute) {
-  case 0x3020: *value = 8; break;
-  case 0x3021: *value = 8; break;
-  case 0x3022: *value = 8; break;
-  case 0x3023: *value = 0; break;
-  case 0x3025: *value = 24; break;
-  case 0x3026: *value = 8; break;
-  default: *value = 0; break;
-  }
-  return EGL_TRUE;
-}
-
-EGLint egl_shim_GetError(void) { return EGL_SUCCESS; }
-
-void *egl_shim_GetProcAddress(const char *procname) {
-  /* spoof glGetString -> "Mali-400 MP" (whitelist de device do GTA VC) */
-  extern const unsigned char *my_glGetString(unsigned int);
-  if (procname && strcmp(procname, "glGetString") == 0)
-    return (void *)my_glGetString;
-  void *ptr = SDL_GL_GetProcAddress(procname);
-  if (ptr) return ptr;
-
-  size_t len = strlen(procname);
-  if (len > 3 && strcmp(procname + len - 3, "OES") == 0) {
-    char stripped[256];
-    if (len - 3 < sizeof(stripped)) {
-      memcpy(stripped, procname, len - 3);
-      stripped[len - 3] = '\0';
-      ptr = SDL_GL_GetProcAddress(stripped);
-      if (ptr) return ptr;
+int bully_init_gl(void) {
+  if (g_ctx) return 1;
+  if (SDL_WasInit(SDL_INIT_VIDEO) == 0 && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+    fprintf(stderr, "[sdl] InitVideo: %s\n", SDL_GetError());
+    /* o SDL2 do device pode nao ter o backend pedido (ex: Trimui sem kmsdrm)
+     * -> solta o SDL_VIDEODRIVER e deixa o SDL escolher o que existe */
+    if (getenv("SDL_VIDEODRIVER")) {
+      unsetenv("SDL_VIDEODRIVER");
+      if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+        fprintf(stderr, "[sdl] InitVideo (auto): %s\n", SDL_GetError());
+      else
+        fprintf(stderr, "[sdl] InitVideo OK driver auto='%s'\n",
+                SDL_GetCurrentVideoDriver());
     }
   }
 
-  debugPrintf("egl_shim: eglGetProcAddress(%s) -> NOT FOUND\n", procname);
-  return NULL;
-}
-
-EGLBoolean egl_shim_BindAPI(unsigned int api) {
-  (void)api;
-  return EGL_TRUE;
-}
-
-const char *egl_shim_QueryString(EGLDisplay dpy, EGLint name) {
-  (void)dpy;
-  switch (name) {
-  case 0x3053: return "NextOS";      /* EGL_VENDOR */
-  case 0x3054: return "1.4 NextOS";  /* EGL_VERSION */
-  case 0x3055: return "";            /* EGL_EXTENSIONS */
-  case 0x308D: return "OpenGL_ES";   /* EGL_CLIENT_APIS */
-  default: return "";
+  SDL_DisplayMode dm;
+  if (SDL_GetDesktopDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+    g_w = dm.w; g_h = dm.h;
   }
+
+  /* Backend-agnostico: tenta alpha=8 (mali fbdev) e, se falhar, alpha=0
+   * (KMSDRM/wayland: scanout primario e XRGB8888 sem alpha -> GBM nao casa ARGB).
+   * BULLY_MSAA=N (so setado no launcher p/ KMSDRM): pede multisample Nx; se o
+   * driver recusar, re-tenta sem (Mali-450/fbdev nunca pede). */
+  int msaa = 0;
+  { const char *e = getenv("BULLY_MSAA"); if (e) msaa = atoi(e); }
+  static const int alpha_try[] = {8, 0};
+  int msaa_try[2] = {0, 0}, nmsaa = 1;
+  if (msaa > 0) { msaa_try[0] = msaa; msaa_try[1] = 0; nmsaa = 2; }
+  int got_msaa = 0;
+  int want_major = getenv("BULLY_GLES3") ? 3 : 2;   /* GLES3 device (R36S/G31): pede ES3 -> habilita ETC2 */
+  for (int j = 0; j < nmsaa && !g_win; j++)
+   for (int i = 0; i < 2 && !g_win; i++) {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, want_major);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, alpha_try[i]);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, msaa_try[j] ? 1 : 0);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa_try[j]);
+    g_win = SDL_CreateWindow("Bully", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                             g_w, g_h, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+    if (!g_win)
+      fprintf(stderr, "[sdl] CreateWindow alpha=%d msaa=%d: %s\n",
+              alpha_try[i], msaa_try[j], SDL_GetError());
+    else {
+      got_msaa = msaa_try[j];
+      if (i) fprintf(stderr, "[sdl] CreateWindow OK com alpha=0 (KMSDRM/XRGB)\n");
+    }
+  }
+  if (!g_win) return 0;
+  if (msaa > 0)
+    fprintf(stderr, "[gl] MSAA pedido=%dx, conseguido=%dx\n", msaa, got_msaa);
+  { const char *drv = SDL_GetCurrentVideoDriver();
+    g_is_kmsdrm = (drv && SDL_strcmp(drv, "mali") != 0) ? 1 : 0;   /* kmsdrm/wayland precisam SDL_GL_SwapWindow p/ page-flip */
+    fprintf(stderr, "[gl] backend video='%s' kmsdrm=%d\n", drv?drv:"?", g_is_kmsdrm); }
+  g_ctx = SDL_GL_CreateContext(g_win);
+  if (!g_ctx && want_major == 3) {                 /* ES3 recusado -> cai p/ ES2 (sem ETC2) */
+    fprintf(stderr, "[gl] contexto ES3 falhou (%s) -> tenta ES2\n", SDL_GetError());
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    g_ctx = SDL_GL_CreateContext(g_win);
+  }
+  if (!g_ctx) { fprintf(stderr, "[sdl] GL_CreateContext: %s\n", SDL_GetError()); return 0; }
+  SDL_GL_MakeCurrent(g_win, g_ctx);
+
+  const GLubyte *r = glGetString(GL_RENDERER), *v = glGetString(GL_VERSION);
+  if (v && strstr((const char*)v, "ES 3")) g_es3 = 1;  /* "OpenGL ES 3.x" -> ETC2_RGBA8 disponivel */
+  fprintf(stderr, "[gl] ES3=%d (pedido major=%d)\n", g_es3, want_major);
+  fprintf(stderr, "[gl] SDL2 GLES2 %dx%d | EGL dpy=%p surf=%p ctx=%p | %s / %s\n",
+          g_w, g_h, (void*)eglGetCurrentDisplay(), (void*)eglGetCurrentSurface(EGL_DRAW),
+          (void*)eglGetCurrentContext(), r ? (const char*)r : "?", v ? (const char*)v : "?");
+  /* caps p/ decidir melhorias de qualidade (aniso, tamanho max de textura) */
+  { const GLubyte *ext = glGetString(GL_EXTENSIONS);
+    GLint maxtex = 0, maxaniso_i = 0; float maxaniso = 0;
+    glGetIntegerv(0x0D33, &maxtex);                 /* GL_MAX_TEXTURE_SIZE */
+    int has_aniso = ext && strstr((const char*)ext, "texture_filter_anisotropic") != NULL;
+    if (has_aniso) { glGetIntegerv(0x84FF, &maxaniso_i);  /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */
+      glGetFloatv(0x84FF, &maxaniso); }
+    fprintf(stderr, "[glcaps] MAX_TEXTURE_SIZE=%d aniso=%s(max=%g/%d)\n",
+            maxtex, has_aniso ? "SIM" : "nao", maxaniso, maxaniso_i);
+    fprintf(stderr, "[glext] %s\n", ext ? (const char*)ext : "?");
+  }
+  return 1;
 }
 
-EGLBoolean egl_shim_SwapInterval(EGLDisplay dpy, EGLint interval) {
-  (void)dpy;
-  SDL_GL_SetSwapInterval(interval);
-  return EGL_TRUE;
+/* os objetos EGL REAIS que o SDL2-mali criou (o jogo seeda nos OS_EGL globals e
+ * chama eglMakeCurrent direto neles) */
+void bully_egl_objects(uintptr_t *d, uintptr_t *s, uintptr_t *c) {
+  if (d) *d = (uintptr_t)eglGetCurrentDisplay();
+  if (s) *s = (uintptr_t)eglGetCurrentSurface(EGL_DRAW);
+  if (c) *c = (uintptr_t)eglGetCurrentContext();
 }
-
-EGLContext egl_shim_GetCurrentContext(void) {
-  return (EGLContext)current_context;
+int  bully_make_current(void) { return SDL_GL_MakeCurrent(g_win, g_ctx) == 0 ? 1 : 0; }
+void bully_release_current(void) { SDL_GL_MakeCurrent(g_win, NULL); }
+/* screenshot sob demanda: `touch /dev/shm/bully_shot` -> salva RGBA cru do
+ * backbuffer (antes do flip) em /dev/shm/bully_shot.raw + .txt com WxH.
+ * Roda na thread de render (contexto GL correto). */
+void bully_maybe_screenshot(void) {
+  static int chk = 0;
+  if (++chk % 15) return;
+  if (access("/dev/shm/bully_shot", F_OK) != 0) return;
+  unlink("/dev/shm/bully_shot");
+  int vp[4] = {0,0,0,0};
+  glGetIntegerv(GL_VIEWPORT, vp);
+  int w = vp[2], h = vp[3];
+  if (w <= 0 || h <= 0) return;
+  unsigned char *buf = malloc((size_t)w * h * 4);
+  if (!buf) return;
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+  FILE *o = fopen("/dev/shm/bully_shot.raw", "wb");
+  if (o) { fwrite(buf, 1, (size_t)w * h * 4, o); fclose(o); }
+  FILE *t = fopen("/dev/shm/bully_shot.txt", "w");
+  if (t) { fprintf(t, "%d %d\n", w, h); fclose(t); }
+  free(buf);
+  fprintf(stderr, "[shot] %dx%d salvo em /dev/shm/bully_shot.raw\n", w, h);
 }
-
-EGLSurface egl_shim_GetCurrentSurface(EGLint readdraw) {
-  (void)readdraw;
-  return (EGLSurface)"window";
+/* DIAG STUTTER: contador de bytes de asset lidos no frame corrente (asset_archive.c soma). */
+volatile long g_asset_bytes_frame = 0;
+static long bully_read_majflt(void) {
+  FILE *f = fopen("/proc/self/stat", "r"); if (!f) return -1;
+  char b[600]; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); if (!n) return -1; b[n] = 0;
+  char *p = strrchr(b, ')'); if (!p) return -1; p++;            /* pula "(comm)" */
+  long v = -1; int idx = 0; char *t = strtok(p, " ");
+  while (t) { if (idx == 9) { v = atol(t); break; } idx++; t = strtok(NULL, " "); } /* token9 apos comm = majflt (campo 12) */
+  return v;
 }
-
-EGLBoolean egl_shim_SurfaceAttrib(EGLDisplay dpy, EGLSurface s, EGLint a,
-                                  EGLint v) {
-  (void)dpy; (void)s; (void)a; (void)v;
-  return EGL_TRUE;
+void bully_swap_buffers(void) {
+  if (!g_win) return;
+  /* mede o frame REAL (entre presents). Stutter (>=50ms) -> loga a CAUSA: assetKB lido (streaming
+   * sincrono do SD?) + delta de major-faults (swap-in?). Gate BULLY_STUTTERLOG. */
+  { static int slog = -1; if (slog < 0) slog = getenv("BULLY_STUTTERLOG") ? 1 : 0;
+    if (slog) {
+      static int have = 0; static struct timespec prev; static long pmf = 0;
+      struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+      long mf = bully_read_majflt();
+      if (have) {
+        long ms = (now.tv_sec - prev.tv_sec) * 1000L + (now.tv_nsec - prev.tv_nsec) / 1000000L;
+        if (ms >= 50) fprintf(stderr, "[stutter] %ldms assetKB=%ld majflt+%ld\n",
+                              ms, g_asset_bytes_frame / 1024, (mf >= 0 && pmf >= 0) ? mf - pmf : -1L);
+      }
+      g_asset_bytes_frame = 0; prev = now; pmf = mf; have = 1;
+    }
+  }
+  { extern void bully_bakeall_tick(void); bully_bakeall_tick(); } /* dirige o bake POR-FRAME (varre no menu, GL thread) */
+  { extern int bully_bake_active, bully_bake_cur, bully_bake_total; extern void bully_bake_ui(int, int);
+    if (bully_bake_active) { static int n=0; if(n<3){fprintf(stderr,"[swap] via SDL_GL_SwapWindow (bake)\n");n++;} bully_bake_ui(bully_bake_cur, bully_bake_total); } }
+  bully_maybe_screenshot();
+  /* fbdev/mali (NAO kmsdrm): PRESENTA via eglSwapBuffers CRU no surface atual -- mesmo
+   * caminho que o jogo usa e que CHEGA no /dev/fb0. O SDL_GL_SwapWindow no modo splash
+   * standalone NAO estava presentando no fb0 (tela preta na extracao). KMSDRM precisa
+   * do page-flip do SDL, entao la mantemos SDL_GL_SwapWindow. */
+  if (!g_is_kmsdrm) {
+    static unsigned (*raw_swap)(void*, void*) = NULL;
+    if (!raw_swap) raw_swap = (unsigned(*)(void*,void*))dlsym(RTLD_DEFAULT, "eglSwapBuffers");
+    EGLDisplay d = eglGetCurrentDisplay(); EGLSurface s = eglGetCurrentSurface(EGL_DRAW);
+    if (raw_swap && d != EGL_NO_DISPLAY && s != EGL_NO_SURFACE) { raw_swap(d, s); return; }
+  }
+  SDL_GL_SwapWindow(g_win);
 }

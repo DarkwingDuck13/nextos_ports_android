@@ -1,0 +1,6 @@
+gtavc
+gtavc-buster
+*.raw
+*.png
+*.log
+_armhf_old_attempt1/
