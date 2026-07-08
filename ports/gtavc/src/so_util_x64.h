@@ -7,6 +7,6 @@
 #include "so_util.h"
 typedef int Module;
 extern Module mod_game, mod_cxx;
-#define so_symbol(m, name) so_find_addr(name)
+#define so_symbol(m, name) so_find_addr_safe(name)
 #define hook_x64(addr, dst) hook_arm64((uintptr_t)(addr), (uintptr_t)(dst))
 #endif

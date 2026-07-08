@@ -1072,9 +1072,9 @@ static void hook_threads(void) {
 
 static void hook_nvapk(void) {
 #define HK(sym, fn) hook_x64(so_symbol(&mod_game, sym), (uintptr_t)(fn))
-  HK("_Z9NvAPKInitP8_jobject", nv_init);   /* GTA SA: 1 arg (Bully tinha 3) */
+  HK("_Z9NvAPKInitP8_jobjectP13_jobjectArrayS2_", nv_init); /* VC/bully: 3 args */
   HK("_Z9NvAPKOpenPKc", nv_open);
-  /* NvAPKOpenFromPack não existe no GTA SA (era do Bully) — removido */
+  HK("_Z17NvAPKOpenFromPackPKc", nv_open); /* VC tem (igual bully) */
   HK("_Z9NvAPKReadPvmmS_", nv_read);
   HK("_Z9NvAPKSeekPvli", nv_seek);
   HK("_Z10NvAPKClosePv", nv_close);
@@ -1098,27 +1098,6 @@ static long bully_memavail_mb(void) {
   fclose(mf);
   return kb < 0 ? -1 : kb / 1024;
 }
-/* ============================================================================
- * DRIVER GTA SAN ANDREAS -- modelo NVIDIA NvEventQueueActivity (NAO o impl* do
- * Bully). Blueprint: fork Vita (TheOfficialFloW/gtasa_vita, MIT) jni_patch.c:
- * jni_load, traduzido p/ aarch64/Linux e conferido contra o binario real.
- *
- * Fluxo (provado estaticamente em libGTASA.so):
- *   IsAndroidPaused = 0
- *   JNI_OnLoad(fake_vm)  -> o jogo chama RegisterNatives(env,cls,methods,13)
- *   natives[0] = metodo "init" (Z)Z = NVEventJNIInit(env, thiz, initGraphics)
- *   init(fake_env, 0, 1) -> spawna NVEventMainLoopThreadFunc via pthread_create
- *                           (glibc REAL) -> roda NVEventAppMain (loop do jogo).
- *   O jogo dirige o proprio loop e nos chama de volta via JNI:
- *     InitEGLAndGLES2 / makeCurrent / swapBuffers (GL) e GetGamepad* (input,
- *     POLL). Por isso NAO dirigimos frames aqui (≠ Bully). main() so mantem o
- *     processo vivo + bombeia eventos SDL (janela/quit).
- *
- * JNINativeMethod aarch64 = 24 bytes {name@0, sig@8, fn@16} (Vita/armv7 = 12B).
- * fake_vm/fake_env: offsets aarch64 = idx*8 (Vita usa idx*4). Ver build_env().
- * ==========================================================================*/
-
-struct JNINativeMethod64 { const char *name; const char *sig; void *fn; };
 
 /* raise/abort do jogo: captura o CALL SITE (return address -> libGame+offset ->
  * addr2line = linha exata da fonte). O motor chama raise(SIGSEGV)/abort em erro
@@ -1167,211 +1146,170 @@ int gtasa_pthread_create(pthread_t *th, const void *attr, thread_entry_t start, 
   return g_real_pthread_create(th, attr, start, arg);
 }
 
-static int gtasa_ScreenGetWidth(void)  { return bully_screen_w(); }
-static int gtasa_ScreenGetHeight(void) { return bully_screen_h(); }
-/* callback RpMaterial* f(RpMaterial* mat, void* data): passthrough (retorna o
- * material, continua o ForAllMaterials) SEM tocar env-map. Usado p/ desligar o
- * environment mapping dos veículos (RpMatFX) que crasha no Mali-450. */
-static void *gtasa_material_passthrough(void *mat, void *data) { (void)data; return mat; }
-
-/* OS_ThreadSetValue: Vita neutraliza o mutex da RenderQueue (handle+601=0).
- * my_OS_ThreadLaunch/my_OS_ThreadWait/my_NVThreadSpawnJNIThread já estão
- * definidos acima (herdados do bully; offsets do handle 0x28=pthread_t,
- * 0x69=running batem 1:1 com OS_ThreadWait/OS_ThreadIsRunning do GTA SA). */
-static void *gtasa_OS_ThreadSetValue(void *rq) { if (rq) *(uint8_t *)((char *)rq + 601) = 0; return NULL; }
-
-/* patch de 1 instrucao (32b) num offset do libGTASA (text ja writable durante o
- * patch_game). Offsets do md5 eb1b906f. */
-static void patch32(uintptr_t off, uint32_t insn) {
-  extern void *text_base;
-  if (text_base) *(uint32_t *)((uintptr_t)text_base + off) = insn;
-}
-/* hook por-nome SEGURO: se o simbolo nao existe, PULA (nao fatal; nao escreve 0
- * num addr invalido). so_symbol()=so_find_addr() abortaria o processo. */
-static void hook_safe(const char *name, uintptr_t dst) {
-  uintptr_t a = so_find_addr_safe(name);
-  if (a) hook_arm64(a, dst);
-  else fprintf(stderr, "[gtasa] hook skip (ausente): %s\n", name);
-}
-
-/* patch_game do SA -- SOMENTE hooks por-NOME (portaveis armv7->aarch64). Os
- * hooks por-offset-cru do Vita (fix heli/hydraulics/cutscene/skin) sao
- * Thumb-only e NAO valem no aarch64 -> omitidos (nao afetam a 1a imagem;
- * reintroduzir por-simbolo depois). */
-static void patch_game_gtasa(void) {
-  uintptr_t a;
-  if ((a = so_find_addr_safe("UseCloudSaves"))) *(uint8_t *)a = 0;
-  if ((a = so_find_addr_safe("UseTouchSense"))) *(uint8_t *)a = 0;
-  if (getenv("GTASA_NO_DETAIL") && (a = so_find_addr_safe("gNoDetailTextures")))
-    *(int *)a = 1;
-
-  hook_safe("_Z14IsRemovedTracki",       (uintptr_t)ret0);
-  hook_safe("_Z13SaveTelemetryv",        (uintptr_t)ret0);
-  hook_safe("_Z13LoadTelemetryv",        (uintptr_t)ret0);
-  hook_safe("_Z11updateUsageb",          (uintptr_t)ret0);
-  /* AND_FileUpdated NÃO é stubado: o motor NX carrega arquivos ASSÍNCRONO
-   * (AndroidFile::firstAsyncFile) e OS_FileRead BLOQUEIA até o read completar.
-   * Quem avança a fila é AND_FileUpdated(delta), chamado pelo async worker
-   * (start_async_file_worker) — sem ele, os loads (ex: AMERICAN.GXT) travam. */
-  hook_safe("_Z17AND_BillingUpdateb",    (uintptr_t)ret0);
-  hook_safe("_Z20AND_SystemInitializev", (uintptr_t)ret0);
-  hook_safe("_Z13ProcessEventsb",        (uintptr_t)ret0);  /* 0 = NAO sair (1=exit!) */
-
-  hook_safe("_Z24NVThreadGetCurrentJNIEnvv", (uintptr_t)NVThreadGetCurrentJNIEnv);
-  hook_safe("_Z17OS_ScreenGetWidthv",  (uintptr_t)gtasa_ScreenGetWidth);
-  hook_safe("_Z18OS_ScreenGetHeightv", (uintptr_t)gtasa_ScreenGetHeight);
-
-  /* NÃO pulamos mais AddRussian/AddJapaneseTexture: com GTASA_NO_NVAPK + ci_fopen
-   * os .met dessas fontes leem certo, e o dicionário de fontes precisa das TRÊS
-   * texturas (senão o texto do menu sai BRANCO). A LÍNGUA continua EN (locale=0);
-   * carregar o atlas de fonte ≠ mostrar japonês. */
-
-  /* Threads do engine: substitui OS_ThreadLaunch pela impl LIMPA (pthread glibc
-   * rodando func direto). Isso ELIMINA o wrapper NVThreadSpawnProc/ANDRunThread
-   * (que dependia de TLS de NVThread não populado -> pthread_kill(self,SIGSEGV)).
-   * Só a thread do loop principal (NVEventInit->pthread_create direto) continua
-   * pelo bypass em gtasa_pthread_create. Igual Vita (hook OS_ThreadLaunch). */
-  hook_safe("_Z15OS_ThreadLaunchPFjPvES_jPKci16OSThreadPriority", (uintptr_t)my_OS_ThreadLaunch);
-  hook_safe("_Z13OS_ThreadWaitPv", (uintptr_t)my_OS_ThreadWait);
-  hook_safe("_Z17OS_ThreadSetValuePv", (uintptr_t)gtasa_OS_ThreadSetValue);
-  hook_safe("_Z22NVThreadSpawnJNIThreadPlPK14pthread_attr_tPKcPFPvS5_ES5_", (uintptr_t)my_NVThreadSpawnJNIThread);
-
-  /* ENV-MAP dos veículos (RpMatFX): RpMatFXMaterialGetEffects lê dado MatFX
-   * podre -> SIGSEGV no carregamento do 1º carro (mundo). É só o reflexo/brilho
-   * da lataria; desligar (passthrough) destrava o mundo. Opt-out: GTASA_ENVMAP. */
-  if (!getenv("GTASA_ENVMAP")) {
-    hook_safe("_ZN17CVehicleModelInfo19SetEnvironmentMapCBEP10RpMaterialPv",   (uintptr_t)gtasa_material_passthrough);
-    hook_safe("_ZN17CVehicleModelInfo16SetEnvMapCoeffCBEP10RpMaterialPv",      (uintptr_t)gtasa_material_passthrough);
-    hook_safe("_ZN17CVehicleModelInfo22SetEnvMapCoeffAtomicCBEP8RpAtomicPv",   (uintptr_t)gtasa_material_passthrough);
-  }
-
-  /* ÁUDIO: LIGADO por padrão via bridge OpenSL ES -> SDL_Audio (opensl_shim.c).
-   * GTASA_NOAUDIO=1 desliga (stuba PlaySound; slCreateEngine falha -> silêncio
-   * sem corromper heap). */
-  if (getenv("GTASA_NOAUDIO"))
-    hook_safe("_ZN16CAEAudioHardware9PlaySoundEstttssf", (uintptr_t)ret0);
-
-  /* LÍNGUA = INGLÊS (AMERICAN=0). InitialiseLanguage cai no fallback RUSSIAN(5)
-   * porque OS_LanguageUserSelected/DeviceRegion (JNI que nosso env não resolve)
-   * devolvem lixo. Forçar 0 = menu/HUD em inglês. */
-  hook_safe("_Z23OS_LanguageUserSelectedv", (uintptr_t)ret0);
-  hook_safe("_Z23OS_LanguageDeviceRegionv", (uintptr_t)ret0);
-
-  /* RESOLUÇÃO = DEVICE decide (padrão). O jogo escolhe o render pelo tier do
-   * device: Mali-450 (tier baixo) -> escalado LISO (~30fps); device forte
-   * (GLES3/G31) -> full 1280x720. Cada console pega a resolução dele.
-   * GTASA_FULLRES=1 força full-res 1280x720 (mais nítido, ~20fps no Mali-450):
-   * NOP o `b.lt` de OS_ApplicationInitialize (0x70ad9c). */
-  if (getenv("GTASA_FULLRES")) patch32(0x70ad9c, 0xd503201f);
-  /* InitialiseLanguage+0x24 tem `csel w8, w8(=8), w0, ne` — se um FLAG de região
-   * (CIS/russo) != 0, ignora o getter e força idx 4->RUSSIAN. Patch p/ `mov w8,w0`
-   * (0x2a0003e8): sempre usa OS_LanguageUserSelected (=0) -> AMERICAN. */
-  patch32(0x70aa84, 0x2a0003e8);
-}
-
+/* ==== DRIVER GTA VICE CITY -- modelo impl* (GameNative), base BULLY. VC usa
+ * assets LOOSE (sem data zips) -> zip_fs_init removido. Offsets de gate
+ * (StorageRootPath +-X) e OS_ZipAdd sao do Bully -> RE-confirmar no libGame VC
+ * (so_symbol=0 -> pula gracioso). Offsets impl* em re/libGame_impl_symbols.txt. ==== */
 void jni_load(void) {
-  fprintf(stderr, "=== driver GTA SA (NVEvent) ===\n");
-
-  /* env/vm falsos (offsets aarch64). build_env preenche o fake_env. */
   build_env();
-  for (unsigned i = 0; i < sizeof(fake_vm) / sizeof(uintptr_t); i++)
+  for (unsigned i = 0; i < sizeof(fake_vm)/sizeof(uintptr_t); i++)
     ((uintptr_t *)fake_vm)[i] = (uintptr_t)ret0;
-  *(uintptr_t *)(fake_vm + 0x00) = (uintptr_t)fake_vm;             /* aponta p/ si */
-  *(uintptr_t *)(fake_vm + 0x20) = (uintptr_t)AttachCurrentThread; /* idx 4 */
-  *(uintptr_t *)(fake_vm + 0x30) = (uintptr_t)GetEnv;             /* idx 6 (Vita idx3 armv7) */
-  *(uintptr_t *)(fake_vm + 0x38) = (uintptr_t)AttachCurrentThread; /* idx 7 (daemon) */
+  *(uintptr_t *)(fake_vm + 0x00) = (uintptr_t)fake_vm;
+  *(uintptr_t *)(fake_vm + 0x20) = (uintptr_t)AttachCurrentThread;  /* idx 4 */
+  *(uintptr_t *)(fake_vm + 0x30) = (uintptr_t)GetEnv;               /* idx 6 */
+  *(uintptr_t *)(fake_vm + 0x38) = (uintptr_t)AttachCurrentThread;  /* idx 7 daemon */
 
-  /* IsAndroidPaused = 0 (default 1 -> loop do jogo ficaria pausado) */
-  { uintptr_t a = so_find_addr_safe("IsAndroidPaused");
-    if (a) { *(int *)a = 0; fprintf(stderr, "[gtasa] IsAndroidPaused=0 @%p\n", (void *)a); }
-    else fprintf(stderr, "[gtasa] AVISO: IsAndroidPaused ausente\n"); }
-
-  /* GL + input na MAIN; solta o contexto p/ a render thread do jogo pegar via
-   * makeCurrent (EGL e per-thread). bully_init_gl e idempotente. */
-  if (!bully_init_gl()) fprintf(stderr, "[gtasa] AVISO: bully_init_gl falhou\n");
-  if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0)
-    fprintf(stderr, "[pad] InitSubSystem: %s\n", SDL_GetError());
-  jni_init_input();
-  /* IGNORE eventos de joystick no pump: o jogo (thread propria) chama
-   * SDL_GameControllerUpdate via GetGamepadButtons -> unico atualizador, sem
-   * corrida com o SDL_PumpEvents da main. */
-  SDL_GameControllerEventState(SDL_IGNORE);
-  SDL_JoystickEventState(SDL_IGNORE);
-  bully_release_current();
-
-  /* hooks patcham a TEXT (RX apos finalize) -> writable durante o patch */
+  /* hooks patcham a TEXT do libGame (que está RX após so_finalize) -> torna
+   * gravável durante o hooking, depois volta p/ executável (device AArch64). */
   so_make_text_writable();
-  patch_game_gtasa();
-  hook_nvapk();               /* NvAPK* -> asset_archive (le os data zips/OBB) */
+  /* hooka NvAPK ANTES de qualquer init (asset reading vem dos data_*.zip) */
+  hook_nvapk();
+  hook_egl();
+  hook_threads(); /* gerência de thread Switch-safe -> destrava GameMain/whitetexture */
+  hook_screen();  /* OS_ScreenGetWidth/Height + render gates como função */
+  hook_cxa();     /* __cxa_guard simples -> statics C++ (whitetexture?) inicializam */
+  hook_clarity(); /* GetResolutionDefault -> RS_High (engine sempre poe Low em 1GB) */
+  hook_shadow_menu(); /* GetDisplayShadowOption -> mostra a linha Shadows (BULLY_SHADOWS_MENU=1) */
+  hook_shadow_force(); /* BULLY_SHADOW_FORCE=N -> Med/High no load (menu fica Off/Low) */
+  if (getenv("BULLY_BAKEALL")) hook_render(); /* captura a cena ativa p/ o force-render */
+  if (getenv("BULLY_EVICT")) hook_evict();    /* EXPERIMENTO: religa o despejo de streaming (estilo GTA SA) */
   so_make_text_executable();
   so_flush_caches();
   asset_archive_init();
 
-  /* JNI_OnLoad -> o jogo chama RegisterNatives -> preenche `natives` */
-  int (*JNI_OnLoad)(void *, void *) = (void *)so_find_addr_safe("JNI_OnLoad");
-  if (!JNI_OnLoad) { fprintf(stderr, "[gtasa] ERRO: JNI_OnLoad ausente\n"); return; }
-  fprintf(stderr, "[gtasa] JNI_OnLoad...\n");
-  int jver = JNI_OnLoad(fake_vm, NULL);
-  fprintf(stderr, "[gtasa] JNI_OnLoad => 0x%x, natives=%p\n", jver, natives);
-  if (!natives) { fprintf(stderr, "[gtasa] ERRO: RegisterNatives nao capturou natives\n"); return; }
+  /* resolve as funcoes nativas estaticas (JNI estatico, v1.4.311) */
+#define R(n) so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_" n)
+  void (*OnInitialSetup)(void*,void*,void*,void*,void*,void*) = (void*)R("implOnInitialSetup");
+  void (*OnActivityCreated)(void*,void*,void*,int) = (void*)R("implOnActivityCreated");
+  void (*OnSurfaceCreated)(void*,void*) = (void*)R("implOnSurfaceCreated");
+  void (*OnSurfaceChanged)(void*,void*,void*,int,int) = (void*)R("implOnSurfaceChanged");
+  void (*OnDrawFrame)(void*,void*,float) = (void*)R("implOnDrawFrame");
+  void (*OnResume)(void*,void*) = (void*)R("implOnResume");
+#undef R
+  fprintf(stderr, "[drv] impl*: setup=%p act=%p surfC=%p surfCh=%p draw=%p resume=%p\n",
+          OnInitialSetup, OnActivityCreated, OnSurfaceCreated, OnSurfaceChanged, OnDrawFrame, OnResume);
 
-  /* natives[0] = "init" (Z)Z = NVEventJNIInit(env, thiz, initGraphics).
-   * CAPTURA JÁ os eventos de ciclo de vida (natives[7]=setWindowSize,
-   * [9]=resumeEvent) porque init() dispara MAIS RegisterNatives (WarGamepad,
-   * Billing) que SOBRESCREVEM o natives_buf -> depois de init() esta tabela some. */
-  struct JNINativeMethod64 *m = (struct JNINativeMethod64 *)natives;
-  for (int i = 0; i < 13; i++)
-    fprintf(stderr, "[gtasa]   natives[%d] %s %s -> %p\n", i,
-            m[i].name ? m[i].name : "?", m[i].sig ? m[i].sig : "?", (void *)m[i].fn);
-  int (*init)(void *env, void *thiz, int init_graphics) = (void *)m[0].fn;
-  void (*setWindowSize)(void *, void *, int, int) = (void *)m[7].fn;  /* "(II)V" */
-  void (*resumeEvent)(void *, void *)             = (void *)m[9].fn;  /* "()V"   */
-  if (!init) { fprintf(stderr, "[gtasa] ERRO: natives[0].fn nulo\n"); return; }
+  /* gate flags ancorados em StorageRootPath (igual bully-NX) */
+  uintptr_t srp = so_symbol(&mod_game, "StorageRootPath");
+  volatile uint8_t *isInit   = srp ? (volatile uint8_t*)(srp - 0x174) : NULL;
+  volatile uint8_t *suspended= srp ? (volatile uint8_t*)(srp - 0x17c) : NULL;
+  volatile uint8_t *canRender= srp ? (volatile uint8_t*)(srp - 0x2e8) : NULL;
+  fprintf(stderr, "[drv] StorageRootPath=%p\n", (void*)srp);
+  if (suspended) *suspended = 0;
 
-  fprintf(stderr, "[gtasa] init(env,0,1) -> spawna NVEventAppMain...\n");
-  int r = init(fake_env, NULL, 1);
-  fprintf(stderr, "[gtasa] init retornou %d (jogo rodando em thread propria)\n", r);
+  /* JNI_OnLoad primeiro (registra a VM no jogo) */
+  int (*JNI_OnLoad)(void*,void*) = (void*)so_symbol(&mod_game, "JNI_OnLoad");
+  fprintf(stderr, "[drv] JNI_OnLoad => 0x%x\n", JNI_OnLoad(fake_vm, NULL));
 
-  /* worker de I/O assíncrono: avança AndroidFile::firstAsyncFile via
-   * AND_FileUpdated -> completa os reads que OS_FileRead enfileira (senão o
-   * carregamento de AMERICAN.GXT/gta.dat/etc. BLOQUEIA pra sempre). */
-  start_async_file_worker();
+  if (!OnInitialSetup) { fprintf(stderr, "[drv] ERRO: implOnInitialSetup nao achado\n"); return; }
+  fprintf(stderr, "[drv] implOnInitialSetup...\n");
+  OnInitialSetup(fake_env, NULL, NULL, NULL, NULL, NULL);
+  fprintf(stderr, "[drv] implOnInitialSetup OK\n");
 
-  /* CICLO DE VIDA DA ACTIVITY (normalmente vindo do Java NvEventQueueActivity):
-   * sem Java, NVEventAppMain fica BLOQUEADO esperando o surface/resume. Injetamos
-   * os eventos que a Activity mandaria: setWindowSize(w,h) = surface pronta ->
-   * dispara a criação de EGL/GLES no engine; resumeEvent() = foco/resume -> começa
-   * a renderizar. Delay curto p/ a thread do loop já estar em NVEventGetNextEvent. */
-  usleep(200000);
-  if (setWindowSize) {
-    fprintf(stderr, "[gtasa] -> setWindowSize(%d,%d)\n", bully_screen_w(), bully_screen_h());
-    setWindowSize(fake_env, NULL, bully_screen_w(), bully_screen_h());
-  }
-  usleep(100000);
-  if (resumeEvent) {
-    fprintf(stderr, "[gtasa] -> resumeEvent()\n");
-    resumeEvent(fake_env, NULL);
+  /* registra os data zips (o jogo exporta OS_ZipAdd p/ o launcher chamar; libGame nao chama sozinho).
+     Sem isso, OS_ZipFileOpen itera registro vazio -> ZIPFile::Find(NULL) -> crash no GameMain. */
+  void (*OS_ZipAdd)(const char *) = (void *)so_symbol(&mod_game, "_Z9OS_ZipAddPKc");
+  if (OS_ZipAdd) {
+    fprintf(stderr, "[drv] OS_ZipAdd data_0.zip / data_1.zip ...\n");
+    OS_ZipAdd("data_0.zip");
+    OS_ZipAdd("data_1.zip");
+    fprintf(stderr, "[drv] OS_ZipAdd OK\n");
   }
 
-  /* KEEP-ALIVE: NVEventAppMain roda em thread propria e nos chama via JNI.
-   * main() bombeia SDL (janela/quit) e segura o processo. Input e via poll
-   * (GetGamepad*) na thread do jogo -> aqui so tratamos QUIT + hotkey de sair. */
-  fprintf(stderr, "[gtasa] -- loop keep-alive / pump SDL --\n");
-  extern void gtasa_diag_all_threads(void);
-  unsigned long kf = 0;
-  for (;;) {
+  if (isInit && *isInit != 1) *isInit = 1;
+  if (suspended) *suspended = 0;
+  if (canRender) *canRender = 1;
+  fprintf(stderr, "[drv] gates: init=%d susp=%d render=%d\n",
+          isInit?*isInit:-1, suspended?*suspended:-1, canRender?*canRender:-1);
+
+  fprintf(stderr, "[drv] implOnActivityCreated...\n");
+  if (OnActivityCreated) OnActivityCreated(fake_env, NULL, (void*)0x42424242, 1);
+  fprintf(stderr, "[drv] implOnActivityCreated OK\n");
+
+  /* contexto GL (EGL real) + sincroniza nos globais OS_EGL* do jogo */
+  bully_init_gl();
+  /* inicializa + abre o controle (SDL gamecontroller) — sem isso g_pad=NULL e
+   * GetGamepadButtons/Axis sempre retornam 0 (jni_init_input nunca era chamado) */
+  if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0)
+    fprintf(stderr, "[pad] InitSubSystem: %s\n", SDL_GetError());
+  jni_init_input();
+  uintptr_t egl_d=0, egl_s=0, egl_c=0; bully_egl_objects(&egl_d, &egl_s, &egl_c);
+  volatile uintptr_t *OS_EGLDisplay = srp ? (volatile uintptr_t*)(srp - 0x2d0) : NULL;
+  volatile uintptr_t *OS_EGLSurface = srp ? (volatile uintptr_t*)(srp - 0x2c8) : NULL;
+  volatile uintptr_t *OS_EGLContext = srp ? (volatile uintptr_t*)(srp - 0x2c0) : NULL;
+  if (OS_EGLDisplay) *OS_EGLDisplay = egl_d;
+  if (OS_EGLSurface) *OS_EGLSurface = egl_s;
+  if (OS_EGLContext) *OS_EGLContext = egl_c;
+  fprintf(stderr, "[drv] OS_EGL globals: d=%p s=%p c=%p\n", (void*)egl_d, (void*)egl_s, (void*)egl_c);
+
+  /* solta o contexto do main ANTES das surfaces — a render thread do jogo pega via makeCurrent */
+  bully_release_current();
+
+  if (OnSurfaceCreated) { fprintf(stderr, "[drv] implOnSurfaceCreated...\n"); OnSurfaceCreated(fake_env, NULL); }
+  if (OnSurfaceChanged) { fprintf(stderr, "[drv] implOnSurfaceChanged %dx%d (real)...\n", bully_screen_w(), bully_screen_h()); OnSurfaceChanged(fake_env, NULL, NULL, bully_screen_w(), bully_screen_h()); }
+  /* RE-SEED dos EGL globals após surface-changed (o engine reseta OS_EGLSurface
+   * aqui; sem re-seed a render thread fica sem contexto -> whitetexture NULL).
+   * Igual bully-NX sync_engine_egl_globals("post-surface-changed"). */
+  if (OS_EGLDisplay) *OS_EGLDisplay = egl_d;
+  if (OS_EGLSurface) *OS_EGLSurface = egl_s;
+  if (OS_EGLContext) *OS_EGLContext = egl_c;
+  fprintf(stderr, "[drv] OS_EGL globals RE-SEED pós-surface: d=%p s=%p c=%p\n",
+          (void*)egl_d, (void*)egl_s, (void*)egl_c);
+  if (OnResume) { fprintf(stderr, "[drv] implOnResume...\n"); OnResume(fake_env, NULL); }
+  start_async_file_worker(); /* processa a fila de loads async -> recursos/whitetexture carregam */
+
+  /* callbacks Rockstar (gate online): no Android vem async do Java; aqui disparamos no loop */
+  void (*OS_StateChanged)(int) = (void*)so_symbol(&mod_game, "_Z25OS_OnRockstarStateChangedb");
+  void (*OS_InitialComplete)(void) = (void*)so_symbol(&mod_game, "_Z28OS_OnRockstarInitialCompletev");
+  void (*OS_GateComplete)(int,int) = (void*)so_symbol(&mod_game, "_Z25OS_OnRockstarGateCompleteib");
+  void (*OS_SignInComplete)(void) = (void*)so_symbol(&mod_game, "_Z27OS_OnRockstarSignInCompletev");
+  void (*OS_AppEvent)(int,void*) = (void*)so_symbol(&mod_game, "_Z19OS_ApplicationEvent11OSEventTypePv");
+  void (*OnRkSetup)(void*,void*,void*,void*) = (void*)so_symbol(&mod_game, "Java_com_rockstargames_oswrapper_GameNative_implOnRockstarSetup");
+
+  /* REMOVIDO (2026-06-19): o despejo implOnLowMemory + anti-churn. Era um corte
+   * agressivo que, em devices compat/glibc-velha, despejava texturas/render-targets
+   * EM USO -> mundo 3D PRETO dentro do jogo (regressao do v9.5). A solucao certa de
+   * memoria e ETC1 offline/cache (4x menos memoria de textura), nao despejar a quente.
+   * No Mali-450 (Utgard) o limite e a MMU de textura, resolvido pelo ETC1. */
+
+  /* loop de render */
+  fprintf(stderr, "[drv] -- loop implOnDrawFrame --\n");
+  extern volatile int g_rk_pending_initial, g_rk_pending_gate, g_rk_pending_gate_type;
+  int rk_fired = 0, rk_signin = 0;
+  for (int f = 0; OnDrawFrame; f++) {
+    extern unsigned long g_frame_no; g_frame_no = (unsigned long)f; /* p/ proteger glFinish do RTT (só in-game) */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
-      if (e.type == SDL_QUIT) { fprintf(stderr, "[gtasa] SDL_QUIT\n"); _exit(0); }
+      if (e.type == SDL_QUIT) return;
+      if (gptk_mode()) gptk_event(&e); /* teclado/mouse do gptokeyb */
     }
-    check_exit_hotkey();  /* SELECT+START -> _exit(0) (le estado ja atualizado) */
-    /* DIAG: se após ~12s (750 frames) ninguém renderizou, dumpa onde cada thread
-     * do jogo está travada (opt-out: GTASA_NODIAG). Uma vez só. */
-    if (kf == 750 && !getenv("GTASA_NODIAG")) {
-      fprintf(stderr, "[gtasa] DIAG: dump de threads (sem render em ~12s)\n");
-      gtasa_diag_all_threads();
+    if (gptk_mode()) pump_gptk();  /* botoes via gptokeyb (bully.gptk, layout PS2) */
+    else pump_gamepad();           /* fallback: controle NATIVO via SDL (sem gptokeyb) */
+    if (canRender) *canRender = 1;
+
+    /* completa o gate Rockstar (igual bully-NX) */
+    if (!rk_fired && (g_rk_pending_initial || g_rk_pending_gate) && f > 30) {
+      rk_fired = 1; int gt = g_rk_pending_gate ? g_rk_pending_gate_type : 0;
+      fprintf(stderr, "[drv] === ROCKSTAR COMPLETE (frame %d type %d) ===\n", f, gt);
+      if (OS_StateChanged) OS_StateChanged(0);
+      if (OS_InitialComplete) OS_InitialComplete();
+      if (OS_GateComplete) OS_GateComplete(gt, 1);
+      if (OS_AppEvent) OS_AppEvent(9, NULL); /* OSET_Resume */
+      if (OnRkSetup) OnRkSetup(fake_env, NULL, (void*)"pc_user", (void*)"pc_ticket");
+      if (canRender) *canRender = 1; if (suspended) *suspended = 0; if (isInit) *isInit = 1;
+      g_rk_pending_initial = g_rk_pending_gate = 0; rk_signin = 1;
     }
-    kf++;
+    if (rk_signin && f > 45) { rk_signin = 0; if (OS_SignInComplete) OS_SignInComplete(); }
+
+    /* (bake-all roda na render thread, dentro de my_Synchronize -- ver hook_render) */
+
+    /* (despejo implOnLowMemory removido -- ver comentario acima) */
+
+    OnDrawFrame(fake_env, NULL, 1.0f/60.0f);  /* heartbeat; GL real ocorre na render thread do jogo */
+    if (f == 90 || (f % 600 == 0 && f > 0)) { extern void bully_mlock_code(void); bully_mlock_code(); } /* anti-stutter: trava codigo (file-fault) */
+    if (f > 60 && f % 20 == 0) bully_tune_stream();  /* opcao 1: reduz distancia de streaming -> menos RAM */
+    if (f < 5 || f % 120 == 0) { extern unsigned long g_fbo_binds; fprintf(stderr, "[drv] frame %d (RTT binds=%lu)\n", f, g_fbo_binds);
+      extern void bully_resource_report(void); bully_resource_report(); }
     SDL_Delay(16);
   }
 }

@@ -119,3 +119,54 @@ Rodando **GTA SA** (nosso port, JOGÁVEL). O GTA VC vai em `/storage/roms/ports/
 - `../bully/` = o jni_load impl* original (fonte do driver p/ o VC).
 - `re/` = símbolos do libGame.so (impl*, defs, undefs).
 - Fork lógica: `TheOfficialFloW` (Vita, mas é III/VC/SA família).
+
+---
+## ✅ PRIMEIRO BINÁRIO BUILDADO (esta seção)
+- `src/jni_shim.c`: driver trocado **NVEvent → impl\* (bully)** — `jni_load` resolve
+  `implOnInitialSetup/ActivityCreated/SurfaceCreated/Changed/DrawFrame/Resume` por
+  símbolo + gate Rockstar + StorageRootPath. (`zip_fs_init` removido; helpers
+  gtasa_raise/abort/pthread_create readicionados.)
+- `main.c` → `libGame.so`. `build.sh`/`build_buster.sh` → `gtavc`.
+- **`./build.sh` → `gtavc` (aarch64 PIE) COMPILA OK.** 245KB.
+- `gtavc-nextos.sh` (launcher) criado (envs GTASA_* herdados que o binário lê).
+- **NÃO testado no device** (device recebendo os 1.4GB de dados).
+
+### PRÓXIMO PASSO IMEDIATO (quando os dados chegarem no device)
+1. Deploy `gtavc` → `device:/storage/roms/ports/gtavc/gtavc-nosso`.
+2. Rodar via launcher (ES parado) com `GTASA_NO_NVAPK=1 GTASA_NODIAG=1` e ler o log:
+   - confirmar 2 módulos carregam + 0 UNRESOLVED (RE os undefs de `re/` que faltarem
+     → adicionar em gtasa_stubs.c).
+   - `implOnInitialSetup` acha? StorageRootPath gate offsets do VC (bully usa
+     srp-0x174/-0x17c/-0x2e8 → RE-confirmar no libGame; se errado, achar por disasm).
+   - `implOnDrawFrame` → primeira imagem (menu). Igual SA: OS_FileGetPosition/ftell
+     (GTASA_NO_NVAPK), env-map crash (SetEnvironmentMapCB→passthrough), resolução.
+3. Muros esperados (mesma família do SA/bully) — atacar pela ordem do log.
+
+### RE ainda a fazer (libGame.so stripado — por símbolo/disasm)
+- Offsets do gate (StorageRootPath ±X) — disasm implOnInitialSetup/OnResume.
+- Assinaturas exatas dos impl* (args de implOnActivityCreated/OnDrawFrame).
+- OS_ScreenSetResolution / tier (equivalente do GTASA_FULLRES).
+- SetEnvironmentMapCB (env-map veículo) no VC.
+- OS_ZipAdd: VC usa? (assets loose → talvez não).
+- Cutscenes (assets/movies/): como libGame toca (OS_Movie*/FindCutsceneAudioTrackId).
+
+---
+## ✅✅ PRIMEIRO BOOT NO DEVICE (esta seção) — driver impl* funciona!
+Rodado no device (dados ainda subindo — parcial). O binário passou por:
+- libc++ (2358 sym) + libGame carregam ✓
+- impl* TODOS resolvidos (setup/act/surfC/surfCh/draw/resume) ✓
+- **JNI_OnLoad => 0x10004** ✓, **implOnInitialSetup OK** ✓
+- **gates init=1 susp=0 render=1** ✓ (offsets StorageRootPath do BULLY -0x174/-0x17c/-0x2e8
+  BATERAM no VC — não precisou re-derivar!)
+- implOnActivityCreated ✓ → **GL Mali-450 GLES2 1280x720 ✓** → gamepad ✓
+- implOnSurfaceCreated ✓ → implOnSurfaceChanged 1280x720 ✓
+- **`[OSWrapper] HALT`** logo após surface-changed.
+
+O driver bully portou ~1:1. O HALT é no init de recursos do surface-changed —
+**provável DADO INCOMPLETO** (rsync em 1.0/1.4 GB na hora do teste). RE-TESTAR com
+os assets completos. Se persistir: investigar o que o surface-changed carrega
+(whitetexture/default resources) e o async file worker (start_async_file_worker
+já é chamado no jni_load). Fixes já aplicados p/ o VC:
+- `so_util_x64.h`: `so_symbol` → `so_find_addr_safe` (hooks NÃO-FATAIS; faltou símbolo = no-op).
+- `hook_nvapk`: NvAPKInit **3-arg** (`_Z9NvAPKInitP8_jobjectP13_jobjectArrayS2_`) +
+  `NvAPKOpenFromPack` (VC tem, igual bully).
