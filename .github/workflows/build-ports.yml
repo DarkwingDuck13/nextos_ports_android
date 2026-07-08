@@ -142,8 +142,8 @@ jobs:
           PORT_INPUT="${{ github.event_name == 'push' && 'all' || inputs.port }}"
           echo "Port selector: $PORT_INPUT"
 
-          # Get full playable list
-          PLAYABLE=$(bash ci/discover-ports.sh README.md . 2>/dev/null)
+          # Get full playable list — compact single-line JSON array
+          PLAYABLE=$(bash ci/discover-ports.sh README.md . 2>/dev/null | jq -c '.')
           echo "Playable ports: $PLAYABLE"
 
           if [ "$PORT_INPUT" = "all" ]; then
@@ -156,7 +156,7 @@ jobs:
             for name in "${REQUESTED[@]}"; do
               name=$(echo "$name" | tr -d ' ')
               if echo "$PLAYABLE" | jq -e --arg n "$name" 'index($n) != null' >/dev/null; then
-                VALID=$(echo "$VALID" | jq --arg n "$name" '. + [$n]')
+                VALID=$(echo "$VALID" | jq -c --arg n "$name" '. + [$n]')
               else
                 ERRORS+=("$name")
               fi
@@ -169,8 +169,10 @@ jobs:
             MATRIX="$VALID"
           fi
 
-          echo "Build matrix: $MATRIX"
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          # GITHUB_OUTPUT requires single-line values — matrix must be compact JSON
+          MATRIX_COMPACT=$(echo "$MATRIX" | jq -c '.')
+          echo "Build matrix: $MATRIX_COMPACT"
+          echo "matrix=$MATRIX_COMPACT" >> "$GITHUB_OUTPUT"
 
       - name: Log build info
         run: |
