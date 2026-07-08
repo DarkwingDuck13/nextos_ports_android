@@ -184,13 +184,23 @@ static int GetGamepadButtons(int port) {
     {SDL_CONTROLLER_BUTTON_A,0x1},{SDL_CONTROLLER_BUTTON_B,0x2},
     {SDL_CONTROLLER_BUTTON_X,0x4},{SDL_CONTROLLER_BUTTON_Y,0x8},
     {SDL_CONTROLLER_BUTTON_START,0x10},{SDL_CONTROLLER_BUTTON_BACK,0x20},
-    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER,0x40},{SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,0x80},
     {SDL_CONTROLLER_BUTTON_DPAD_UP,0x100},{SDL_CONTROLLER_BUTTON_DPAD_DOWN,0x200},
     {SDL_CONTROLLER_BUTTON_DPAD_LEFT,0x400},{SDL_CONTROLLER_BUTTON_DPAD_RIGHT,0x800},
     {SDL_CONTROLLER_BUTTON_LEFTSTICK,0x1000},{SDL_CONTROLLER_BUTTON_RIGHTSTICK,0x2000},
   };
   for (unsigned i = 0; i < sizeof(map)/sizeof(map[0]); i++)
     if (SDL_GameControllerGetButton(g_pad, map[i].b)) m |= map[i].mask;
+  /* SWAP L1<->L2 e R1<->R2 (padrão; GTASA_LR_NORMAL desliga). Game L1(0x40)/
+   * R1(0x80) = GATILHO físico L2/R2; game L2/R2(eixo 4/5) = OMBRO físico L1/R1
+   * (feito no GetGamepadAxis). Pareado c/ o GetGamepadAxis. */
+  { static int lrn = -1; if (lrn < 0) lrn = getenv("GTASA_LR_NORMAL") ? 1 : 0;
+    int l = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    int r = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000;
+    int ls = SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    int rs = SDL_GameControllerGetButton(g_pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    if (lrn) { if (ls) m |= 0x40; if (rs) m |= 0x80; }   /* normal: L1<-ombro */
+    else     { if (l)  m |= 0x40; if (r)  m |= 0x80; }   /* swap:   L1<-gatilho */
+  }
   static int last_m = 0, calls = 0;
   if (calls < 3) { fprintf(stderr, "[pad] GetGamepadButtons CHAMADO (poll #%d) m=0x%x\n", calls, m); calls++; }
   if (m != last_m) { fprintf(stderr, "[pad] buttons=0x%x\n", m); last_m = m; }
@@ -215,10 +225,20 @@ static float GetGamepadAxis(int port, int axis) {
     }
   }
   if (!g_pad) return 0.0f;
+  /* L2/R2 (eixo 4/5) com SWAP: vêm do OMBRO físico L1/R1 (pareado c/ GetGamepad
+   * Buttons). GTASA_LR_NORMAL -> gatilho analógico normal. */
+  if (axis == 4 || axis == 5) {
+    static int lrn = -1; if (lrn < 0) lrn = getenv("GTASA_LR_NORMAL") ? 1 : 0;
+    if (!lrn)
+      return SDL_GameControllerGetButton(g_pad, axis == 4 ? SDL_CONTROLLER_BUTTON_LEFTSHOULDER
+                                                          : SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1.0f : 0.0f;
+    float v = SDL_GameControllerGetAxis(g_pad, axis == 4 ? SDL_CONTROLLER_AXIS_TRIGGERLEFT
+                                                         : SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32768.0f;
+    return fabsf(v) > 0.25f ? v : 0.0f;
+  }
   SDL_GameControllerAxis ax[] = {SDL_CONTROLLER_AXIS_LEFTX,SDL_CONTROLLER_AXIS_LEFTY,
-    SDL_CONTROLLER_AXIS_RIGHTX,SDL_CONTROLLER_AXIS_RIGHTY,
-    SDL_CONTROLLER_AXIS_TRIGGERLEFT,SDL_CONTROLLER_AXIS_TRIGGERRIGHT};
-  if (axis < 0 || axis > 5) return 0.0f;
+    SDL_CONTROLLER_AXIS_RIGHTX,SDL_CONTROLLER_AXIS_RIGHTY};
+  if (axis < 0 || axis > 3) return 0.0f;
   float v = SDL_GameControllerGetAxis(g_pad, ax[axis]) / 32768.0f;
   return fabsf(v) > 0.25f ? v : 0.0f;
 }
