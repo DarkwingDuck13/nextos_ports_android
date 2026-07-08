@@ -6,7 +6,7 @@
 
 <p>
   <img alt="Licença" src="https://img.shields.io/badge/licença-GPL--3.0-blue?style=for-the-badge">
-  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-38-brightgreen?style=for-the-badge">
+  <img alt="Jogáveis" src="https://img.shields.io/badge/jogáveis-39-brightgreen?style=for-the-badge">
   <img alt="Em andamento" src="https://img.shields.io/badge/em%20andamento-20-orange?style=for-the-badge">
 </p>
 <p>
@@ -31,7 +31,7 @@ Carrega o `.so` nativo do APK e o executa **direto** no Linux, com uma camada de
 
 ## ✨ Destaques
 
-Vários **primeiros ports mundiais** em Linux/aarch64: **Bully: Anniversary Edition** (Rockstar — mundo aberto completo), **Sonic Mania Plus** (RSDKv5), **GTA: Vice City**, **Final Fantasy VII** (com FMV próprio) e **Dead Space**. **Streets of Rage 4** e **Carrion** rodam **nativos** (runtime .NET 9 + MonoGame em GLES2). Cada port documenta seus destraves técnicos na própria pasta.
+Vários **primeiros ports mundiais** em Linux/aarch64: **Bully: Anniversary Edition** (Rockstar — mundo aberto completo), **GTA: San Andreas** (1º no Mali-450 Utgard, GLES2 nativo), **Sonic Mania Plus** (RSDKv5), **GTA: Vice City**, **Final Fantasy VII** (com FMV próprio) e **Dead Space**. **Streets of Rage 4** e **Carrion** rodam **nativos** (runtime .NET 9 + MonoGame em GLES2). Cada port documenta seus destraves técnicos na própria pasta.
 
 ## 🕹️ Jogos portados
 
@@ -46,6 +46,7 @@ Todos rodam a **versão Android** (o `.so` do APK) via so-loader, salvo onde ind
 | **Bully: Anniversary Edition** | so-loader (`libGame.so`) | Mundo aberto, escola, controle, áudio (Mali-450 GLES2; + R36S 1GB via streaming) | [`ports/bully`](ports/bully/) |
 | **Castlevania: Symphony of the Night** (DotEmu) | so-loader (SDL2 nativo ES2) | Boot→título→menu→gameplay, áudio, controle, save persiste | [`ports/sotn`](ports/sotn/) |
 | **GTA: Vice City** (reVC) | so-loader 2-módulos | 100% — mundo 3D, controle, áudio, menu, NPCs | [`ports/revc`](ports/revc/) |
+| **GTA: San Andreas** (RenderWare/War Drum) | so-loader aarch64 (GLES2 nativo, driver NVIDIA NvEvent) | Jogável (Mali-450) — **1º GTA SA do mundo neste chip**; CJ no mundo (Los Santos), menu inglês, áudio (OpenSL→SDL); resolução decidida pelo device | [`ports/gtasa`](ports/gtasa/) |
 | **Sonic Mania Plus** (RSDKv5, ed. Netflix) | so-loader | 100% com som — logos→título→menu→save→cutscene→fase | [`ports/sonicmania`](ports/sonicmania/) |
 | **Streets of Rage 4** | **nativo** MonoGame/.NET 9 (GLES2) | Jogável — música/SFX (Wwise reimpl), texturas ETC1 | [`ports/sor4`](ports/sor4/) |
 | **Carrion** | **nativo** MonoGame 3.8 / .NET 9 + gl4es | 100% (Mali-450 + R36S) — render, controle, **som (FMOD)** | [`ports/carrion`](ports/carrion/) |
