@@ -95,7 +95,7 @@ fi
 echo "[check-binary] --- Check 3: No forbidden bundled libraries ---"
 FORBIDDEN_LIBS="libSDL2 libopenal libmali libmpg123"
 dt_needed=$(readelf --dynamic "$BINARY" 2>/dev/null | grep 'DT_NEEDED' | \
-            grep -oE '\(.*\)' | tr -d '()')
+            grep -oE '\(.*\)' | tr -d '()' || true)
 
 found_forbidden=0
 for lib in $FORBIDDEN_LIBS; do
