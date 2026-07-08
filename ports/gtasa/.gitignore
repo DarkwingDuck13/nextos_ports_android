@@ -1,0 +1,5 @@
+gtasa
+*.raw
+*.png
+*.log
+tools/libvao_alias.so
