@@ -13,14 +13,9 @@ SRCS=$(ls src/*.c)
 if [ "${CI_BUILD:-0}" = "1" ]; then
     # CI build on Ubuntu 22.04 cross-compiler (aarch64-linux-gnu-gcc-10).
     #
-    # Device-side libs (SDL2, GLESv2, EGL, freetype, stdc++, gcc_s) are NOT
-    # available in the CI sysroot and are provided at runtime on the target device.
-    # We omit -lSDL2 etc. entirely and use --unresolved-symbols=ignore-all so the
-    # linker succeeds without them. The binary still carries correct DT_NEEDED
-    # entries because so_util.c loads everything via dlopen at runtime anyway.
-    #
-    # Note: check-binary.sh rejects DT_NEEDED entries for libSDL2/libGLESv2/libEGL/
-    # libmali — so we must NOT link against them here.
+    # Link against the runtime libraries provided by PortMaster/Knulli.
+    # These must remain dynamic dependencies so the device loader can resolve
+    # OpenGL ES, EGL, SDL2, and freetype symbols at startup.
     $CC -D_GNU_SOURCE \
         -DSDL_DISABLE_IMMINTRIN_H \
         -I src \
@@ -33,11 +28,10 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
         -O2 -fPIC -fno-omit-frame-pointer -rdynamic \
         -Wno-int-conversion -Wno-incompatible-pointer-types \
         -o chrono $SRCS \
-        -ldl -lm -lpthread \
+        -lSDL2 -lGLESv2 -lEGL -lfreetype \
+        -ldl -lm -lpthread -lstdc++ -lgcc_s \
         -L/usr/lib/aarch64-linux-gnu \
-        -L/usr/aarch64-linux-gnu/lib \
-        -Wl,--unresolved-symbols=ignore-all \
-        -Wl,--allow-shlib-undefined
+        -L/usr/aarch64-linux-gnu/lib
 else
     # Local NextOS toolchain build (original)
     $CC --sysroot="$SR" -D_GNU_SOURCE -I src -I "$SR/usr/include" -I "$SR/usr/include/SDL2" \
