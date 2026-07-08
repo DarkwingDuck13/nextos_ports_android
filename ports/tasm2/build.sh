@@ -1,10 +1,11 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build ARMHF (gerado) so-loader — toolchain NextOS Amlogic-old (armhf).
 # glibc 2.43 + SDL2/EGL/GLESv2 do sysroot = BATEM com o device (runtime /usr/lib32).
 set -e
 TC=$(ls -d ~/NextOS-Elite-Edition/build*Amlogic-old*/toolchain 2>/dev/null | head -1)
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 cd "$(dirname "$0")"
 
 [ -x "$CC" ] || { echo "toolchain armhf não encontrado: $CC"; exit 1; }

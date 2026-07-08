@@ -1,10 +1,11 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build arm64 do Elderand (Unity 2021.3.42f1 IL2CPP+pairip) so-loader — toolchain NextOS Amlogic-old.
 # Base = scaffold do Terraria (mesma engine Unity 2021.3 IL2CPP). pairip ignorado (carrega libil2cpp direto).
 set -e
 TC=~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/aarch64-libreelec-linux-gnu-gcc
-SR=$TC/aarch64-libreelec-linux-gnu/sysroot
+CC=${CC:-$TC/bin/aarch64-libreelec-linux-gnu-gcc}
+SR=${SR:-$TC/aarch64-libreelec-linux-gnu/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain não encontrado: $CC"; exit 1; }
 SRCS=$(ls src/*.c)

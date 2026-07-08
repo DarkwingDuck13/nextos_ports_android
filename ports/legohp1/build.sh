@@ -1,11 +1,12 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build ARMHF do LEGO Harry Potter Years 1-4 (so-loader, engine Fusion, GLES1).
 # libLEGOHarry.so = armeabi-v7a (softfp) -> loader armhf (hardfp) + softfp thunks.
 # toolchain NextOS Amlogic-old armhf -> Mali-450 fbdev (libGLESv1_CM do sysroot).
 set -e
 TC=$(ls -d ~/NextOS-Elite-Edition/build*Amlogic-old*/toolchain 2>/dev/null | head -1)
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain armhf nao encontrado: $CC"; exit 1; }
 

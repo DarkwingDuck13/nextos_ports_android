@@ -1,9 +1,10 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 set -e
 
 TC=${NEXTOS_TOOLCHAIN:-$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain}
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain nao encontrado: $CC"; exit 1; }

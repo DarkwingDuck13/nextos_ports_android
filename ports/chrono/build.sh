@@ -1,10 +1,11 @@
 #!/bin/bash
 # build aarch64 do Chrono Trigger (Cocos2d-x 3.14.1 so-loader)
 # toolchain NextOS Amlogic-old aarch64 -> Mali-450 fbdev (libMali.so provê GLESv2/EGL).
+# CI: set CC and SR env vars before invoking this script to override local toolchain.
 set -e
-TC=~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/aarch64-libreelec-linux-gnu-gcc
-SR=$TC/aarch64-libreelec-linux-gnu/sysroot
+TC=${NEXTOS_TC:-~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain}
+CC=${CC:-$TC/bin/aarch64-libreelec-linux-gnu-gcc}
+SR=${SR:-$TC/aarch64-libreelec-linux-gnu/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain não encontrado: $CC"; exit 1; }
 SRCS=$(ls src/*.c)

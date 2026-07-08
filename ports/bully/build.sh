@@ -1,4 +1,5 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build aarch64 do Bully (Android) so-loader — toolchain NextOS Amlogic-old.
 # Loader ELF aarch64 glibc; SDL2/GLESv2/EGL/OpenAL/mpg123 = runtime (dlopen).
 # Linkamos -lSDL2 (input no jni_shim) e -lEGL (egl_shim Mali fbdev).

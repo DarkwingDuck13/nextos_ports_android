@@ -1,4 +1,5 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build ARMHF do LEGO Ninjago Tournament (so-loader, engine Fusion, GLES2).
 # libLEGO_M1.so = armeabi-v7a (softfp) -> loader armhf (hardfp) + softfp thunks.
 # toolchain NextOS Amlogic-old armhf -> Mali-450 fbdev (libGLESv2 do sysroot).
@@ -8,8 +9,8 @@ set -e
 export TMPDIR="${TMPDIR:-/mnt/ARQUIVOS/TRABALHO CLAUDE CODE/99-TEMP-CLAUDE/claude-1000/gcc-tmp}"
 mkdir -p "$TMPDIR"
 TC=$(ls -d ~/NextOS-Elite-Edition/build*Amlogic-old*/toolchain 2>/dev/null | head -1)
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain armhf nao encontrado: $CC"; exit 1; }
 

@@ -1,12 +1,13 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # Build Castlevania: Grimoire of Souls (jp.konami.castlevania, Unity 2018.4.11f1
 # IL2CPP, armeabi-v7a, GLES2) so-loader -> Mali-450 Amlogic fbdev via SDL2.
 # Base: glue Unity IL2CPP do Terraria + loader ELF32-ARM/softfp do Shantae (ambos JOGAVEL).
 # Toolchain armhf (mesma do Shantae/DuckTales/HLM2). NAO versionar o binario.
 set -e
 TC=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain nao encontrado: $CC"; exit 1; }
 SRCS=$(ls src/*.c)

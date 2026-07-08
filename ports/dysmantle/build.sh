@@ -1,10 +1,11 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build aarch64 do DYSMANTLE (Android, 10tons NX) so-loader — toolchain NextOS Amlogic-old.
 # Loader ELF aarch64 glibc; SDL2/GLESv2/EGL = runtime (dlopen RTLD_GLOBAL).
 set -e
 TC=~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/aarch64-libreelec-linux-gnu-gcc
-SR=$TC/aarch64-libreelec-linux-gnu/sysroot
+CC=${CC:-$TC/bin/aarch64-libreelec-linux-gnu-gcc}
+SR=${SR:-$TC/aarch64-libreelec-linux-gnu/sysroot}
 cd "$(dirname "$0")"
 
 [ -x "$CC" ] || { echo "toolchain não encontrado: $CC"; exit 1; }

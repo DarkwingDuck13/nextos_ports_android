@@ -1,10 +1,11 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # build aarch64 do CASTLE OF ILLUSION (Sega oz, libViewer_GP.so, FMOD Ex) so-loader.
 # Toolchain NextOS Amlogic-old. SDL2/GLESv2/EGL = runtime (dlopen RTLD_GLOBAL).
 set -e
 TC=~/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/aarch64-libreelec-linux-gnu-gcc
-SR=$TC/aarch64-libreelec-linux-gnu/sysroot
+CC=${CC:-$TC/bin/aarch64-libreelec-linux-gnu-gcc}
+SR=${SR:-$TC/aarch64-libreelec-linux-gnu/sysroot}
 cd "$(dirname "$0")"
 
 [ -x "$CC" ] || { echo "toolchain nao encontrado: $CC"; exit 1; }

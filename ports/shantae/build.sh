@@ -1,11 +1,12 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # Build SHANTAE (WayForward "Black" engine, NativeActivity native armv7) so-loader
 # -> Mali-450 fbdev via SDL2. Toolchain armhf (mesma do RE4/Terraria/DuckTales).
 # NÃO versionar o binário.
 set -e
 TC=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
-SR=$TC/armv8a-emuelec-linux-gnueabihf/sysroot
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
+SR=${SR:-$TC/armv8a-emuelec-linux-gnueabihf/sysroot}
 cd "$(dirname "$0")"
 [ -x "$CC" ] || { echo "toolchain nao encontrado: $CC"; exit 1; }
 

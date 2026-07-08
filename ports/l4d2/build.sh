@@ -1,8 +1,9 @@
 #!/bin/bash
+# CI: set CC and SR env vars before invoking to override local toolchain.
 # Build l4d2boot (so-loader Unity 2020.3 Mono ARM32 -> Mali-450). Base = RE4 infra.
 set -e
 TC=$HOME/NextOS-Elite-Edition/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-4/toolchain
-CC=$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc
+CC=${CC:-$TC/bin/armv8a-emuelec-linux-gnueabihf-gcc}
 cd "$(dirname "$0")"
 $CC -O2 -fPIC -fno-omit-frame-pointer -o l4d2boot \
   src/main_l4d2.c src/so_util.c src/util.c src/error.c \
