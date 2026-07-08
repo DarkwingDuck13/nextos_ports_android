@@ -1160,6 +1160,12 @@ static void *gtasa_material_passthrough(void *mat, void *data) { (void)data; ret
  * 0x69=running batem 1:1 com OS_ThreadWait/OS_ThreadIsRunning do GTA SA). */
 static void *gtasa_OS_ThreadSetValue(void *rq) { if (rq) *(uint8_t *)((char *)rq + 601) = 0; return NULL; }
 
+/* patch de 1 instrucao (32b) num offset do libGTASA (text ja writable durante o
+ * patch_game). Offsets do md5 eb1b906f. */
+static void patch32(uintptr_t off, uint32_t insn) {
+  extern void *text_base;
+  if (text_base) *(uint32_t *)((uintptr_t)text_base + off) = insn;
+}
 /* hook por-nome SEGURO: se o simbolo nao existe, PULA (nao fatal; nao escreve 0
  * num addr invalido). so_symbol()=so_find_addr() abortaria o processo. */
 static void hook_safe(const char *name, uintptr_t dst) {
@@ -1230,6 +1236,10 @@ static void patch_game_gtasa(void) {
    * devolvem lixo. Forçar 0 = menu/HUD em inglês. */
   hook_safe("_Z23OS_LanguageUserSelectedv", (uintptr_t)ret0);
   hook_safe("_Z23OS_LanguageDeviceRegionv", (uintptr_t)ret0);
+  /* InitialiseLanguage+0x24 tem `csel w8, w8(=8), w0, ne` — se um FLAG de região
+   * (CIS/russo) != 0, ignora o getter e força idx 4->RUSSIAN. Patch p/ `mov w8,w0`
+   * (0x2a0003e8): sempre usa OS_LanguageUserSelected (=0) -> AMERICAN. */
+  patch32(0x70aa84, 0x2a0003e8);
 }
 
 void jni_load(void) {
