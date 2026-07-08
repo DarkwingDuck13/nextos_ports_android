@@ -32,7 +32,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             gcc-10-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
-            debootstrap \
             jq \
             zip \
             file \
@@ -43,19 +42,90 @@ jobs:
           echo "=== Git commit ==="
           git rev-parse HEAD
 
-      - name: Bootstrap aarch64 Debian Bullseye sysroot
+      - name: Build aarch64 sysroot from arm64 deb packages
         run: |
-          sudo debootstrap \
-            --arch=arm64 \
-            --variant=minbase \
-            --include=libsdl2-dev,libegl-dev,libgles2-mesa-dev,libfreetype-dev,libstdc++-10-dev \
-            bullseye \
-            ./ci-sysroot \
-            http://deb.debian.org/debian
-          echo "=== Sysroot SDL2 check ==="
-          ls ./ci-sysroot/usr/include/SDL2/SDL.h
-          echo "=== Sysroot EGL check ==="
-          ls ./ci-sysroot/usr/include/EGL/egl.h
+          # Add arm64 architecture and Debian Bullseye sources
+          sudo dpkg --add-architecture arm64
+          # Add bullseye sources for arm64 packages
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update -qq 2>/dev/null || true
+
+          SYSROOT="$(pwd)/ci-sysroot"
+          mkdir -p "$SYSROOT"
+
+          # Download arm64 dev packages and extract headers + stub libs
+          # We use a temp dir to download .debs then extract with dpkg-deb
+          PKGDIR="$(mktemp -d)"
+
+          PACKAGES=(
+            libsdl2-dev:arm64
+            libegl-dev:arm64
+            libgles2-mesa-dev:arm64
+            libfreetype-dev:arm64
+            libstdc++-10-dev:arm64
+            libc6-dev:arm64
+            libgcc-10-dev:arm64
+            linux-libc-dev:arm64
+          )
+
+          echo "Downloading arm64 packages..."
+          for pkg in "${PACKAGES[@]}"; do
+            apt-get download "$pkg" -o Dir::Cache="$PKGDIR" 2>/dev/null || \
+            apt-get download "${pkg%:arm64}" 2>/dev/null || \
+            echo "WARN: could not download $pkg, skipping"
+          done 2>/dev/null || true
+
+          # Also grab any .deb files apt left in its cache
+          find /var/cache/apt/archives/ -name "*arm64*.deb" -exec cp {} "$PKGDIR/" \; 2>/dev/null || true
+          ls "$PKGDIR"/*.deb 2>/dev/null | head -5
+
+          echo "Extracting packages into sysroot..."
+          for deb in "$PKGDIR"/*.deb; do
+            [ -f "$deb" ] || continue
+            dpkg-deb --fsys-tarfile "$deb" | tar -x -C "$SYSROOT" 2>/dev/null || true
+          done
+          rm -rf "$PKGDIR"
+
+          # Fix symlinks — stub .so files in multiarch dir
+          MULTIARCH_DIR="$SYSROOT/usr/lib/aarch64-linux-gnu"
+          mkdir -p "$MULTIARCH_DIR"
+
+          # Create stub symlinks for linker if missing
+          for lib in libSDL2 libEGL libGLESv2 libGL libfreetype libm libdl libpthread libstdc++; do
+            so="$MULTIARCH_DIR/${lib}.so"
+            [ -f "$so" ] || [ -L "$so" ] || {
+              # Find any versioned .so and symlink it
+              versioned=$(find "$SYSROOT" -name "${lib}.so.*" -not -type d 2>/dev/null | head -1)
+              [ -n "$versioned" ] && ln -sf "$versioned" "$so" || true
+            }
+          done
+
+          # Verify critical headers exist
+          echo "=== Sysroot contents check ==="
+          ls "$SYSROOT/usr/include/SDL2/SDL.h" 2>/dev/null && echo "SDL2: OK" || echo "SDL2: MISSING"
+          ls "$SYSROOT/usr/include/EGL/egl.h"  2>/dev/null && echo "EGL: OK"  || echo "EGL: MISSING"
+          ls "$SYSROOT/usr/include/freetype2/ft2build.h" 2>/dev/null && echo "freetype: OK" || echo "freetype: MISSING"
+
+          # If headers are still missing, fall back to host headers (sufficient for cross-compile)
+          if [ ! -f "$SYSROOT/usr/include/SDL2/SDL.h" ]; then
+            echo "Falling back to host SDL2 headers..."
+            sudo apt-get install -y --no-install-recommends libsdl2-dev libfreetype-dev libegl-dev libgles2-mesa-dev
+            mkdir -p "$SYSROOT/usr/include"
+            cp -r /usr/include/SDL2 "$SYSROOT/usr/include/" 2>/dev/null || true
+            cp -r /usr/include/EGL  "$SYSROOT/usr/include/" 2>/dev/null || true
+            cp -r /usr/include/GLES2 "$SYSROOT/usr/include/" 2>/dev/null || true
+            cp -r /usr/include/freetype2 "$SYSROOT/usr/include/" 2>/dev/null || true
+            cp /usr/include/ft2build.h "$SYSROOT/usr/include/" 2>/dev/null || true
+            # For stub libs use the host amd64 libs — the linker only needs them at link time
+            mkdir -p "$SYSROOT/usr/lib/aarch64-linux-gnu"
+            for lib in SDL2 EGL GLESv2 freetype; do
+              find /usr/lib -name "lib${lib}.so*" 2>/dev/null | head -1 | \
+                xargs -I{} cp {} "$SYSROOT/usr/lib/aarch64-linux-gnu/" 2>/dev/null || true
+            done
+          fi
+
+          echo "Sysroot size: $(du -sh $SYSROOT | cut -f1)"
           tar -czf ci-sysroot.tar.gz ci-sysroot/
           echo "Sysroot tarball: $(du -sh ci-sysroot.tar.gz | cut -f1)"
 

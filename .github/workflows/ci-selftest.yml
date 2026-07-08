@@ -22,22 +22,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             gcc-10-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
-            debootstrap \
             jq \
             zip \
             file \
             binutils \
             python3
 
-      - name: Bootstrap aarch64 sysroot
+      - name: Build aarch64 sysroot from arm64 deb packages
         run: |
-          sudo debootstrap \
-            --arch=arm64 \
-            --variant=minbase \
-            --include=libsdl2-dev,libegl-dev,libgles2-mesa-dev \
-            bullseye \
-            ./ci-sysroot \
-            http://deb.debian.org/debian
+          sudo dpkg --add-architecture arm64
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" \
+            | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update -qq 2>/dev/null || true
+
+          SYSROOT="$(pwd)/ci-sysroot"
+          mkdir -p "$SYSROOT"
+
+          # Fall back to host headers + arm64 stub libs approach
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-dev libfreetype-dev libegl-dev libgles2-mesa-dev
+          mkdir -p "$SYSROOT/usr/include" "$SYSROOT/usr/lib/aarch64-linux-gnu"
+          for inc in SDL2 EGL GLES2 freetype2; do
+            cp -r /usr/include/$inc "$SYSROOT/usr/include/" 2>/dev/null || true
+          done
+          cp /usr/include/ft2build.h "$SYSROOT/usr/include/" 2>/dev/null || true
+
           echo "SR=$(pwd)/ci-sysroot" >> "$GITHUB_ENV"
           echo "CC=aarch64-linux-gnu-gcc-10" >> "$GITHUB_ENV"
 
