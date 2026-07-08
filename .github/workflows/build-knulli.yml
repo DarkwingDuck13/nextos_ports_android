@@ -1,0 +1,65 @@
+name: Build SOTN (Knulli / RK3566)
+
+# Runs build_knulli.sh inside debian:bullseye (same container trick used
+# locally) so you never need an aarch64 toolchain on your own machine.
+#
+# Triggers:
+#  - manual (Actions tab -> "Run workflow")
+#  - any push that touches ports/sotn/
+#
+# Output: a "sotn-knulli" artifact containing the compiled `sotn` binary,
+# ready to drop into /roms/ports/sotn/ alongside sotn.gptk, the .sh
+# launcher, and your extracted assets/.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ports/sotn/**"
+      - ".github/workflows/build-knulli.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:bullseye
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: ports/sotn
+        run: bash build_knulli.sh
+
+      - name: Show build info
+        working-directory: ports/sotn
+        run: |
+          file sotn
+          echo "GLIBC max: $(aarch64-linux-gnu-readelf -V sotn | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sotn-knulli
+          path: ports/sotn/sotn
+          if-no-files-found: error
+
+  # Optional: also attach the binary to a GitHub Release when you push a tag
+  # like "sotn-v1". Comment this job out if you don't want that.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/sotn-v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sotn-knulli
+          path: dist
+
+      - name: Rename for clarity
+        run: mv dist/sotn dist/sotn-knulli-aarch64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/sotn-knulli-aarch64
