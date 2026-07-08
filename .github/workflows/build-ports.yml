@@ -148,6 +148,7 @@ jobs:
         run: |
           echo "CC=$(command -v aarch64-linux-gnu-gcc-10)" >> "$GITHUB_ENV"
           echo "SR=/usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
+          echo "CI_BUILD=1" >> "$GITHUB_ENV"
 
       - name: Compile port
         run: bash ci/build-port.sh "${{ matrix.port }}"
