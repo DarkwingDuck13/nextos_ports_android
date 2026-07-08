@@ -135,12 +135,18 @@ jobs:
             echo "WARN: khrplatform.h not found"
           fi
 
-          # SDL2 headers — arm64 arch-specific config lives in aarch64-linux-gnu/SDL2/
-          # Merge aarch64-specific SDL2 headers on top of the generic ones
+          # SDL2 headers — _real_SDL_config.h lives in the host multiarch dir
+          # (x86_64-linux-gnu/SDL2/) and is included by the generic SDL_config.h.
+          # Copy it into /usr/include/SDL2/ so cross-compile -I /usr/include finds it.
+          for arch_inc in /usr/include/x86_64-linux-gnu/SDL2 /usr/include/aarch64-linux-gnu/SDL2; do
+            if [ -d "$arch_inc" ]; then
+              sudo cp -rn "$arch_inc/." /usr/include/SDL2/ 2>/dev/null || true
+            fi
+          done
+          # Also merge into sysroot SDL2 dir
           if [ -d /usr/include/aarch64-linux-gnu/SDL2 ]; then
             sudo cp -r /usr/include/aarch64-linux-gnu/SDL2/. "$SR/SDL2/" 2>/dev/null || true
           fi
-          # Also copy generic SDL2 headers if not already there
           if [ -d /usr/include/SDL2 ]; then
             sudo cp -rn /usr/include/SDL2/. "$SR/SDL2/" 2>/dev/null || true
           fi
@@ -160,7 +166,8 @@ jobs:
 
           echo "=== Final header check ==="
           ls "$SR/KHR/khrplatform.h"       && echo "KHR: OK"        || echo "KHR: MISSING"
-          ls "$SR/SDL2/_real_SDL_config.h"  && echo "SDL2 config: OK" || echo "SDL2 config: MISSING"
+          ls /usr/include/SDL2/_real_SDL_config.h && echo "SDL2 _real_config: OK" || { echo "SDL2 _real_config: MISSING"; exit 1; }
+          ls "$SR/SDL2/SDL.h"              && echo "SDL2 sysroot: OK" || echo "SDL2 sysroot: MISSING"
           ls "$SR/ft2build.h"              && echo "freetype: OK"   || echo "freetype: MISSING"
           aarch64-linux-gnu-gcc-10 --version
 
