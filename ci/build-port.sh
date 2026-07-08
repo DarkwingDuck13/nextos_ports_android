@@ -36,6 +36,18 @@ if [ ! -f "$BUILD_SCRIPT" ]; then
 fi
 
 # ── Log build context (for reproducibility audit) ────────────────────────────
+# Resolve CC to a full path so that [ -x "$CC" ] checks in port build.sh work.
+# If CC is a bare command name (e.g. "aarch64-linux-gnu-gcc-10"), resolve it.
+if [ -n "${CC:-}" ] && [ ! -x "$CC" ]; then
+  CC_RESOLVED=$(command -v "$CC" 2>/dev/null || true)
+  if [ -n "$CC_RESOLVED" ]; then
+    CC="$CC_RESOLVED"
+  else
+    echo "[build-port] ERROR: CC='$CC' is not executable and not found in PATH" >&2
+    exit 1
+  fi
+fi
+
 echo "[build-port] ============================================"
 echo "[build-port] Port:       $PORTNAME"
 echo "[build-port] CC:         $CC"
@@ -45,10 +57,6 @@ echo "[build-port] Compiler:   $("$CC" --version 2>&1 | head -1 || echo 'version
 echo "[build-port] ============================================"
 
 # ── Invoke the port's build.sh ────────────────────────────────────────────────
-# Export CC and SR so that build.sh scripts that reference them (not just $CC)
-# pick them up correctly. We do NOT override any other env the caller sets.
-# The CI replaces any hardcoded local toolchain paths in build.sh by ensuring
-# CC and SR are set before the toolchain-detection block in each build.sh runs.
 export CC SR
 
 cd "$PORT_DIR"
