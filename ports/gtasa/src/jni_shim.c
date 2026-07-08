@@ -1236,6 +1236,13 @@ static void patch_game_gtasa(void) {
    * devolvem lixo. Forçar 0 = menu/HUD em inglês. */
   hook_safe("_Z23OS_LanguageUserSelectedv", (uintptr_t)ret0);
   hook_safe("_Z23OS_LanguageDeviceRegionv", (uintptr_t)ret0);
+
+  /* RESOLUÇÃO = DEVICE decide (padrão). O jogo escolhe o render pelo tier do
+   * device: Mali-450 (tier baixo) -> escalado LISO (~30fps); device forte
+   * (GLES3/G31) -> full 1280x720. Cada console pega a resolução dele.
+   * GTASA_FULLRES=1 força full-res 1280x720 (mais nítido, ~20fps no Mali-450):
+   * NOP o `b.lt` de OS_ApplicationInitialize (0x70ad9c). */
+  if (getenv("GTASA_FULLRES")) patch32(0x70ad9c, 0xd503201f);
   /* InitialiseLanguage+0x24 tem `csel w8, w8(=8), w0, ne` — se um FLAG de região
    * (CIS/russo) != 0, ignora o getter e força idx 4->RUSSIAN. Patch p/ `mov w8,w0`
    * (0x2a0003e8): sempre usa OS_LanguageUserSelected (=0) -> AMERICAN. */
