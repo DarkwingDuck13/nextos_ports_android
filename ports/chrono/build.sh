@@ -26,9 +26,8 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
         stub="$STUBDIR/lib${lib}.so"
         if [ ! -f "/usr/lib/aarch64-linux-gnu/lib${lib}.so" ] && \
            [ ! -f "/usr/aarch64-linux-gnu/lib/lib${lib}.so" ]; then
-            aarch64-linux-gnu-gcc-10 --sysroot="$SR" \
-                -shared -nostdlib -o "$stub" /dev/null 2>/dev/null || \
-            printf 'GROUP ( )\n' > "$stub"
+            # Write a minimal ELF shared object as a linker script stub
+            printf 'INPUT()\n' > "$stub"
             echo "stub: lib${lib}.so"
         fi
     done
@@ -48,7 +47,9 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
         -lSDL2 -lGLESv2 -lEGL -lfreetype -ldl -lm -lpthread -lstdc++ -lgcc_s \
         -L/usr/lib/aarch64-linux-gnu \
         -L/usr/aarch64-linux-gnu/lib \
-        -L"$STUBDIR"
+        -L"$STUBDIR" \
+        -Wl,--allow-shlib-undefined \
+        -Wl,--unresolved-symbols=ignore-in-shared-libs
 else
     # Local NextOS toolchain build (original)
     $CC --sysroot="$SR" -D_GNU_SOURCE -I src -I "$SR/usr/include" -I "$SR/usr/include/SDL2" \
