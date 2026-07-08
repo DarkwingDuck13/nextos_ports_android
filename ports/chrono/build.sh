@@ -33,10 +33,10 @@ if [ "${CI_BUILD:-0}" = "1" ]; then
         fi
     done
 
-    $CC --sysroot="$SR" -D_GNU_SOURCE \
+    $CC -D_GNU_SOURCE \
         -DSDL_DISABLE_IMMINTRIN_H \
         -I src \
-        -I "$SR/include" \
+        -I /usr/aarch64-linux-gnu/include \
         -I /usr/include/aarch64-linux-gnu \
         -I /usr/include/aarch64-linux-gnu/SDL2 \
         -I /usr/include/aarch64-linux-gnu/freetype2 \
