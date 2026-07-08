@@ -202,7 +202,7 @@ fi
 
 # ── Assemble zip ──────────────────────────────────────────────────────────────
 mkdir -p "$OUTPUT_DIR"
-ZIP_PATH="$OUTPUT_DIR/$ZIP_NAME"
+ZIP_PATH="$(cd "$OUTPUT_DIR" && pwd)/$ZIP_NAME"
 
 echo "[assemble-zip] Creating $ZIP_PATH ..."
 (cd "$STAGING" && zip -r "$ZIP_PATH" .)
