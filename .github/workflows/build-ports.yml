@@ -117,31 +117,46 @@ jobs:
             || ls /usr/include/SDL2/SDL.h \
             || { echo "ERROR: SDL2 headers missing"; exit 1; }
 
-          # Fix missing headers: arm64 packages put some files in /usr/include
-          # but --sysroot only searches /usr/aarch64-linux-gnu/include.
-          # Copy the missing pieces into the sysroot include path.
+          # Fix missing headers: arm64 packages install arch-specific files to
+          # /usr/include/aarch64-linux-gnu/ but --sysroot searches /usr/aarch64-linux-gnu/include.
+          # Merge the multiarch headers into the sysroot include directory.
           SR=/usr/aarch64-linux-gnu/include
           sudo mkdir -p "$SR/KHR" "$SR/SDL2" "$SR/freetype2"
 
-          # KHR/khrplatform.h
-          [ -f "$SR/KHR/khrplatform.h" ] || \
+          # KHR/khrplatform.h — from arm64 multiarch path
+          if [ ! -f "$SR/KHR/khrplatform.h" ]; then
+            sudo cp /usr/include/aarch64-linux-gnu/KHR/khrplatform.h "$SR/KHR/" 2>/dev/null || \
             sudo cp /usr/include/KHR/khrplatform.h "$SR/KHR/" 2>/dev/null || \
-            sudo apt-get install -y --no-install-recommends libkhrplatform-dev 2>/dev/null && \
-            sudo cp /usr/include/KHR/khrplatform.h "$SR/KHR/" 2>/dev/null || true
+            echo "WARN: khrplatform.h not found"
+          fi
 
-          # SDL2/_real_SDL_config.h and full SDL2 headers
-          [ -f "$SR/SDL2/_real_SDL_config.h" ] || \
-            sudo cp -r /usr/include/SDL2/. "$SR/SDL2/" 2>/dev/null || true
+          # SDL2 headers — arm64 arch-specific config lives in aarch64-linux-gnu/SDL2/
+          # Merge aarch64-specific SDL2 headers on top of the generic ones
+          if [ -d /usr/include/aarch64-linux-gnu/SDL2 ]; then
+            sudo cp -r /usr/include/aarch64-linux-gnu/SDL2/. "$SR/SDL2/" 2>/dev/null || true
+          fi
+          # Also copy generic SDL2 headers if not already there
+          if [ -d /usr/include/SDL2 ]; then
+            sudo cp -rn /usr/include/SDL2/. "$SR/SDL2/" 2>/dev/null || true
+          fi
 
-          # ft2build.h and freetype2/
-          [ -f "$SR/ft2build.h" ] || \
-            sudo cp /usr/include/ft2build.h "$SR/" 2>/dev/null || true
-          sudo cp -r /usr/include/freetype2/. "$SR/freetype2/" 2>/dev/null || true
+          # freetype — ft2build.h and freetype2/
+          if [ ! -f "$SR/ft2build.h" ]; then
+            sudo cp /usr/include/aarch64-linux-gnu/ft2build.h "$SR/" 2>/dev/null || \
+            sudo cp /usr/include/ft2build.h "$SR/" 2>/dev/null || \
+            echo "WARN: ft2build.h not found"
+          fi
+          if [ -d /usr/include/aarch64-linux-gnu/freetype2 ]; then
+            sudo cp -rn /usr/include/aarch64-linux-gnu/freetype2/. "$SR/freetype2/" 2>/dev/null || true
+          fi
+          if [ -d /usr/include/freetype2 ]; then
+            sudo cp -rn /usr/include/freetype2/. "$SR/freetype2/" 2>/dev/null || true
+          fi
 
           echo "=== Final header check ==="
-          ls "$SR/KHR/khrplatform.h"   && echo "KHR: OK"     || echo "KHR: MISSING"
-          ls "$SR/SDL2/_real_SDL_config.h" && echo "SDL2 config: OK" || echo "SDL2 config: MISSING"
-          ls "$SR/ft2build.h"          && echo "freetype: OK" || echo "freetype: MISSING"
+          ls "$SR/KHR/khrplatform.h"       && echo "KHR: OK"        || echo "KHR: MISSING"
+          ls "$SR/SDL2/_real_SDL_config.h"  && echo "SDL2 config: OK" || echo "SDL2 config: MISSING"
+          ls "$SR/ft2build.h"              && echo "freetype: OK"   || echo "freetype: MISSING"
           aarch64-linux-gnu-gcc-10 --version
 
       - name: Set CC and SR
