@@ -1224,6 +1224,12 @@ static void patch_game_gtasa(void) {
    * Opt-out: GTASA_AUDIO=1 pra tentar com som. */
   if (!getenv("GTASA_AUDIO"))
     hook_safe("_ZN16CAEAudioHardware9PlaySoundEstttssf", (uintptr_t)ret0);
+
+  /* LÍNGUA = INGLÊS (AMERICAN=0). InitialiseLanguage cai no fallback RUSSIAN(5)
+   * porque OS_LanguageUserSelected/DeviceRegion (JNI que nosso env não resolve)
+   * devolvem lixo. Forçar 0 = menu/HUD em inglês. */
+  hook_safe("_Z23OS_LanguageUserSelectedv", (uintptr_t)ret0);
+  hook_safe("_Z23OS_LanguageDeviceRegionv", (uintptr_t)ret0);
 }
 
 void jni_load(void) {
